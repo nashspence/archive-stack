@@ -12,18 +12,6 @@ class ArchiveUsageTotalsOut(RiverhogModel):
     measured_storage_bytes: int
 
 
-class ArchiveUsageImageOut(RiverhogModel):
-    id: str
-    filename: str
-    collection_ids: list[str]
-
-
-class ArchiveCollectionContributionOut(RiverhogModel):
-    image_id: str
-    filename: str
-    represented_bytes: int
-
-
 class ArchiveUsageCollectionOut(RiverhogModel):
     id: str
     bytes: int
@@ -32,7 +20,6 @@ class ArchiveUsageCollectionOut(RiverhogModel):
     archive_format: str | None = None
     compression: str | None = None
     measured_storage_bytes: int
-    images: list[ArchiveCollectionContributionOut]
 
 
 class ArchiveUsageSnapshotOut(RiverhogModel):
@@ -42,9 +29,8 @@ class ArchiveUsageSnapshotOut(RiverhogModel):
 
 
 class ArchiveUsageReportOut(RiverhogModel):
-    scope: Literal["all", "collection", "filtered"]
+    scope: Literal["all", "collection"]
     measured_at: str
     totals: ArchiveUsageTotalsOut
-    images: list[ArchiveUsageImageOut]
     collections: list[ArchiveUsageCollectionOut]
     history: list[ArchiveUsageSnapshotOut]

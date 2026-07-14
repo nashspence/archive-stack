@@ -9,10 +9,6 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
-    FetchEntryRecord,
-    FileDiscRecord,
-    FinalizedImageRecord,
-    PlannedCandidateRecord,
 )
 
 
@@ -20,20 +16,10 @@ from riverhog_core.catalog_models import (
     ("model", "column"),
     [
         (CollectionFileRecord, "bytes"),
-        (FileDiscRecord, "part_bytes"),
-        (FileDiscRecord, "recovery_bytes"),
         (CollectionArchiveRecord, "stored_bytes"),
         (CollectionArchiveRecord, "manifest_stored_bytes"),
         (CollectionArchiveRecord, "ots_stored_bytes"),
-        (PlannedCandidateRecord, "bytes"),
-        (PlannedCandidateRecord, "target_bytes"),
-        (PlannedCandidateRecord, "min_fill_bytes"),
-        (FinalizedImageRecord, "bytes"),
-        (FinalizedImageRecord, "target_bytes"),
         (ArchiveUsageSnapshotRecord, "measured_storage_bytes"),
-        (FetchEntryRecord, "bytes"),
-        (FetchEntryRecord, "recovery_bytes"),
-        (FetchEntryRecord, "uploaded_bytes"),
         (CollectionUploadFileRecord, "bytes"),
         (CollectionUploadFileRecord, "uploaded_bytes"),
     ],

@@ -1,20 +1,5 @@
-Acceptance feature suite conventions
-===================================
+# Contract harness
 
-These `.feature` files are the normative external contract for the MVP.
+The assembled API contract lives in `tests/harness/`. Scenarios use generic collection manifests, verified archive records, target selectors, archive materialization, hot-cache state, and stable API errors.
 
-They are executed by the fixture-backed spec harness:
-
-- `tests/harness/test_spec_harness.py` loads every feature file through the fixture-backed spec harness.
-
-Conventions:
-
-- Feature files describe externally visible behavior only.
-- Scenario titles should remain stable even if implementation details change.
-- Step wording is intentionally repetitive where it protects exact semantics, especially for:
-  - selector validity
-  - fetch-editing and hot-eviction selector behavior
-  - disc coverage vs hot availability
-  - fetch lifecycle and hash verification
-- `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior, not internal command structure.
-- disc-media scenarios should validate against the machine-readable contracts in `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.
+Keep fixtures positive and focused on supported behavior. Machine payload shapes belong in the checked OpenAPI, webhook, and terminology contracts.

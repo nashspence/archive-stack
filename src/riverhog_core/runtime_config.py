@@ -14,14 +14,10 @@ from riverhog_core.operator_reminders import (
     reminder_zone,
 )
 
-_DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+_DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
-DEV_RECOVERY_PAYLOAD_PASSPHRASE = "riverhog-dev-recovery-passphrase"
+DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
-DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
-DEFAULT_PLANNER_MIN_FILL_RATIO = 0.99
-DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
-DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
 DEFAULT_HOT_PROMOTION_CONCURRENCY = 8
@@ -29,18 +25,19 @@ DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_ARCHIVE_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
-DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR = 30
 
 
 def _parse_duration(value: str) -> timedelta:
     m = _DURATION_RE.match(value.strip())
     if not m or not any(m.groups()):
-        raise ValueError(f"invalid duration {value!r}: expected format like '24h', '30m', '90s'")
-    hours = int(m.group(1) or 0)
-    minutes = int(m.group(2) or 0)
-    seconds = int(m.group(3) or 0)
-    return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        raise ValueError(
+            f"invalid duration {value!r}: expected format like '2d', '24h', '30m', '90s'"
+        )
+    days = int(m.group(1) or 0)
+    hours = int(m.group(2) or 0)
+    minutes = int(m.group(3) or 0)
+    seconds = int(m.group(4) or 0)
+    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
 def _parse_bool(value: str) -> bool:
@@ -91,17 +88,6 @@ def _parse_float(value: str, *, name: str, minimum: float = 0.0) -> float:
     parsed = float(value.strip())
     if parsed < minimum:
         raise ValueError(f"invalid {name} {value!r}: expected >= {minimum}")
-    return parsed
-
-
-def _parse_ratio(value: str, *, name: str) -> float:
-    raw = value.strip()
-    if raw.endswith("%"):
-        parsed = float(raw[:-1].strip()) / 100.0
-    else:
-        parsed = float(raw)
-    if parsed <= 0.0 or parsed > 1.0:
-        raise ValueError(f"invalid {name} {value!r}: expected a ratio in (0, 1]")
     return parsed
 
 
@@ -201,15 +187,15 @@ def _database_url_driver(database_url: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    object_store: str
-    s3_endpoint_url: str
-    s3_region: str
-    s3_bucket: str
-    s3_access_key_id: str
-    s3_secret_access_key: str
-    s3_force_path_style: bool
-    tusd_base_url: str
-    tusd_hook_secret: str
+    object_store: str = "s3"
+    s3_endpoint_url: str = "http://127.0.0.1:9000"
+    s3_region: str = "us-east-1"
+    s3_bucket: str = "riverhog"
+    s3_access_key_id: str = "minioadmin"
+    s3_secret_access_key: str = "minioadmin"
+    s3_force_path_style: bool = True
+    tusd_base_url: str = "http://127.0.0.1:1080/files"
+    tusd_hook_secret: str = "dev-tusd-hook-secret"
     s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     tusd_public_base_url: str | None = None
     tusd_public_signing_secret: str | None = None
@@ -234,7 +220,7 @@ class RuntimeConfig:
     hot_promotion_concurrency: int = DEFAULT_HOT_PROMOTION_CONCURRENCY
     hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
     archive_encryption: str = "age_scrypt"
-    archive_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
+    archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
     archive_require_explicit_passphrase: bool = False
     archive_work_factor: int = DEFAULT_ARCHIVE_WORK_FACTOR
     archive_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
@@ -256,21 +242,7 @@ class RuntimeConfig:
     archive_restore_mode: str = "auto"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots",)
-    recovery_payload_command: tuple[str, ...] = ("age",)
-    recovery_payload_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
-    recovery_payload_require_explicit_passphrase: bool = False
-    recovery_payload_work_factor: int = DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR
-    recovery_payload_max_work_factor: int = DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR
     public_base_url: str | None = None
-    planner_disc_target_bytes: int = DEFAULT_PLANNER_DISC_TARGET_BYTES
-    planner_min_fill_ratio: float = DEFAULT_PLANNER_MIN_FILL_RATIO
-    planner_min_fill_bytes: int = int(
-        DEFAULT_PLANNER_DISC_TARGET_BYTES * DEFAULT_PLANNER_MIN_FILL_RATIO
-    )
-    planner_unplanned_saturation_bytes: int = DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES
-    planner_image_root: Path = field(default_factory=lambda: Path(".riverhog/images"))
-    planner_refresh_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=1))
-    unburned_collection_bytes_limit: int = DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT
 
     def __post_init__(self) -> None:
         if not self.database_url:
@@ -303,7 +275,7 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASE must be set")
         if (
             self.archive_require_explicit_passphrase
-            and self.archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+            and self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE
         ):
             raise ValueError(
                 "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
@@ -343,27 +315,6 @@ class RuntimeConfig:
             normalize_reminder_time(self.operator_webhook_reminder_time),
         )
         reminder_zone(self.operator_webhook_reminder_timezone)
-        if self.planner_disc_target_bytes < 1:
-            raise ValueError("RIVERHOG_PLANNER_DISC_TARGET_BYTES must be >= 1")
-        if self.planner_min_fill_bytes < 1:
-            raise ValueError("RIVERHOG_PLANNER_MIN_FILL_BYTES must be >= 1")
-        if self.planner_min_fill_ratio <= 0.0 or self.planner_min_fill_ratio > 1.0:
-            raise ValueError("RIVERHOG_PLANNER_MIN_FILL_RATIO must be in (0, 1]")
-        if self.planner_min_fill_bytes > self.planner_disc_target_bytes:
-            raise ValueError(
-                "RIVERHOG_PLANNER_MIN_FILL_BYTES must be <= RIVERHOG_PLANNER_DISC_TARGET_BYTES"
-            )
-        if self.planner_unplanned_saturation_bytes < 0:
-            raise ValueError("RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES must be >= 0")
-        if self.planner_refresh_sweep_interval.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL must be > 0")
-        if self.unburned_collection_bytes_limit < 0:
-            raise ValueError("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT must be >= 0")
-        object.__setattr__(
-            self,
-            "planner_image_root",
-            self.planner_image_root.expanduser().resolve(),
-        )
         object.__setattr__(
             self,
             "upload_staging_root",
@@ -495,25 +446,10 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_OTS_VERIFY_COMMAND", "ots"),
         name="RIVERHOG_OTS_VERIFY_COMMAND",
     )
-    recovery_payload_command = _parse_command(
-        os.getenv("RIVERHOG_RECOVERY_PAYLOAD_COMMAND", "age"),
-        name="RIVERHOG_RECOVERY_PAYLOAD_COMMAND",
-    )
-    recovery_payload_require_explicit_passphrase = _parse_bool(
-        os.getenv("RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE", "false")
-    )
-    recovery_payload_passphrase_supplied = "RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE" in os.environ
-    recovery_payload_passphrase = (
-        os.getenv(
-            "RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE",
-            DEV_RECOVERY_PAYLOAD_PASSPHRASE,
-        ).strip()
-        or DEV_RECOVERY_PAYLOAD_PASSPHRASE
-    )
     archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ
     archive_passphrase = (
-        os.getenv("RIVERHOG_ARCHIVE_PASSPHRASE", recovery_payload_passphrase).strip()
-        or recovery_payload_passphrase
+        os.getenv("RIVERHOG_ARCHIVE_PASSPHRASE", DEV_ARCHIVE_PASSPHRASE).strip()
+        or DEV_ARCHIVE_PASSPHRASE
     )
     archive_require_explicit_passphrase = _parse_bool(
         os.getenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "false")
@@ -529,83 +465,12 @@ def load_runtime_config() -> RuntimeConfig:
     if archive_work_factor > 22:
         raise ValueError("RIVERHOG_ARCHIVE_WORK_FACTOR must be <= 22")
     if archive_require_explicit_passphrase and (
-        not archive_passphrase_supplied or archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+        not archive_passphrase_supplied or archive_passphrase == DEV_ARCHIVE_PASSPHRASE
     ):
         raise ValueError(
             "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
             "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
         )
-    if recovery_payload_require_explicit_passphrase and (
-        not recovery_payload_passphrase_supplied
-        or recovery_payload_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
-    ):
-        raise ValueError(
-            "RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE requires "
-            "RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE to be explicitly set to a non-development secret"
-        )
-    recovery_payload_work_factor = _parse_int(
-        os.getenv(
-            "RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR",
-            str(DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR),
-        ),
-        name="RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR",
-        minimum=1,
-    )
-    recovery_payload_max_work_factor = _parse_int(
-        os.getenv(
-            "RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR",
-            str(DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR),
-        ),
-        name="RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR",
-        minimum=1,
-    )
-    if recovery_payload_work_factor > 30:
-        raise ValueError("RIVERHOG_RECOVERY_PAYLOAD_WORK_FACTOR must be <= 30")
-    if recovery_payload_max_work_factor > 30:
-        raise ValueError("RIVERHOG_RECOVERY_PAYLOAD_MAX_WORK_FACTOR must be <= 30")
-
-    planner_disc_target_bytes = _parse_bytes(
-        os.getenv("RIVERHOG_PLANNER_DISC_TARGET_BYTES", str(DEFAULT_PLANNER_DISC_TARGET_BYTES)),
-        name="RIVERHOG_PLANNER_DISC_TARGET_BYTES",
-        minimum=1,
-    )
-    planner_min_fill_ratio = _parse_ratio(
-        os.getenv("RIVERHOG_PLANNER_MIN_FILL_RATIO", str(DEFAULT_PLANNER_MIN_FILL_RATIO)),
-        name="RIVERHOG_PLANNER_MIN_FILL_RATIO",
-    )
-    planner_min_fill_bytes_raw = os.getenv("RIVERHOG_PLANNER_MIN_FILL_BYTES", "").strip()
-    planner_min_fill_bytes = (
-        _parse_bytes(
-            planner_min_fill_bytes_raw,
-            name="RIVERHOG_PLANNER_MIN_FILL_BYTES",
-            minimum=1,
-        )
-        if planner_min_fill_bytes_raw
-        else int(planner_disc_target_bytes * planner_min_fill_ratio)
-    )
-    planner_unplanned_saturation_bytes = _parse_bytes(
-        os.getenv(
-            "RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES",
-            str(DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES),
-        ),
-        name="RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES",
-        minimum=0,
-    )
-    planner_image_root = Path(
-        os.getenv("RIVERHOG_PLANNER_IMAGE_ROOT", ".riverhog/images").strip() or ".riverhog/images"
-    )
-    planner_refresh_sweep_interval = _parse_duration(
-        os.getenv("RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL", "60s")
-    )
-    unburned_collection_bytes_limit = _parse_bytes(
-        os.getenv(
-            "RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT",
-            str(DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT),
-        ),
-        name="RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT",
-        minimum=0,
-    )
-
     return RuntimeConfig(
         object_store=object_store,
         s3_endpoint_url=s3_endpoint_url,
@@ -678,17 +543,5 @@ def load_runtime_config() -> RuntimeConfig:
         archive_restore_mode=archive_restore_mode,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
-        recovery_payload_command=recovery_payload_command,
-        recovery_payload_passphrase=recovery_payload_passphrase,
-        recovery_payload_require_explicit_passphrase=(recovery_payload_require_explicit_passphrase),
-        recovery_payload_work_factor=recovery_payload_work_factor,
-        recovery_payload_max_work_factor=recovery_payload_max_work_factor,
         public_base_url=public_base_url,
-        planner_disc_target_bytes=planner_disc_target_bytes,
-        planner_min_fill_ratio=planner_min_fill_ratio,
-        planner_min_fill_bytes=planner_min_fill_bytes,
-        planner_unplanned_saturation_bytes=planner_unplanned_saturation_bytes,
-        planner_image_root=planner_image_root,
-        planner_refresh_sweep_interval=planner_refresh_sweep_interval,
-        unburned_collection_bytes_limit=unburned_collection_bytes_limit,
     )

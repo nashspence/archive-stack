@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG AGE_VERSION=v1.3.1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates xorriso \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN arch="$(dpkg --print-architecture)" \

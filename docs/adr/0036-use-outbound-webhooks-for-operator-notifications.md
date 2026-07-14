@@ -2,12 +2,10 @@
 
 ## Decision
 
-Riverhog emits configured outbound webhooks for operator-relevant collection,
-archive, planner, fetch, and recovery events.
+Riverhog emits configured outbound webhooks for operator-relevant collection upload, archive upload, archive restore, fetch, and Jeb events.
+
+Payloads use the checked webhook contract, stable event names, explicit recipients, and best-effort delivery with recorded failures.
 
 ## Reason
 
-Fetch manifests that are waiting for physical media, rare archive restore
-stages, collection upload handoff, archive/promotion progress, planner
-completion, and persistent failures need notification without creating
-additional product API surface.
+Long-running custody and retrieval operations need timely notification without coupling Riverhog to a particular messaging service or adding polling-specific product APIs.

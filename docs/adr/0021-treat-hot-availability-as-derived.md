@@ -1,21 +1,11 @@
-# ADR-0021: Treat Hot Availability As Derived
+# ADR-0021: Catalog Hot Availability
 
 ## Decision
 
-Riverhog treats hot availability as a materialized projection of catalog state,
-not as source-of-truth state.
+Riverhog records hot availability for each logical file and changes that state only when verified bytes are published or explicitly evicted.
 
-The projection is driven by collection archive state, verified disc coverage,
-named fetches, recovery upload state, and the actual committed hot-file
-namespace.
+Search, collection summaries, fetches, downloads, and read-only browsing use this cataloged state. Storage checks verify that the corresponding committed object exists before serving bytes.
 
 ## Reason
 
-Hot bytes can be browsed, downloaded, evicted, lost, or rebuilt, but archive
-membership and operator recovery intent must remain unambiguous.
-
-Derived hot availability lets Riverhog answer operator list/show/search
-commands quickly without scanning unbounded file history. It also lets recovery
-workers repair missing hot files from the right source: queued `djdan fetch`
-work when verified discs exist, or fetch fetch materialization when
-the selected bytes must come from the archive.
+Operators need one consistent answer about whether a file is immediately available. Cataloged availability supports efficient queries, while object verification prevents metadata alone from claiming custody of missing bytes.

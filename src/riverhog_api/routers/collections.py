@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter, Query, Request, Response
 
 from riverhog_api.deps import ContainerDep
@@ -33,13 +31,11 @@ def list_collections(
     q: str | None = Query(None),
     sort: str = Query("id"),
     order: str = Query("asc"),
-    disc_redundancy: Literal["none", "partial", "full"] | None = Query(None),
 ) -> ListCollectionsResponse:
     summary = container.collections.list(
         page=page,
         per_page=per_page,
         q=q,
-        disc_redundancy_state=disc_redundancy,
         sort=sort,
         order=order,
     )
@@ -175,12 +171,7 @@ def create_or_resume_collection_file_upload(
 def get_collection(
     collection_id: str,
     container: ContainerDep,
-    coverage_path_limit: int = Query(100, ge=0, le=100),
 ) -> CollectionSummaryOut:
-    summary = container.collections.get(
-        collection_id,
-        coverage_path_limit=coverage_path_limit,
-    )
     return CollectionSummaryOut.model_validate(
-        map_collection(summary, coverage_path_limit=coverage_path_limit)
+        map_collection(container.collections.get(collection_id))
     )

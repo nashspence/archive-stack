@@ -31,17 +31,6 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
                         "stored_bytes": 128,
                         "object_path": "riverhog/archives/opaque/archive.tar.age",
                     },
-                    "disc_coverage": {
-                        "state": "partial",
-                        "bytes": 50,
-                    },
-                    "disc_redundancy": {"state": "partial", "bytes": 50},
-                    "image_coverage": [
-                        {
-                            "id": "20260420T040001Z",
-                            "covered_paths": ["tax/2022/invoice-123.pdf"],
-                        }
-                    ],
                 }
             ],
         }
@@ -60,11 +49,6 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
                 "storage_class": "DEEP_ARCHIVE",
                 "stored_bytes": 128,
             },
-            "disc_coverage": {
-                "state": "partial",
-                "bytes": 50,
-            },
-            "disc_redundancy": {"state": "partial", "bytes": 50},
         }
     ]
 

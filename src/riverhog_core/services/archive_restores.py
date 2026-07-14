@@ -2,46 +2,35 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
-import tempfile
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
-from pathlib import Path
 from typing import cast
 
-from sqlalchemy import and_, asc, desc, func, or_, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveRestoreCollectionRecord,
-    ArchiveRestoreImageRecord,
     ArchiveRestoreRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
-    FetchOperatorFileRecord,
     FetchRecord,
-    FinalizedImageCollectionArtifactRecord,
-    FinalizedImageCoveragePartRecord,
-    FinalizedImageCoveredPathRecord,
-    FinalizedImageRecord,
-    ImageDiscRecord,
+    FetchSelectorRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
     iter_verified_collection_archive_file_chunks,
-    verify_collection_archive_files,
     verify_collection_manifest,
     verify_collection_manifest_proof,
 )
-from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, DiscState, FetchState
+from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, FetchState
 from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.domain.models import (
     ArchiveRestoreCollection,
-    ArchiveRestoreImage,
     ArchiveRestoreListPage,
     ArchiveRestoreNotificationStatus,
     ArchiveRestoreProgress,
@@ -49,42 +38,19 @@ from riverhog_core.domain.models import (
     ArchiveStatus,
     CollectionManifestStatus,
 )
-from riverhog_core.domain.types import CollectionId, ImageId
-from riverhog_core.durability import (
-    disc_counts_toward_redundancy,
-    normalize_archive_state,
-    normalize_disc_state,
-)
-from riverhog_core.finalized_image_coverage import build_disc_manifest_from_catalog
+from riverhog_core.domain.types import CollectionId
 from riverhog_core.fs_paths import normalize_relpath
-from riverhog_core.iso.streaming import build_iso_cmd_from_root
 from riverhog_core.operator_reminders import operator_reminder_due
-from riverhog_core.planner.manifest import (
-    MANIFEST_FILENAME,
-    README_FILENAME,
-    PlannerFileMeta,
-    recovery_readme_bytes,
-    sidecar_bytes,
-)
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
-from riverhog_core.proofs import (
-    CommandProofVerifier,
-    ProofVerifier,
-)
-from riverhog_core.recovery_payloads import (
-    CommandAgeBatchpassRecoveryPayloadCodec,
-    RecoveryPayloadCodec,
-    encrypt_recovery_payload,
-)
+from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.compliance import file_has_disc_coverage
+from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_archive_restore_canceled_payload,
     build_archive_restore_completed_payload,
     build_archive_restore_failed_payload,
-    build_archive_restore_paused_reminder_payload,
     build_archive_restore_ready_payload,
     build_archive_restore_retrying_payload,
     build_archive_restore_started_payload,
@@ -94,31 +60,21 @@ from riverhog_core.webhooks import (
 
 _LOG = logging.getLogger(__name__)
 
-_ACTIVE_RECOVERY_STATES = {
+_ACTIVE_STATES = {
     ArchiveRestoreState.REQUESTED.value,
     ArchiveRestoreState.READY.value,
-    ArchiveRestoreState.PAUSED.value,
 }
-_PUBLIC_RECOVERY_STATES = {
+_PUBLIC_STATES = {
     ArchiveRestoreState.REQUESTED.value,
     ArchiveRestoreState.READY.value,
-    ArchiveRestoreState.PAUSED.value,
     ArchiveRestoreState.EXPIRED.value,
     ArchiveRestoreState.COMPLETED.value,
     ArchiveRestoreState.FAILED.value,
     ArchiveRestoreState.CANCELED.value,
 }
-_TERMINAL_RECOVERY_STATES = _PUBLIC_RECOVERY_STATES - _ACTIVE_RECOVERY_STATES
-_ARCHIVE_RESTORE_TERMINAL_FILTERS = {"active", "terminal", "all"}
-_ARCHIVE_RESTORE_SORT_FIELDS = {
-    "created_at",
-    "id",
-    "type",
-    "state",
-    "ready_at",
-    "expires_at",
-}
-_ARCHIVE_RESTORE_TYPES = {"fetch_materialization", "disc_rebuild"}
+_TERMINAL_STATES = _PUBLIC_STATES - _ACTIVE_STATES
+_TERMINAL_FILTERS = {"active", "terminal", "all"}
+_SORT_FIELDS = {"created_at", "id", "state", "ready_at", "expires_at"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,12 +87,6 @@ class _CollectionArchiveObjects:
     proof_sha256: str
 
 
-@dataclass(frozen=True, slots=True)
-class _RestoredCollectionArtifact:
-    manifest_bytes: bytes
-    proof_bytes: bytes
-
-
 class SqlAlchemyArchiveRestoreService:
     def __init__(
         self,
@@ -145,21 +95,11 @@ class SqlAlchemyArchiveRestoreService:
         hot_store: HotStore | None = None,
         *,
         proof_verifier: ProofVerifier | None = None,
-        recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
-        self._recovery_payload_codec = (
-            recovery_payload_codec
-            or CommandAgeBatchpassRecoveryPayloadCodec(
-                command=config.recovery_payload_command,
-                passphrase=config.recovery_payload_passphrase,
-                work_factor=config.recovery_payload_work_factor,
-                max_work_factor=config.recovery_payload_max_work_factor,
-            )
-        )
         self._session_factory = make_session_factory(config.database_url)
 
     def list(
@@ -170,60 +110,31 @@ class SqlAlchemyArchiveRestoreService:
         sort: str,
         order: str,
         terminal: str = "all",
-        restore_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
-        image: str | None = None,
     ) -> ArchiveRestoreListPage:
-        if page < 1:
-            raise BadRequest("page must be greater than or equal to 1")
-        if per_page < 1 or per_page > 100:
-            raise BadRequest("per_page must be between 1 and 100")
-        if sort not in _ARCHIVE_RESTORE_SORT_FIELDS:
-            raise BadRequest(
-                f"sort must be one of {', '.join(sorted(_ARCHIVE_RESTORE_SORT_FIELDS))}"
-            )
-        if order not in {"asc", "desc"}:
-            raise BadRequest("order must be asc or desc")
-        if terminal not in _ARCHIVE_RESTORE_TERMINAL_FILTERS:
-            raise BadRequest("terminal must be active, terminal, or all")
-        if restore_type is not None and restore_type not in _ARCHIVE_RESTORE_TYPES:
-            raise BadRequest(f"type must be one of {', '.join(sorted(_ARCHIVE_RESTORE_TYPES))}")
-        if state is not None and state not in _PUBLIC_RECOVERY_STATES:
-            raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_RECOVERY_STATES))}")
-
-        type_expr = func.coalesce(ArchiveRestoreRecord.type, "disc_rebuild")
+        _validate_list_options(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            terminal=terminal,
+            state=state,
+        )
         stmt = select(ArchiveRestoreRecord)
-        if restore_type == "disc_rebuild":
-            stmt = stmt.where(
-                or_(
-                    ArchiveRestoreRecord.type == "disc_rebuild",
-                    ArchiveRestoreRecord.type.is_(None),
-                )
-            )
-        elif restore_type is not None:
-            stmt = stmt.where(ArchiveRestoreRecord.type == restore_type)
         if terminal == "active":
-            stmt = stmt.where(ArchiveRestoreRecord.state.in_(_ACTIVE_RECOVERY_STATES))
+            stmt = stmt.where(ArchiveRestoreRecord.state.in_(_ACTIVE_STATES))
         elif terminal == "terminal":
-            stmt = stmt.where(ArchiveRestoreRecord.state.in_(_TERMINAL_RECOVERY_STATES))
+            stmt = stmt.where(ArchiveRestoreRecord.state.in_(_TERMINAL_STATES))
         if state is not None:
             stmt = stmt.where(ArchiveRestoreRecord.state == state)
         if collection is not None:
-            stmt = stmt.join(
-                ArchiveRestoreCollectionRecord,
-                ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            ).where(ArchiveRestoreCollectionRecord.collection_id == collection)
-        if image is not None:
-            stmt = stmt.join(
-                ArchiveRestoreImageRecord,
-                ArchiveRestoreImageRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            ).where(ArchiveRestoreImageRecord.image_id == image)
-
+            stmt = stmt.join(ArchiveRestoreCollectionRecord).where(
+                ArchiveRestoreCollectionRecord.collection_id == collection
+            )
         sort_expr = {
             "created_at": ArchiveRestoreRecord.created_at,
             "id": ArchiveRestoreRecord.restore_id,
-            "type": type_expr,
             "state": ArchiveRestoreRecord.state,
             "ready_at": ArchiveRestoreRecord.ready_at,
             "expires_at": ArchiveRestoreRecord.expires_at,
@@ -246,28 +157,14 @@ class SqlAlchemyArchiveRestoreService:
                 sort=sort,
                 order=order,
                 terminal=terminal,
-                type=restore_type,
                 state=state,
                 collection=collection,
-                image=image,
-                restores=[
-                    _restore_summary(session, record, config=self._config) for record in records
-                ],
+                restores=[_restore_summary(session, record, self._config) for record in records],
             )
 
     def get(self, restore_id: str) -> ArchiveRestoreSummary:
         with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                raise NotFound(f"archive restore not found: {restore_id}")
-            return _restore_summary(session, record, config=self._config)
-
-    def get_for_collection(self, collection_id: str) -> ArchiveRestoreSummary:
-        with session_scope(self._session_factory) as session:
-            record = _latest_restore_for_collection(session, collection_id)
-            if record is None:
-                raise NotFound(f"archive restore not found for collection: {collection_id}")
-            return _restore_summary(session, record, config=self._config)
+            return _restore_summary(session, _require_restore(session, restore_id), self._config)
 
     def create_or_resume_for_collection(
         self,
@@ -275,37 +172,30 @@ class SqlAlchemyArchiveRestoreService:
         *,
         paths: Sequence[str] | None = None,
     ) -> ArchiveRestoreSummary:
-        restore_id: str | None = None
         with session_scope(self._session_factory) as session:
             collection = _require_collection(session, collection_id)
+            _require_collection_archive_uploaded(collection)
             active = _active_restore_for_collection(session, collection_id)
-            if active is not None:
-                _merge_fetch_materialization_paths(
-                    session,
-                    record=active,
-                    collection_id=collection.id,
-                    paths=paths,
-                )
-                restore_id = active.restore_id
-            else:
-                _require_collection_archive_uploaded(collection)
-                created = _create_fetch_materialization_restore(
+            if active is None:
+                record = _create_restore(
                     session,
                     config=self._config,
                     collection=collection,
-                    paths=_normalize_fetch_materialization_paths(
-                        session,
-                        collection_id=collection.id,
-                        paths=paths,
-                    ),
-                    created_at=_isoformat_z(utcnow()),
+                    paths=_normalize_paths(session, collection_id=collection_id, paths=paths),
                 )
-                restore_id = created.restore_id
-        assert restore_id is not None
+            else:
+                _merge_paths(
+                    session,
+                    record=active,
+                    collection_id=collection_id,
+                    paths=paths,
+                )
+                record = active
+            restore_id = record.restore_id
         try:
-            self._process_one(restore_id=restore_id)
+            self._process_one(restore_id)
         except Exception as exc:
-            self._record_processing_failure(restore_id=restore_id, exc=exc)
+            self._record_processing_failure(restore_id, exc)
         return self.get(restore_id)
 
     def list_for_fetch(
@@ -318,27 +208,18 @@ class SqlAlchemyArchiveRestoreService:
         order: str,
         state: str | None = None,
     ) -> ArchiveRestoreListPage:
-        if page < 1:
-            raise BadRequest("page must be greater than or equal to 1")
-        if per_page < 1 or per_page > 100:
-            raise BadRequest("per_page must be between 1 and 100")
-        if sort not in _ARCHIVE_RESTORE_SORT_FIELDS:
-            raise BadRequest(
-                f"sort must be one of {', '.join(sorted(_ARCHIVE_RESTORE_SORT_FIELDS))}"
-            )
-        if order not in {"asc", "desc"}:
-            raise BadRequest("order must be asc or desc")
-        if state is not None and state not in _PUBLIC_RECOVERY_STATES:
-            raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_RECOVERY_STATES))}")
-
+        _validate_list_options(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            terminal="all",
+            state=state,
+        )
         with session_scope(self._session_factory) as session:
-            fetch_record = _require_fetch(session, fetch_id)
-            records = _fetch_materialization_records_for_fetch(
-                session,
-                fetch_record=fetch_record,
-                state=state,
-            )
-            records = _sort_archive_restore_records(records, sort=sort, order=order)
+            _require_fetch(session, fetch_id)
+            records = _records_for_fetch(session, fetch_id=fetch_id, state=state)
+            records = _sort_records(records, sort=sort, order=order)
             total = len(records)
             start = (page - 1) * per_page
             return ArchiveRestoreListPage(
@@ -349,30 +230,29 @@ class SqlAlchemyArchiveRestoreService:
                 sort=sort,
                 order=order,
                 terminal="all",
-                type="fetch_materialization",
                 state=state,
                 collection=None,
-                image=None,
                 restores=[
-                    _restore_summary(session, record, config=self._config)
+                    _restore_summary(session, record, self._config)
                     for record in records[start : start + per_page]
                 ],
             )
 
     def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
-            fetch_record = _require_fetch(session, fetch_id)
-            if fetch_record.fetch_state == FetchState.QUEUED_ARCHIVE.value:
-                fetch_record.fetch_state = FetchState.RESTORING_ARCHIVE.value
-            paths_by_collection = _fetch_fetch_materialization_paths(
-                session,
-                fetch_record=fetch_record,
-                missing_only=True,
-            )
+            fetch = _require_fetch(session, fetch_id)
+            if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
+                fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
+            paths_by_collection: dict[str, set[str]] = {}
+            for file in _selected_fetch_files(session, fetch_id):
+                if not file.hot:
+                    paths_by_collection.setdefault(file.collection_id, set()).add(file.path)
 
         for collection_id, paths in sorted(paths_by_collection.items()):
             self.create_or_resume_for_collection(collection_id, paths=sorted(paths))
 
+        with session_scope(self._session_factory) as session:
+            _sync_fetch_states(session, hot_store=self._hot_store)
         return self.list_for_fetch(
             fetch_id,
             page=1,
@@ -383,25 +263,19 @@ class SqlAlchemyArchiveRestoreService:
 
     def cancel_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
-            fetch_record = _require_fetch(session, fetch_id)
+            fetch = _require_fetch(session, fetch_id)
             restore_ids = [
                 record.restore_id
-                for record in _fetch_materialization_records_for_fetch(
-                    session,
-                    fetch_record=fetch_record,
-                    state=None,
-                )
-                if record.state in _ACTIVE_RECOVERY_STATES
+                for record in _records_for_fetch(session, fetch_id=fetch_id, state=None)
+                if record.state in _ACTIVE_STATES
             ]
-            if fetch_record.fetch_state in {
+            if fetch.fetch_state in {
                 FetchState.QUEUED_ARCHIVE.value,
                 FetchState.RESTORING_ARCHIVE.value,
             }:
-                fetch_record.fetch_state = FetchState.DRAFT.value
-
+                fetch.fetch_state = FetchState.DRAFT.value
         for restore_id in restore_ids:
             self.cancel(restore_id)
-
         return self.list_for_fetch(
             fetch_id,
             page=1,
@@ -410,135 +284,29 @@ class SqlAlchemyArchiveRestoreService:
             order="desc",
         )
 
-    def get_for_image(self, image_id: str) -> ArchiveRestoreSummary:
-        with session_scope(self._session_factory) as session:
-            record = _latest_restore_for_image(session, image_id)
-            if record is None:
-                raise NotFound(f"archive restore not found for image: {image_id}")
-            return _restore_summary(session, record, config=self._config)
-
-    def complete(self, restore_id: str) -> ArchiveRestoreSummary:
-        current = utcnow()
-        try:
-            with session_scope(self._session_factory) as session:
-                record = session.get(ArchiveRestoreRecord, restore_id)
-                if record is None:
-                    raise NotFound(f"archive restore not found: {restore_id}")
-                _complete_archive_restore_record(
-                    session,
-                    record=record,
-                    archive_store=self._archive_store,
-                    proof_verifier=self._proof_verifier,
-                    config=self._config,
-                    current=current,
-                    verify_archives=True,
-                )
-                return _restore_summary(session, record, config=self._config)
-        except (InvalidState, NotFound):
-            raise
-        except Exception as exc:
-            self._record_processing_failure(restore_id=restore_id, exc=exc)
-            raise
-
     def cancel(self, restore_id: str) -> ArchiveRestoreSummary:
         current = utcnow()
         with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                raise NotFound(f"archive restore not found: {restore_id}")
-            _cancel_archive_restore_record(
-                session,
-                record=record,
-                archive_store=self._archive_store,
-                config=self._config,
-                current=current,
-            )
-            return _restore_summary(session, record, config=self._config)
-
-    def pause(self, restore_id: str) -> ArchiveRestoreSummary:
-        current = utcnow()
-        with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                raise NotFound(f"archive restore not found: {restore_id}")
-            _pause_archive_restore_record(
-                record=record,
-                config=self._config,
-                current=current,
-            )
-            return _restore_summary(session, record, config=self._config)
-
-    def resume(self, restore_id: str) -> ArchiveRestoreSummary:
-        current = utcnow()
-        with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                raise NotFound(f"archive restore not found: {restore_id}")
-            _resume_archive_restore_record(record=record, current=current)
-        try:
-            self._process_one(restore_id=restore_id)
-        except Exception as exc:
-            self._record_processing_failure(restore_id=restore_id, exc=exc)
-        return self.get(restore_id)
-
-    def iter_restored_iso(self, restore_id: str, image_id: str) -> Iterator[bytes]:
-        with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                raise NotFound(f"archive restore not found: {restore_id}")
-            if record.state != ArchiveRestoreState.READY.value:
-                raise InvalidState("archive restore is not ready for ISO download")
-            images = {image.image_id: image for image in _restore_images(session, record=record)}
-            image = images.get(image_id)
-            if image is None:
-                raise NotFound(f"image not found in archive restore: {image_id}")
-            collections = _restore_collections(session, record=record)
-            if (record.type or "disc_rebuild") == "disc_rebuild" and collections:
-                collection_archives = tuple(
-                    _require_collection_archive_objects(collection) for collection in collections
-                )
-                collection_artifacts = tuple(
-                    session.scalars(
-                        select(FinalizedImageCollectionArtifactRecord).where(
-                            FinalizedImageCollectionArtifactRecord.image_id == image_id
-                        )
-                    ).all()
-                )
-                coverage_parts = tuple(
-                    session.scalars(
-                        select(FinalizedImageCoveragePartRecord).where(
-                            FinalizedImageCoveragePartRecord.image_id == image_id
-                        )
-                    ).all()
-                )
-                file_lookup = {
-                    (file.collection_id, file.path): (file.sha256, file.bytes)
-                    for file in session.scalars(select(CollectionFileRecord)).all()
-                }
-                return _iter_rebuilt_iso_from_collection_archives(
-                    archive_store=self._archive_store,
-                    image_id=image_id,
-                    filename=image.filename,
-                    collection_archives=collection_archives,
-                    collection_artifacts=collection_artifacts,
-                    coverage_parts=coverage_parts,
-                    file_lookup=file_lookup,
-                    proof_verifier=self._proof_verifier,
-                    recovery_payload_codec=self._recovery_payload_codec,
-                )
-            raise InvalidState("archive restore has no collection archives to rebuild image")
-        raise InvalidState("fetch materialization archive restores do not provide ISO downloads")
+            record = _require_restore(session, restore_id)
+            if record.state == ArchiveRestoreState.CANCELED.value:
+                _notify_canceled(session, record, self._config, current)
+                return _restore_summary(session, record, self._config)
+            if record.state not in _ACTIVE_STATES:
+                raise InvalidState("archive restore is not active and cannot be canceled")
+            _cleanup_restore(session, record, self._archive_store)
+            record.state = ArchiveRestoreState.CANCELED.value
+            record.canceled_at = _isoformat_z(current)
+            record.next_poll_at = None
+            record.started_notification_next_attempt_at = None
+            record.completed_notification_next_attempt_at = None
+            record.latest_message = "Archive restore was canceled."
+            _notify_canceled(session, record, self._config, current)
+            return _restore_summary(session, record, self._config)
 
     def process_due_restores(self, *, limit: int = 100) -> int:
         if limit < 1:
             return 0
-
-        current = utcnow()
-        current_text = _isoformat_z(current)
-        processed = 0
-        started_next = ArchiveRestoreRecord.started_notification_next_attempt_at
-        completed_next = ArchiveRestoreRecord.completed_notification_next_attempt_at
-        canceled_next = ArchiveRestoreRecord.canceled_notification_next_attempt_at
+        current_text = _isoformat_z(utcnow())
         with session_scope(self._session_factory) as session:
             due_ids = session.scalars(
                 select(ArchiveRestoreRecord.restore_id)
@@ -547,144 +315,70 @@ class SqlAlchemyArchiveRestoreService:
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.REQUESTED.value)
                             & (
-                                (ArchiveRestoreRecord.next_poll_at.is_(None))
+                                ArchiveRestoreRecord.next_poll_at.is_(None)
                                 | (ArchiveRestoreRecord.next_poll_at <= current_text)
                                 | (ArchiveRestoreRecord.ready_at <= current_text)
                             )
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.REQUESTED.value)
-                            & started_next.is_not(None)
-                            & (started_next <= current_text)
-                        ),
-                        (
-                            (ArchiveRestoreRecord.state == ArchiveRestoreState.READY.value)
+                            & ArchiveRestoreRecord.started_notification_next_attempt_at.is_not(None)
                             & (
-                                (ArchiveRestoreRecord.expires_at.is_not(None))
-                                & (ArchiveRestoreRecord.expires_at <= current_text)
+                                ArchiveRestoreRecord.started_notification_next_attempt_at
+                                <= current_text
                             )
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.READY.value)
-                            & (ArchiveRestoreRecord.type == "fetch_materialization")
-                            & (ArchiveRestoreRecord.materialization_state != "completed")
                             & (
-                                (ArchiveRestoreRecord.next_poll_at.is_(None))
+                                ArchiveRestoreRecord.materialization_state != "completed"
+                            )
+                            & (
+                                ArchiveRestoreRecord.next_poll_at.is_(None)
                                 | (ArchiveRestoreRecord.next_poll_at <= current_text)
                             )
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.READY.value)
-                            & (
-                                (ArchiveRestoreRecord.next_reminder_at.is_not(None))
-                                & (ArchiveRestoreRecord.next_reminder_at <= current_text)
-                            )
+                            & ArchiveRestoreRecord.expires_at.is_not(None)
+                            & (ArchiveRestoreRecord.expires_at <= current_text)
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.COMPLETED.value)
-                            & (completed_next.is_not(None))
-                            & (completed_next <= current_text)
+                            & ArchiveRestoreRecord.completed_notification_next_attempt_at.is_not(
+                                None
+                            )
+                            & (
+                                ArchiveRestoreRecord.completed_notification_next_attempt_at
+                                <= current_text
+                            )
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.CANCELED.value)
-                            & (canceled_next.is_not(None))
-                            & (canceled_next <= current_text)
-                        ),
-                        (
-                            (ArchiveRestoreRecord.state == ArchiveRestoreState.PAUSED.value)
+                            & ArchiveRestoreRecord.canceled_notification_next_attempt_at.is_not(
+                                None
+                            )
                             & (
-                                (ArchiveRestoreRecord.next_reminder_at.is_not(None))
-                                & (ArchiveRestoreRecord.next_reminder_at <= current_text)
+                                ArchiveRestoreRecord.canceled_notification_next_attempt_at
+                                <= current_text
                             )
                         ),
                     )
                 )
-                .order_by(
-                    ArchiveRestoreRecord.created_at,
-                    ArchiveRestoreRecord.restore_id,
-                )
+                .order_by(ArchiveRestoreRecord.created_at, ArchiveRestoreRecord.restore_id)
                 .limit(limit)
             ).all()
-
         for restore_id in due_ids:
             try:
-                self._process_one(restore_id=restore_id)
+                self._process_one(restore_id)
             except Exception as exc:
-                self._record_processing_failure(restore_id=restore_id, exc=exc)
-            processed += 1
-        return processed
-
-    def _record_processing_failure(self, *, restore_id: str, exc: Exception) -> None:
-        current = utcnow()
-        current_text = _isoformat_z(current)
-        retryable = _archive_restore_failure_is_retryable(exc)
-        error = _error_text(exc)
-        notify_operator = False
-        next_retry_at = (
-            _isoformat_z(current + self._config.archive_restore_sweep_interval)
-            if retryable
-            else None
-        )
-
-        with session_scope(self._session_factory) as session:
-            record = session.get(ArchiveRestoreRecord, restore_id)
-            if record is None:
-                return
-            if record.state in {
-                ArchiveRestoreState.COMPLETED.value,
-                ArchiveRestoreState.CANCELED.value,
-                ArchiveRestoreState.PAUSED.value,
-            }:
-                return
-
-            record.failure_count = int(record.failure_count or 0) + 1
-            record.last_failure_at = current_text
-            record.last_failure = error
-            if retryable:
-                record.next_poll_at = next_retry_at
-                record.latest_message = (
-                    "Recovery attempt failed and will retry"
-                    f"{' at ' + next_retry_at if next_retry_at else ''}: {error}"
-                )
-                if _operator_failure_notification_due(
-                    record.last_failure_notification_at,
-                    current=current,
-                    config=self._config,
-                ):
-                    record.last_failure_notification_at = current_text
-                    notify_operator = True
-            else:
-                record.state = ArchiveRestoreState.FAILED.value
-                record.next_poll_at = None
-                record.next_reminder_at = None
-                record.archive_verification_state = _failed_progress_state(
-                    record.archive_verification_state
-                )
-                record.extraction_state = _failed_progress_state(record.extraction_state)
-                record.materialization_state = _failed_progress_state(record.materialization_state)
-                record.latest_message = f"Recovery failed and will not retry automatically: {error}"
-                if record.last_failure_notification_at != current_text:
-                    record.last_failure_notification_at = current_text
-                    notify_operator = True
-
-            if notify_operator:
-                _notify_restore_failure(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                    retryable=retryable,
-                    error=error,
-                    next_retry_at=next_retry_at,
-                )
+                self._record_processing_failure(restore_id, exc)
+        return len(due_ids)
 
     def repair_missing_fetch_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
-        hot_store = self._hot_store
-
-        archive_paths: dict[str, set[str]] = {}
-        operator_fetches = 0
+        paths_by_collection: dict[str, set[str]] = {}
         missing_count = 0
         with session_scope(self._session_factory) as session:
             fetches = session.scalars(
@@ -692,152 +386,72 @@ class SqlAlchemyArchiveRestoreService:
                 .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
                 .order_by(FetchRecord.fetch_order)
             ).all()
-            for fetch_record in fetches:
+            for fetch in fetches:
                 if missing_count >= limit:
                     break
-                selected = _selected_fetch_files(session, fetch_record.fetch_id)
-                listed_hot_files: dict[str, dict[str, int]] = {}
-                missing_for_fetch: list[CollectionFileRecord] = []
-                for file_record in selected:
+                selected = _selected_fetch_files(session, fetch.fetch_id)
+                listed: dict[str, dict[str, int]] = {}
+                fetch_missing = False
+                for file in selected:
                     if missing_count >= limit:
                         break
                     if _hot_file_available_for_audit(
-                        hot_store,
-                        file_record,
+                        self._hot_store,
+                        file,
                         selected_count=len(selected),
-                        listed_hot_files=listed_hot_files,
+                        listed_hot_files=listed,
                     ):
-                        if not file_record.hot:
-                            file_record.hot = True
+                        file.hot = True
                         continue
-                    file_record.hot = False
-                    missing_for_fetch.append(file_record)
+                    file.hot = False
+                    fetch_missing = True
                     missing_count += 1
-                    if file_has_disc_coverage(
-                        session,
-                        collection_id=file_record.collection_id,
-                        path=file_record.path,
-                    ):
-                        operator_fetches += 1
-                    else:
-                        archive_paths.setdefault(
-                            file_record.collection_id,
-                            set(),
-                        ).add(file_record.path)
-                if missing_for_fetch:
-                    if fetch_record.fetch_state == FetchState.DONE.value:
-                        fetch_record.fetch_state = FetchState.QUEUED_DJDAN.value
-                elif fetch_record.fetch_state not in {
-                    FetchState.DRAFT.value,
-                    FetchState.DONE.value,
-                }:
-                    fetch_record.fetch_state = FetchState.DONE.value
+                    paths_by_collection.setdefault(file.collection_id, set()).add(file.path)
+                if fetch_missing and fetch.fetch_state == FetchState.DONE.value:
+                    fetch.fetch_state = FetchState.QUEUED_ARCHIVE.value
+                elif not fetch_missing and selected:
+                    fetch.fetch_state = FetchState.DONE.value
 
+        for collection_id, paths in sorted(paths_by_collection.items()):
+            try:
+                self.create_or_resume_for_collection(collection_id, paths=sorted(paths))
+            except Exception:
+                _LOG.exception(
+                    "automatic archive restore failed: collection=%s", collection_id
+                )
         if missing_count:
-            _LOG.info(
-                "fetch hot-file audit found missing files: total=%s "
-                "operator_fetch_files=%s archive_restore_collections=%s",
-                missing_count,
-                operator_fetches,
-                len(archive_paths),
-            )
-
-        restored_collections = 0
-        for collection_id, paths in sorted(archive_paths.items()):
-            if self._restore_missing_fetch_files_from_archive(
-                collection_id=collection_id,
-                paths=sorted(paths),
-            ):
-                restored_collections += 1
-
-        if restored_collections:
             with session_scope(self._session_factory) as session:
-                _sync_fetch_states_after_hot_repair(session, hot_store=hot_store)
+                _sync_fetch_states(session, hot_store=self._hot_store)
         return missing_count
 
-    def _restore_missing_fetch_files_from_archive(
-        self,
-        *,
-        collection_id: str,
-        paths: Sequence[str],
-    ) -> bool:
-        if self._hot_store is None:
-            return False
-        if not paths:
-            return False
-        try:
-            summary = self.create_or_resume_for_collection(collection_id, paths=paths)
-            if summary.state == ArchiveRestoreState.REQUESTED:
-                self._process_one(restore_id=summary.id)
-                summary = self.get(summary.id)
-            if summary.state == ArchiveRestoreState.COMPLETED:
-                return True
-            _LOG.info(
-                "automatic archive restore is pending for missing fetch files: "
-                "collection=%s restore=%s state=%s",
-                collection_id,
-                summary.id,
-                summary.state.value,
-            )
-            return False
-        except Exception:
-            _LOG.exception(
-                "automatic archive restore for missing fetch files failed: collection=%s",
-                collection_id,
-            )
-            return False
-
-    def _process_one(self, *, restore_id: str) -> None:
+    def _process_one(self, restore_id: str) -> None:
         current = utcnow()
         current_text = _isoformat_z(current)
         with session_scope(self._session_factory) as session:
             record = session.get(ArchiveRestoreRecord, restore_id)
             if record is None:
                 return
-            if (record.type or "disc_rebuild") == "disc_rebuild":
-                _sync_restore_collections_for_images(session, record)
-                session.flush()
-
             if record.state == ArchiveRestoreState.COMPLETED.value:
-                _notify_restore_completed(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                )
+                _notify_completed(session, record, self._config, current)
                 return
             if record.state == ArchiveRestoreState.CANCELED.value:
-                _notify_restore_canceled(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                )
+                _notify_canceled(session, record, self._config, current)
                 return
-            if record.state == ArchiveRestoreState.PAUSED.value:
-                _notify_restore_paused_reminder(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                )
-                return
-
             if record.state == ArchiveRestoreState.REQUESTED.value:
-                _request_restore_if_needed(
+                _request_restore(
                     session,
-                    record=record,
+                    record,
                     archive_store=self._archive_store,
                     config=self._config,
                     current=current,
                 )
-                _notify_restore_started(
+                _notify_started(session, record, self._config, current)
+                status = _poll_restore(
                     session,
-                    record=record,
-                    config=self._config,
+                    record,
+                    archive_store=self._archive_store,
                     current=current,
                 )
-                status = self._poll_archive_restore_status(session, record=record, current=current)
                 if status.state == "ready":
                     record.state = ArchiveRestoreState.READY.value
                     record.ready_at = status.ready_at or current_text
@@ -845,302 +459,223 @@ class SqlAlchemyArchiveRestoreService:
                         current + self._config.archive_restore_ready_ttl
                     )
                     record.next_poll_at = None
-                    if (record.type or "disc_rebuild") == "disc_rebuild":
-                        record.latest_message = (
-                            "Restored ISO data is ready; reopen the archive restore to complete "
-                            "download, verify the ISO, and burn replacement media before "
-                            "cleanup."
-                        )
-                    else:
-                        record.latest_message = (
-                            "Restored collection archive is ready; Riverhog will materialize "
-                            "the requested files automatically."
-                        )
-                    _notify_restore_ready(
-                        session,
-                        record=record,
-                        config=self._config,
-                        current=current,
-                        reminder=False,
-                    )
-                    if (record.type or "disc_rebuild") == "fetch_materialization":
-                        _auto_materialize_fetch_materialization(
-                            session,
-                            record=record,
-                            archive_store=self._archive_store,
-                            hot_store=self._hot_store,
-                            proof_verifier=self._proof_verifier,
-                            config=self._config,
-                            current=current,
-                        )
-                    return
-                if status.state == "expired":
-                    record.state = ArchiveRestoreState.EXPIRED.value
-                    record.next_reminder_at = None
-                    record.next_poll_at = None
                     record.latest_message = (
-                        "Restored ISO data expired and cleanup was recorded; re-initiate "
-                        "recovery to request a new restore."
+                        "Archive is ready; Riverhog is materializing the requested files."
+                    )
+                    _notify_ready(session, record, self._config, current)
+                elif status.state == "expired":
+                    _expire_restore(session, record, self._archive_store)
+                    return
+                else:
+                    record.next_poll_at = _isoformat_z(
+                        current + self._config.archive_restore_sweep_interval
+                    )
+                    record.latest_message = status.message or (
+                        "Archive retrieval is in progress; Riverhog will poll again."
                     )
                     return
-                record.next_poll_at = _isoformat_z(
-                    current + self._config.archive_restore_sweep_interval
-                )
-                record.latest_message = (
-                    status.message
-                    or "Archive restore is still in progress; Riverhog will poll again."
-                )
+            if record.state != ArchiveRestoreState.READY.value:
                 return
-
-            if (
-                record.state == ArchiveRestoreState.READY.value
-                and (record.type or "disc_rebuild") == "fetch_materialization"
-                and record.materialization_state != "completed"
-            ):
-                _auto_materialize_fetch_materialization(
-                    session,
-                    record=record,
-                    archive_store=self._archive_store,
-                    hot_store=self._hot_store,
-                    proof_verifier=self._proof_verifier,
-                    config=self._config,
-                    current=current,
-                )
+            if record.expires_at is not None and record.expires_at <= current_text:
+                _expire_restore(session, record, self._archive_store)
                 return
+            _materialize_restore(
+                session,
+                record,
+                archive_store=self._archive_store,
+                hot_store=self._hot_store,
+                proof_verifier=self._proof_verifier,
+                config=self._config,
+                current=current,
+            )
 
-            if (
-                record.state == ArchiveRestoreState.READY.value
-                and record.next_reminder_at is not None
-                and record.next_reminder_at <= current_text
-            ):
-                initial_notification_succeeded = record.last_notified_at is not None
-                _notify_restore_ready(
-                    session,
-                    record=record,
-                    config=self._config,
-                    current=current,
-                    reminder=initial_notification_succeeded,
-                )
-                return
-
-            if (
-                record.state == ArchiveRestoreState.READY.value
-                and record.expires_at is not None
-                and record.expires_at <= current_text
-            ):
-                for collection in _restore_collections(session, record=record):
-                    archive = _require_collection_archive_objects(collection)
-                    self._archive_store.cleanup_collection_archive_restore(
-                        collection_id=collection.id,
-                        object_path=archive.archive_object_path,
-                        manifest_object_path=archive.manifest_object_path,
-                        proof_object_path=archive.proof_object_path,
-                    )
-                record.state = ArchiveRestoreState.EXPIRED.value
-                record.next_reminder_at = None
-                record.next_poll_at = None
-                record.latest_message = (
-                    "Restored ISO data expired and cleanup was recorded; re-initiate recovery to "
-                    "request a new restore."
-                )
-
-    def _poll_archive_restore_status(
-        self,
-        session: Session,
-        *,
-        record: ArchiveRestoreRecord,
-        current: datetime,
-    ) -> ArchiveRestoreStatus:
-        if (record.type or "disc_rebuild") == "disc_rebuild":
-            _sync_restore_collections_for_images(session, record)
-            session.flush()
-        collections = _restore_collections(session, record=record)
-        if not collections:
-            return ArchiveRestoreStatus(
-                state="requested",
-                message="Archive restore has no collection archives to poll.",
-            )
-        statuses = [
-            self._archive_store.get_collection_archive_restore_status(
-                collection_id=archive.collection_id,
-                object_path=archive.archive_object_path,
-                requested_at=record.requested_at or _isoformat_z(current),
-                estimated_ready_at=record.ready_at,
-                estimated_expires_at=record.expires_at,
-                manifest_object_path=archive.manifest_object_path,
-                proof_object_path=archive.proof_object_path,
-            )
-            for archive in (
-                _require_collection_archive_objects(collection) for collection in collections
-            )
-        ]
-        if any(status.state == "expired" for status in statuses):
-            return ArchiveRestoreStatus(state="expired")
-        if statuses and all(status.state == "ready" for status in statuses):
-            return ArchiveRestoreStatus(
-                state="ready",
-                ready_at=_max_timestamp(
-                    status.ready_at for status in statuses if status.ready_at is not None
-                ),
-                expires_at=_min_timestamp(
-                    status.expires_at for status in statuses if status.expires_at is not None
-                ),
-            )
-        return ArchiveRestoreStatus(
-            state="requested",
-            message="Archive restore is still in progress; Riverhog will poll again.",
+    def _record_processing_failure(self, restore_id: str, exc: Exception) -> None:
+        current = utcnow()
+        current_text = _isoformat_z(current)
+        retryable = _failure_is_retryable(exc)
+        error = _error_text(exc)
+        next_retry_at = (
+            _isoformat_z(current + self._config.archive_restore_sweep_interval)
+            if retryable
+            else None
         )
+        with session_scope(self._session_factory) as session:
+            record = session.get(ArchiveRestoreRecord, restore_id)
+            if record is None or record.state in {
+                ArchiveRestoreState.COMPLETED.value,
+                ArchiveRestoreState.CANCELED.value,
+            }:
+                return
+            record.failure_count = int(record.failure_count or 0) + 1
+            record.last_failure_at = current_text
+            record.last_failure = error
+            notify = False
+            if retryable:
+                record.next_poll_at = next_retry_at
+                record.latest_message = f"Archive restore will retry: {error}"
+                if _failure_notification_due(
+                    record.last_failure_notification_at,
+                    current=current,
+                    config=self._config,
+                ):
+                    record.last_failure_notification_at = current_text
+                    notify = True
+            else:
+                record.state = ArchiveRestoreState.FAILED.value
+                record.next_poll_at = None
+                record.archive_verification_state = _failed_progress_state(
+                    record.archive_verification_state
+                )
+                record.extraction_state = _failed_progress_state(record.extraction_state)
+                record.materialization_state = _failed_progress_state(
+                    record.materialization_state
+                )
+                record.latest_message = f"Archive restore failed: {error}"
+                record.last_failure_notification_at = current_text
+                notify = True
+            if notify:
+                _notify_failure(
+                    session,
+                    record,
+                    self._config,
+                    current,
+                    retryable=retryable,
+                    error=error,
+                    next_retry_at=next_retry_at,
+                )
 
 
-def ensure_archive_restore_for_image(
-    session: Session,
+def _validate_list_options(
     *,
-    config: RuntimeConfig,
-    image_id: str,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    terminal: str,
+    state: str | None,
 ) -> None:
-    image = session.get(FinalizedImageRecord, image_id)
-    if image is None:
-        return
-    if not _image_collections_archived(session, image):
-        return
-    if _disc_redundancy_count(session, image_id) > 0:
-        return
-    if not _has_recovery_triggering_disc_history(session, image_id):
-        return
-    if _active_restore_for_image(session, image_id) is not None:
-        return
-    reusable = _reusable_queued_disc_rebuild_restore(session)
-    if reusable is not None:
-        _attach_image_to_restore(session, record=reusable, image=image, config=config)
-        return
-    _create_archive_restore(session, config=config, image=image)
+    if page < 1:
+        raise BadRequest("page must be greater than or equal to 1")
+    if per_page < 1 or per_page > 100:
+        raise BadRequest("per_page must be between 1 and 100")
+    if sort not in _SORT_FIELDS:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
+    if order not in {"asc", "desc"}:
+        raise BadRequest("order must be asc or desc")
+    if terminal not in _TERMINAL_FILTERS:
+        raise BadRequest("terminal must be active, terminal, or all")
+    if state is not None and state not in _PUBLIC_STATES:
+        raise BadRequest(f"state must be one of {', '.join(sorted(_PUBLIC_STATES))}")
+
+
+def _require_restore(session: Session, restore_id: str) -> ArchiveRestoreRecord:
+    record = session.get(ArchiveRestoreRecord, restore_id)
+    if record is None:
+        raise NotFound(f"archive restore not found: {restore_id}")
+    return record
 
 
 def _require_fetch(session: Session, fetch_id: str) -> FetchRecord:
-    fetch_record = session.get(FetchRecord, fetch_id)
-    if fetch_record is None:
+    record = session.get(FetchRecord, fetch_id)
+    if record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
-    return fetch_record
+    return record
+
+
+def _require_collection(session: Session, collection_id: str) -> CollectionRecord:
+    collection = cast(CollectionRecord | None, session.get(CollectionRecord, collection_id))
+    if collection is None:
+        raise NotFound(f"collection not found: {collection_id}")
+    return collection
+
+
+def _require_collection_archive_uploaded(collection: CollectionRecord) -> None:
+    archive = collection.archive
+    if archive is None or ArchiveState(archive.state) != ArchiveState.UPLOADED:
+        raise InvalidState(
+            f"collection archive is not uploaded and cannot be restored: {collection.id}"
+        )
+
+
+def _require_archive_objects(collection: CollectionRecord) -> _CollectionArchiveObjects:
+    archive = collection.archive
+    if archive is None or not archive.object_path:
+        raise InvalidState(f"collection archive object is missing: {collection.id}")
+    if not archive.manifest_object_path or not archive.manifest_sha256:
+        raise InvalidState(f"collection archive manifest is missing: {collection.id}")
+    if not archive.ots_object_path or not archive.ots_sha256:
+        raise InvalidState(f"collection archive proof is missing: {collection.id}")
+    return _CollectionArchiveObjects(
+        collection_id=collection.id,
+        archive_object_path=archive.object_path,
+        manifest_object_path=archive.manifest_object_path,
+        proof_object_path=archive.ots_object_path,
+        manifest_sha256=archive.manifest_sha256,
+        proof_sha256=archive.ots_sha256,
+    )
+
+
+def _restore_collections(session: Session, record: ArchiveRestoreRecord) -> list[CollectionRecord]:
+    rows = session.scalars(
+        select(ArchiveRestoreCollectionRecord)
+        .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
+        .order_by(ArchiveRestoreCollectionRecord.collection_order)
+    ).all()
+    return [_require_collection(session, row.collection_id) for row in rows]
 
 
 def _selected_fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
-    return list(
-        session.scalars(
-            select(CollectionFileRecord)
-            .join(
-                FetchOperatorFileRecord,
-                and_(
-                    FetchOperatorFileRecord.collection_id == CollectionFileRecord.collection_id,
-                    FetchOperatorFileRecord.path == CollectionFileRecord.path,
-                ),
-            )
-            .where(FetchOperatorFileRecord.fetch_id == fetch_id)
-            .order_by(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path)
-        ).all()
-    )
+    selected: dict[tuple[str, str], CollectionFileRecord] = {}
+    selectors = session.scalars(
+        select(FetchSelectorRecord)
+        .where(FetchSelectorRecord.fetch_id == fetch_id)
+        .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
+    ).all()
+    for selector in selectors:
+        for file in selected_collection_files(session, selector.target, missing_ok=True):
+            selected[(file.collection_id, file.path)] = file
+    return [selected[key] for key in sorted(selected)]
 
 
-def _fetch_fetch_materialization_paths(
+def _records_for_fetch(
     session: Session,
     *,
-    fetch_record: FetchRecord,
-    missing_only: bool,
-) -> dict[str, set[str]]:
-    selected_exists = (
-        session.scalar(
-            select(FetchOperatorFileRecord.fetch_id)
-            .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
-            .limit(1)
-        )
-        is not None
-    )
-    stmt = (
-        select(
-            FetchOperatorFileRecord.collection_id,
-            FetchOperatorFileRecord.path,
-        )
-        .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
-        .order_by(FetchOperatorFileRecord.collection_id, FetchOperatorFileRecord.path)
-    )
-    if missing_only:
-        stmt = stmt.where(FetchOperatorFileRecord.hot.is_(False))
-    rows = session.execute(stmt).all()
-    if not rows:
-        if selected_exists and missing_only:
-            return {}
-        raise NotFound(f"fetch has no files: {fetch_record.fetch_id}")
-    paths_by_collection: dict[str, set[str]] = {}
-    for collection_id, path in rows:
-        paths_by_collection.setdefault(collection_id, set()).add(path)
-    return paths_by_collection
-
-
-def _record_paths_intersect_fetch(
-    session: Session,
-    record: ArchiveRestoreRecord,
     fetch_id: str,
-) -> bool:
-    paths = _paths_from_json(record.paths_json)
-    for collection in record.collections:
-        stmt = select(FetchOperatorFileRecord.fetch_id).where(
-            FetchOperatorFileRecord.fetch_id == fetch_id,
-            FetchOperatorFileRecord.collection_id == collection.collection_id,
-        )
-        if paths is not None:
-            stmt = stmt.where(FetchOperatorFileRecord.path.in_(paths))
-        if session.scalar(stmt.limit(1)) is not None:
-            return True
-    return False
-
-
-def _fetch_materialization_records_for_fetch(
-    session: Session,
-    *,
-    fetch_record: FetchRecord,
     state: str | None,
 ) -> list[ArchiveRestoreRecord]:
-    selected_collections = (
-        select(FetchOperatorFileRecord.collection_id)
-        .where(FetchOperatorFileRecord.fetch_id == fetch_record.fetch_id)
-        .distinct()
-        .subquery()
-    )
-    type_expr = func.coalesce(ArchiveRestoreRecord.type, "disc_rebuild")
+    selected = _selected_fetch_files(session, fetch_id)
+    selected_paths: dict[str, set[str]] = {}
+    for file in selected:
+        selected_paths.setdefault(file.collection_id, set()).add(file.path)
+    if not selected_paths:
+        return []
     stmt = (
         select(ArchiveRestoreRecord)
-        .join(
-            ArchiveRestoreCollectionRecord,
-            ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
-        )
-        .where(type_expr == "fetch_materialization")
-        .where(
-            ArchiveRestoreCollectionRecord.collection_id.in_(
-                select(selected_collections.c.collection_id)
-            )
-        )
+        .join(ArchiveRestoreCollectionRecord)
+        .where(ArchiveRestoreCollectionRecord.collection_id.in_(selected_paths))
     )
     if state is not None:
         stmt = stmt.where(ArchiveRestoreRecord.state == state)
     records = session.scalars(stmt).unique().all()
-    return [
-        record
-        for record in records
-        if _record_paths_intersect_fetch(session, record, fetch_record.fetch_id)
-    ]
+    result: list[ArchiveRestoreRecord] = []
+    for record in records:
+        paths = _paths_from_json(record.paths_json)
+        if any(
+            paths is None or bool(set(paths) & selected_paths.get(row.collection_id, set()))
+            for row in record.collections
+        ):
+            result.append(record)
+    return result
 
 
-def _sort_archive_restore_records(
-    records: list[ArchiveRestoreRecord],
-    *,
-    sort: str,
-    order: str,
+def _sort_records(
+    records: list[ArchiveRestoreRecord], *, sort: str, order: str
 ) -> list[ArchiveRestoreRecord]:
-    def sort_value(record: ArchiveRestoreRecord) -> str:
+    def value(record: ArchiveRestoreRecord) -> str:
         return str(
             {
                 "created_at": record.created_at,
                 "id": record.restore_id,
-                "type": record.type or "disc_rebuild",
                 "state": record.state,
                 "ready_at": record.ready_at or "",
                 "expires_at": record.expires_at or "",
@@ -1149,194 +684,53 @@ def _sort_archive_restore_records(
 
     return sorted(
         records,
-        key=lambda record: (sort_value(record), record.restore_id),
+        key=lambda record: (value(record), record.restore_id),
         reverse=order == "desc",
     )
 
 
-def _hot_file_available_for_audit(
-    hot_store: HotStore,
-    file_record: CollectionFileRecord,
-    *,
-    selected_count: int,
-    listed_hot_files: dict[str, dict[str, int]],
-) -> bool:
-    if selected_count <= 1:
-        return _hot_file_available(hot_store, file_record)
-    listing = listed_hot_files.get(file_record.collection_id)
-    if listing is None:
-        try:
-            listing = {
-                path: int(byte_count)
-                for path, byte_count in hot_store.list_collection_files(file_record.collection_id)
-            }
-        except Exception:
-            return _hot_file_available(hot_store, file_record)
-        listed_hot_files[file_record.collection_id] = listing
-    return listing.get(file_record.path) == int(file_record.bytes)
-
-
-def _hot_file_available(hot_store: HotStore, file_record: CollectionFileRecord) -> bool:
-    try:
-        stat = hot_store.stat_collection_file(file_record.collection_id, file_record.path)
-    except FileNotFoundError:
-        return False
-    if stat is None:
-        return False
-    if int(stat.bytes) != int(file_record.bytes):
-        return False
-    if stat.sha256 is not None and stat.sha256 != file_record.sha256:
-        return False
-    return True
-
-
-def _missing_hot_paths(
-    session_factory: sessionmaker[Session],
-    hot_store: HotStore,
-    *,
-    collection_id: str,
-    paths: Sequence[str],
-) -> list[str]:
-    missing: list[str] = []
-    with session_scope(session_factory) as session:
-        for path in paths:
-            file_record = session.get(
-                CollectionFileRecord,
-                {"collection_id": collection_id, "path": path},
-            )
-            if file_record is None:
-                continue
-            if not _hot_file_available(hot_store, file_record):
-                missing.append(path)
-    return missing
-
-
-def _sync_fetch_states_after_hot_repair(session: Session, *, hot_store: HotStore) -> None:
-    fetches = session.scalars(
-        select(FetchRecord)
-        .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
-        .order_by(FetchRecord.fetch_order)
-    ).all()
-    for fetch_record in fetches:
-        selected = _selected_fetch_files(session, fetch_record.fetch_id)
-        if selected and all(
-            _hot_file_available(hot_store, file_record) for file_record in selected
-        ):
-            fetch_record.fetch_state = FetchState.DONE.value
-
-
-def _create_archive_restore(
-    session: Session,
-    *,
-    config: RuntimeConfig,
-    image: FinalizedImageRecord,
-    created_at: str | None = None,
-) -> ArchiveRestoreRecord:
-    existing_ids = session.scalars(
-        select(ArchiveRestoreRecord.restore_id)
-        .join(
-            ArchiveRestoreImageRecord,
-            ArchiveRestoreImageRecord.restore_id == ArchiveRestoreRecord.restore_id,
+def _active_restore_for_collection(
+    session: Session, collection_id: str
+) -> ArchiveRestoreRecord | None:
+    return session.scalar(
+        select(ArchiveRestoreRecord)
+        .join(ArchiveRestoreCollectionRecord)
+        .where(
+            ArchiveRestoreCollectionRecord.collection_id == collection_id,
+            ArchiveRestoreRecord.state.in_(_ACTIVE_STATES),
         )
-        .where(ArchiveRestoreImageRecord.image_id == image.image_id)
-    ).all()
-    restore_id = _generated_archive_restore_id(image.image_id, existing_ids=existing_ids)
-    created_at = created_at or _isoformat_z(utcnow())
-    collections = [
-        _require_collection(session, collection_id)
-        for collection_id in _image_collection_ids(session, image.image_id)
-    ]
-    if not collections:
-        raise InvalidState(
-            f"image has no collection archives and cannot be rebuilt: {image.image_id}"
-        )
-    warnings = _build_warnings(config=config)
-    record = ArchiveRestoreRecord(
-        restore_id=restore_id,
-        type="disc_rebuild",
-        state=ArchiveRestoreState.REQUESTED.value,
-        created_at=created_at,
-        requested_at=None,
-        ready_at=None,
-        next_poll_at=None,
-        expires_at=None,
-        completed_at=None,
-        canceled_at=None,
-        paused_at=None,
-        paused_from_state=None,
-        latest_message="Archive restore queued; Riverhog will request archived collection data.",
-        retrieval_tier=config.archive_restore_retrieval_tier,
-        hold_days=_restore_hold_days(config),
-        warnings_json=json.dumps(list(warnings)),
-        failure_count=0,
-        last_failure_at=None,
-        last_failure=None,
-        last_failure_notification_at=None,
-        reminder_count=0,
-        next_reminder_at=None,
-        last_notified_at=None,
-        paths_json=None,
+        .order_by(ArchiveRestoreRecord.created_at.desc())
+        .limit(1)
     )
-    session.add(record)
-    session.flush()
-    session.add(
-        ArchiveRestoreImageRecord(
-            restore_id=restore_id,
-            image_id=image.image_id,
-            image_order=0,
-        )
-    )
-    _sync_restore_collections_for_images(session, record)
-    session.flush()
-    return record
 
 
-def _create_fetch_materialization_restore(
+def _create_restore(
     session: Session,
     *,
     config: RuntimeConfig,
     collection: CollectionRecord,
     paths: tuple[str, ...] | None,
-    created_at: str | None = None,
 ) -> ArchiveRestoreRecord:
-    existing_ids = session.scalars(
-        select(ArchiveRestoreRecord.restore_id)
-        .join(
-            ArchiveRestoreCollectionRecord,
-            ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
-        )
-        .where(ArchiveRestoreCollectionRecord.collection_id == collection.id)
-    ).all()
-    restore_id = _generated_fetch_materialization_restore_id(
-        collection.id,
-        existing_ids=existing_ids,
-    )
-    created_at = created_at or _isoformat_z(utcnow())
-    warnings = _build_warnings(config=config)
+    existing_ids = session.scalars(select(ArchiveRestoreRecord.restore_id)).all()
+    restore_id = _generated_restore_id(collection.id, existing_ids=existing_ids)
     record = ArchiveRestoreRecord(
         restore_id=restore_id,
-        type="fetch_materialization",
         state=ArchiveRestoreState.REQUESTED.value,
-        created_at=created_at,
+        created_at=_isoformat_z(utcnow()),
         requested_at=None,
         ready_at=None,
         next_poll_at=None,
         expires_at=None,
         completed_at=None,
         canceled_at=None,
-        paused_at=None,
-        paused_from_state=None,
-        latest_message="Archive restore queued; Riverhog will materialize requested files.",
+        latest_message="Archive restore queued for materialization.",
         retrieval_tier=config.archive_restore_retrieval_tier,
         hold_days=_restore_hold_days(config),
-        warnings_json=json.dumps(list(warnings)),
+        warnings_json=json.dumps(list(_build_warnings(config))),
         failure_count=0,
         last_failure_at=None,
         last_failure=None,
         last_failure_notification_at=None,
-        reminder_count=0,
-        next_reminder_at=None,
-        last_notified_at=None,
         paths_json=_paths_json(paths),
     )
     session.add(record)
@@ -1352,120 +746,19 @@ def _create_fetch_materialization_restore(
     return record
 
 
-def _attach_image_to_restore(
+def _request_restore(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
-    image: FinalizedImageRecord,
-    config: RuntimeConfig,
-) -> ArchiveRestoreRecord:
-    existing_image_ids = {
-        row.image_id
-        for row in session.scalars(
-            select(ArchiveRestoreImageRecord).where(
-                ArchiveRestoreImageRecord.restore_id == record.restore_id
-            )
-        ).all()
-    }
-    if image.image_id in existing_image_ids:
-        return record
-    next_order = len(existing_image_ids)
-    session.add(
-        ArchiveRestoreImageRecord(
-            restore_id=record.restore_id,
-            image_id=image.image_id,
-            image_order=next_order,
-        )
-    )
-    session.flush()
-    _sync_restore_collections_for_images(session, record)
-    session.flush()
-    _refresh_archive_restore_metadata(session, record=record, config=config)
-    return record
-
-
-def _require_image(session: Session, image_id: str) -> FinalizedImageRecord:
-    image = cast(FinalizedImageRecord | None, session.get(FinalizedImageRecord, image_id))
-    if image is None:
-        raise NotFound(f"image not found: {image_id}")
-    return image
-
-
-def _require_collection(session: Session, collection_id: str) -> CollectionRecord:
-    collection = cast(CollectionRecord | None, session.get(CollectionRecord, collection_id))
-    if collection is None:
-        raise NotFound(f"collection not found: {collection_id}")
-    return collection
-
-
-def _require_collection_archive_uploaded(collection: CollectionRecord) -> None:
-    archive = collection.archive
-    if archive is None or normalize_archive_state(archive.state) != ArchiveState.UPLOADED:
-        raise InvalidState(
-            f"collection archive is not uploaded and cannot be restored yet: {collection.id}"
-        )
-
-
-def _require_collection_archive_object_path(collection: CollectionRecord) -> str:
-    archive = collection.archive
-    if archive is None or not archive.object_path:
-        raise InvalidState(
-            f"collection archive object path is missing and cannot be restored: {collection.id}"
-        )
-    return archive.object_path
-
-
-def _require_collection_archive_objects(collection: CollectionRecord) -> _CollectionArchiveObjects:
-    archive = collection.archive
-    if archive is None or not archive.object_path:
-        raise InvalidState(
-            f"collection archive object path is missing and cannot be restored: {collection.id}"
-        )
-    if not archive.manifest_object_path:
-        raise InvalidState(
-            f"collection manifest object path is missing and cannot be restored: {collection.id}"
-        )
-    if not archive.ots_object_path:
-        raise InvalidState(
-            f"collection manifest proof object path is missing and cannot be restored: "
-            f"{collection.id}"
-        )
-    if not archive.manifest_sha256:
-        raise InvalidState(
-            f"collection manifest sha256 is missing and cannot be verified: {collection.id}"
-        )
-    if not archive.ots_sha256:
-        raise InvalidState(
-            f"collection manifest proof sha256 is missing and cannot be verified: {collection.id}"
-        )
-    return _CollectionArchiveObjects(
-        collection_id=collection.id,
-        archive_object_path=archive.object_path,
-        manifest_object_path=archive.manifest_object_path,
-        proof_object_path=archive.ots_object_path,
-        manifest_sha256=archive.manifest_sha256,
-        proof_sha256=archive.ots_sha256,
-    )
-
-
-def _request_restore_if_needed(
-    session: Session,
     *,
-    record: ArchiveRestoreRecord,
     archive_store: ArchiveStore,
     config: RuntimeConfig,
     current: datetime,
 ) -> None:
-    if record.state != ArchiveRestoreState.REQUESTED.value:
-        return
     if record.requested_at is not None:
         return
-    if (record.type or "disc_rebuild") == "disc_rebuild":
-        _sync_restore_collections_for_images(session, record)
-        session.flush()
-    collections = _restore_collections(session, record=record)
+    collections = _restore_collections(session, record)
     if not collections:
-        raise InvalidState("archive restore has no collection archives to restore")
+        raise InvalidState("archive restore has no collections")
     requested_at = _isoformat_z(current)
     estimated_ready_at = _isoformat_z(current + config.archive_restore_latency)
     statuses = [
@@ -1479,9 +772,7 @@ def _request_restore_if_needed(
             manifest_object_path=archive.manifest_object_path,
             proof_object_path=archive.proof_object_path,
         )
-        for archive in (
-            _require_collection_archive_objects(collection) for collection in collections
-        )
+        for archive in (_require_archive_objects(collection) for collection in collections)
     ]
     record.requested_at = requested_at
     record.ready_at = (
@@ -1492,40 +783,189 @@ def _request_restore_if_needed(
         status.expires_at for status in statuses if status.expires_at is not None
     )
     record.next_poll_at = _isoformat_z(current + config.archive_restore_sweep_interval)
-    if (record.type or "disc_rebuild") == "disc_rebuild":
-        record.latest_message = (
-            "Archive restore requested; wait until the restore is ready before burning "
-            "replacement media."
-        )
-    else:
-        record.latest_message = (
-            "Archive restore requested; Riverhog will materialize the requested files when "
-            "the archive is ready."
-        )
-    _notify_restore_started(
-        session,
-        record=record,
-        config=config,
-        current=current,
+    record.latest_message = (
+        "Archive retrieval requested; Riverhog will materialize the selected files when ready."
     )
 
 
-def _paths_json(paths: tuple[str, ...] | None) -> str | None:
-    if paths is None:
-        return None
-    return json.dumps(list(paths), separators=(",", ":"))
+def _poll_restore(
+    session: Session,
+    record: ArchiveRestoreRecord,
+    *,
+    archive_store: ArchiveStore,
+    current: datetime,
+) -> ArchiveRestoreStatus:
+    collections = _restore_collections(session, record)
+    if not collections:
+        raise InvalidState("archive restore has no collections")
+    statuses = [
+        archive_store.get_collection_archive_restore_status(
+            collection_id=archive.collection_id,
+            object_path=archive.archive_object_path,
+            requested_at=record.requested_at or _isoformat_z(current),
+            estimated_ready_at=record.ready_at,
+            estimated_expires_at=record.expires_at,
+            manifest_object_path=archive.manifest_object_path,
+            proof_object_path=archive.proof_object_path,
+        )
+        for archive in (_require_archive_objects(collection) for collection in collections)
+    ]
+    if any(status.state == "expired" for status in statuses):
+        return ArchiveRestoreStatus(state="expired")
+    if statuses and all(status.state == "ready" for status in statuses):
+        return ArchiveRestoreStatus(
+            state="ready",
+            ready_at=_max_timestamp(
+                status.ready_at for status in statuses if status.ready_at is not None
+            ),
+            expires_at=_min_timestamp(
+                status.expires_at for status in statuses if status.expires_at is not None
+            ),
+        )
+    return ArchiveRestoreStatus(
+        state="requested",
+        message="Archive retrieval is in progress; Riverhog will poll again.",
+    )
 
 
-def _paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
-    if raw_value is None:
-        return None
-    loaded = json.loads(raw_value)
-    if not isinstance(loaded, list):
-        raise InvalidState("fetch materialization paths are corrupt")
-    return tuple(str(item) for item in loaded)
+def _materialize_restore(
+    session: Session,
+    record: ArchiveRestoreRecord,
+    *,
+    archive_store: ArchiveStore,
+    hot_store: HotStore | None,
+    proof_verifier: ProofVerifier,
+    config: RuntimeConfig,
+    current: datetime,
+) -> None:
+    if hot_store is None:
+        raise InvalidState("archive restore service has no hot store")
+    for collection in _restore_collections(session, record):
+        paths = set(_materialization_paths(session, record=record, collection=collection))
+        if not paths:
+            continue
+        expected_files = _expected_files(session, collection.id)
+        missing = paths - {file.path for file in expected_files}
+        if missing:
+            raise NotFound(f"collection file not found: {sorted(missing)[0]}")
+        archive = _require_archive_objects(collection)
+        record.archive_verification_state = "in_progress"
+        record.extraction_state = "in_progress"
+        record.materialization_state = "in_progress"
+        session.flush()
+        manifest_bytes = archive_store.read_restored_collection_manifest(
+            collection_id=archive.collection_id,
+            object_path=archive.manifest_object_path,
+        )
+        verify_collection_manifest(
+            manifest_bytes=manifest_bytes,
+            expected_sha256=archive.manifest_sha256,
+            collection_id=archive.collection_id,
+            files=expected_files,
+        )
+        proof_bytes = archive_store.read_restored_collection_manifest_proof(
+            collection_id=archive.collection_id,
+            object_path=archive.proof_object_path,
+        )
+        verify_collection_manifest_proof(
+            proof_bytes=proof_bytes,
+            expected_sha256=archive.proof_sha256,
+            manifest_bytes=manifest_bytes,
+            verifier=proof_verifier,
+        )
+        record.archive_verification_state = "completed"
+        materialized: set[str] = set()
+        chunks = archive_store.iter_restored_collection_archive(
+            collection_id=archive.collection_id,
+            object_path=archive.archive_object_path,
+        )
+        for path, content, content_length in iter_verified_collection_archive_file_chunks(
+            chunks,
+            files=expected_files,
+            selected_paths=paths,
+        ):
+            hot_store.put_collection_file_stream(
+                collection.id,
+                path,
+                content,
+                content_length=content_length,
+            )
+            row = session.get(
+                CollectionFileRecord,
+                {"collection_id": collection.id, "path": path},
+            )
+            if row is not None:
+                row.hot = True
+            materialized.add(path)
+        if materialized != paths:
+            raise ValueError(
+                f"collection archive missing selected member: {sorted(paths - materialized)[0]}"
+            )
+    record.extraction_state = "completed"
+    record.materialization_state = "completed"
+    _cleanup_restore(session, record, archive_store)
+    record.state = ArchiveRestoreState.COMPLETED.value
+    record.completed_at = _isoformat_z(current)
+    record.expires_at = record.completed_at
+    record.next_poll_at = None
+    record.latest_message = "Requested files were verified and materialized to hot storage."
+    _sync_fetch_states(session, hot_store=hot_store)
+    _notify_completed(session, record, config, current)
 
 
-def _normalize_fetch_materialization_paths(
+def _expire_restore(
+    session: Session,
+    record: ArchiveRestoreRecord,
+    archive_store: ArchiveStore,
+) -> None:
+    _cleanup_restore(session, record, archive_store)
+    record.state = ArchiveRestoreState.EXPIRED.value
+    record.next_poll_at = None
+    record.latest_message = "Temporary archive retrieval expired; start a new restore."
+
+
+def _cleanup_restore(
+    session: Session,
+    record: ArchiveRestoreRecord,
+    archive_store: ArchiveStore,
+) -> None:
+    for collection in _restore_collections(session, record):
+        archive = _require_archive_objects(collection)
+        archive_store.cleanup_collection_archive_restore(
+            collection_id=collection.id,
+            object_path=archive.archive_object_path,
+            manifest_object_path=archive.manifest_object_path,
+            proof_object_path=archive.proof_object_path,
+        )
+
+
+def _expected_files(
+    session: Session, collection_id: str
+) -> tuple[CollectionArchiveExpectedFile, ...]:
+    rows = session.scalars(
+        select(CollectionFileRecord)
+        .where(CollectionFileRecord.collection_id == collection_id)
+        .order_by(CollectionFileRecord.path)
+    ).all()
+    return tuple(
+        CollectionArchiveExpectedFile(path=row.path, bytes=row.bytes, sha256=row.sha256)
+        for row in rows
+    )
+
+
+def _materialization_paths(
+    session: Session,
+    *,
+    record: ArchiveRestoreRecord,
+    collection: CollectionRecord,
+) -> tuple[str, ...]:
+    requested = _paths_from_json(record.paths_json)
+    if requested is not None:
+        return requested
+    return tuple(file.path for file in _expected_files(session, collection.id))
+
+
+def _normalize_paths(
     session: Session,
     *,
     collection_id: str,
@@ -1536,969 +976,108 @@ def _normalize_fetch_materialization_paths(
     normalized = tuple(dict.fromkeys(normalize_relpath(path) for path in paths))
     if not normalized:
         return None
-    expected_paths = {
-        file.path
-        for file in _collection_archive_expected_files(session, collection_id=collection_id)
-    }
-    missing_paths = sorted(set(normalized) - expected_paths)
-    if missing_paths:
-        raise NotFound(f"collection file not found: {missing_paths[0]}")
+    expected = {file.path for file in _expected_files(session, collection_id)}
+    missing = sorted(set(normalized) - expected)
+    if missing:
+        raise NotFound(f"collection file not found: {missing[0]}")
     return tuple(sorted(normalized))
 
 
-def _merge_fetch_materialization_paths(
+def _merge_paths(
     session: Session,
     *,
     record: ArchiveRestoreRecord,
     collection_id: str,
     paths: Sequence[str] | None,
 ) -> None:
-    if (record.type or "disc_rebuild") != "fetch_materialization":
-        return
-    incoming = _normalize_fetch_materialization_paths(
-        session, collection_id=collection_id, paths=paths
-    )
-    if incoming is None:
-        record.paths_json = None
-        return
+    incoming = _normalize_paths(session, collection_id=collection_id, paths=paths)
     existing = _paths_from_json(record.paths_json)
-    if existing is None:
-        return
-    record.paths_json = _paths_json(tuple(sorted(set(existing) | set(incoming))))
-
-
-def _fetch_materialization_paths(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    collection: CollectionRecord,
-) -> tuple[str, ...]:
-    requested = _paths_from_json(record.paths_json)
-    if requested is not None:
-        return requested
-    return tuple(
-        file.path
-        for file in _collection_archive_expected_files(session, collection_id=collection.id)
-    )
-
-
-def _materialize_collection_files(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    collection: CollectionRecord,
-    paths: set[str],
-    archive_store: ArchiveStore,
-    hot_store: HotStore,
-    proof_verifier: ProofVerifier,
-) -> None:
-    session_collection_ids = {
-        current.id for current in _restore_collections(session, record=record)
-    }
-    if collection.id not in session_collection_ids:
-        raise NotFound(f"collection not found in archive restore: {collection.id}")
-    expected_files = _collection_archive_expected_files(
-        session,
-        collection_id=collection.id,
-    )
-    expected_paths = {file.path for file in expected_files}
-    missing_paths = sorted(paths - expected_paths)
-    if missing_paths:
-        raise NotFound(f"collection file not found: {missing_paths[0]}")
-    archive = _require_collection_archive_objects(collection)
-    record.archive_verification_state = "in_progress"
-    record.extraction_state = "in_progress"
-    record.materialization_state = "in_progress"
-    session.flush()
-    manifest_bytes = archive_store.read_restored_collection_manifest(
-        collection_id=archive.collection_id,
-        object_path=archive.manifest_object_path,
-    )
-    verify_collection_manifest(
-        manifest_bytes=manifest_bytes,
-        expected_sha256=archive.manifest_sha256,
-        collection_id=archive.collection_id,
-        files=expected_files,
-    )
-    proof_bytes = archive_store.read_restored_collection_manifest_proof(
-        collection_id=archive.collection_id,
-        object_path=archive.proof_object_path,
-    )
-    verify_collection_manifest_proof(
-        proof_bytes=proof_bytes,
-        expected_sha256=archive.proof_sha256,
-        manifest_bytes=manifest_bytes,
-        verifier=proof_verifier,
-    )
-    record.archive_verification_state = "completed"
-    materialized: list[str] = []
-    archive_chunks = archive_store.iter_restored_collection_archive(
-        collection_id=archive.collection_id,
-        object_path=archive.archive_object_path,
-    )
-    for path, content_chunks, content_length in iter_verified_collection_archive_file_chunks(
-        archive_chunks,
-        files=expected_files,
-        selected_paths=paths,
-    ):
-        hot_store.put_collection_file_stream(
-            collection.id,
-            path,
-            content_chunks,
-            content_length=content_length,
-        )
-        row = session.get(
-            CollectionFileRecord,
-            {"collection_id": collection.id, "path": path},
-        )
-        if row is not None:
-            row.hot = True
-        materialized.append(path)
-    record.extraction_state = "completed"
-    record.materialization_state = "completed"
-    record.latest_message = (
-        "Requested collection files were verified and materialized to hot storage."
-    )
-    if len(materialized) != len(paths):
-        missing = sorted(paths - set(materialized))
-        raise ValueError(f"collection archive missing selected member: {missing[0]}")
-
-
-def _auto_materialize_fetch_materialization(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
-    hot_store: HotStore | None,
-    proof_verifier: ProofVerifier,
-    config: RuntimeConfig,
-    current: datetime,
-) -> None:
-    if hot_store is None:
-        record.latest_message = (
-            "Restored collection archive is ready, but this service has no hot store for "
-            "automatic materialization."
-        )
-        return
-    collections = _restore_collections(session, record=record)
-    if not collections:
-        raise InvalidState("archive restore has no collection archives to materialize")
-    for collection in collections:
-        paths = set(_fetch_materialization_paths(session, record=record, collection=collection))
-        if not paths:
-            continue
-        _materialize_collection_files(
-            session,
-            record=record,
-            collection=collection,
-            paths=paths,
-            archive_store=archive_store,
-            hot_store=hot_store,
-            proof_verifier=proof_verifier,
-        )
-    _complete_archive_restore_record(
-        session,
-        record=record,
-        archive_store=archive_store,
-        proof_verifier=proof_verifier,
-        config=config,
-        current=current,
-        verify_archives=False,
-    )
-
-
-def _cancel_archive_restore_record(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
-    config: RuntimeConfig,
-    current: datetime,
-) -> None:
-    if (record.type or "disc_rebuild") != "fetch_materialization":
-        raise InvalidState("disc rebuild restores can be paused and resumed, not canceled")
-    if record.state == ArchiveRestoreState.CANCELED.value:
-        _notify_restore_canceled(session, record=record, config=config, current=current)
-        return
-    if record.state not in {
-        ArchiveRestoreState.REQUESTED.value,
-        ArchiveRestoreState.READY.value,
-    }:
-        raise InvalidState("archive restore is not active and cannot be canceled")
-    _cleanup_restored_archive_objects(session, record=record, archive_store=archive_store)
-    record.state = ArchiveRestoreState.CANCELED.value
-    record.canceled_at = _isoformat_z(current)
-    record.next_poll_at = None
-    record.next_reminder_at = None
-    record.started_notification_next_attempt_at = None
-    record.completed_notification_next_attempt_at = None
-    record.latest_message = (
-        "Fetch materialization was canceled by the operator; Riverhog will not materialize "
-        "files for this archive restore."
-    )
-    _notify_restore_canceled(session, record=record, config=config, current=current)
-
-
-def _pause_archive_restore_record(
-    *,
-    record: ArchiveRestoreRecord,
-    config: RuntimeConfig,
-    current: datetime,
-) -> None:
-    if (record.type or "disc_rebuild") != "disc_rebuild":
-        raise InvalidState("fetch-materialization restores can be canceled, not paused")
-    if record.state == ArchiveRestoreState.PAUSED.value:
-        return
-    if record.state not in {
-        ArchiveRestoreState.REQUESTED.value,
-        ArchiveRestoreState.READY.value,
-    }:
-        raise InvalidState("disc rebuild archive restore is not active and cannot be paused")
-    record.paused_from_state = record.state
-    record.state = ArchiveRestoreState.PAUSED.value
-    record.paused_at = _isoformat_z(current)
-    record.next_poll_at = None
-    next_reminder = config.operator_webhook_next_reminder_at(current)
-    record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
-    record.started_notification_next_attempt_at = None
-    record.latest_message = (
-        "Disc rebuild restore is paused by the operator; resume it when replacement "
-        "media should continue."
-    )
-
-
-def _resume_archive_restore_record(
-    *,
-    record: ArchiveRestoreRecord,
-    current: datetime,
-) -> None:
-    if (record.type or "disc_rebuild") != "disc_rebuild":
-        raise InvalidState("fetch-materialization restores cannot be resumed from pause")
-    if record.state != ArchiveRestoreState.PAUSED.value:
-        raise InvalidState("disc rebuild archive restore is not paused")
-    resume_state = record.paused_from_state or ArchiveRestoreState.REQUESTED.value
-    if resume_state not in {
-        ArchiveRestoreState.REQUESTED.value,
-        ArchiveRestoreState.READY.value,
-    }:
-        resume_state = ArchiveRestoreState.REQUESTED.value
-    current_text = _isoformat_z(current)
-    if (
-        resume_state == ArchiveRestoreState.READY.value
-        and record.expires_at is not None
-        and record.expires_at <= current_text
-    ):
-        record.state = ArchiveRestoreState.EXPIRED.value
-        record.next_poll_at = None
-        record.next_reminder_at = None
-        record.latest_message = (
-            "Paused disc rebuild restore expired before resume; a new archive restore is required."
-        )
-        return
-    record.state = resume_state
-    record.paused_at = None
-    record.paused_from_state = None
-    record.next_poll_at = current_text
-    record.next_reminder_at = None
-    record.latest_message = "Disc rebuild restore resumed by the operator."
-
-
-def _complete_archive_restore_record(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
-    proof_verifier: ProofVerifier,
-    config: RuntimeConfig,
-    current: datetime,
-    verify_archives: bool,
-) -> None:
-    if record.state not in {
-        ArchiveRestoreState.READY.value,
-        ArchiveRestoreState.EXPIRED.value,
-    }:
-        raise InvalidState("archive restore is not ready to complete")
-    collections = _restore_collections(session, record=record)
-    if not collections:
-        raise InvalidState("archive restore has no collection archives to complete")
-    if record.state == ArchiveRestoreState.READY.value and verify_archives:
-        record.archive_verification_state = "in_progress"
-        session.flush()
-        _verify_restored_collection_archives(
-            session,
-            archive_store=archive_store,
-            collections=collections,
-            proof_verifier=proof_verifier,
-        )
-        record.archive_verification_state = "completed"
-    _cleanup_restored_archive_objects(session, record=record, archive_store=archive_store)
-    record.state = ArchiveRestoreState.COMPLETED.value
-    record.completed_at = _isoformat_z(current)
-    record.next_reminder_at = None
-    record.expires_at = record.completed_at
-    if (record.type or "disc_rebuild") == "fetch_materialization":
-        record.latest_message = (
-            "Fetch materialization completed; requested files are hot and temporary "
-            "archive restore cleanup was recorded."
-        )
+    if incoming is None or existing is None:
+        record.paths_json = None
     else:
-        record.latest_message = "Disc rebuild completed and archive restore cleanup was recorded."
-    _notify_restore_completed(
-        session,
-        record=record,
-        config=config,
-        current=current,
-    )
+        record.paths_json = _paths_json(tuple(sorted(set(existing) | set(incoming))))
 
 
-def _cleanup_restored_archive_objects(
-    session: Session,
+def _paths_json(paths: tuple[str, ...] | None) -> str | None:
+    return None if paths is None else json.dumps(list(paths), separators=(",", ":"))
+
+
+def _paths_from_json(raw: str | None) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise InvalidState("archive restore paths are corrupt")
+    return tuple(str(item) for item in value)
+
+
+def _hot_file_available_for_audit(
+    hot_store: HotStore,
+    file: CollectionFileRecord,
     *,
-    record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
-) -> None:
-    for collection in _restore_collections(session, record=record):
-        archive = _require_collection_archive_objects(collection)
-        archive_store.cleanup_collection_archive_restore(
-            collection_id=collection.id,
-            object_path=archive.archive_object_path,
-            manifest_object_path=archive.manifest_object_path,
-            proof_object_path=archive.proof_object_path,
-        )
-
-
-def _iter_rebuilt_iso_from_collection_archives(
-    *,
-    archive_store: ArchiveStore,
-    image_id: str,
-    filename: str,
-    collection_archives: Sequence[_CollectionArchiveObjects],
-    collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
-    coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
-    file_lookup: dict[tuple[str, str], tuple[str, int]],
-    proof_verifier: ProofVerifier,
-    recovery_payload_codec: RecoveryPayloadCodec,
-) -> Iterator[bytes]:
-    with tempfile.TemporaryDirectory(prefix="riverhog-rebuilt-iso-") as tmpdir:
-        work_root = Path(tmpdir)
-        image_root = work_root / "image-root"
-        image_root.mkdir()
-        restored_artifacts = _restore_collection_artifacts(
-            archive_store=archive_store,
-            collection_archives=collection_archives,
-            file_lookup=file_lookup,
-            proof_verifier=proof_verifier,
-        )
-        _write_rebuilt_collection_artifacts(
-            image_root=image_root,
-            collection_artifacts=collection_artifacts,
-            restored_artifacts=restored_artifacts,
-            recovery_payload_codec=recovery_payload_codec,
-        )
-        _write_rebuilt_image_payloads_from_collection_archives(
-            image_root=image_root,
-            archive_store=archive_store,
-            collection_archives=collection_archives,
-            coverage_parts=coverage_parts,
-            file_lookup=file_lookup,
-            recovery_payload_codec=recovery_payload_codec,
-        )
-        manifest = build_disc_manifest_from_catalog(
-            image_id=image_id,
-            collection_artifacts=collection_artifacts,
-            coverage_parts=coverage_parts,
-            file_lookup=file_lookup,
-        )
-        _write_image_root_file(
-            image_root,
-            MANIFEST_FILENAME,
-            encrypt_recovery_payload(manifest, recovery_payload_codec),
-        )
-        _write_image_root_file(image_root, README_FILENAME, recovery_readme_bytes(image_id))
-        yield from _run_iso_from_root(
-            image_root=image_root,
-            volume_id=image_id,
-            filename=filename,
-        )
-
-
-def _restore_collection_artifacts(
-    *,
-    archive_store: ArchiveStore,
-    collection_archives: Sequence[_CollectionArchiveObjects],
-    file_lookup: dict[tuple[str, str], tuple[str, int]],
-    proof_verifier: ProofVerifier,
-) -> dict[str, _RestoredCollectionArtifact]:
-    restored_artifacts: dict[str, _RestoredCollectionArtifact] = {}
-    for collection_archive in collection_archives:
-        restored_artifacts[collection_archive.collection_id] = (
-            _verify_restored_collection_manifest_and_proof(
-                archive_store=archive_store,
-                archive=collection_archive,
-                expected_files=_expected_files_from_lookup(
-                    file_lookup=file_lookup,
-                    collection_id=collection_archive.collection_id,
-                ),
-                proof_verifier=proof_verifier,
-            )
-        )
-    return restored_artifacts
-
-
-def _verify_restored_collection_archives(
-    session: Session,
-    *,
-    archive_store: ArchiveStore,
-    collections: Sequence[CollectionRecord],
-    proof_verifier: ProofVerifier,
-) -> None:
-    for collection in collections:
-        archive = _require_collection_archive_objects(collection)
-        _verify_restored_collection_archive(
-            archive_store=archive_store,
-            archive=archive,
-            expected_files=_collection_archive_expected_files(
-                session,
-                collection_id=collection.id,
-            ),
-            proof_verifier=proof_verifier,
-        )
-
-
-def _verify_restored_collection_archive(
-    *,
-    archive_store: ArchiveStore,
-    archive: _CollectionArchiveObjects,
-    expected_files: Sequence[CollectionArchiveExpectedFile],
-    proof_verifier: ProofVerifier,
-) -> _RestoredCollectionArtifact:
-    artifact = _verify_restored_collection_manifest_and_proof(
-        archive_store=archive_store,
-        archive=archive,
-        expected_files=expected_files,
-        proof_verifier=proof_verifier,
-    )
-    verify_collection_archive_files(
-        chunks=archive_store.iter_restored_collection_archive(
-            collection_id=archive.collection_id,
-            object_path=archive.archive_object_path,
-        ),
-        files=expected_files,
-    )
-    return artifact
-
-
-def _verify_restored_collection_manifest_and_proof(
-    *,
-    archive_store: ArchiveStore,
-    archive: _CollectionArchiveObjects,
-    expected_files: Sequence[CollectionArchiveExpectedFile],
-    proof_verifier: ProofVerifier,
-) -> _RestoredCollectionArtifact:
-    manifest_bytes = archive_store.read_restored_collection_manifest(
-        collection_id=archive.collection_id,
-        object_path=archive.manifest_object_path,
-    )
-    verify_collection_manifest(
-        manifest_bytes=manifest_bytes,
-        expected_sha256=archive.manifest_sha256,
-        collection_id=archive.collection_id,
-        files=expected_files,
-    )
-    proof_bytes = archive_store.read_restored_collection_manifest_proof(
-        collection_id=archive.collection_id,
-        object_path=archive.proof_object_path,
-    )
-    verify_collection_manifest_proof(
-        proof_bytes=proof_bytes,
-        expected_sha256=archive.proof_sha256,
-        manifest_bytes=manifest_bytes,
-        verifier=proof_verifier,
-    )
-    return _RestoredCollectionArtifact(manifest_bytes=manifest_bytes, proof_bytes=proof_bytes)
-
-
-def _collection_archive_expected_files(
-    session: Session,
-    *,
-    collection_id: str,
-) -> tuple[CollectionArchiveExpectedFile, ...]:
-    rows = session.scalars(
-        select(CollectionFileRecord)
-        .where(CollectionFileRecord.collection_id == collection_id)
-        .order_by(CollectionFileRecord.path)
-    ).all()
-    return tuple(
-        CollectionArchiveExpectedFile(
-            path=row.path,
-            bytes=row.bytes,
-            sha256=row.sha256,
-        )
-        for row in rows
-    )
-
-
-def _expected_files_from_lookup(
-    *,
-    file_lookup: dict[tuple[str, str], tuple[str, int]],
-    collection_id: str,
-) -> tuple[CollectionArchiveExpectedFile, ...]:
-    return tuple(
-        CollectionArchiveExpectedFile(path=path, sha256=sha256, bytes=byte_count)
-        for (current_collection_id, path), (sha256, byte_count) in sorted(file_lookup.items())
-        if current_collection_id == collection_id
-    )
-
-
-def _write_rebuilt_collection_artifacts(
-    *,
-    image_root: Path,
-    collection_artifacts: Sequence[FinalizedImageCollectionArtifactRecord],
-    restored_artifacts: dict[str, _RestoredCollectionArtifact],
-    recovery_payload_codec: RecoveryPayloadCodec,
-) -> None:
-    for artifact in sorted(collection_artifacts, key=lambda current: current.collection_id):
-        restored = restored_artifacts.get(artifact.collection_id)
-        if restored is None:
-            raise InvalidState(
-                f"restored collection artifacts are missing: {artifact.collection_id}"
-            )
-        _write_image_root_file(
-            image_root,
-            artifact.manifest_path,
-            encrypt_recovery_payload(
-                restored.manifest_bytes,
-                recovery_payload_codec,
-            ),
-        )
-        _write_image_root_file(
-            image_root,
-            artifact.proof_path,
-            encrypt_recovery_payload(
-                restored.proof_bytes,
-                recovery_payload_codec,
-            ),
-        )
-
-
-def _write_rebuilt_image_payloads_from_collection_archives(
-    *,
-    image_root: Path,
-    archive_store: ArchiveStore,
-    collection_archives: Sequence[_CollectionArchiveObjects],
-    coverage_parts: Sequence[FinalizedImageCoveragePartRecord],
-    file_lookup: dict[tuple[str, str], tuple[str, int]],
-    recovery_payload_codec: RecoveryPayloadCodec,
-) -> None:
-    parts_by_file: dict[tuple[str, str], list[FinalizedImageCoveragePartRecord]] = {}
-    for part in coverage_parts:
-        if part.object_path is None or part.sidecar_path is None:
-            raise InvalidState(
-                "finalized image coverage part is missing persisted artifact paths: "
-                f"{part.collection_id}/{part.path}"
-            )
-        parts_by_file.setdefault((part.collection_id, part.path), []).append(part)
-
-    written: set[tuple[str, str, int, int]] = set()
-    for archive in collection_archives:
-        selected_paths = {
-            path for collection_id, path in parts_by_file if collection_id == archive.collection_id
-        }
-        archive_chunks = archive_store.iter_restored_collection_archive(
-            collection_id=archive.collection_id,
-            object_path=archive.archive_object_path,
-        )
-        expected_files = _expected_files_from_lookup(
-            file_lookup=file_lookup,
-            collection_id=archive.collection_id,
-        )
-        for path, content_chunks, _content_length in iter_verified_collection_archive_file_chunks(
-            archive_chunks,
-            files=expected_files,
-            selected_paths=selected_paths,
-        ):
-            content = b"".join(content_chunks)
-            for part in sorted(
-                parts_by_file.get((archive.collection_id, path), ()),
-                key=lambda current: (current.part_count, current.part_index),
-            ):
-                sha256, plaintext_bytes = file_lookup[(part.collection_id, part.path)]
-                file_meta = cast(
-                    PlannerFileMeta,
-                    {
-                        "relpath": part.path,
-                        "sha256": sha256,
-                        "plaintext_bytes": plaintext_bytes,
-                    },
-                )
-                _write_rebuilt_image_part(
-                    image_root=image_root,
-                    part=part,
-                    content=content,
-                    file_meta=file_meta,
-                    recovery_payload_codec=recovery_payload_codec,
-                )
-                written.add(
-                    (
-                        part.collection_id,
-                        part.path,
-                        int(part.part_index),
-                        int(part.part_count),
-                    )
-                )
-
-    expected = {
-        (
-            part.collection_id,
-            part.path,
-            int(part.part_index),
-            int(part.part_count),
-        )
-        for part in coverage_parts
-    }
-    missing = sorted(expected - written)
-    if missing:
-        collection_id, path, part_index, part_count = missing[0]
-        raise InvalidState(
-            "restored collection archive is missing finalized image part: "
-            f"{collection_id}/{path} part {part_index + 1} of {part_count}"
-        )
-
-
-def _write_rebuilt_image_part(
-    *,
-    image_root: Path,
-    part: FinalizedImageCoveragePartRecord,
-    content: bytes,
-    file_meta: PlannerFileMeta,
-    recovery_payload_codec: RecoveryPayloadCodec,
-) -> None:
-    if part.object_path is None or part.sidecar_path is None:
-        raise InvalidState(
-            "finalized image coverage part is missing persisted artifact paths: "
-            f"{part.collection_id}/{part.path}"
-        )
-    _write_image_root_file(
-        image_root,
-        part.object_path,
-        encrypt_recovery_payload(
-            _content_part(content, part_index=part.part_index, part_count=part.part_count),
-            recovery_payload_codec,
-        ),
-    )
-    _write_image_root_file(
-        image_root,
-        part.sidecar_path,
-        encrypt_recovery_payload(
-            sidecar_bytes(
-                file_meta,
-                collection_id=part.collection_id,
-                part_index=part.part_index,
-                part_count=part.part_count,
-            ),
-            recovery_payload_codec,
-        ),
-    )
-
-
-def _content_part(content: bytes, *, part_index: int, part_count: int) -> bytes:
-    if part_count < 1 or part_index < 0 or part_index >= part_count:
-        raise InvalidState("invalid rebuilt image part index")
-    base, remainder = divmod(len(content), part_count)
-    start = part_index * base + min(part_index, remainder)
-    size = base + int(part_index < remainder)
-    return content[start : start + size]
-
-
-def _write_image_root_file(root: Path, relpath: str, content: bytes) -> None:
-    dest = root / normalize_relpath(relpath)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(content)
-
-
-def _run_iso_from_root(*, image_root: Path, volume_id: str, filename: str) -> Iterator[bytes]:
-    _ = filename
-    cmd = build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id)
-    with tempfile.TemporaryFile() as stderr:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr)
-        assert proc.stdout is not None
+    selected_count: int,
+    listed_hot_files: dict[str, dict[str, int]],
+) -> bool:
+    if selected_count <= 1:
+        return _hot_file_available(hot_store, file)
+    listing = listed_hot_files.get(file.collection_id)
+    if listing is None:
         try:
-            while True:
-                chunk = proc.stdout.read(1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-            returncode = proc.wait()
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-            proc.stdout.close()
-        if returncode != 0:
-            stderr.seek(0, 2)
-            size = stderr.tell()
-            stderr.seek(max(size - 1500, 0))
-            detail = stderr.read().decode("utf-8", errors="replace")
-            raise RuntimeError(detail or f"xorriso exited {returncode}")
+            listing = {
+                path: int(byte_count)
+                for path, byte_count in hot_store.list_collection_files(file.collection_id)
+            }
+        except Exception:
+            return _hot_file_available(hot_store, file)
+        listed_hot_files[file.collection_id] = listing
+    return listing.get(file.path) == int(file.bytes)
 
 
-def _image_collections_archived(session: Session, image: FinalizedImageRecord) -> bool:
-    collection_ids = _image_collection_ids(session, image.image_id)
-    if not collection_ids:
+def _hot_file_available(hot_store: HotStore, file: CollectionFileRecord) -> bool:
+    try:
+        stat = hot_store.stat_collection_file(file.collection_id, file.path)
+    except FileNotFoundError:
         return False
-    for collection_id in collection_ids:
-        collection = session.get(CollectionRecord, collection_id)
-        if collection is None:
-            return False
-        archive = collection.archive
-        if archive is None or normalize_archive_state(archive.state) != ArchiveState.UPLOADED:
-            return False
-    return True
+    if stat is None or int(stat.bytes) != int(file.bytes):
+        return False
+    return stat.sha256 is None or stat.sha256 == file.sha256
 
 
-def _require_image_collections_archived(session: Session, image: FinalizedImageRecord) -> None:
-    if not _image_collections_archived(session, image):
-        raise InvalidState(
-            f"image collections are not archived and cannot be rebuilt yet: {image.image_id}"
-        )
-
-
-def _image_collection_ids(session: Session, image_id: str) -> list[str]:
-    return sorted(
-        set(
-            session.scalars(
-                select(FinalizedImageCoveredPathRecord.collection_id).where(
-                    FinalizedImageCoveredPathRecord.image_id == image_id
-                )
-            ).all()
-        )
-    )
-
-
-def _disc_redundancy_count(session: Session, image_id: str) -> int:
-    rows = session.scalars(
-        select(ImageDiscRecord.state).where(ImageDiscRecord.image_id == image_id)
+def _sync_fetch_states(session: Session, *, hot_store: HotStore | None) -> None:
+    if hot_store is None:
+        return
+    fetches = session.scalars(
+        select(FetchRecord)
+        .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
+        .order_by(FetchRecord.fetch_order)
     ).all()
-    return sum(1 for state in rows if disc_counts_toward_redundancy(state))
-
-
-def _has_recovery_triggering_disc_history(session: Session, image_id: str) -> bool:
-    rows = session.scalars(
-        select(ImageDiscRecord.state).where(ImageDiscRecord.image_id == image_id)
-    ).all()
-    return any(
-        normalize_disc_state(state) not in {DiscState.NEEDED, DiscState.BURNING} for state in rows
-    )
-
-
-def _active_restore_for_image(
-    session: Session,
-    image_id: str,
-) -> ArchiveRestoreRecord | None:
-    return cast(
-        ArchiveRestoreRecord | None,
-        session.scalar(
-            select(ArchiveRestoreRecord)
-            .join(
-                ArchiveRestoreImageRecord,
-                ArchiveRestoreImageRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            )
-            .where(ArchiveRestoreImageRecord.image_id == image_id)
-            .where(ArchiveRestoreRecord.state.in_(_ACTIVE_RECOVERY_STATES))
-            .order_by(ArchiveRestoreRecord.created_at.desc())
-            .limit(1)
-        ),
-    )
-
-
-def _active_restore_for_collection(
-    session: Session,
-    collection_id: str,
-) -> ArchiveRestoreRecord | None:
-    return cast(
-        ArchiveRestoreRecord | None,
-        session.scalar(
-            select(ArchiveRestoreRecord)
-            .join(
-                ArchiveRestoreCollectionRecord,
-                ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            )
-            .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
-            .where(ArchiveRestoreRecord.state.in_(_ACTIVE_RECOVERY_STATES))
-            .order_by(ArchiveRestoreRecord.created_at.desc())
-            .limit(1)
-        ),
-    )
-
-
-def _latest_restore_for_image(
-    session: Session,
-    image_id: str,
-) -> ArchiveRestoreRecord | None:
-    return cast(
-        ArchiveRestoreRecord | None,
-        session.scalar(
-            select(ArchiveRestoreRecord)
-            .join(
-                ArchiveRestoreImageRecord,
-                ArchiveRestoreImageRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            )
-            .where(ArchiveRestoreImageRecord.image_id == image_id)
-            .order_by(ArchiveRestoreRecord.created_at.desc())
-            .limit(1)
-        ),
-    )
-
-
-def _latest_restore_for_collection(
-    session: Session,
-    collection_id: str,
-) -> ArchiveRestoreRecord | None:
-    return cast(
-        ArchiveRestoreRecord | None,
-        session.scalar(
-            select(ArchiveRestoreRecord)
-            .join(
-                ArchiveRestoreCollectionRecord,
-                ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
-            )
-            .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
-            .order_by(ArchiveRestoreRecord.created_at.desc())
-            .limit(1)
-        ),
-    )
-
-
-def _reusable_queued_disc_rebuild_restore(session: Session) -> ArchiveRestoreRecord | None:
-    return cast(
-        ArchiveRestoreRecord | None,
-        session.scalar(
-            select(ArchiveRestoreRecord)
-            .where(
-                ArchiveRestoreRecord.type == "disc_rebuild",
-                ArchiveRestoreRecord.state == ArchiveRestoreState.REQUESTED.value,
-                ArchiveRestoreRecord.requested_at.is_(None),
-            )
-            .order_by(ArchiveRestoreRecord.created_at.desc())
-            .limit(1)
-        ),
-    )
-
-
-def _restore_images(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-) -> list[FinalizedImageRecord]:
-    image_rows = session.scalars(
-        select(ArchiveRestoreImageRecord)
-        .where(ArchiveRestoreImageRecord.restore_id == record.restore_id)
-        .order_by(ArchiveRestoreImageRecord.image_order)
-    ).all()
-    return [_require_image(session, image_row.image_id) for image_row in image_rows]
-
-
-def _restore_collections(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-) -> list[CollectionRecord]:
-    collection_rows = session.scalars(
-        select(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
-        .order_by(ArchiveRestoreCollectionRecord.collection_order)
-    ).all()
-    return [_require_collection(session, row.collection_id) for row in collection_rows]
-
-
-def _sync_restore_collections_for_images(
-    session: Session,
-    record: ArchiveRestoreRecord,
-) -> None:
-    collection_ids: list[str] = []
-    for image in _restore_images(session, record=record):
-        for collection_id in _image_collection_ids(session, image.image_id):
-            if collection_id not in collection_ids:
-                collection = session.get(CollectionRecord, collection_id)
-                if (
-                    collection is None
-                    or collection.archive is None
-                    or normalize_archive_state(collection.archive.state) != ArchiveState.UPLOADED
-                ):
-                    continue
-                collection_ids.append(collection_id)
-    existing = {
-        row.collection_id
-        for row in session.scalars(
-            select(ArchiveRestoreCollectionRecord).where(
-                ArchiveRestoreCollectionRecord.restore_id == record.restore_id
-            )
-        ).all()
-    }
-    for index, collection_id in enumerate(collection_ids):
-        if collection_id in existing:
-            continue
-        session.add(
-            ArchiveRestoreCollectionRecord(
-                restore_id=record.restore_id,
-                collection_id=collection_id,
-                collection_order=index,
-            )
+    for fetch in fetches:
+        files = _selected_fetch_files(session, fetch.fetch_id)
+        fetch.fetch_state = (
+            FetchState.DONE.value
+            if files and all(_hot_file_available(hot_store, file) for file in files)
+            else FetchState.RESTORING_ARCHIVE.value
         )
 
 
 def _restore_summary(
     session: Session,
     record: ArchiveRestoreRecord,
-    *,
     config: RuntimeConfig,
 ) -> ArchiveRestoreSummary:
-    if (record.type or "disc_rebuild") == "disc_rebuild":
-        _sync_restore_collections_for_images(session, record)
-        session.flush()
-    collections: list[ArchiveRestoreCollection] = []
-    for collection in _restore_collections(session, record=record):
-        archive = collection.archive
-        collections.append(
-            ArchiveRestoreCollection(
-                id=CollectionId(collection.id),
-                archive=_collection_archive_status(archive),
-                collection_manifest=_collection_manifest_status(archive),
-                stored_bytes=_collection_stored_bytes(archive),
-            )
+    collections = tuple(
+        ArchiveRestoreCollection(
+            id=CollectionId(collection.id),
+            archive=_archive_status(collection.archive),
+            collection_manifest=_manifest_status(collection.archive),
+            stored_bytes=int(collection.archive.stored_bytes or 0)
+            if collection.archive is not None
+            else 0,
         )
-    images: list[ArchiveRestoreImage] = []
-    for image in _restore_images(session, record=record):
-        collection_ids = tuple(
-            CollectionId(collection_id)
-            for collection_id in _image_collection_ids(session, image.image_id)
-        )
-        images.append(
-            ArchiveRestoreImage(
-                id=ImageId(image.image_id),
-                filename=image.filename,
-                collection_ids=collection_ids,
-                rebuild_state=_archive_restore_disc_rebuild_state(record),
-            )
-        )
-    notification = ArchiveRestoreNotificationStatus(
-        webhook_configured=bool(config.operator_webhook_url),
-        reminder_count=record.reminder_count,
-        next_reminder_at=record.next_reminder_at,
-        last_notified_at=record.last_notified_at,
-        failure_count=int(record.failure_count or 0),
-        last_failure_at=record.last_failure_at,
-        last_failure=record.last_failure,
+        for collection in _restore_collections(session, record)
     )
-    progress = ArchiveRestoreProgress(
-        archive_verification=record.archive_verification_state or "pending",
-        extraction=record.extraction_state or "pending",
-        materialization=record.materialization_state or "pending",
-    )
-    warnings = tuple(str(item) for item in json.loads(record.warnings_json))
     return ArchiveRestoreSummary(
         id=record.restore_id,
-        type=record.type or "disc_rebuild",
         state=ArchiveRestoreState(record.state),
         created_at=record.created_at,
         requested_at=record.requested_at,
@@ -2506,27 +1085,29 @@ def _restore_summary(
         expires_at=record.expires_at,
         completed_at=record.completed_at,
         canceled_at=record.canceled_at,
-        paused_at=record.paused_at,
-        paused_from_state=record.paused_from_state,
-        paths=_paths_from_json(record.paths_json)
-        if (record.type or "disc_rebuild") == "fetch_materialization"
-        else None,
+        paths=_paths_from_json(record.paths_json),
         latest_message=record.latest_message,
-        warnings=warnings,
-        notification=notification,
-        progress=progress,
-        collections=tuple(collections),
-        images=tuple(images),
+        warnings=tuple(str(item) for item in json.loads(record.warnings_json)),
+        notification=ArchiveRestoreNotificationStatus(
+            webhook_configured=bool(config.operator_webhook_url),
+            failure_count=int(record.failure_count or 0),
+            last_failure_at=record.last_failure_at,
+            last_failure=record.last_failure,
+        ),
+        progress=ArchiveRestoreProgress(
+            archive_verification=record.archive_verification_state or "pending",
+            extraction=record.extraction_state or "pending",
+            materialization=record.materialization_state or "pending",
+        ),
+        collections=collections,
     )
 
 
-def _collection_archive_status(
-    archive: CollectionArchiveRecord | None,
-) -> ArchiveStatus:
+def _archive_status(archive: CollectionArchiveRecord | None) -> ArchiveStatus:
     if archive is None:
         return ArchiveStatus()
     return ArchiveStatus(
-        state=normalize_archive_state(archive.state),
+        state=ArchiveState(archive.state),
         object_path=archive.object_path,
         stored_bytes=archive.stored_bytes,
         backend=archive.backend,
@@ -2537,28 +1118,13 @@ def _collection_archive_status(
     )
 
 
-def _archive_restore_disc_rebuild_state(record: ArchiveRestoreRecord) -> str:
-    state = ArchiveRestoreState(record.state)
-    if state == ArchiveRestoreState.REQUESTED:
-        return "restoring_collections"
-    if state in {ArchiveRestoreState.READY, ArchiveRestoreState.COMPLETED}:
-        return "ready"
-    if state == ArchiveRestoreState.PAUSED:
-        return "paused"
-    if state == ArchiveRestoreState.CANCELED:
-        return "canceled"
-    if state in {ArchiveRestoreState.EXPIRED, ArchiveRestoreState.FAILED}:
-        return "failed"
-    return "pending"
-
-
-def _collection_manifest_status(
+def _manifest_status(
     archive: CollectionArchiveRecord | None,
 ) -> CollectionManifestStatus | None:
     if archive is None:
         return None
     ots_state = "uploaded" if archive.ots_object_path else "pending"
-    if normalize_archive_state(archive.state) == ArchiveState.FAILED:
+    if ArchiveState(archive.state) == ArchiveState.FAILED:
         ots_state = "failed"
     return CollectionManifestStatus(
         object_path=archive.manifest_object_path,
@@ -2569,95 +1135,45 @@ def _collection_manifest_status(
     )
 
 
-def _collection_stored_bytes(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None:
-        return 0
-    return int(archive.stored_bytes or 0)
-
-
-def _refresh_archive_restore_metadata(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    config: RuntimeConfig,
-) -> None:
-    collections = _restore_collections(session, record=record)
-    if not collections:
-        raise InvalidState("archive restore has no collection archives")
-    record.warnings_json = json.dumps(list(_build_warnings(config=config)))
-    record.hold_days = _restore_hold_days(config)
-    record.retrieval_tier = config.archive_restore_retrieval_tier
-
-
 def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
-    restore_latency = _format_timedelta(config.archive_restore_latency)
-    cleanup_window = _format_timedelta(config.archive_restore_ready_ttl)
-    reminder = (
-        "Riverhog will notify and remind the operator through the configured operator webhook "
-        "as an archive restore starts, becomes ready, and completes."
-        if config.operator_webhook_url
-        else "No operator webhook URL is configured; operators must poll the archive restore "
-        "manually for readiness."
-    )
     return (
-        "Archive restore requests take time; the configured restore latency estimate "
-        f"is {restore_latency}.",
-        reminder,
-        "Restored ISO data will be cleaned up after "
-        f"{cleanup_window} if the archive restore is not completed sooner.",
+        f"Archive retrieval may take {_format_timedelta(config.archive_restore_latency)}.",
+        "Riverhog verifies the collection manifest, proof, and content before materialization.",
+        "Temporary retrieval availability expires after "
+        f"{_format_timedelta(config.archive_restore_ready_ttl)}.",
     )
 
 
-def _notify_restore_ready(
+def _notify_ready(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
     config: RuntimeConfig,
     current: datetime,
-    reminder: bool,
 ) -> None:
     if not config.operator_webhook_url:
-        record.next_reminder_at = None
         return
+    webhook = _webhook_config(config)
     try:
-        webhook_config = _webhook_config(config)
-        payload = build_archive_restore_ready_payload(
-            config=webhook_config,
-            restore_id=record.restore_id,
-            restore_type=_restore_type(record),
-            expires_at=record.expires_at,
-            images=_restore_image_payload(session, record),
-            collections=_restore_collection_payload(session, record),
-            delivered_at=current,
-            reminder_count=record.reminder_count,
-            reminder=reminder,
-        )
         post_webhook(
-            config=webhook_config,
-            payload=payload,
+            config=webhook,
+            payload=build_archive_restore_ready_payload(
+                config=webhook,
+                restore_id=record.restore_id,
+                expires_at=record.expires_at,
+                collections=_collection_payload(session, record),
+                delivered_at=current,
+            ),
         )
-    except Exception as exc:
-        record.latest_message = (
-            "Ready notification failed and will retry: "
-            f"{str(exc).strip() or exc.__class__.__name__}"
+    except Exception:
+        _LOG.warning(
+            "failed to deliver archive restore ready webhook: restore=%s",
+            record.restore_id,
+            exc_info=True,
         )
-        record.next_reminder_at = _isoformat_z(current + config.operator_webhook_retry_delay)
-        return
-
-    record.last_notified_at = _isoformat_z(current)
-    if reminder:
-        record.reminder_count += 1
-    interval = config.operator_webhook_reminder_interval
-    if interval.total_seconds() > 0:
-        next_reminder = config.operator_webhook_next_reminder_at(current)
-        record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
-    else:
-        record.next_reminder_at = None
 
 
-def _notify_restore_started(
+def _notify_started(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
     config: RuntimeConfig,
     current: datetime,
@@ -2667,47 +1183,39 @@ def _notify_restore_started(
         record.started_notification_next_attempt_at = None
         record.started_notification_failure = None
         return
-    if (
-        record.started_notification_sent_at is not None
-        and record.started_notification_next_attempt_at is None
-    ):
+    if record.started_notification_sent_at is not None:
         return
     if (
         record.started_notification_next_attempt_at is not None
         and record.started_notification_next_attempt_at > current_text
     ):
         return
-
-    webhook_config = _webhook_config(config)
+    webhook = _webhook_config(config)
     try:
         post_webhook(
-            config=webhook_config,
+            config=webhook,
             payload=build_archive_restore_started_payload(
-                config=webhook_config,
+                config=webhook,
                 restore_id=record.restore_id,
-                restore_type=_restore_type(record),
                 retrieval_tier=record.retrieval_tier,
                 estimated_ready_at=record.ready_at,
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
+                collections=_collection_payload(session, record),
                 delivered_at=current,
             ),
         )
     except Exception as exc:
-        record.started_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.started_notification_failure = _error_text(exc)
         record.started_notification_next_attempt_at = _isoformat_z(
             current + config.operator_webhook_retry_delay
         )
         return
-
     record.started_notification_sent_at = current_text
     record.started_notification_next_attempt_at = None
     record.started_notification_failure = None
 
 
-def _notify_restore_completed(
+def _notify_completed(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
     config: RuntimeConfig,
     current: datetime,
@@ -2717,45 +1225,37 @@ def _notify_restore_completed(
         record.completed_notification_next_attempt_at = None
         record.completed_notification_failure = None
         return
-    if (
-        record.completed_notification_sent_at is not None
-        and record.completed_notification_next_attempt_at is None
-    ):
+    if record.completed_notification_sent_at is not None:
         return
     if (
         record.completed_notification_next_attempt_at is not None
         and record.completed_notification_next_attempt_at > current_text
     ):
         return
-
-    webhook_config = _webhook_config(config)
+    webhook = _webhook_config(config)
     try:
         post_webhook(
-            config=webhook_config,
+            config=webhook,
             payload=build_archive_restore_completed_payload(
-                config=webhook_config,
+                config=webhook,
                 restore_id=record.restore_id,
-                restore_type=_restore_type(record),
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
+                collections=_collection_payload(session, record),
                 delivered_at=current,
             ),
         )
     except Exception as exc:
-        record.completed_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.completed_notification_failure = _error_text(exc)
         record.completed_notification_next_attempt_at = _isoformat_z(
             current + config.operator_webhook_retry_delay
         )
         return
-
     record.completed_notification_sent_at = current_text
     record.completed_notification_next_attempt_at = None
     record.completed_notification_failure = None
 
 
-def _notify_restore_canceled(
+def _notify_canceled(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
     config: RuntimeConfig,
     current: datetime,
@@ -2765,164 +1265,96 @@ def _notify_restore_canceled(
         record.canceled_notification_next_attempt_at = None
         record.canceled_notification_failure = None
         return
-    if (
-        record.canceled_notification_sent_at is not None
-        and record.canceled_notification_next_attempt_at is None
-    ):
+    if record.canceled_notification_sent_at is not None:
         return
     if (
         record.canceled_notification_next_attempt_at is not None
         and record.canceled_notification_next_attempt_at > current_text
     ):
         return
-
-    webhook_config = _webhook_config(config)
+    webhook = _webhook_config(config)
     try:
         post_webhook(
-            config=webhook_config,
+            config=webhook,
             payload=build_archive_restore_canceled_payload(
-                config=webhook_config,
+                config=webhook,
                 restore_id=record.restore_id,
-                restore_type=_restore_type(record),
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
+                collections=_collection_payload(session, record),
                 delivered_at=current,
             ),
         )
     except Exception as exc:
-        record.canceled_notification_failure = str(exc).strip() or exc.__class__.__name__
+        record.canceled_notification_failure = _error_text(exc)
         record.canceled_notification_next_attempt_at = _isoformat_z(
             current + config.operator_webhook_retry_delay
         )
         return
-
     record.canceled_notification_sent_at = current_text
     record.canceled_notification_next_attempt_at = None
     record.canceled_notification_failure = None
 
 
-def _notify_restore_paused_reminder(
+def _notify_failure(
     session: Session,
-    *,
     record: ArchiveRestoreRecord,
     config: RuntimeConfig,
     current: datetime,
-) -> None:
-    current_text = _isoformat_z(current)
-    if not config.operator_webhook_url:
-        record.next_reminder_at = None
-        return
-    if record.next_reminder_at is not None and record.next_reminder_at > current_text:
-        return
-    webhook_config = _webhook_config(config)
-    try:
-        post_webhook(
-            config=webhook_config,
-            payload=build_archive_restore_paused_reminder_payload(
-                config=webhook_config,
-                restore_id=record.restore_id,
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
-                delivered_at=current,
-                reminder_count=record.reminder_count,
-                reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
-            ),
-        )
-    except Exception as exc:
-        record.latest_message = (
-            "Paused rebuild reminder failed and will retry: "
-            f"{str(exc).strip() or exc.__class__.__name__}"
-        )
-        record.next_reminder_at = _isoformat_z(current + config.operator_webhook_retry_delay)
-        return
-    record.last_notified_at = current_text
-    record.reminder_count += 1
-    next_reminder = config.operator_webhook_next_reminder_at(current)
-    record.next_reminder_at = _isoformat_z(next_reminder) if next_reminder is not None else None
-
-
-def _notify_restore_failure(
-    session: Session,
     *,
-    record: ArchiveRestoreRecord,
-    config: RuntimeConfig,
-    current: datetime,
     retryable: bool,
     error: str,
     next_retry_at: str | None,
 ) -> None:
     if not config.operator_webhook_url:
         return
-    webhook_config = _webhook_config(config)
+    webhook = _webhook_config(config)
+    collections = _collection_payload(session, record)
+    attempts = int(record.failure_count or 0)
+    failed_at = record.last_failure_at or _isoformat_z(current)
     try:
-        if retryable:
-            payload = build_archive_restore_retrying_payload(
-                config=webhook_config,
+        payload = (
+            build_archive_restore_retrying_payload(
+                config=webhook,
                 restore_id=record.restore_id,
-                restore_type=_restore_type(record),
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
+                collections=collections,
                 delivered_at=current,
-                attempts=int(record.failure_count or 0),
-                failed_at=record.last_failure_at or _isoformat_z(current),
+                attempts=attempts,
+                failed_at=failed_at,
                 next_retry_at=next_retry_at,
                 retry_delay_seconds=config.archive_restore_sweep_interval.total_seconds(),
                 error=error,
             )
-        else:
-            payload = build_archive_restore_failed_payload(
-                config=webhook_config,
+            if retryable
+            else build_archive_restore_failed_payload(
+                config=webhook,
                 restore_id=record.restore_id,
-                restore_type=_restore_type(record),
-                images=_restore_image_payload(session, record),
-                collections=_restore_collection_payload(session, record),
+                collections=collections,
                 delivered_at=current,
-                attempts=int(record.failure_count or 0),
-                failed_at=record.last_failure_at or _isoformat_z(current),
+                attempts=attempts,
+                failed_at=failed_at,
                 error=error,
             )
-        post_webhook(config=webhook_config, payload=payload)
+        )
+        post_webhook(config=webhook, payload=payload)
     except Exception:
         _LOG.warning(
-            "failed to deliver recovery failure webhook: session=%s retryable=%s",
+            "failed to deliver archive restore failure webhook: restore=%s retryable=%s",
             record.restore_id,
             retryable,
             exc_info=True,
         )
 
 
-def _restore_type(record: ArchiveRestoreRecord) -> str:
-    return record.type or "disc_rebuild"
-
-
-def _restore_image_payload(
-    session: Session,
-    record: ArchiveRestoreRecord,
+def _collection_payload(
+    session: Session, record: ArchiveRestoreRecord
 ) -> list[dict[str, str]]:
-    rows = session.scalars(
-        select(ArchiveRestoreImageRecord).where(
-            ArchiveRestoreImageRecord.restore_id == record.restore_id
-        )
-    ).all()
     return [
-        {
-            "image_id": row.image_id,
-            "filename": _require_image(session, row.image_id).filename,
-        }
-        for row in rows
+        {"collection_id": row.collection_id}
+        for row in session.scalars(
+            select(ArchiveRestoreCollectionRecord).where(
+                ArchiveRestoreCollectionRecord.restore_id == record.restore_id
+            )
+        ).all()
     ]
-
-
-def _restore_collection_payload(
-    session: Session,
-    record: ArchiveRestoreRecord,
-) -> list[dict[str, str]]:
-    rows = session.scalars(
-        select(ArchiveRestoreCollectionRecord).where(
-            ArchiveRestoreCollectionRecord.restore_id == record.restore_id
-        )
-    ).all()
-    return [{"collection_id": row.collection_id} for row in rows]
 
 
 def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
@@ -2937,29 +1369,15 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
     )
 
 
-def _generated_archive_restore_id(image_id: str, *, existing_ids: Sequence[str]) -> str:
-    existing = set(existing_ids)
-    ordinal = 1
-    while True:
-        candidate = f"ar-{image_id}-rebuild-{ordinal}"
-        ordinal += 1
-        if candidate not in existing:
-            return candidate
-
-
-def _generated_fetch_materialization_restore_id(
-    collection_id: str,
-    *,
-    existing_ids: Sequence[str],
-) -> str:
+def _generated_restore_id(collection_id: str, *, existing_ids: Sequence[str]) -> str:
     existing = set(existing_ids)
     safe_collection_id = collection_id.replace("/", "-")
     ordinal = 1
     while True:
-        candidate = f"ar-{safe_collection_id}-restore-{ordinal}"
-        ordinal += 1
+        candidate = f"ar-{safe_collection_id}-{ordinal}"
         if candidate not in existing:
             return candidate
+        ordinal += 1
 
 
 def _restore_hold_days(config: RuntimeConfig) -> int:
@@ -2980,24 +1398,15 @@ def _format_timedelta(value: timedelta) -> str:
     return "".join(parts)
 
 
-def _error_text(exc: Exception) -> str:
-    detail = str(exc).strip()
-    return detail or exc.__class__.__name__
-
-
-def _archive_restore_failure_is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (InvalidState, NotFound, ValueError)):
-        return False
-    return True
+def _failure_is_retryable(exc: Exception) -> bool:
+    return not isinstance(exc, (InvalidState, NotFound, ValueError))
 
 
 def _failed_progress_state(value: str | None) -> str:
-    if value == "completed":
-        return "completed"
-    return "failed"
+    return "completed" if value == "completed" else "failed"
 
 
-def _operator_failure_notification_due(
+def _failure_notification_due(
     last_notified_at: str | None,
     *,
     current: datetime,
@@ -3018,15 +1427,19 @@ def _operator_failure_notification_due(
     )
 
 
+def _error_text(exc: Exception) -> str:
+    return str(exc).strip() or exc.__class__.__name__
+
+
 def _isoformat_z(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _max_timestamp(values: Iterable[str]) -> str | None:
-    value_list = list(values)
-    return max(value_list) if value_list else None
+    items = list(values)
+    return max(items) if items else None
 
 
 def _min_timestamp(values: Iterable[str]) -> str | None:
-    value_list = list(values)
-    return min(value_list) if value_list else None
+    items = list(values)
+    return min(items) if items else None

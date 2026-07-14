@@ -3,40 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord, FileDiscRecord
+from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
 from tests.unit.db_helpers import sqlite_url
 
 
-def _config(sqlite_path: Path) -> RuntimeConfig:
-    return RuntimeConfig(
-        object_store="s3",
-        s3_endpoint_url="http://example.invalid:9000",
-        s3_region="us-east-1",
-        s3_bucket="riverhog",
-        s3_access_key_id="test-access",
-        s3_secret_access_key="test-secret",
-        s3_force_path_style=True,
-        tusd_base_url="http://example.invalid:1080/files",
-        tusd_hook_secret="hook-secret",
-        database_url=sqlite_url(sqlite_path),
-    )
-
-
-def _seed_docs_collection(sqlite_path: Path) -> None:
-    session_factory = make_session_factory(sqlite_url(sqlite_path))
-    with session_scope(session_factory) as session:
+def _seed(path: Path) -> None:
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
         session.add(CollectionRecord(id="docs"))
         session.add_all(
             [
-                CollectionFileRecord(
-                    collection_id="docs",
-                    path="tax/2022/receipt-456.pdf",
-                    bytes=21,
-                    sha256="b" * 64,
-                    hot=True,
-                ),
                 CollectionFileRecord(
                     collection_id="docs",
                     path="letters/cover.txt",
@@ -46,34 +24,28 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
-                    path="tax/2022/invoice-123.pdf",
+                    path="tax/invoice.pdf",
                     bytes=34,
-                    sha256="c" * 64,
+                    sha256="b" * 64,
                     hot=False,
                 ),
+                CollectionFileRecord(
+                    collection_id="docs",
+                    path="tax/receipt.pdf",
+                    bytes=21,
+                    sha256="c" * 64,
+                    hot=True,
+                ),
             ]
-        )
-        session.add(
-            FileDiscRecord(
-                collection_id="docs",
-                path="tax/2022/invoice-123.pdf",
-                disc_id="disc-1",
-                image_id="image-1",
-                location="shelf-1",
-                disc_path="docs/tax/2022/invoice-123.pdf.age",
-                enc_json="{}",
-            )
         )
 
 
 def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(sqlite_url(sqlite_path))
-    _seed_docs_collection(sqlite_path)
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
 
-    service = SqlAlchemySearchService(_config(sqlite_path))
-
-    payload = service.search(
+    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
         q="tax",
         collection="docs",
         page=2,
@@ -82,41 +54,42 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
         order="asc",
     )
 
-    assert payload["query"] == "tax"
-    assert payload["collection"] == "docs"
-    assert payload["page"] == 2
-    assert payload["per_page"] == 1
-    assert payload["total"] == 2
-    assert payload["pages"] == 2
-    assert payload["files"] == [
-        {
-            "target": "docs/tax/2022/receipt-456.pdf",
-            "collection": "docs",
-            "path": "tax/2022/receipt-456.pdf",
-            "bytes": 21,
-            "sha256": "b" * 64,
-            "hot": True,
-            "disc_coverage": False,
-        }
-    ]
+    assert payload == {
+        "query": "tax",
+        "collection": "docs",
+        "hot": None,
+        "page": 2,
+        "per_page": 1,
+        "total": 2,
+        "pages": 2,
+        "sort": "path",
+        "order": "asc",
+        "files": [
+            {
+                "target": "docs/tax/receipt.pdf",
+                "collection": "docs",
+                "path": "tax/receipt.pdf",
+                "bytes": 21,
+                "sha256": "c" * 64,
+                "hot": True,
+            }
+        ],
+    }
 
 
-def test_search_files_filters_disc_coverage(tmp_path: Path) -> None:
-    sqlite_path = tmp_path / "state.sqlite3"
-    initialize_db(sqlite_url(sqlite_path))
-    _seed_docs_collection(sqlite_path)
+def test_search_files_filters_hot_state(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
 
-    service = SqlAlchemySearchService(_config(sqlite_path))
-
-    payload = service.search(
+    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
         q=None,
         collection="docs",
-        disc_coverage=True,
+        hot=False,
         page=1,
         per_page=25,
         sort="target",
         order="asc",
     )
 
-    assert payload["disc_coverage"] is True
-    assert [file["target"] for file in payload["files"]] == ["docs/tax/2022/invoice-123.pdf"]
+    assert [file["target"] for file in payload["files"]] == ["docs/tax/invoice.pdf"]

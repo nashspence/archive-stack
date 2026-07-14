@@ -4,13 +4,11 @@ import hashlib
 import json
 import logging
 import re
-from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict
 
-from sqlalchemy import Integer, and_, case, cast, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -18,41 +16,19 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
-    CollectionImageOperatorSummaryRecord,
-    CollectionOperatorSummaryRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
-    FinalizedImageCoveragePartRecord,
-    FinalizedImageCoveredPathRecord,
-    FinalizedImageRecord,
-    ImageDiscRecord,
-    ImageOperatorSummaryRecord,
 )
-from riverhog_core.domain.enums import CoverageState
+from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, NotFound
 from riverhog_core.domain.models import (
     ArchiveStatus,
-    CollectionCoverageImage,
     CollectionListPage,
     CollectionManifestStatus,
     CollectionSummary,
-    Coverage,
-    DiscSummary,
 )
-from riverhog_core.domain.types import CollectionId, DiscId, ImageId, Sha256Hex
-from riverhog_core.durability import (
-    DEFAULT_REQUIRED_DISCS,
-    coverage_state,
-    disc_counts_as_verified,
-    disc_counts_toward_redundancy,
-    disc_redundancy_state,
-    normalize_archive_state,
-    normalize_disc_state,
-    normalize_required_disc_count,
-    normalize_verification_state,
-    registered_disc_shortfall,
-)
+from riverhog_core.domain.types import CollectionId, Sha256Hex
 from riverhog_core.fs_paths import (
     PathNormalizationError,
     find_collection_id_conflict,
@@ -88,33 +64,7 @@ _COLLECTION_SORT_FIELDS = {
     "bytes",
     "files",
     "hot_bytes",
-    "disc_coverage",
-    "disc_redundancy",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class _RecoveryParts:
-    part_count: int
-    present_parts: frozenset[int]
-
-
-@dataclass(slots=True)
-class _CollectionListStats:
-    files: int = 0
-    bytes: int = 0
-    hot_bytes: int = 0
-    disc_redundancy_bytes: int = 0
-    disc_coverage_bytes: int = 0
-    has_registered_image: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _CollectionFileSummaryRow:
-    collection_id: str
-    path: str
-    bytes: int
-    hot: bool
 
 
 class _UploadManifestEntry(TypedDict):
@@ -214,11 +164,6 @@ class SqlAlchemyCollectionService:
                 )
                 _ensure_collection_id_unused(session, normalized_collection_id)
                 _ensure_collection_upload_conflict_free(session, normalized_collection_id)
-                _ensure_unburned_collection_limit_allows(
-                    session,
-                    incoming_bytes=sum(item["bytes"] for item in normalized_files),
-                    limit_bytes=self._config.unburned_collection_bytes_limit,
-                )
                 upload = CollectionUploadRecord(
                     collection_id=normalized_collection_id,
                     ingest_source=ingest_source,
@@ -344,11 +289,6 @@ class SqlAlchemyCollectionService:
             )
             _ensure_collection_id_unused(session, normalized_collection_id)
             _ensure_collection_upload_conflict_free(session, normalized_collection_id)
-            _ensure_unburned_collection_limit_allows(
-                session,
-                incoming_bytes=0,
-                limit_bytes=self._config.unburned_collection_bytes_limit,
-            )
             now = _utc_now()
             upload = CollectionUploadRecord(
                 collection_id=normalized_collection_id,
@@ -489,11 +429,6 @@ class SqlAlchemyCollectionService:
                 )
             return upload, existing
 
-        _ensure_active_upload_limit_allows(
-            session,
-            incoming_bytes=int(normalized_file["bytes"]),
-            limit_bytes=self._config.unburned_collection_bytes_limit,
-        )
         file_order = (
             session.scalar(
                 select(func.max(CollectionUploadFileRecord.file_order)).where(
@@ -882,32 +817,24 @@ class SqlAlchemyCollectionService:
                     session_idle_ttl=self._upload_session_idle_ttl,
                 )
 
-    def get(
-        self,
-        collection_id: str,
-        *,
-        coverage_path_limit: int = 100,
-    ) -> CollectionSummary:
+    def get(self, collection_id: str) -> CollectionSummary:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
-        if coverage_path_limit < 0:
-            raise BadRequest("coverage_path_limit must be at least 0")
 
         with session_scope(self._session_factory) as session:
-            row = session.get(CollectionOperatorSummaryRecord, normalized_collection_id)
-            if row is None:
-                collection = session.get(CollectionRecord, normalized_collection_id)
-                if collection is None:
-                    raise NotFound(f"collection not found: {normalized_collection_id}")
-                raise Conflict(
-                    f"collection operator summary projection is missing: {normalized_collection_id}"
+            collection = session.scalar(
+                select(CollectionRecord)
+                .options(
+                    selectinload(CollectionRecord.files),
+                    selectinload(CollectionRecord.archive),
                 )
-            return replace(
-                _summary_from_operator_projection(row),
-                image_coverage=_bounded_collection_image_coverage(
-                    session,
-                    normalized_collection_id,
-                    path_limit=coverage_path_limit,
-                ),
+                .where(CollectionRecord.id == normalized_collection_id)
+            )
+            if collection is None:
+                raise NotFound(f"collection not found: {normalized_collection_id}")
+            return _summary_from_records(
+                collection.id,
+                collection.files,
+                archive=collection.archive,
             )
 
     def list(
@@ -916,7 +843,6 @@ class SqlAlchemyCollectionService:
         page: int,
         per_page: int,
         q: str | None,
-        disc_redundancy_state: str | None,
         sort: str = "id",
         order: str = "asc",
     ) -> CollectionListPage:
@@ -928,543 +854,76 @@ class SqlAlchemyCollectionService:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_COLLECTION_SORT_FIELDS))}")
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
-        if disc_redundancy_state is not None and disc_redundancy_state not in {
-            "none",
-            "partial",
-            "full",
-        }:
-            raise BadRequest(f"unsupported disc_redundancy_state filter: {disc_redundancy_state}")
-
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
             filters: list[ColumnElement[bool]] = []
             if needle is not None:
-                filters.append(
-                    func.lower(CollectionOperatorSummaryRecord.collection_id).like(f"%{needle}%")
-                )
-            if disc_redundancy_state is not None:
-                filters.append(
-                    CollectionOperatorSummaryRecord.disc_redundancy_state == disc_redundancy_state
-                )
-
+                filters.append(func.lower(CollectionRecord.id).like(f"%{needle}%"))
             total = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionOperatorSummaryRecord)
-                    .where(*filters)
-                )
+                session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
                 or 0
             )
             pages = (total + per_page - 1) // per_page if total else 0
             start = (page - 1) * per_page
+            file_stats = (
+                select(
+                    CollectionFileRecord.collection_id.label("collection_id"),
+                    func.count(CollectionFileRecord.path).label("files"),
+                    func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
+                    func.coalesce(
+                        func.sum(CollectionFileRecord.bytes).filter(
+                            CollectionFileRecord.hot.is_(True)
+                        ),
+                        0,
+                    ).label("hot_bytes"),
+                )
+                .group_by(CollectionFileRecord.collection_id)
+                .subquery()
+            )
             sort_columns = {
-                "id": CollectionOperatorSummaryRecord.collection_id,
-                "bytes": CollectionOperatorSummaryRecord.bytes,
-                "files": CollectionOperatorSummaryRecord.files,
-                "hot_bytes": CollectionOperatorSummaryRecord.hot_bytes,
-                "disc_coverage": CollectionOperatorSummaryRecord.disc_coverage_bytes,
-                "disc_redundancy": CollectionOperatorSummaryRecord.disc_redundancy_bytes,
+                "id": CollectionRecord.id,
+                "bytes": func.coalesce(file_stats.c.bytes, 0),
+                "files": func.coalesce(file_stats.c.files, 0),
+                "hot_bytes": func.coalesce(file_stats.c.hot_bytes, 0),
             }
             sort_column = sort_columns[sort]
             order_by = sort_column.desc() if order == "desc" else sort_column.asc()
-            rows = session.scalars(
-                select(CollectionOperatorSummaryRecord)
-                .where(*filters)
-                .order_by(order_by, CollectionOperatorSummaryRecord.collection_id.asc())
-                .offset(start)
-                .limit(per_page)
-            ).all()
+            collection_ids = list(
+                session.scalars(
+                    select(CollectionRecord.id)
+                    .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
+                    .where(*filters)
+                    .order_by(order_by, CollectionRecord.id.asc())
+                    .offset(start)
+                    .limit(per_page)
+                )
+            )
+            collections_by_id = {
+                collection.id: collection
+                for collection in session.scalars(
+                    select(CollectionRecord)
+                    .options(
+                        selectinload(CollectionRecord.files),
+                        selectinload(CollectionRecord.archive),
+                    )
+                    .where(CollectionRecord.id.in_(collection_ids))
+                ).all()
+            }
 
             return CollectionListPage(
                 page=page,
                 per_page=per_page,
                 total=total,
                 pages=pages,
-                collections=[_summary_from_operator_projection(row) for row in rows],
-            )
-
-
-def _summary_from_operator_projection(row: CollectionOperatorSummaryRecord) -> CollectionSummary:
-    bytes_total = int(row.bytes or 0)
-    disc_redundancy_bytes = int(row.disc_redundancy_bytes or 0)
-    disc_coverage_bytes = int(row.disc_coverage_bytes or 0)
-    archive_state = normalize_archive_state(row.archive_state)
-    disc_coverage_state = coverage_state(
-        covered_bytes=disc_coverage_bytes,
-        total_bytes=bytes_total,
-    )
-
-    collection_manifest = None
-    if row.has_archive:
-        ots_state = "uploaded" if row.ots_object_path else "pending"
-        if row.archive_state == "failed":
-            ots_state = "failed"
-        collection_manifest = CollectionManifestStatus(
-            object_path=row.manifest_object_path,
-            sha256=row.manifest_sha256,
-            ots_object_path=row.ots_object_path,
-            ots_state=ots_state,
-            ots_sha256=row.ots_sha256,
-        )
-
-    return CollectionSummary(
-        id=CollectionId(row.collection_id),
-        files=int(row.files or 0),
-        bytes=bytes_total,
-        hot_bytes=int(row.hot_bytes or 0),
-        disc_coverage=Coverage(state=disc_coverage_state, bytes=disc_coverage_bytes),
-        disc_redundancy=Coverage(
-            state=CoverageState(row.disc_redundancy_state or "none"),
-            bytes=disc_redundancy_bytes,
-        ),
-        image_coverage=[],
-        archive=ArchiveStatus(
-            state=archive_state,
-            object_path=row.archive_object_path,
-            stored_bytes=row.archive_stored_bytes,
-            backend=row.archive_backend,
-            storage_class=row.archive_storage_class,
-            last_uploaded_at=row.archive_last_uploaded_at,
-            last_verified_at=row.archive_last_verified_at,
-            failure=row.archive_failure,
-        ),
-        collection_manifest=collection_manifest,
-        archive_format=row.archive_format,
-        compression=row.compression,
-    )
-
-
-def _bounded_collection_image_coverage(
-    session: Session,
-    collection_id: str,
-    *,
-    path_limit: int,
-) -> list[CollectionCoverageImage]:
-    rows = session.execute(
-        select(CollectionImageOperatorSummaryRecord, ImageOperatorSummaryRecord)
-        .join(
-            ImageOperatorSummaryRecord,
-            ImageOperatorSummaryRecord.image_id == CollectionImageOperatorSummaryRecord.image_id,
-        )
-        .where(CollectionImageOperatorSummaryRecord.collection_id == collection_id)
-        .order_by(CollectionImageOperatorSummaryRecord.image_id.asc())
-    ).all()
-    image_ids = [image_row.image_id for _, image_row in rows]
-    if not image_ids:
-        return []
-
-    paths_by_image: dict[str, list[str]] = {image_id: [] for image_id in image_ids}
-    if path_limit > 0:
-        for image_id in image_ids:
-            path_rows = session.scalars(
-                select(FinalizedImageCoveredPathRecord.path)
-                .where(FinalizedImageCoveredPathRecord.image_id == image_id)
-                .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
-                .order_by(FinalizedImageCoveredPathRecord.path.asc())
-                .limit(path_limit)
-            ).all()
-            paths_by_image[image_id] = list(path_rows)
-
-    disc_rows = session.execute(
-        select(
-            ImageDiscRecord.image_id,
-            ImageDiscRecord.disc_id,
-            ImageDiscRecord.label_text,
-            ImageDiscRecord.location,
-            ImageDiscRecord.created_at,
-            ImageDiscRecord.state,
-            ImageDiscRecord.verification_state,
-        )
-        .where(ImageDiscRecord.image_id.in_(image_ids))
-        .order_by(ImageDiscRecord.image_id.asc(), ImageDiscRecord.disc_id.asc())
-    ).all()
-    discs_by_image: dict[str, list[DiscSummary]] = {image_id: [] for image_id in image_ids}
-    for disc in disc_rows:
-        discs_by_image.setdefault(disc.image_id, []).append(
-            DiscSummary(
-                disc_id=DiscId(disc.disc_id),
-                image_id=disc.image_id,
-                label_text=disc.label_text or disc.disc_id,
-                location=disc.location,
-                created_at=disc.created_at,
-                state=normalize_disc_state(disc.state),
-                verification_state=normalize_verification_state(disc.verification_state),
-            )
-        )
-
-    return [
-        CollectionCoverageImage(
-            id=ImageId(image_row.image_id),
-            filename=image_row.filename,
-            disc_redundancy_state=CoverageState(image_row.disc_redundancy_state or "none"),
-            discs_required=int(image_row.discs_required or 0),
-            discs_registered=int(image_row.discs_registered or 0),
-            discs_verified=int(image_row.discs_verified or 0),
-            discs_missing=int(image_row.discs_missing or 0),
-            covered_paths=paths_by_image.get(image_row.image_id, []),
-            discs=discs_by_image.get(image_row.image_id, []),
-            covered_paths_total=int(collection_image_row.covered_paths_total or 0),
-        )
-        for collection_image_row, image_row in rows
-    ]
-
-
-def _collection_list_summaries(
-    session: Session,
-    collection_ids: Sequence[str],
-) -> list[CollectionSummary]:
-    if not collection_ids:
-        return []
-
-    stats_by_collection = {
-        collection_id: _CollectionListStats() for collection_id in collection_ids
-    }
-
-    file_stat_rows = session.execute(
-        select(
-            CollectionFileRecord.collection_id,
-            func.count(CollectionFileRecord.path).label("files"),
-            func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
-                        else_=0,
+                collections=[
+                    _summary_from_records(
+                        collections_by_id[collection_id].id,
+                        collections_by_id[collection_id].files,
+                        archive=collections_by_id[collection_id].archive,
                     )
-                ),
-                0,
-            ).label("hot_bytes"),
-        )
-        .where(CollectionFileRecord.collection_id.in_(collection_ids))
-        .group_by(CollectionFileRecord.collection_id)
-    ).all()
-    for row in file_stat_rows:
-        stats = stats_by_collection[row.collection_id]
-        stats.files = int(row.files or 0)
-        stats.bytes = int(row.bytes or 0)
-        stats.hot_bytes = int(row.hot_bytes or 0)
-
-    archive_rows = session.scalars(
-        select(CollectionArchiveRecord).where(
-            CollectionArchiveRecord.collection_id.in_(collection_ids)
-        )
-    ).all()
-    archives_by_collection = {archive.collection_id: archive for archive in archive_rows}
-
-    registered_disc_count = func.coalesce(
-        func.sum(
-            case(
-                (ImageDiscRecord.state.in_(("registered", "verified")), 1),
-                (ImageDiscRecord.state.is_(None), 1),
-                else_=0,
+                    for collection_id in collection_ids
+                ],
             )
-        ),
-        0,
-    )
-    registered_counts = (
-        select(
-            ImageDiscRecord.image_id.label("image_id"),
-            registered_disc_count.label("registered_count"),
-        )
-        .group_by(ImageDiscRecord.image_id)
-        .subquery()
-    )
-    required_disc_count = case(
-        (
-            FinalizedImageRecord.required_disc_count.is_(None),
-            DEFAULT_REQUIRED_DISCS,
-        ),
-        (
-            FinalizedImageRecord.required_disc_count <= 0,
-            DEFAULT_REQUIRED_DISCS,
-        ),
-        else_=FinalizedImageRecord.required_disc_count,
-    )
-    image_states = (
-        select(
-            FinalizedImageRecord.image_id.label("image_id"),
-            case(
-                (
-                    func.coalesce(registered_counts.c.registered_count, 0) >= required_disc_count,
-                    1,
-                ),
-                else_=0,
-            ).label("is_redundant"),
-            case(
-                (
-                    func.coalesce(registered_counts.c.registered_count, 0) > 0,
-                    1,
-                ),
-                else_=0,
-            ).label("has_registered"),
-        )
-        .outerjoin(
-            registered_counts,
-            registered_counts.c.image_id == FinalizedImageRecord.image_id,
-        )
-        .subquery()
-    )
-
-    path_redundancy = (
-        select(
-            FinalizedImageCoveredPathRecord.collection_id,
-            FinalizedImageCoveredPathRecord.path,
-            func.min(image_states.c.is_redundant).label("all_redundant"),
-            func.max(image_states.c.has_registered).label("has_registered"),
-        )
-        .join(
-            image_states,
-            image_states.c.image_id == FinalizedImageCoveredPathRecord.image_id,
-        )
-        .where(FinalizedImageCoveredPathRecord.collection_id.in_(collection_ids))
-        .group_by(
-            FinalizedImageCoveredPathRecord.collection_id,
-            FinalizedImageCoveredPathRecord.path,
-        )
-        .subquery()
-    )
-    redundancy_rows = session.execute(
-        select(
-            CollectionFileRecord.collection_id,
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            path_redundancy.c.all_redundant == 1,
-                            CollectionFileRecord.bytes,
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("disc_redundancy_bytes"),
-            func.coalesce(func.max(path_redundancy.c.has_registered), 0).label(
-                "has_registered_image"
-            ),
-        )
-        .outerjoin(
-            path_redundancy,
-            and_(
-                path_redundancy.c.collection_id == CollectionFileRecord.collection_id,
-                path_redundancy.c.path == CollectionFileRecord.path,
-            ),
-        )
-        .where(CollectionFileRecord.collection_id.in_(collection_ids))
-        .group_by(CollectionFileRecord.collection_id)
-    ).all()
-    for row in redundancy_rows:
-        stats = stats_by_collection[row.collection_id]
-        stats.disc_redundancy_bytes = int(row.disc_redundancy_bytes or 0)
-        stats.has_registered_image = bool(row.has_registered_image)
-
-    path_part_stats = (
-        select(
-            FinalizedImageCoveragePartRecord.collection_id,
-            FinalizedImageCoveragePartRecord.path,
-            func.max(
-                case(
-                    (
-                        and_(
-                            FinalizedImageCoveragePartRecord.part_count == 1,
-                            FinalizedImageCoveragePartRecord.part_index == 0,
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("has_single_full_part"),
-            func.min(FinalizedImageCoveragePartRecord.part_count).label("min_part_count"),
-            func.max(FinalizedImageCoveragePartRecord.part_count).label("max_part_count"),
-            func.count(func.distinct(FinalizedImageCoveragePartRecord.part_index)).label(
-                "present_parts"
-            ),
-        )
-        .join(
-            image_states,
-            image_states.c.image_id == FinalizedImageCoveragePartRecord.image_id,
-        )
-        .where(FinalizedImageCoveragePartRecord.collection_id.in_(collection_ids))
-        .where(image_states.c.has_registered == 1)
-        .group_by(
-            FinalizedImageCoveragePartRecord.collection_id,
-            FinalizedImageCoveragePartRecord.path,
-        )
-        .subquery()
-    )
-    partial_disc_coverage_bytes_expr = cast(
-        (CollectionFileRecord.bytes * path_part_stats.c.present_parts)
-        / path_part_stats.c.min_part_count,
-        Integer,
-    )
-    bounded_partial_disc_coverage_bytes_expr = case(
-        (partial_disc_coverage_bytes_expr < 1, 1),
-        else_=partial_disc_coverage_bytes_expr,
-    )
-    bounded_partial_disc_coverage_bytes_expr = case(
-        (
-            bounded_partial_disc_coverage_bytes_expr > CollectionFileRecord.bytes,
-            CollectionFileRecord.bytes,
-        ),
-        else_=bounded_partial_disc_coverage_bytes_expr,
-    )
-    disc_coverage_bytes_expr = case(
-        (
-            path_part_stats.c.has_single_full_part == 1,
-            CollectionFileRecord.bytes,
-        ),
-        (
-            and_(
-                path_part_stats.c.min_part_count == path_part_stats.c.max_part_count,
-                path_part_stats.c.present_parts > 0,
-            ),
-            bounded_partial_disc_coverage_bytes_expr,
-        ),
-        else_=0,
-    )
-    disc_coverage_rows = session.execute(
-        select(
-            CollectionFileRecord.collection_id,
-            func.coalesce(func.sum(disc_coverage_bytes_expr), 0).label("disc_coverage_bytes"),
-        )
-        .outerjoin(
-            path_part_stats,
-            and_(
-                path_part_stats.c.collection_id == CollectionFileRecord.collection_id,
-                path_part_stats.c.path == CollectionFileRecord.path,
-            ),
-        )
-        .where(CollectionFileRecord.collection_id.in_(collection_ids))
-        .group_by(CollectionFileRecord.collection_id)
-    ).all()
-    for row in disc_coverage_rows:
-        stats_by_collection[row.collection_id].disc_coverage_bytes = int(
-            row.disc_coverage_bytes or 0
-        )
-
-    summaries: list[CollectionSummary] = []
-    for collection_id in collection_ids:
-        stats = stats_by_collection[collection_id]
-        bytes_total = stats.bytes
-        disc_redundancy_bytes = stats.disc_redundancy_bytes
-        disc_coverage_bytes = stats.disc_coverage_bytes
-
-        archive = archives_by_collection.get(collection_id)
-        disc_coverage_state = coverage_state(
-            covered_bytes=disc_coverage_bytes,
-            total_bytes=bytes_total,
-        )
-
-        summaries.append(
-            CollectionSummary(
-                id=CollectionId(collection_id),
-                files=stats.files,
-                bytes=bytes_total,
-                hot_bytes=stats.hot_bytes,
-                disc_coverage=Coverage(
-                    state=disc_coverage_state,
-                    bytes=disc_coverage_bytes,
-                ),
-                disc_redundancy=Coverage(
-                    state=coverage_state(
-                        total_bytes=bytes_total,
-                        covered_bytes=disc_redundancy_bytes,
-                    ),
-                    bytes=disc_redundancy_bytes,
-                ),
-                archive=_collection_archive_status(archive),
-                collection_manifest=_collection_manifest_status(archive),
-                archive_format=archive.archive_format if archive is not None else None,
-                compression=archive.compression if archive is not None else None,
-            )
-        )
-    return summaries
-
-
-def _collection_file_summary_rows(
-    session: Session,
-    collection_ids: Sequence[str],
-) -> list[_CollectionFileSummaryRow]:
-    if not collection_ids:
-        return []
-    rows = session.execute(
-        select(
-            CollectionFileRecord.collection_id,
-            CollectionFileRecord.path,
-            CollectionFileRecord.bytes,
-            CollectionFileRecord.hot,
-        )
-        .where(CollectionFileRecord.collection_id.in_(collection_ids))
-        .order_by(CollectionFileRecord.collection_id.asc(), CollectionFileRecord.path.asc())
-    ).all()
-    return [
-        _CollectionFileSummaryRow(
-            collection_id=row.collection_id,
-            path=row.path,
-            bytes=row.bytes,
-            hot=row.hot,
-        )
-        for row in rows
-    ]
-
-
-def _finalized_disc_redundancy_states(session: Session) -> dict[str, CoverageState]:
-    image_rows = session.execute(
-        select(FinalizedImageRecord.image_id, FinalizedImageRecord.required_disc_count)
-    ).all()
-    registered_counts: dict[str, int] = {row.image_id: 0 for row in image_rows}
-    disc_rows = session.execute(select(ImageDiscRecord.image_id, ImageDiscRecord.state)).all()
-    for disc in disc_rows:
-        if disc_counts_toward_redundancy(disc.state):
-            registered_counts[disc.image_id] = registered_counts.get(disc.image_id, 0) + 1
-    return {
-        row.image_id: disc_redundancy_state(
-            required_disc_count=normalize_required_disc_count(row.required_disc_count),
-            registered_disc_count=registered_counts.get(row.image_id, 0),
-        )
-        for row in image_rows
-    }
-
-
-def _finalized_image_registered_counts(session: Session) -> dict[str, int]:
-    image_ids = session.scalars(select(FinalizedImageRecord.image_id)).all()
-    registered_counts: dict[str, int] = {image_id: 0 for image_id in image_ids}
-    disc_rows = session.execute(select(ImageDiscRecord.image_id, ImageDiscRecord.state)).all()
-    for disc in disc_rows:
-        if disc_counts_toward_redundancy(disc.state):
-            registered_counts[disc.image_id] = registered_counts.get(disc.image_id, 0) + 1
-    return registered_counts
-
-
-def _path_recoverable_bytes_from_registered_images(
-    total_bytes: int,
-    path: str,
-    *,
-    image_ids: set[str],
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
-    registered_counts: dict[str, int],
-) -> int:
-    expected_part_count: int | None = None
-    present_parts: set[int] = set()
-    for image_id in image_ids:
-        if registered_counts.get(image_id, 0) <= 0:
-            continue
-        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
-        if recovery_parts is None:
-            continue
-        if recovery_parts.part_count == 1 and recovery_parts.present_parts == frozenset({0}):
-            return total_bytes
-        if expected_part_count is None:
-            expected_part_count = recovery_parts.part_count
-        elif expected_part_count != recovery_parts.part_count:
-            return 0
-        present_parts.update(recovery_parts.present_parts)
-
-    if expected_part_count is None or not present_parts:
-        return 0
-    return min(
-        total_bytes,
-        max(1, (total_bytes * len(present_parts)) // expected_part_count),
-    )
 
 
 def _normalize_collection_id_or_raise(raw: str) -> str:
@@ -1671,129 +1130,6 @@ def _ensure_collection_upload_conflict_free(session: Session, collection_id: str
     )
     if conflict is not None:
         raise Conflict(f"collection id conflicts with existing collection: {conflict}")
-
-
-def _ensure_unburned_collection_limit_allows(
-    session: Session,
-    *,
-    incoming_bytes: int,
-    limit_bytes: int,
-) -> None:
-    if limit_bytes <= 0:
-        return
-
-    current_bytes = _unburned_collection_bytes(session)
-    projected_bytes = current_bytes + incoming_bytes
-    if projected_bytes <= limit_bytes:
-        return
-
-    raise Conflict(
-        "unburned collection limit exceeded: "
-        f"{projected_bytes} bytes would exceed the configured {limit_bytes} byte limit; "
-        "finalize, burn, and register enough discs before uploading "
-        "new collections"
-    )
-
-
-def _ensure_active_upload_limit_allows(
-    session: Session,
-    *,
-    incoming_bytes: int,
-    limit_bytes: int,
-) -> None:
-    if limit_bytes <= 0:
-        return
-
-    current_bytes = _active_collection_upload_bytes(session)
-    projected_bytes = current_bytes + incoming_bytes
-    if projected_bytes <= limit_bytes:
-        return
-
-    raise Conflict(
-        "unburned collection limit exceeded: "
-        f"{projected_bytes} bytes would exceed the configured {limit_bytes} byte limit; "
-        "finalize, burn, and register enough discs before uploading "
-        "new collections"
-    )
-
-
-def _active_collection_upload_bytes(session: Session) -> int:
-    value = session.scalar(
-        select(func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0))
-        .join(
-            CollectionUploadRecord,
-            CollectionUploadRecord.collection_id == CollectionUploadFileRecord.collection_id,
-        )
-        .where(CollectionUploadRecord.state != "finalized")
-    )
-    return int(value or 0)
-
-
-def _unburned_collection_bytes(session: Session) -> int:
-    upload_bytes = _active_collection_upload_bytes(session)
-    nonredundant_bytes = _committed_nonredundant_collection_bytes(session)
-    return upload_bytes + nonredundant_bytes
-
-
-def _committed_nonredundant_collection_bytes(session: Session) -> int:
-    file_rows = session.execute(
-        select(
-            CollectionFileRecord.collection_id,
-            CollectionFileRecord.path,
-            CollectionFileRecord.bytes,
-        )
-    ).all()
-    if not file_rows:
-        return 0
-
-    coverage_rows = session.execute(
-        select(
-            FinalizedImageCoveredPathRecord.collection_id,
-            FinalizedImageCoveredPathRecord.path,
-            FinalizedImageCoveredPathRecord.image_id,
-        )
-    ).all()
-    if not coverage_rows:
-        return int(sum(row.bytes for row in file_rows))
-
-    image_ids = sorted({row.image_id for row in coverage_rows})
-    image_rows = session.execute(
-        select(
-            FinalizedImageRecord.image_id,
-            FinalizedImageRecord.required_disc_count,
-        ).where(FinalizedImageRecord.image_id.in_(image_ids))
-    ).all()
-    disc_rows = session.execute(
-        select(
-            ImageDiscRecord.image_id,
-            ImageDiscRecord.state,
-        ).where(ImageDiscRecord.image_id.in_(image_ids))
-    ).all()
-
-    registered_disc_counts: dict[str, int] = defaultdict(int)
-    for disc_row in disc_rows:
-        if disc_counts_toward_redundancy(disc_row.state):
-            registered_disc_counts[disc_row.image_id] += 1
-
-    image_states = {
-        image_row.image_id: disc_redundancy_state(
-            required_disc_count=normalize_required_disc_count(image_row.required_disc_count),
-            registered_disc_count=registered_disc_counts.get(image_row.image_id, 0),
-        )
-        for image_row in image_rows
-    }
-    coverage_by_file: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for coverage_row in coverage_rows:
-        coverage_by_file[(coverage_row.collection_id, coverage_row.path)].add(coverage_row.image_id)
-
-    nonredundant_bytes = 0
-    for file_row in file_rows:
-        covered_image_ids = coverage_by_file.get((file_row.collection_id, file_row.path), set())
-        if covered_image_ids and all(image_id in image_states for image_id in covered_image_ids):
-            if all(image_states[image_id].value == "full" for image_id in covered_image_ids):
-                continue
-        nonredundant_bytes += file_row.bytes
-    return int(nonredundant_bytes)
 
 
 def _validate_existing_upload_manifest(
@@ -2140,18 +1476,10 @@ def _finalized_collection_upload_payload(
     session: Session,
     collection: CollectionRecord,
 ) -> dict[str, object]:
-    (
-        image_coverage,
-        covered_paths,
-        recovery_parts_by_image_path,
-    ) = _collection_image_coverage(session, collection.id)
     summary = _summary_from_records(
         collection.id,
         collection.files,
         archive=collection.archive,
-        image_coverage=image_coverage,
-        covered_paths=covered_paths,
-        recovery_parts_by_image_path=recovery_parts_by_image_path,
     )
     files = sorted(collection.files, key=lambda current: current.path)
     bytes_total = sum(file_record.bytes for file_record in files)
@@ -2314,49 +1642,6 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
         "collection_manifest": _collection_manifest_payload(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
-        "disc_coverage": {
-            "state": summary.disc_coverage.state.value,
-            "bytes": summary.disc_coverage.bytes,
-        },
-        "disc_redundancy": {
-            "state": summary.disc_redundancy.state.value,
-            "bytes": summary.disc_redundancy.bytes,
-        },
-        "image_coverage": [
-            {
-                "id": str(image.id),
-                "filename": image.filename,
-                "disc_redundancy_state": image.disc_redundancy_state.value,
-                "discs_required": image.discs_required,
-                "discs_registered": image.discs_registered,
-                "discs_verified": image.discs_verified,
-                "discs_missing": image.discs_missing,
-                "covered_paths": list(image.covered_paths),
-                "discs": [
-                    {
-                        "disc_id": str(disc.disc_id),
-                        "image_id": disc.image_id,
-                        "label_text": disc.label_text,
-                        "location": disc.location,
-                        "created_at": disc.created_at,
-                        "state": disc.state.value,
-                        "verification_state": disc.verification_state.value,
-                        "history": [
-                            {
-                                "at": entry.at,
-                                "event": entry.event,
-                                "state": entry.state.value,
-                                "verification_state": entry.verification_state.value,
-                                "location": entry.location,
-                            }
-                            for entry in disc.history
-                        ],
-                    }
-                    for disc in image.discs
-                ],
-            }
-            for image in summary.image_coverage
-        ],
     }
 
 
@@ -2433,33 +1718,13 @@ def _summary_from_records(
     file_records: Sequence[_CollectionFileLike],
     *,
     archive: CollectionArchiveRecord | None = None,
-    image_coverage: Sequence[CollectionCoverageImage] = (),
-    covered_paths: dict[str, set[str]] | None = None,
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] | None = None,
 ) -> CollectionSummary:
     bytes_total = sum(record.bytes for record in file_records)
-    disc_redundancy_bytes = _disc_redundancy_bytes(
-        file_records,
-        image_coverage=image_coverage,
-        covered_paths=covered_paths or {},
-    )
-    disc_coverage = _collection_disc_coverage(
-        file_records,
-        image_coverage=image_coverage,
-        covered_paths=covered_paths or {},
-        recovery_parts_by_image_path=recovery_parts_by_image_path or {},
-    )
     return CollectionSummary(
         id=CollectionId(collection_id),
         files=len(file_records),
         bytes=bytes_total,
         hot_bytes=sum(record.bytes for record in file_records if record.hot),
-        disc_coverage=disc_coverage,
-        disc_redundancy=Coverage(
-            state=coverage_state(total_bytes=bytes_total, covered_bytes=disc_redundancy_bytes),
-            bytes=disc_redundancy_bytes,
-        ),
-        image_coverage=list(image_coverage),
         archive=_collection_archive_status(archive),
         collection_manifest=_collection_manifest_status(archive),
         archive_format=archive.archive_format if archive is not None else None,
@@ -2471,7 +1736,7 @@ def _collection_archive_status(archive: CollectionArchiveRecord | None) -> Archi
     if archive is None:
         return ArchiveStatus()
     return ArchiveStatus(
-        state=normalize_archive_state(archive.state),
+        state=ArchiveState(archive.state),
         object_path=archive.object_path,
         stored_bytes=archive.stored_bytes,
         backend=archive.backend,
@@ -2497,273 +1762,3 @@ def _collection_manifest_status(
         ots_state=ots_state,
         ots_sha256=archive.ots_sha256,
     )
-
-
-def _collection_image_coverage(
-    session: Session,
-    collection_id: str,
-) -> tuple[
-    list[CollectionCoverageImage],
-    dict[str, set[str]],
-    dict[tuple[str, str], _RecoveryParts],
-]:
-    image_rows = session.execute(
-        select(
-            FinalizedImageRecord.image_id,
-            FinalizedImageRecord.filename,
-            FinalizedImageRecord.required_disc_count,
-        )
-        .join(FinalizedImageCoveredPathRecord)
-        .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
-        .distinct()
-    ).all()
-    image_ids = sorted(row.image_id for row in image_rows)
-    if not image_ids:
-        return [], {}, {}
-
-    image_metadata = {row.image_id: (row.filename, row.required_disc_count) for row in image_rows}
-
-    covered_path_rows = session.execute(
-        select(
-            FinalizedImageCoveredPathRecord.image_id,
-            FinalizedImageCoveredPathRecord.path,
-        )
-        .where(FinalizedImageCoveredPathRecord.collection_id == collection_id)
-        .order_by(
-            FinalizedImageCoveredPathRecord.image_id.asc(),
-            FinalizedImageCoveredPathRecord.path.asc(),
-        )
-    ).all()
-    coverage_part_rows = session.execute(
-        select(
-            FinalizedImageCoveragePartRecord.image_id,
-            FinalizedImageCoveragePartRecord.path,
-            FinalizedImageCoveragePartRecord.part_index,
-            FinalizedImageCoveragePartRecord.part_count,
-        )
-        .where(FinalizedImageCoveragePartRecord.collection_id == collection_id)
-        .order_by(
-            FinalizedImageCoveragePartRecord.image_id.asc(),
-            FinalizedImageCoveragePartRecord.path.asc(),
-            FinalizedImageCoveragePartRecord.part_index.asc(),
-        )
-    ).all()
-    disc_rows = session.execute(
-        select(
-            ImageDiscRecord.image_id,
-            ImageDiscRecord.disc_id,
-            ImageDiscRecord.label_text,
-            ImageDiscRecord.location,
-            ImageDiscRecord.created_at,
-            ImageDiscRecord.state,
-            ImageDiscRecord.verification_state,
-        )
-        .where(ImageDiscRecord.image_id.in_(image_ids))
-        .order_by(ImageDiscRecord.image_id.asc(), ImageDiscRecord.disc_id.asc())
-    ).all()
-
-    discs_by_image: dict[str, list[DiscSummary]] = {}
-    registered_disc_counts: dict[str, int] = {}
-    verified_disc_counts: dict[str, int] = {}
-    for disc in disc_rows:
-        discs_by_image.setdefault(disc.image_id, []).append(
-            DiscSummary(
-                disc_id=DiscId(disc.disc_id),
-                image_id=disc.image_id,
-                label_text=disc.label_text or disc.disc_id,
-                location=disc.location,
-                created_at=disc.created_at,
-                state=normalize_disc_state(disc.state),
-                verification_state=normalize_verification_state(disc.verification_state),
-            )
-        )
-        if disc_counts_toward_redundancy(disc.state):
-            registered_disc_counts[disc.image_id] = registered_disc_counts.get(disc.image_id, 0) + 1
-        if disc_counts_as_verified(
-            state=disc.state,
-            verification_state=disc.verification_state,
-        ):
-            verified_disc_counts[disc.image_id] = verified_disc_counts.get(disc.image_id, 0) + 1
-
-    image_paths_by_image: dict[str, set[str]] = {image_id: set() for image_id in image_ids}
-    covered_paths: dict[str, set[str]] = {}
-    for covered_path in covered_path_rows:
-        covered_paths.setdefault(covered_path.path, set()).add(covered_path.image_id)
-        image_paths_by_image.setdefault(covered_path.image_id, set()).add(covered_path.path)
-
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts] = {}
-    for part in coverage_part_rows:
-        key = (part.image_id, part.path)
-        current = recovery_parts_by_image_path.get(key)
-        present_parts = frozenset({part.part_index})
-        if current is None:
-            recovery_parts_by_image_path[key] = _RecoveryParts(
-                part_count=part.part_count,
-                present_parts=present_parts,
-            )
-            continue
-        recovery_parts_by_image_path[key] = _RecoveryParts(
-            part_count=current.part_count,
-            present_parts=current.present_parts | present_parts,
-        )
-
-    image_coverage: list[CollectionCoverageImage] = []
-    for image_id in image_ids:
-        filename, required_disc_count_value = image_metadata[image_id]
-        required_disc_count = normalize_required_disc_count(required_disc_count_value)
-        registered_disc_count = registered_disc_counts.get(image_id, 0)
-        verified_disc_count = verified_disc_counts.get(image_id, 0)
-        image_coverage.append(
-            CollectionCoverageImage(
-                id=ImageId(image_id),
-                filename=filename,
-                disc_redundancy_state=disc_redundancy_state(
-                    required_disc_count=required_disc_count,
-                    registered_disc_count=registered_disc_count,
-                ),
-                discs_required=required_disc_count,
-                discs_registered=registered_disc_count,
-                discs_verified=verified_disc_count,
-                discs_missing=registered_disc_shortfall(
-                    required_disc_count=required_disc_count,
-                    registered_disc_count=registered_disc_count,
-                ),
-                covered_paths=sorted(image_paths_by_image.get(image_id, set())),
-                discs=discs_by_image.get(image_id, []),
-            )
-        )
-
-    return image_coverage, covered_paths, recovery_parts_by_image_path
-
-
-def _disc_redundancy_bytes(
-    file_records: Sequence[_CollectionFileLike],
-    *,
-    image_coverage: Sequence[CollectionCoverageImage],
-    covered_paths: dict[str, set[str]],
-) -> int:
-    if not image_coverage or not covered_paths:
-        return 0
-    image_states = {str(image.id): image.disc_redundancy_state for image in image_coverage}
-    redundant_bytes = 0
-    for record in file_records:
-        image_ids = covered_paths.get(record.path, set())
-        if image_ids and all(image_states.get(image_id) is not None for image_id in image_ids):
-            if all(image_states[image_id] is CoverageState.FULL for image_id in image_ids):
-                redundant_bytes += record.bytes
-    return redundant_bytes
-
-
-def _collection_disc_coverage(
-    file_records: Sequence[_CollectionFileLike],
-    *,
-    image_coverage: Sequence[CollectionCoverageImage],
-    covered_paths: dict[str, set[str]],
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
-) -> Coverage:
-    if not file_records:
-        return Coverage(state=CoverageState.NONE, bytes=0)
-
-    image_by_id = {str(image.id): image for image in image_coverage}
-    verified_disc_coverage_bytes = 0
-    total_bytes = sum(record.bytes for record in file_records)
-    for record in file_records:
-        image_ids = covered_paths.get(record.path, set())
-        disc_coverage_bytes = _path_recoverable_bytes(
-            record.bytes,
-            record.path,
-            image_ids=image_ids,
-            recovery_parts_by_image_path=recovery_parts_by_image_path,
-            image_available=lambda image: image.discs_registered > 0,
-            image_by_id=image_by_id,
-        )
-        verified_disc_coverage_bytes += disc_coverage_bytes
-
-    state = coverage_state(
-        covered_bytes=verified_disc_coverage_bytes,
-        total_bytes=total_bytes,
-    )
-    return Coverage(state=state, bytes=verified_disc_coverage_bytes)
-
-
-def _path_is_recoverable(
-    path: str,
-    *,
-    image_ids: set[str],
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
-    image_available: Callable[[CollectionCoverageImage], bool],
-    image_by_id: dict[str, CollectionCoverageImage],
-) -> bool:
-    if not image_ids:
-        return False
-
-    expected_part_count: int | None = None
-    present_parts: set[int] = set()
-    for image_id in image_ids:
-        image = image_by_id.get(image_id)
-        if image is None or not image_available(image):
-            continue
-        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
-        if recovery_parts is None:
-            continue
-        if recovery_parts.part_count == 1 and recovery_parts.present_parts == frozenset({0}):
-            return True
-        if expected_part_count is None:
-            expected_part_count = recovery_parts.part_count
-        elif expected_part_count != recovery_parts.part_count:
-            return False
-        present_parts.update(recovery_parts.present_parts)
-    return expected_part_count is not None and len(present_parts) == expected_part_count
-
-
-def _path_recoverable_bytes(
-    total_bytes: int,
-    path: str,
-    *,
-    image_ids: set[str],
-    recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
-    image_available: Callable[[CollectionCoverageImage], bool],
-    image_by_id: dict[str, CollectionCoverageImage],
-) -> int:
-    if _path_is_recoverable(
-        path,
-        image_ids=image_ids,
-        recovery_parts_by_image_path=recovery_parts_by_image_path,
-        image_available=image_available,
-        image_by_id=image_by_id,
-    ):
-        return total_bytes
-
-    expected_part_count: int | None = None
-    present_parts: set[int] = set()
-    for image_id in image_ids:
-        image = image_by_id.get(image_id)
-        if image is None or not image_available(image):
-            continue
-        recovery_parts = recovery_parts_by_image_path.get((image_id, path))
-        if recovery_parts is None:
-            continue
-        if expected_part_count is None:
-            expected_part_count = recovery_parts.part_count
-        elif expected_part_count != recovery_parts.part_count:
-            return 0
-        present_parts.update(recovery_parts.present_parts)
-
-    if expected_part_count is None or not present_parts:
-        return 0
-    return min(
-        total_bytes,
-        max(1, (total_bytes * len(present_parts)) // expected_part_count),
-    )
-
-
-def _recovery_coverage_state(
-    *,
-    covered_bytes: int,
-    total_bytes: int,
-) -> CoverageState:
-    if total_bytes <= 0 or covered_bytes <= 0:
-        return CoverageState.NONE
-    if covered_bytes >= total_bytes:
-        return CoverageState.FULL
-    return CoverageState.PARTIAL

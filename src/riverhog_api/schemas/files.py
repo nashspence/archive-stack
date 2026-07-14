@@ -10,7 +10,6 @@ class FileStateOut(RiverhogModel):
     bytes: int
     sha256: str
     hot: bool
-    disc_coverage: bool
 
 
 class FilesResponse(RiverhogModel):

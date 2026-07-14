@@ -16,11 +16,10 @@ def search(
     q: str | None = Query(None, min_length=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["target", "collection", "path", "bytes", "hot", "disc"] = Query("target"),
+    sort: Literal["target", "collection", "path", "bytes", "hot"] = Query("target"),
     order: Literal["asc", "desc"] = Query("asc"),
     collection: str | None = Query(None, min_length=1),
     hot: bool | None = Query(None),
-    disc_coverage: bool | None = Query(None),
 ) -> SearchResponse:
     payload = container.search.search(
         q=q,
@@ -30,7 +29,6 @@ def search(
         order=order,
         collection=collection,
         hot=hot,
-        disc_coverage=disc_coverage,
     )
     files = cast(list[dict[str, object]], payload["files"])
     return SearchResponse.model_validate(

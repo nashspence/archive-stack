@@ -1,95 +1,39 @@
 # Create fetches and evict hot files
 
-Use the same projected-path selector format in API and CLI.
+Use target selectors from the projected collection namespace. A selector can name a collection, directory, or file.
 
-## Create a fetch
-
-```bash
-riverhog hot fetch create --name 'Japan album refresh'
-```
-
-## Add targets
-
-Whole collection:
+## Create and inspect a fetch
 
 ```bash
-riverhog hot fetch add fx-1 'photos-2024/'
+riverhog hot fetch create --name "tax records" "2026/tax/**"
+riverhog hot fetch list
+riverhog hot fetch show <fetch-id>
+riverhog hot fetch files <fetch-id>
 ```
 
-Directory subtree:
+Add or remove selectors while the fetch is in `draft`:
 
 ```bash
-riverhog hot fetch add fx-1 'photos-2024/albums/japan/'
+riverhog hot fetch add <fetch-id> "2026/receipts/**"
+riverhog hot fetch remove <fetch-id> "2026/tax/drafts/**"
 ```
 
-Single file:
+## Start retrieval
 
 ```bash
-riverhog hot fetch add fx-1 'docs/tax/2022/invoice-123.pdf'
+riverhog hot fetch start <fetch-id>
+riverhog hot fetch show <fetch-id>
 ```
 
-Projected parent directory:
+Starting freezes the selector set. If every selected file is hot, the fetch completes immediately. Otherwise Riverhog requests the required collection archives and materializes only the missing selected files. Canceling an active fetch returns it to `draft`.
+
+## Evict from hot storage
+
+Preview the selection, then evict it:
 
 ```bash
-riverhog hot fetch add fx-1 'photos/'
+riverhog hot evict --dry-run "2026/tax/**"
+riverhog hot evict "2026/tax/**"
 ```
 
-This selects every file projected beneath that hot-namespace directory, even
-when the files come from multiple collections.
-
-## Inspect selection
-
-Show the bounded preflight summary and next recommended action:
-
-```bash
-riverhog hot fetch show fx-1
-```
-
-List the selected files when you need to inspect or search the actual targets:
-
-```bash
-riverhog hot fetch files fx-1 --query japan --sort bytes --order desc
-```
-
-## Start fulfillment
-
-Queue the fetch for the prompt-based optical-media workflow:
-
-```bash
-riverhog hot fetch start fx-1
-djdan fetch
-```
-
-Start automatic archive materialization:
-
-```bash
-riverhog hot fetch start fx-1 --archive
-riverhog hot fetch show fx-1
-```
-
-Cancel an active fetch, whether it was queued for `djdan` or archive
-materialization:
-
-```bash
-riverhog hot fetch cancel fx-1
-```
-
-## Evict hot files
-
-```bash
-riverhog hot evict 'docs/tax/2022/'
-```
-
-Eviction is allowed only when every selected file has the required disc
-redundancy. It removes matching bytes from hot storage immediately and reports the
-selected and evicted counts.
-
-## Notes
-
-- Fetches are named so the operator can remember why they exist.
-- Draft fetches can be edited with `riverhog hot fetch add` and
-  `riverhog hot fetch remove`.
-- A fetch is frozen once queued to `djdan` or fetch materialization.
-- Fetch cancellation returns the fetch to draft when possible.
-- `djdan fetch` with no id clears the queued djdan fetch backlog in one guided
-  session.
+Riverhog accepts eviction only when every selected file belongs to a verified collection archive. Eviction changes hot-cache availability; it does not change collection identity or archive custody.

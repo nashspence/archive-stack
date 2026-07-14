@@ -32,7 +32,6 @@
     ],
     "actors": {
       "riverhog": "🐷",
-      "djdan": "👨🏻‍🎤",
       "munchy": "🤤",
       "jeb": "🤖"
     },
@@ -500,40 +499,6 @@
       ]
     },
     {
-      "event": "collections.planner_failed",
-      "category": "collection_lifecycle",
-      "source": "riverhog_core.services.archive_uploads",
-      "purpose": "The collection finalized, but provisional planner refresh failed.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "inspect Riverhog planner logs and state",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, the archive is safe, but planner refresh failed. Please inspect Riverhog!"
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "collection_id",
-        "delivered_at",
-        "operator_urgency",
-        "operator_action",
-        "files_total",
-        "files_uploaded",
-        "bytes_total",
-        "uploaded_bytes"
-      ],
-      "optional_payload_fields": [
-        "collection_url",
-        "upload_url"
-      ]
-    },
-    {
       "event": "collections.archive_failed",
       "category": "collection_lifecycle",
       "source": "riverhog_core.services.archive_uploads",
@@ -567,195 +532,12 @@
       ]
     },
     {
-      "event": "images.ready",
-      "category": "disc_image",
-      "source": "riverhog_core.services.planning",
-      "purpose": "One or more finalized image candidates are ready for operator burn workflow.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "run `djdan burn`",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification": {
-        "actor": "djdan",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "The pigs got some discs ready to burn, dawg! Run `djdan burn` so we can get spinnin'."
-      },
-      "required_payload_fields": [
-        "event",
-        "batch_id",
-        "delivered_at",
-        "operator_urgency",
-        "operator_action",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "images"
-      ],
-      "image_fields": [
-        "image_id",
-        "filename",
-        "iso_available",
-        "download_url"
-      ]
-    },
-    {
-      "event": "images.ready.reminder",
-      "category": "disc_image",
-      "source": "riverhog_core.services.planning",
-      "purpose": "Reminder that one or more burnable image candidates are still waiting for operator burn workflow.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "run `djdan burn`",
-      "reminder_of": "images.ready",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification": {
-        "actor": "djdan",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Burn cue is still on deck. Run `djdan burn` when you're ready to spin it up."
-      },
-      "required_payload_fields": [
-        "event",
-        "batch_id",
-        "delivered_at",
-        "operator_urgency",
-        "operator_action",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "images"
-      ],
-      "image_fields": [
-        "image_id",
-        "filename",
-        "iso_available",
-        "download_url"
-      ]
-    },
-    {
-      "event": "images.disc_label_needed",
-      "category": "disc",
-      "source": "riverhog_core.services.discs",
-      "purpose": "A burned and verified disc needs its physical label applied before djdan registers the storage location.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "label the physical disc exactly as label_text",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
-      "canonical_notification": {
-        "actor": "djdan",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "That burn verified clean! Label the disc exactly, then tell me where it lives."
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "image_id",
-        "disc_id",
-        "label_text",
-        "delivered_at",
-        "operator_urgency",
-        "operator_action"
-      ],
-      "optional_payload_fields": [
-        "image_url"
-      ]
-    },
-    {
-      "event": "fetches.queued_djdan",
-      "category": "fetch",
-      "source": "riverhog_core.services.fetches",
-      "purpose": "A named fetch is queued for djdan to read registered optical media.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "Run `djdan fetch {fetch_id}`",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification": {
-        "actor": "djdan",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Need that disc read, friend! Run `djdan fetch` so I can get those files hot again."
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "fetch_id",
-        "name",
-        "delivered_at",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "files",
-        "bytes",
-        "discs",
-        "operator_urgency",
-        "operator_action",
-        "operator_message"
-      ],
-      "optional_payload_fields": [
-        "fetch_url",
-        "manifest_url"
-      ]
-    },
-    {
-      "event": "fetches.queued_djdan.reminder",
-      "category": "fetch",
-      "source": "riverhog_core.services.fetches",
-      "purpose": "Reminder that a named fetch is still queued for djdan fetch and registered optical media.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "Run `djdan fetch {fetch_id}`",
-      "reminder_of": "fetches.queued_djdan",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification": {
-        "actor": "djdan",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Fetch cue is still waiting. Run `djdan fetch` when the disc is ready."
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "fetch_id",
-        "name",
-        "delivered_at",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "files",
-        "bytes",
-        "discs",
-        "operator_urgency",
-        "operator_action",
-        "operator_message"
-      ],
-      "optional_payload_fields": [
-        "fetch_url",
-        "manifest_url"
-      ]
-    },
-    {
       "event": "archive_restore.started",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "Riverhog requested an archive restore for disc rebuild or missing fetch-file recovery.",
+      "purpose": "Riverhog requested remote archive retrieval for selected collection files.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "wait for recovery progress",
+      "operator_action": "wait for automatic materialization",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -765,14 +547,13 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, an archive restore is underway. This may take a long while; the archived data is safe."
+        "body_template": "Oink, archive retrieval is underway. This may take a while; the remote archive remains the durable copy."
       },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "retrieval_tier",
         "estimated_ready_at",
@@ -784,46 +565,28 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
+        "archive_restore"
       ]
     },
     {
       "event": "archive_restore.ready",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "Temporarily restored archive data is available for disc rebuild or fetch materialization.",
+      "purpose": "Retrieved archive data is ready for verified materialization into hot storage.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: disc_rebuild requires rebuild/burn; fetch_materialization is automatic fetch materialization",
+      "operator_action": "wait for automatic materialization",
       "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "djdan",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Archived data is ready! Run `djdan burn` before the restore window closes."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, archived data is ready. I'm materializing the missing fetch files now."
-        }
+        "mode": "best_effort",
+        "retry": false,
+        "reminder": false
       },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "expires_at",
-        "reminder_count",
-        "reminder_interval_seconds",
         "operator_urgency",
         "operator_action",
         "operator_message"
@@ -832,64 +595,19 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
-    },
-    {
-      "event": "archive_restore.ready.reminder",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Reminder that temporarily restored archive data is still available and the archive restore is incomplete.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: disc_rebuild requires rebuild/burn; fetch_materialization is automatic fetch materialization",
-      "reminder_of": "archive_restore.ready",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
-      },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "djdan",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Recovery data is still on deck. Run `djdan burn` before it expires."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, I'm still materializing fetch files from restored archive data."
-        }
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "restore_id",
-        "delivered_at",
-        "images",
-        "collections",
-        "expires_at",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "operator_urgency",
-        "operator_action",
-        "operator_message"
+        "archive_restore"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
-      "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive retrieval is ready. I'm verifying and materializing the selected files now."
+      }
     },
     {
       "event": "archive_restore.completed",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "Archive restore finished verification, materialization, and cleanup.",
+      "purpose": "Selected archive files were verified, materialized, and temporary retrieval state was cleaned up.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
       "delivery": {
@@ -898,24 +616,11 @@
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": false
       },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, Archive restore is done, and the temporary restored data is cleaned up."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, fetch materialization is complete, and the missing fetch files are hot again."
-        }
-      },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "operator_urgency",
         "operator_action",
@@ -925,17 +630,21 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
+        "archive_restore"
+      ],
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization is complete and the selected files are hot."
+      }
     },
     {
       "event": "archive_restore.retrying",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "Archive restore encountered a recoverable restore, polling, cleanup, or materialization failure and Riverhog will keep retrying.",
+      "purpose": "Archive retrieval or materialization encountered a retryable failure.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "wait unless failures persist beyond normal connectivity trouble",
+      "operator_action": "wait unless failures persist",
       "delivery": {
         "mode": "paced_best_effort",
         "retry": false,
@@ -944,24 +653,11 @@
         "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
         "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "djdan",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Recovery restore hit a retryable issue: {error_80}. Next retry: {next_retry_at}; no action yet."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, fetch materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
-        }
-      },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "attempts",
         "failed_at",
@@ -976,40 +672,31 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
+        "archive_restore"
+      ],
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
+      }
     },
     {
       "event": "archive_restore.failed",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "Archive restore encountered a non-retryable validation, catalog, or data-integrity failure.",
+      "purpose": "Archive retrieval or materialization encountered a non-retryable integrity or catalog failure.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "inspect Riverhog recovery logs and session state",
+      "operator_action": "inspect Riverhog archive retrieval logs",
       "delivery": {
         "mode": "best_effort",
         "retry": false,
         "reminder": false
-      },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "djdan",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Disc rebuild stopped: {error_80}. Please inspect Riverhog; I will not retry this."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink! Fetch materialization stopped: {error_80}. Please inspect Riverhog; I will not retry this."
-        }
       },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "attempts",
         "failed_at",
@@ -1022,59 +709,19 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
-    },
-    {
-      "event": "archive_restore.paused.reminder",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Daily reminder that a disc rebuild archive restore is paused and should be resumed when the operator is ready to restore disc coverage.",
-      "operator_urgency": "time_sensitive",
-      "operator_action": "run `djdan disc rebuild resume <restore_id>` when ready",
-      "reminder_of": "disc rebuild pause",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
-      },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "djdan",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Disc rebuild is paused. Resume when ready to rebuild the image and restore disc coverage."
-        }
-      },
-      "required_payload_fields": [
-        "event",
-        "type",
-        "restore_id",
-        "delivered_at",
-        "images",
-        "collections",
-        "reminder_count",
-        "reminder_interval_seconds",
-        "operator_urgency",
-        "operator_action",
-        "operator_message"
+        "archive_restore"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
-      "type_values": [
-        "disc_rebuild"
-      ]
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink! Archive materialization stopped: {error_80}. Please inspect Riverhog."
+      }
     },
     {
       "event": "archive_restore.canceled",
       "category": "archive_restore",
       "source": "riverhog_core.services.archive_restores",
-      "purpose": "The operator canceled active fetch materialization.",
+      "purpose": "The operator canceled active archive materialization.",
       "operator_urgency": "passive",
       "operator_action": "none",
       "delivery": {
@@ -1083,24 +730,11 @@
         "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
         "reminder": false
       },
-      "canonical_notification_by_type": {
-        "disc_rebuild": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, recovery was canceled by the operator."
-        },
-        "fetch_materialization": {
-          "actor": "riverhog",
-          "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, fetch materialization was canceled by the operator."
-        }
-      },
       "required_payload_fields": [
         "event",
         "type",
         "restore_id",
         "delivered_at",
-        "images",
         "collections",
         "operator_urgency",
         "operator_action",
@@ -1110,9 +744,13 @@
         "restore_url"
       ],
       "type_values": [
-        "disc_rebuild",
-        "fetch_materialization"
-      ]
+        "archive_restore"
+      ],
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization was canceled."
+      }
     }
   ]
 }

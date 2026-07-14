@@ -20,10 +20,8 @@ from riverhog_api.routers.archive_restores import router as archive_restores_rou
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.fetches import router as fetches_router
 from riverhog_api.routers.files import router as files_router
-from riverhog_api.routers.images import router as images_router
 from riverhog_api.routers.internal import router as internal_router
 from riverhog_api.routers.jeb import router as jeb_router
-from riverhog_api.routers.plan import router as plan_router
 from riverhog_api.routers.search import router as search_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 from riverhog_core.domain.errors import RiverhogError
@@ -88,7 +86,6 @@ def _configure_logging(level_name: str) -> None:
 
 def _sweep_expired_uploads(container: ServiceContainer) -> None:
     container.collections.expire_stale_uploads()
-    container.fetches.expire_stale_uploads()
 
 
 def _process_archive_uploads(
@@ -118,14 +115,7 @@ def _process_archive_restores(
     container.archive_restores.repair_missing_fetch_hot_files(
         limit=10_000 if startup_hot_repair_audit else 100
     )
-    container.fetches.deliver_due_queued_notifications(limit=100)
     container.archive_restores.process_due_restores(limit=10)
-
-
-def _process_planner_refresh(container: ServiceContainer) -> None:
-    container.archive_restores.repair_missing_fetch_hot_files(limit=100)
-    container.fetches.deliver_due_queued_notifications(limit=100)
-    container.planning.process_due_refresh(limit=1)
 
 
 async def _run_upload_expiry_reaper(
@@ -221,35 +211,6 @@ async def _run_archive_restore_reaper(
             _LOG.exception("archive restore reaper sweep failed")
 
 
-async def _run_planner_refresh_reaper(
-    container_provider: Callable[[], ServiceContainer | None],
-    *,
-    sweep_interval: timedelta,
-) -> None:
-    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    first_run = True
-    while True:
-        try:
-            if first_run:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(interval_seconds)
-            current_first_run = first_run
-            first_run = False
-            container = container_provider()
-            if container is None:
-                continue
-            if current_first_run:
-                _LOG.info(
-                    "startup planner refresh queued in background; API startup is not blocked"
-                )
-            await asyncio.to_thread(_process_planner_refresh, container)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("planner refresh reaper sweep failed")
-
-
 def create_app(
     *,
     container: ServiceContainer | None = None,
@@ -257,7 +218,6 @@ def create_app(
     upload_expiry_reaper_interval: float | None = None,
     archive_upload_reaper_interval: float | None = None,
     archive_restore_reaper_interval: float | None = None,
-    planner_refresh_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
         raise ValueError("create_app accepts either container or container_provider, not both")
@@ -280,11 +240,6 @@ def create_app(
         timedelta(seconds=archive_restore_reaper_interval)
         if archive_restore_reaper_interval is not None
         else config.archive_restore_sweep_interval
-    )
-    planner_refresh_sweep_interval = (
-        timedelta(seconds=planner_refresh_reaper_interval)
-        if planner_refresh_reaper_interval is not None
-        else config.planner_refresh_sweep_interval
     )
 
     def get_or_create_container() -> ServiceContainer:
@@ -319,27 +274,18 @@ def create_app(
                 sweep_interval=archive_restore_sweep_interval,
             )
         )
-        planner_refresh_task = asyncio.create_task(
-            _run_planner_refresh_reaper(
-                get_or_create_container,
-                sweep_interval=planner_refresh_sweep_interval,
-            )
-        )
         try:
             yield
         finally:
             upload_task.cancel()
             archive_task.cancel()
             archive_restore_task.cancel()
-            planner_refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_restore_task
-            with contextlib.suppress(asyncio.CancelledError):
-                await planner_refresh_task
 
     app = FastAPI(title="riverhog API", version="0.1.0", lifespan=lifespan)
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
@@ -380,8 +326,6 @@ def create_app(
     app.include_router(archive_restores_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(archive_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(jeb_router, prefix="/v1", dependencies=auth_deps)

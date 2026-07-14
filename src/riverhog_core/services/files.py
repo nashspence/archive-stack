@@ -61,7 +61,6 @@ class SqlAlchemyFileService:
             all_files = session.scalars(
                 select(CollectionFileRecord).options(
                     selectinload(CollectionFileRecord.collection),
-                    selectinload(CollectionFileRecord.discs),
                 )
             ).all()
 
@@ -82,7 +81,6 @@ class SqlAlchemyFileService:
                     "bytes": file_record.bytes,
                     "sha256": file_record.sha256,
                     "hot": file_record.hot,
-                    "disc_coverage": bool(file_record.discs),
                 }
             )
         records = sorted(result, key=lambda r: str(r["target"]))

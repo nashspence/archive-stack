@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "title": "Riverhog User-Facing Terminology",
-  "purpose": "Inventory important terms currently exposed through Riverhog, Djdan, Munchy, Jeb, API contracts, webhook payloads, and operator configuration. This contract records current vocabulary without embedding work-item state, review priority, ownership, or tracker links.",
+  "purpose": "Inventory important terms currently exposed through Riverhog, Munchy, Jeb, API contracts, webhook payloads, and operator configuration. This contract records current vocabulary without embedding work-item state, review priority, ownership, or tracker links.",
   "term_type_values": {
     "entity": "A named resource, object, artifact, manifest, namespace, package, or material thing.",
     "activity": "An operator action, workflow, process, transition, or validation pass.",
@@ -21,7 +21,6 @@
   ],
   "surface_values": [
     "cli:riverhog",
-    "cli:djdan",
     "cli:munchy",
     "cli:jeb",
     "api:riverhog",
@@ -44,7 +43,7 @@
         "operator",
         "api_client"
       ],
-      "definition": "Cold storage holding durable collection archive packages.",
+      "definition": "A verified encrypted collection package stored in the configured remote archive account.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -59,6 +58,28 @@
       ]
     },
     {
+      "id": "archive_materialization",
+      "label": "archive materialization",
+      "term_type": "activity",
+      "definition": "Verification and restoration of selected collection files from the remote archive into hot storage.",
+      "audiences": [
+        "operator",
+        "developer"
+      ],
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "archive materialization",
+          "context": "Fetch progress and next-action output."
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "restoring_archive",
+          "context": "Fetch state while selected archived files are returning to hot storage."
+        }
+      ]
+    },
+    {
       "id": "archive_restore",
       "label": "archive restore",
       "term_type": "entity",
@@ -67,7 +88,7 @@
         "webhook_recipient",
         "developer"
       ],
-      "definition": "A durable request to restore archived collection data for fetch materialization or disc rebuild work.",
+      "definition": "A durable request to restore archived collection data into hot storage.",
       "exposed_as": [
         {
           "surface": "api:riverhog",
@@ -90,7 +111,7 @@
         "config_author",
         "api_client"
       ],
-      "definition": "Moving accepted media into durable Riverhog-backed custody.",
+      "definition": "Moving a collection into Riverhog custody by uploading and verifying its encrypted remote archive.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -146,50 +167,6 @@
           "surface": "webhook",
           "spelling": "batch",
           "context": "Jeb notification payload details"
-        }
-      ]
-    },
-    {
-      "id": "burn_backlog",
-      "label": "burn backlog",
-      "term_type": "state",
-      "audiences": [
-        "operator"
-      ],
-      "definition": "The set of finalized images or recovery images that still need physical discs.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "djdan burn",
-          "context": "guided burn-backlog workflow"
-        },
-        {
-          "surface": "docs",
-          "spelling": "burn backlog",
-          "context": "optical media workflow docs"
-        }
-      ]
-    },
-    {
-      "id": "candidate",
-      "label": "candidate",
-      "term_type": "entity",
-      "audiences": [
-        "operator",
-        "api_client",
-        "developer"
-      ],
-      "definition": "A provisional planner proposal that may be finalized into an image.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "candidate",
-          "context": "djdan image plan output"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "candidate_id",
-          "context": "planner candidate payloads"
         }
       ]
     },
@@ -396,154 +373,6 @@
       ]
     },
     {
-      "id": "disc",
-      "label": "disc",
-      "term_type": "entity",
-      "audiences": [
-        "operator",
-        "api_client",
-        "webhook_recipient"
-      ],
-      "definition": "Physical optical medium that stores a finalized image.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "disc",
-          "context": "djdan disc commands"
-        },
-        {
-          "surface": "docs",
-          "spelling": "disc",
-          "context": "optical media docs"
-        }
-      ]
-    },
-    {
-      "id": "disc_coverage",
-      "label": "disc coverage",
-      "term_type": "state",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "How much collection data is represented on registered discs.",
-      "exposed_as": [
-        {
-          "surface": "cli:riverhog",
-          "spelling": "disc coverage",
-          "context": "collection summaries"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "disc_coverage",
-          "context": "collection summaries"
-        }
-      ]
-    },
-    {
-      "id": "disc_id",
-      "label": "disc id",
-      "term_type": "identifier",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "Generated identifier and exact label text written on a burned disc.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "DISC_ID",
-          "context": "disc and disc rebuild commands"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "disc_id",
-          "context": "disc registration and recovery hints"
-        }
-      ]
-    },
-    {
-      "id": "disc_rebuild",
-      "label": "disc rebuild",
-      "term_type": "activity",
-      "audiences": [
-        "operator",
-        "webhook_recipient"
-      ],
-      "definition": "Operator workflow for replacing lost or damaged physical disc coverage.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "djdan disc rebuild",
-          "context": "disc rebuild commands"
-        },
-        {
-          "surface": "webhook",
-          "spelling": "disc rebuild",
-          "context": "operator action guidance"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "disc_rebuild",
-          "context": "archive restore type"
-        },
-        {
-          "surface": "contract:openapi",
-          "spelling": "disc_rebuild",
-          "context": "OpenAPI enum value"
-        },
-        {
-          "surface": "contract:webhooks",
-          "spelling": "disc_rebuild",
-          "context": "operator notification payload"
-        }
-      ]
-    },
-    {
-      "id": "disc_redundancy",
-      "label": "disc redundancy",
-      "term_type": "state",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "How fully the required duplicate discs are registered and verified for a collection or image.",
-      "exposed_as": [
-        {
-          "surface": "cli:riverhog",
-          "spelling": "disc redundancy",
-          "context": "collection summaries"
-        },
-        {
-          "surface": "cli:djdan",
-          "spelling": "disc redundancy",
-          "context": "image summaries"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "disc_redundancy",
-          "context": "collection summaries and filters"
-        }
-      ]
-    },
-    {
-      "id": "djdan",
-      "label": "Djdan",
-      "term_type": "software_agent",
-      "audiences": [
-        "operator",
-        "developer"
-      ],
-      "definition": "Riverhog optical media CLI for burn, fetch, image, and burned-disc workflows.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "djdan",
-          "context": "CLI command name"
-        }
-      ]
-    },
-    {
       "id": "encode_profile",
       "label": "encode profile",
       "term_type": "policy",
@@ -580,7 +409,7 @@
         "api_client",
         "webhook_recipient"
       ],
-      "definition": "A named manifest of target selectors that can be fulfilled from hot storage, archive data, or optical media.",
+      "definition": "A named manifest of target selectors fulfilled from hot storage or the remote archive.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -588,37 +417,9 @@
           "context": "named fetch manifest commands"
         },
         {
-          "surface": "cli:djdan",
-          "spelling": "djdan fetch",
-          "context": "guided optical fetch workflow"
-        },
-        {
           "surface": "api:riverhog",
           "spelling": "fetch",
           "context": "fetch resources"
-        }
-      ]
-    },
-    {
-      "id": "fetch_materialization",
-      "label": "fetch materialization",
-      "term_type": "enum_value",
-      "audiences": [
-        "api_client",
-        "webhook_recipient",
-        "developer"
-      ],
-      "definition": "Archive-restore type for archive materialization of collection archive data needed by a fetch.",
-      "exposed_as": [
-        {
-          "surface": "api:riverhog",
-          "spelling": "fetch_materialization",
-          "context": "archive restore type"
-        },
-        {
-          "surface": "contract:webhooks",
-          "spelling": "fetch_materialization",
-          "context": "operator notification contract"
         }
       ]
     },
@@ -654,7 +455,7 @@
         "api_client",
         "developer"
       ],
-      "definition": "Transition from provisional upload or planner output into accepted collection or finalized image state.",
+      "definition": "Transition from a provisional upload into an accepted collection.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -664,7 +465,7 @@
         {
           "surface": "api:riverhog",
           "spelling": "finalize",
-          "context": "planner and upload endpoints"
+          "context": "collection upload endpoint"
         }
       ]
     },
@@ -754,7 +555,7 @@
         "operator",
         "api_client"
       ],
-      "definition": "Explicit removal of compliant hot bytes from fast storage while durable archive coverage remains intact.",
+      "definition": "Explicit removal of selected hot bytes while their verified collection archives remain intact.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -776,7 +577,7 @@
         "operator",
         "api_client"
       ],
-      "definition": "Fast server-side materialized cache of logical file bytes currently available without optical or archive recovery.",
+      "definition": "Fast server-side cache of logical file bytes currently available without an archive restore.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -787,28 +588,6 @@
           "surface": "api:riverhog",
           "spelling": "hot_bytes",
           "context": "collection and fetch summaries"
-        }
-      ]
-    },
-    {
-      "id": "image",
-      "label": "image",
-      "term_type": "entity",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "Finalized ISO artifact planned for optical-media recovery.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "image",
-          "context": "djdan image commands"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "image",
-          "context": "finalized image resources"
         }
       ]
     },
@@ -1083,28 +862,6 @@
       ]
     },
     {
-      "id": "projected_selector",
-      "label": "projected selector",
-      "term_type": "identifier",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "A target path or directory selector over Riverhog's projected hot namespace, not a raw storage path.",
-      "exposed_as": [
-        {
-          "surface": "cli:riverhog",
-          "spelling": "TARGET",
-          "context": "find, hot fetch, and hot evict commands"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "target",
-          "context": "fetch target payloads"
-        }
-      ]
-    },
-    {
       "id": "qcut_review",
       "label": "qcut review",
       "term_type": "activity",
@@ -1135,7 +892,7 @@
         "operator",
         "developer"
       ],
-      "definition": "Restoring derived recovery media from durable source material; operator wording should name the object being rebuilt.",
+      "definition": "Reconstructing a derived media file from preserved source artifacts; operator wording should name the object being rebuilt.",
       "exposed_as": [
         {
           "surface": "service",
@@ -1153,7 +910,7 @@
         "developer",
         "api_client"
       ],
-      "definition": "Collection archive, hot storage, optical recovery, and API system.",
+      "definition": "Collection archive, hot storage, and API system.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -1380,6 +1137,28 @@
           "surface": "config:jeb",
           "spelling": "stable_age",
           "context": "Jeb account config"
+        }
+      ]
+    },
+    {
+      "id": "target_selector",
+      "label": "target selector",
+      "term_type": "identifier",
+      "definition": "A collection, directory, or file target used to select catalog files.",
+      "audiences": [
+        "operator",
+        "developer"
+      ],
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "target",
+          "context": "Arguments accepted by find, fetch, and hot eviction commands."
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "target",
+          "context": "Canonical file-selection value in requests and responses."
         }
       ]
     },

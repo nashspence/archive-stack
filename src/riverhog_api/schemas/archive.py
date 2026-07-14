@@ -20,4 +20,5 @@ class CollectionManifestOut(RiverhogModel):
     object_path: str | None = None
     sha256: str | None = None
     ots_object_path: str | None = None
+    ots_sha256: str | None = None
     ots_state: Literal["pending", "uploaded", "failed"] = "pending"

@@ -1,89 +1,23 @@
-# Run Acceptance Tests
+# Run tests
 
-The executable acceptance contract lives in the Gherkin feature files under
-`tests/acceptance/features`.
-
-## Preferred Commands
-
-Run the normal local verification flow:
+## Preferred commands
 
 ```bash
-mise install
 make lint
 make unit
-```
-
-`make lint` runs repo-wide `ruff check .` and strict `mypy` over `src` and the
-deployed service app entrypoints in the locked local `uv` environment selected
-through mise. `make unit` runs the supported unit test lane. The Makefile
-expects `mise` on `PATH`; pass `MISE_BIN=/abs/path/to/mise` when a host keeps
-the binary outside the shell path.
-
-Run the fixture-backed executable spec harness separately when you are working
-on acceptance contracts:
-
-```bash
 make spec
-```
-
-If the spec harness is running and you need to change source, contracts,
-features, fixtures, or harness code, stop it first, make the edit, then restart
-it. A canonical run is only valid for the checkout that existed when the lane
-started.
-
-```bash
-make stop-spec
-```
-
-Run the serial aggregate target when one command is more convenient:
-
-```bash
-make test
-```
-
-That target runs lint, then unit.
-
-Forward pytest selectors or other pytest arguments with `args`:
-
-```bash
-make spec args='-k server_rejects_incorrect_recovered_bytes'
-make unit args='tests/unit/test_planning_service.py'
-```
-
-Run the atomic image build targets when you need fresh local app or test images:
-
-```bash
-make build-app
-make build-test
 make build
 ```
 
-Run the Garage bootstrap on its own when you want the checked-in buckets and keys
-prepared for a local Compose stack:
+Use `make unit args='-k expression'` for focused iteration. `make spec` runs the assembled FastAPI contract harness. `make compose-smoke` validates the container stack and should run after service, proxy, storage, or runtime configuration changes.
 
-```bash
-make bootstrap-garage
-```
+The Makefile runs Python through the repository-selected `mise` and locked `uv` environment.
 
-The local lanes resolve from `uv.lock` with the `dev` dependency group and the
-runtime extras needed by tests.
+## Test layout
 
-## What Lives Where
+- `tests/unit/` covers focused domain, service, adapter, CLI, and contract behavior.
+- `tests/harness/` exercises the assembled API with real service wiring and controlled storage adapters.
+- `tests/fixtures/` contains generic positive fixtures.
+- `contracts/openapi/`, `contracts/webhooks/`, and `contracts/terminology/` are checked machine contracts.
 
-- `tests/acceptance/features/` contains the normative external scenarios.
-- `tests/harness/test_spec_harness.py` loads those feature files against the
-  fixture-backed spec harness.
-- `contracts/disc/` holds the machine-readable ISO layout and YAML schema
-  contracts that acceptance scenarios verify directly.
-- `tests/fixtures/bdd_steps.py` holds the shared step definitions used by the
-  spec harness.
-
-## Feature Conventions
-
-- Feature files describe externally visible behavior only.
-- Scenario titles should remain stable even if implementation details change.
-- Step wording is intentionally repetitive where it protects exact semantics.
-- `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior,
-  not internal command structure.
-- Disc-media scenarios should validate against the machine-readable contracts in
-  `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.
+Tests describe current supported behavior. Use fake identities and storage endpoints; deployment-specific configuration belongs downstream.

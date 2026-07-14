@@ -47,8 +47,7 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
         "collection",
         "collection_archive",
         "collection_archive_destination",
-        "fetch_materialization",
-        "disc_rebuild",
+        "archive_materialization",
         "encode_profile",
         "fetch",
         "held_unmatched",
@@ -67,11 +66,12 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
         "archive_restore",
         "riverhog",
         "runner_task",
+        "target_selector",
         "workflow_mode",
     }
     assert required <= set(terms)
 
-    needed_surfaces = {"cli:riverhog", "cli:djdan", "cli:munchy", "cli:jeb", "webhook"}
+    needed_surfaces = {"cli:riverhog", "cli:munchy", "cli:jeb", "webhook"}
     covered_surfaces = {
         exposure["surface"] for term in terms.values() for exposure in term["exposed_as"]
     }
@@ -81,7 +81,6 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
 def test_named_systems_are_intentional_software_agents() -> None:
     terms = {term["id"]: term for term in load_contract()["terms"]}
     assert terms["riverhog"]["term_type"] == "software_agent"
-    assert terms["djdan"]["term_type"] == "software_agent"
     assert terms["munchy"]["term_type"] == "software_agent"
     assert terms["jeb"]["term_type"] == "software_agent"
 
@@ -90,11 +89,7 @@ def test_terms_expose_ontology_shape() -> None:
     terms = {term["id"]: term for term in load_contract()["terms"]}
     assert terms["collection_archive"]["term_type"] == "entity"
     assert terms["collection_archive_destination"]["term_type"] == "policy"
-    assert terms["disc_rebuild"]["term_type"] == "activity"
-    assert terms["fetch_materialization"]["term_type"] == "enum_value"
-    assert any(
-        exposure["spelling"] == "disc_rebuild" for exposure in terms["disc_rebuild"]["exposed_as"]
-    )
+    assert terms["archive_materialization"]["term_type"] == "activity"
     assert terms["capture_date"]["term_type"] == "metadata_property"
     assert terms["collection_id"]["term_type"] == "identifier"
     assert terms["routing"]["term_type"] == "policy"

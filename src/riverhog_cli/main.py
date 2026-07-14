@@ -24,7 +24,6 @@ from riverhog_cli.output import (
     format_collections,
     format_fetch,
     format_fetch_files,
-    format_fetch_start_plan,
     format_fetches,
     format_find,
     format_hot_evict,
@@ -39,7 +38,7 @@ from riverhog_core.fs_paths import (
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
-fetch_app = typer.Typer(help="Named fetch manifest operations.")
+fetch_app = typer.Typer(help="Named hot-file fetch operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(hot_app, name="hot")
@@ -988,11 +987,9 @@ _COLLECTION_SORT_FIELDS = {
     "bytes",
     "files",
     "hot_bytes",
-    "disc_coverage",
-    "disc_redundancy",
 }
-_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "disc"}
-_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "disc"}
+_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
+_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
 
 
 def _collection_list_archive_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
@@ -1013,13 +1010,6 @@ def _collection_list_archive_payload(collection: Mapping[str, object]) -> dict[s
     }
 
 
-def _collection_list_disc_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
-    disc_coverage = collection.get("disc_coverage")
-    if not isinstance(disc_coverage, Mapping):
-        return None
-    return {key: disc_coverage[key] for key in ("state", "bytes") if key in disc_coverage}
-
-
 def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str, object]:
     payload: dict[str, object] = {
         key: collection[key]
@@ -1028,8 +1018,6 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
             "files",
             "bytes",
             "hot_bytes",
-            "disc_coverage",
-            "disc_redundancy",
             "archive_format",
             "compression",
         )
@@ -1038,9 +1026,6 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
     archive = _collection_list_archive_payload(collection)
     if archive is not None:
         payload["archive"] = archive
-    disc_coverage = _collection_list_disc_payload(collection)
-    if disc_coverage is not None:
-        payload["disc_coverage"] = disc_coverage
     return payload
 
 
@@ -1063,7 +1048,6 @@ def _compact_collection_page(payload: Mapping[str, object]) -> dict[str, object]
             "sort",
             "order",
             "query",
-            "disc_redundancy",
         )
         if key in payload
     }
@@ -1077,7 +1061,6 @@ def _sorted_collection_page(
     page: int,
     per_page: int,
     query: str | None,
-    disc_redundancy: str | None,
     sort: str,
     order: str,
 ) -> dict[str, Any]:
@@ -1094,7 +1077,6 @@ def _sorted_collection_page(
         page=page,
         per_page=per_page,
         q=query,
-        disc_redundancy=disc_redundancy,
         sort=sort,
         order=normalized_order,
     )
@@ -1103,7 +1085,6 @@ def _sorted_collection_page(
         "sort": sort,
         "order": normalized_order,
         "query": query,
-        "disc_redundancy": disc_redundancy,
     }
 
 
@@ -1117,23 +1098,15 @@ def collection_list_cmd(
         str | None,
         typer.Option("--query", "--search", help="Substring match over collection ids"),
     ] = None,
-    disc_redundancy: Annotated[
-        str | None,
-        typer.Option(
-            "--disc-redundancy",
-            help="Filter by none, partial, or full disc redundancy",
-        ),
-    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List collections with storage coverage summaries."""
+    """List collections with archive and hot-storage summaries."""
 
     payload = _sorted_collection_page(
         client(),
         page=page,
         per_page=per_page,
         query=query,
-        disc_redundancy=disc_redundancy,
         sort=sort,
         order=order,
     )
@@ -1350,7 +1323,7 @@ def upload_watch_cmd(
 def find_cmd(
     query: Annotated[
         str | None,
-        typer.Argument(help="Optional substring matched against projected file targets"),
+        typer.Argument(help="Optional substring matched against file targets"),
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
@@ -1363,10 +1336,6 @@ def find_cmd(
     hot: Annotated[
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
-    ] = None,
-    disc_coverage: Annotated[
-        bool | None,
-        typer.Option("--disc/--no-disc", help="Filter by disc coverage"),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -1388,7 +1357,6 @@ def find_cmd(
         order=normalized_order,
         collection=collection,
         hot=hot,
-        disc_coverage=disc_coverage,
     )
     emit(payload if json_mode else format_find(payload), json_mode=json_mode)
 
@@ -1398,14 +1366,14 @@ def show_cmd(
     collection: Annotated[str, typer.Argument(help="Collection id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show collection storage and recovery details."""
+    """Show collection storage and archive details."""
 
     api = client()
     if json_mode:
         payload = api.get_collection(collection)
         emit(payload, json_mode=True)
         return
-    payload = api.get_collection(collection, coverage_path_limit=4)
+    payload = api.get_collection(collection)
     archive_payload = api.get_archive_report(collection=collection)
     emit(format_collection_summary(payload, archive_payload), json_mode=False)
 
@@ -1427,7 +1395,7 @@ def fetch_create_cmd(
         emit(payload, json_mode=True)
         return
     status = api.get_fetch_status(str(payload.get("id", "unknown")))
-    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+    emit(format_fetch(status), json_mode=False)
 
 
 @hot_app.command("evict")
@@ -1439,7 +1407,7 @@ def hot_evict_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Evict compliant hot files by selector."""
+    """Evict hot files backed by verified collection archives."""
 
     payload = client().evict_hot_targets(targets, dry_run=dry_run)
     emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
@@ -1459,7 +1427,7 @@ def fetch_add_cmd(
         emit(payload, json_mode=True)
         return
     status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+    emit(format_fetch(status), json_mode=False)
 
 
 @fetch_app.command("remove")
@@ -1476,7 +1444,7 @@ def fetch_remove_cmd(
         emit(payload, json_mode=True)
         return
     status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+    emit(format_fetch(status), json_mode=False)
 
 
 @fetch_app.command("list")
@@ -1516,7 +1484,7 @@ def fetch_cmd(
     if json_mode:
         emit(status, json_mode=True)
         return
-    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+    emit(format_fetch(status), json_mode=False)
 
 
 @fetch_app.command("files")
@@ -1532,10 +1500,6 @@ def fetch_files_cmd(
     hot: Annotated[
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
-    ] = None,
-    disc_coverage: Annotated[
-        bool | None,
-        typer.Option("--disc/--no-disc", help="Filter by disc coverage"),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -1558,7 +1522,6 @@ def fetch_files_cmd(
         order=normalized_order,
         query=query,
         hot=hot,
-        disc_coverage=disc_coverage,
     )
     emit(payload if json_mode else format_fetch_files(payload), json_mode=json_mode)
 
@@ -1566,27 +1529,17 @@ def fetch_files_cmd(
 @fetch_app.command("start")
 def fetch_start_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    archive: Annotated[
-        bool, typer.Option("--archive", help="Queue for automatic archive restore")
-    ] = False,
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Preview the queued fetch action without changing state"),
-    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Start a fetch with djdan or an automatic archive restore."""
+    """Start a fetch, restoring archived files when needed."""
 
     api = client()
-    payload = api.start_fetch(fetch_id, archive=archive, dry_run=dry_run)
+    payload = api.start_fetch(fetch_id)
     if json_mode:
         emit(payload, json_mode=True)
         return
-    if dry_run:
-        emit(format_fetch_start_plan(payload), json_mode=False)
-        return
     status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)
+    emit(format_fetch(status), json_mode=False)
 
 
 @fetch_app.command("cancel")
@@ -1598,7 +1551,7 @@ def fetch_cancel_cmd(
 
     payload = client().cancel_fetch(fetch_id)
     emit(
-        payload if json_mode else format_fetch(payload, {"entries": payload.get("entries", [])}),
+        payload if json_mode else format_fetch(payload),
         json_mode=json_mode,
     )
 

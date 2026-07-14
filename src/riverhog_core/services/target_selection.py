@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import and_, case, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
@@ -60,7 +60,6 @@ def selected_collection_files(
     session: Session,
     raw_target: str,
     *,
-    load_discs: bool = False,
     missing_ok: bool = False,
 ) -> list[CollectionFileRecord]:
     clauses = _target_file_clauses(session, raw_target)
@@ -74,8 +73,6 @@ def selected_collection_files(
         .where(or_(*clauses))
         .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
     )
-    if load_discs:
-        stmt = stmt.options(selectinload(CollectionFileRecord.discs))
     selected = list(session.scalars(stmt).all())
     if not selected and not missing_ok:
         raise NotFound(f"target not found: {raw_target}")

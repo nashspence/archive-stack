@@ -40,20 +40,12 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
-from riverhog_core.recovery_payloads import (
-    CommandAgeBatchpassRecoveryPayloadCodec,
-    RecoveryPayloadCodec,
-)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _collection_upload_target_path
 from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
     post_collection_operator_webhook,
-)
-from riverhog_core.services.planning import (
-    cache_collection_manifest_artifacts,
-    refresh_provisional_plan,
 )
 from riverhog_core.webhooks import post_webhook, utcnow
 
@@ -71,22 +63,12 @@ class SqlAlchemyArchiveUploadService:
         upload_store: UploadStore | None = None,
         *,
         proof_stamper: ProofStamper | None = None,
-        recovery_payload_codec: RecoveryPayloadCodec | None = None,
     ) -> None:
         self._config = config
         self._archive_store = archive_store
         self._hot_store = hot_store
         self._upload_store = upload_store
         self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
-        self._recovery_payload_codec = (
-            recovery_payload_codec
-            or CommandAgeBatchpassRecoveryPayloadCodec(
-                command=config.recovery_payload_command,
-                passphrase=config.recovery_payload_passphrase,
-                work_factor=config.recovery_payload_work_factor,
-                max_work_factor=config.recovery_payload_max_work_factor,
-            )
-        )
         self._session_factory = make_session_factory(config.database_url)
 
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
@@ -184,7 +166,6 @@ class SqlAlchemyArchiveUploadService:
     def _process_one_collection(self, *, collection_id: str) -> None:
         if self._hot_store is None or self._upload_store is None:
             return
-        hot_store = self._hot_store
         upload_store = self._upload_store
         current = utcnow()
         current_text = _isoformat_z(current)
@@ -337,12 +318,6 @@ class SqlAlchemyArchiveUploadService:
                 )
             if manifest_bytes is None or proof_bytes is None:
                 raise RuntimeError("collection archive artifacts were not recorded")
-            cache_collection_manifest_artifacts(
-                self._config,
-                collection_id=collection_id,
-                manifest_bytes=manifest_bytes,
-                proof_bytes=proof_bytes,
-            )
         except Exception as exc:
             error = _error_text(exc)
             if _archive_failure_is_retryable(exc):
@@ -418,20 +393,6 @@ class SqlAlchemyArchiveUploadService:
                 )
             return
 
-        try:
-            refresh_provisional_plan(
-                config=self._config,
-                hot_store=hot_store,
-                archive_store=self._archive_store,
-                recovery_payload_codec=self._recovery_payload_codec,
-            )
-        except Exception:
-            _LOG.exception("failed to refresh provisional plan after archiving %s", collection_id)
-            self._post_collection_operator_webhook(
-                event="collections.planner_failed",
-                collection_id=collection_id,
-                details=archive_details,
-            )
 
     def _promote_one_collection_file(
         self,

@@ -2,38 +2,14 @@
 
 ## Decision
 
-Riverhog accepts a human-readable collection slug at upload creation time and
-mints the canonical collection id on the server.
-
-The minted id includes a UTC timestamp and normalized slug, for example:
+Riverhog accepts a human-readable collection slug and mints the canonical collection id on the server. The id combines a UTC collection timestamp with the normalized slug:
 
 ```text
-2026/20260524T190233Z__mom-iphone-photos
+20260524T190233Z__family-photos
 ```
 
-By default, Riverhog uses the current server UTC upload time. Migration uploads
-may provide an explicit timestamp in UTC basic form `YYYYMMDDTHHMMSSZ` to
-preserve an original archival timestamp. The slug remains required either way.
-
-Clients use the returned id for later upload status, file upload, collection,
-planning, disc, and recovery APIs. There is no supported client-supplied
-collection-id path for collection upload creation.
+Clients may provide the collection timestamp when it is part of the source's archival identity. Otherwise Riverhog uses the current server time. The returned id is the canonical identifier for upload status, catalog, archive, search, and fetch operations.
 
 ## Reason
 
-Archive identity must not depend on the server's local filesystem paths, and the
-operator should not have to manually invent globally unique ids for ordinary
-uploads.
-
-Server-minted timestamped ids preserve chronological browsing, keep year
-projection simple for WebDAV, and still include the operator's slug for human
-recognition. Allowing a validated timestamp override lets older archival sets
-migrate without losing their original date identity while still avoiding manual
-collection ids.
-
-Determinate-upload resume behavior is based on the normalized slug plus the
-complete file manifest: the same pair resumes an unfinished upload or returns
-the already-finalized collection, while the same slug with different contents
-becomes a distinct timestamped collection. Incremental upload sessions resume an
-open server-minted session by normalized slug until the operator explicitly
-completes or cancels it, or Riverhog expires it after the configured idle TTL.
+Archive identity must not depend on local filesystem paths, and ordinary uploads should not require operators to invent globally unique ids. Timestamped slugs preserve chronological browsing and readable identity while keeping id construction deterministic and validated.

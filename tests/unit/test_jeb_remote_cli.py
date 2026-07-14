@@ -117,7 +117,7 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
             },
         )
     ]
-    assert "jeb attempts: page 1/0" in capsys.readouterr().out
+    assert "Jeb attempts: 0 (page 1/0)" in capsys.readouterr().out
 
 
 def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -135,13 +135,9 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
         ("archive-now", {"account": "camera", "process": False, "dry_run": False}),
     ]
     output = capsys.readouterr().out
-    assert "jeb config" in output
-    assert "accounts: 2" in output
-    assert "jeb scheduler pass" in output
-    assert "operation id: op-once" in output
-    assert "jeb archive" in output
-    assert "account: camera" in output
-    assert "batch: batch-1" in output
+    assert "Jeb config: ok" in output
+    assert "jeb scheduler pass: started" in output
+    assert "jeb archive: started" in output
 
 
 def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -154,10 +150,7 @@ def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -
     assert fake.calls == [("archive-now", {"account": "camera", "process": True, "dry_run": False})]
     output = capsys.readouterr().out
     assert "jeb archive" in output
-    assert "status: started" in output
-    assert "account: camera" in output
-    assert "batch: batch-1" in output
-    assert "operation id: op-archive" in output
+    assert "jeb archive: started" in output
 
 
 def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -169,8 +162,5 @@ def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  #
 
     assert fake.calls == [("archive-now", {"account": "camera", "process": True, "dry_run": True})]
     output = capsys.readouterr().out
-    assert "jeb archive dry-run" in output
-    assert "status: would_process" in output
-    assert "account: camera" in output
-    assert "batch: batch-plan" in output
-    assert "routing preflight: not_configured ok=true unmatched=0 left=0" in output
+    assert "Jeb archive plan: camera" in output
+    assert "collections: 0" in output

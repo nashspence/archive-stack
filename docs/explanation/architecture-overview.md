@@ -1,116 +1,35 @@
 # Architecture overview
 
-The runtime uses four cooperating surfaces.
+Riverhog accepts immutable logical collections, stores their files in a fast materialized cache, and creates one deterministic encrypted archive package per collection in remote object storage. PostgreSQL is the catalog authority; object stores hold the bytes.
 
-## Catalog
+## Custody path
 
-The catalog is the durable authoritative metadata layer. It tracks collections,
-logical files, file hashes, collection archive state, physical disc
-coverage, fetches, upload state, and hot presence across service restarts.
+1. A client creates a collection upload from a slug and file manifest.
+2. Files arrive through resumable upload resources in staging storage.
+3. Riverhog verifies each logical file against its declared size and SHA-256 digest.
+4. Riverhog builds and encrypts the collection archive, uploads it to remote storage, verifies the remote object, and records the manifest and OpenTimestamps proof.
+5. Verified logical files become available in hot storage and the collection becomes accepted.
 
-## Upload staging
+A collection is durable only when its archive record is uploaded and verified. The archive package, manifest, digest, encryption parameters, and proof together define the recoverable unit.
 
-Collection ingest and fetch recovery both stream bytes through Riverhog-managed
-tus-compatible upload resources. Incomplete bytes stage under `.riverhog/uploads/`
-inside the S3-compatible object store and remain outside the committed hot
-namespace until Riverhog verifies them.
+## Remote archive
 
-Collection ingest begins with a human-readable slug. Determinate uploads provide
-a complete file manifest up front; incremental upload sessions register files
-one at a time and explicitly complete once the file set is frozen. Riverhog
-normalizes the slug, mints a timestamped canonical collection id, and returns
-that id for subsequent file-upload and status calls. Migration uploads may
-provide the timestamp explicitly in UTC basic form while still providing the
-slug. Retrying the same normalized slug with the same determinate manifest
-resumes the same unfinished upload or returns the already-finalized collection;
-retrying the same normalized slug for an open incremental session resumes that
-session until it is completed, canceled, or expired.
+The remote archive account is the durable storage authority. Operational readiness includes working account recovery, authentication, billing, bucket permissions, object listing, object reads, and restore requests for the configured storage class. These controls should be checked routinely and after credential or provider changes.
 
-Collection ingest has two gates. The upload gate verifies every declared file.
-The archive gate builds the whole-collection archive package, uploads
-the archive, manifest, and OpenTimestamps proof, verifies the archive receipt,
-and only then admits the collection.
+Archive object keys are opaque. User-facing identity comes from the catalog and collection manifest, not from bucket paths. Archive credentials have only the permissions required by the configured service role.
 
-## Committed hot storage
+## Hot storage
 
-Committed hot files live in one collection-shaped object namespace:
+Hot storage is a materialized cache for direct downloads and read-only browsing. The catalog records which logical files are currently materialized. Operators can evict selected hot files only after Riverhog verifies durable collection archive coverage.
 
-```text
-collections/{collection_id}/{path}
-```
+Missing selected files are restored automatically from their collection archives. Riverhog verifies the encrypted object and extracted logical files before publishing them into the hot namespace.
 
-Only promoted, verified files count as hot. Staged upload keys and other `.riverhog/`
-paths are not committed hot files.
+## Fetches
 
-Promotion happens after collection archive upload succeeds. A collection still
-in `uploading`, `archiving`, or `failed` upload state is not visible in hot
-storage, search, read-only browsing, or disc planning.
+A fetch is a named, immutable-on-start set of target selectors. Draft fetches can be edited. Starting a fetch completes immediately when every target is hot; otherwise it creates the required archive restores and tracks materialization until every target is hot.
 
-## Collection archive
+Selectors use the same projected namespace as search, file download, WebDAV browsing, and eviction.
 
-Accepted collections have a deterministic whole-collection archive package under
-the archive prefix. The package uses a deterministic tar archive for
-the logical files in the configured archive storage class, plus sibling Standard
-S3 collection manifest and OpenTimestamps proof objects under the same
-collection prefix.
+## Service boundaries
 
-The archive stores collection archives. Finalized images remain disc
-artifacts and do not define the archive unit.
-
-Finalization is gated by verified archive receipt. Riverhog persists that
-receipt, promotes staged bytes into the hot collection namespace with per-file
-verification markers, and commits the collection/archive records before deleting
-staged upload files from the shared tusd filesystem directory. A retry after
-restart resumes the archive multipart upload, the completed archive receipt, or
-the hot-file promotion phase according to the last durable state.
-
-## Hot Storage And Fetches
-
-New uploads enter planner jurisdiction after archiving and verified
-promotion into hot storage. Until the required verified discs exist,
-matching files are not evictable. Once files are compliant, `riverhog hot evict`
-can remove the selected hot bytes synchronously.
-
-Operators create named fetch manifests when they need hot bytes materialized
-again. A fetch can be queued to the prompt-based `djdan fetch` optical-media
-workflow, or started with fetch materialization so Riverhog automatically restores the
-selected collection archive data, verifies it, materializes the selected files,
-and cleans up temporary archive restore state.
-
-## Read-only browsing
-
-Read-only WebDAV exposes the committed `collections/` namespace for day-to-day
-browsing and download. It must not expose `.riverhog/`, and it is never an upload
-surface.
-
-## Why fetches and eviction exist
-
-Users do not delete or restore by mutating storage surfaces. Instead they:
-
-- create a named fetch and add target selectors to it
-- start that fetch for optical media or fetch fetch materialization
-- evict compliant hot bytes explicitly when they no longer need fast access
-
-This keeps intent explicit and makes the system safer than inferring meaning
-from storage mutations.
-
-## Fetch flow
-
-1. The user creates a named fetch and adds one or more target selectors.
-2. The system keeps a fetch-keyed summary projection for fast operator list and
-   show commands.
-3. If all selected bytes are already hot, the fetch manifest is immediately satisfied.
-4. If some bytes are archived but not hot, the operator starts the fetch for
-   `djdan fetch` or with `--archive`.
-5. The server stages the uploaded recovery bytes under `.riverhog/uploads/`, verifies
-   and decrypts them, then promotes the recovered logical file into
-   `collections/{collection_id}/{path}`.
-6. The fetch remains readable after completion as the recovery record for that
-   named operator intent.
-
-## Evict flow
-
-1. The user asks `riverhog hot evict` to remove one or more selectors from hot storage.
-2. Riverhog refuses if any selected file lacks verified disc redundancy.
-3. Riverhog deletes selected compliant hot files synchronously and reports what changed.
-4. Unrelated hot files are left alone.
+Riverhog owns custody and retrieval. Munchy produces finished media collections, Jeb schedules watched-drop submissions, and Gogurt presents the public API through a browser interface. Deployment identity and device mappings remain downstream configuration.

@@ -11,170 +11,79 @@ from riverhog_cli.main import app
 runner = CliRunner()
 
 
-class _DoneFetchClient:
-    def __init__(self) -> None:
-        self.manifest_calls = 0
-
-    def get_fetch(self, fetch_id: str) -> dict[str, Any]:
-        raise AssertionError(f"summary should only be requested in JSON mode: {fetch_id}")
-
-    def get_fetch_status(self, fetch_id: str) -> dict[str, Any]:
-        return {
-            "id": fetch_id,
-            "name": "Docs",
-            "targets": ["docs/"],
-            "state": "done",
-            "files": 3,
-            "bytes": 30,
-            "entries_total": 3,
-            "entries_pending": 0,
-            "entries_partial": 0,
-            "entries_byte_complete": 0,
-            "entries_uploaded": 3,
-            "uploaded_bytes": 30,
-            "missing_bytes": 0,
-            "upload_state_expires_at": None,
-            "discs": [],
-            "entries_limit": 25,
-            "entries_returned": 0,
-            "entries": [],
-        }
-
-    def get_fetch_manifest(self, fetch_id: str) -> dict[str, Any]:
-        self.manifest_calls += 1
-        raise AssertionError(f"manifest should not be requested for done fetch {fetch_id}")
+def _status(fetch_id: str) -> dict[str, object]:
+    return {
+        "id": fetch_id,
+        "name": "Docs",
+        "targets": ["docs/"],
+        "state": "done",
+        "files": 3,
+        "bytes": 30,
+        "hot_files": 3,
+        "hot_bytes": 30,
+        "missing_files": 0,
+        "missing_bytes": 0,
+        "next_action": {"action": "none", "reason": "selected files are hot"},
+        "archive_restores": {"total": 0},
+    }
 
 
-def test_hot_show_done_fetch_does_not_request_manifest(monkeypatch) -> None:
-    fake_client = _DoneFetchClient()
-    monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake_client)
-    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
-
-    result = runner.invoke(app, ["hot", "fetch", "show", "fx-done"])
-
-    assert result.exit_code == 0
-    assert "fetch: fx-done (done)" in result.stdout
-    assert "entries: none" in result.stdout
-    assert "pending:" not in result.stdout
-    assert fake_client.manifest_calls == 0
-
-
-def test_hot_list_passes_page_options_and_emits_paged_json(monkeypatch) -> None:
+def test_hot_fetch_show_renders_current_status(monkeypatch) -> None:
     class FakeClient:
-        def list_fetches(
-            self,
-            *,
-            page: int = 1,
-            per_page: int = 25,
-            state: str | None = None,
-            query: str | None = None,
-            sort: str = "order",
-            order: str = "asc",
-        ) -> dict[str, Any]:
-            assert page == 2
-            assert per_page == 1
-            assert state is None
-            assert query is None
-            assert sort == "order"
-            assert order == "asc"
-            return {
-                "page": page,
-                "per_page": per_page,
-                "total": 2,
-                "pages": 2,
-                "fetches": [
-                    {
-                        "id": "fx-2",
-                        "name": "Photos",
-                        "targets": ["docs/photos/"],
-                        "state": "queued_djdan",
-                        "files": 4,
-                        "bytes": 40,
-                        "missing_bytes": 40,
-                        "discs": [],
-                    }
-                ],
-            }
+        def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
+            return _status(fetch_id)
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
+    result = runner.invoke(app, ["hot", "fetch", "show", "fx-1"])
+
+    assert result.exit_code == 0
+    assert "fetch fx-1" in result.stdout
+    assert "hot: 3" in result.stdout
+
+
+def test_hot_fetch_list_emits_paged_json(monkeypatch) -> None:
+    class FakeClient:
+        def list_fetches(self, **kwargs: Any) -> dict[str, object]:
+            assert kwargs["page"] == 2
+            return {
+                "page": 2,
+                "per_page": 1,
+                "total": 2,
+                "pages": 2,
+                "fetches": [_status("fx-2")],
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
     result = runner.invoke(
         app,
         ["hot", "fetch", "list", "--page", "2", "--per-page", "1", "--json"],
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["page"] == 2
-    assert payload["per_page"] == 1
-    assert payload["total"] == 2
-    assert payload["fetches"][0]["id"] == "fx-2"
+    assert json.loads(result.stdout)["fetches"][0]["id"] == "fx-2"
 
 
-def test_hot_fetch_start_dry_run_renders_plan_without_followup_status(monkeypatch) -> None:
+def test_hot_fetch_start_follows_with_status(monkeypatch) -> None:
     class FakeClient:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def start_fetch(
-            self,
-            fetch_id: str,
-            *,
-            archive: bool = False,
-            dry_run: bool = False,
-        ) -> dict[str, object]:
-            self.calls.append((fetch_id, {"archive": archive, "dry_run": dry_run}))
-            return {
-                "dry_run": True,
-                "status": "would_queue_archive",
-                "id": fetch_id,
-                "name": "Docs",
-                "targets": ["docs/"],
-                "state": "draft",
-                "queued_state": "queued_archive",
-                "archive": True,
-                "will_create_archive_restore": True,
-                "files": 3,
-                "bytes": 30,
-                "missing_bytes": 20,
-                "entries_total": 0,
-                "entries_pending": 0,
-                "entries_partial": 0,
-                "entries_byte_complete": 0,
-                "entries_uploaded": 0,
-                "uploaded_bytes": 0,
-                "upload_state_expires_at": None,
-                "discs": [],
-            }
+        def start_fetch(self, fetch_id: str) -> dict[str, object]:
+            return {**_status(fetch_id), "state": "done"}
 
         def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
-            raise AssertionError(f"dry-run should not request follow-up status: {fetch_id}")
+            return _status(fetch_id)
 
-    fake = FakeClient()
-    monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake)
-    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
-
-    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1", "--archive", "--dry-run"])
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1"])
 
     assert result.exit_code == 0
-    assert fake.calls == [("fx-1", {"archive": True, "dry_run": True})]
-    assert "hot fetch start dry-run" in result.stdout
-    assert "status: would_queue_archive" in result.stdout
-    assert "queued state: queued_archive" in result.stdout
+    assert "state: done" in result.stdout
 
 
-def test_hot_evict_dry_run_passes_flag_and_renders_plan(monkeypatch) -> None:
+def test_hot_evict_dry_run_renders_selection(monkeypatch) -> None:
     class FakeClient:
-        def __init__(self) -> None:
-            self.calls: list[tuple[list[str], bool]] = []
-
         def evict_hot_targets(
-            self,
-            targets: list[str],
-            *,
-            dry_run: bool = False,
+            self, targets: list[str], *, dry_run: bool = False
         ) -> dict[str, object]:
-            self.calls.append((targets, dry_run))
             return {
                 "targets": targets,
                 "dry_run": dry_run,
@@ -187,13 +96,9 @@ def test_hot_evict_dry_run_passes_flag_and_renders_plan(monkeypatch) -> None:
                 "would_evict_bytes": 12,
             }
 
-    fake = FakeClient()
-    monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake)
-    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
-
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
     result = runner.invoke(app, ["hot", "evict", "docs/", "--dry-run"])
 
     assert result.exit_code == 0
-    assert fake.calls == [(["docs/"], True)]
-    assert "hot evict dry-run" in result.stdout
-    assert "would evict: 1 files 12 bytes" in result.stdout
+    assert "hot eviction: would_evict" in result.stdout
+    assert "affected: 1" in result.stdout

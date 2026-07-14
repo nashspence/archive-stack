@@ -5,11 +5,11 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= tests/unit
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db --extra planner
+UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec openapi stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -31,6 +31,7 @@ help:
 		'  make lint              Run ruff, then mypy.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
+		'  make openapi           Regenerate the checked OpenAPI contract.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
@@ -71,6 +72,9 @@ unit:
 
 spec:
 	$(call UV_CMD,python -m pytest -q $(SPEC_TESTS) $(args))
+
+openapi:
+	$(call UV_CMD,python scripts/generate_openapi.py)
 
 stop-spec:
 	@./scripts/stop_spec.sh

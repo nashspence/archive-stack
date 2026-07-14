@@ -2,23 +2,12 @@
 
 ## Decision
 
-Riverhog uses named fetches to declare operator recovery intent and
-`riverhog hot evict` to remove compliant bytes from hot storage.
+Riverhog uses named fetches to declare retrieval intent and `riverhog hot evict` to remove selected files from hot storage.
 
-A fetch contains one or more target selectors. The operator can edit a draft
-fetch, start it for the normal `djdan fetch` optical-media workflow, or start it
-with fetch materialization for automatic archive materialization.
+A fetch contains target selectors. Draft fetches can be edited; starting a fetch freezes its selectors and automatically materializes missing files from their collection archives.
 
-Hot eviction is separate from fetch creation. Eviction refuses any selected file
-that does not have the required verified disc redundancy.
+Hot eviction is separate from fetch creation and requires a verified collection archive for every selected file.
 
 ## Reason
 
-Fetches are a clearer unit of thought than implicit hot-residency rules. They let
-the operator name intent, build a manifest incrementally, and choose the
-fulfillment path only when ready.
-
-Eviction stays explicit and synchronous so Riverhog never treats cache cleanup
-as recovery intent. Keeping the two operations separate also keeps list/show
-views keyed by fetch id, which makes operator projections fast as the underlying
-file set grows.
+A named fetch is a durable, inspectable unit for retrieval. Explicit eviction keeps cache management separate from retrieval intent and ensures that every removed hot byte remains recoverable from verified remote storage.

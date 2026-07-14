@@ -11,11 +11,10 @@ terms, not the other way around.
 
 Each term includes a `term_type` that describes the kind of concept being
 exposed: `entity`, `activity`, `state`, `policy`, `identifier`,
-`metadata_property`, `enum_value`, or `software_agent`. `Riverhog`, `Djdan`,
-`Munchy`, and `Jeb` are intentional named system or agent terms and should use
+`metadata_property`, `enum_value`, or `software_agent`. `Riverhog`, `Munchy`,
+`Jeb`, and `Gogurt` are intentional named system or agent terms and should use
 `software_agent`.
 
 When adding a new operator-visible command, webhook field, config key, or major
 API term, update the terminology contract in the same change. When renaming a
-term, keep behavior and wire compatibility decisions in the owning API or CLI
-contract, then update this inventory to reflect the exposed vocabulary.
+term, update the owning API or CLI contract and this inventory together.

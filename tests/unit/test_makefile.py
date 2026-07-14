@@ -190,7 +190,7 @@ def test_atomic_local_targets_run_in_locked_uv_environment(
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
     assert (
-        "run --locked --no-default-groups --group dev --extra db --extra planner "
+        "run --locked --no-default-groups --group dev --extra db "
     ) in uv_log_lines[0]
     assert expected_command in uv_log_lines[0]
 
@@ -307,7 +307,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "COPY src ./src"
     )
     assert test_dockerfile.index(
-        "uv sync --locked --no-default-groups --group dev --extra db --extra planner "
+        "uv sync --locked --no-default-groups --group dev --extra db "
         "--no-install-project"
     ) < test_dockerfile.index("COPY src ./src")
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile

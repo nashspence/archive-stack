@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 
@@ -20,30 +19,6 @@ _FALLBACK_NOTIFICATION_TEMPLATE: dict[str, str] = {
     "title_template": "{emoji} {subject_40}",
     "body_template": "Riverhog has an operator notification.",
 }
-
-
-@dataclass(frozen=True)
-class ReadyImage:
-    image_id: str
-    filename: str
-    iso_available: bool
-
-
-@dataclass(frozen=True)
-class ImagesReadyBatch:
-    batch_id: str
-    images: list[ReadyImage]
-    reminder_count: int = 0
-    initial_sent_at: datetime | None = None
-    next_attempt_at: datetime | None = None
-
-
-class ImageReadyReminderStore(Protocol):
-    def list_due(self, *, now: datetime, limit: int) -> list[ImagesReadyBatch]: ...
-    def mark_delivered(
-        self, batch_id: str, *, delivered_at: datetime, next_attempt_at: datetime | None
-    ) -> None: ...
-    def mark_failed(self, batch_id: str, *, error: str, next_attempt_at: datetime) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -75,22 +50,6 @@ def isoformat_z(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def image_iso_download_path(image_id: str) -> str:
-    return f"/v1/images/{image_id}/iso"
-
-
-def image_summary_path(image_id: str) -> str:
-    return f"/v1/images/{image_id}"
-
-
-def image_iso_download_url(base_url: str, image_id: str) -> str:
-    return f"{base_url.rstrip('/')}{image_iso_download_path(image_id)}"
-
-
-def image_summary_url(base_url: str, image_id: str) -> str:
-    return f"{base_url.rstrip('/')}{image_summary_path(image_id)}"
-
-
 def archive_restore_path(restore_id: str) -> str:
     return f"/v1/archive-restores/{restore_id}"
 
@@ -103,16 +62,8 @@ def fetch_summary_path(fetch_id: str) -> str:
     return f"/v1/fetches/{fetch_id}"
 
 
-def fetch_manifest_path(fetch_id: str) -> str:
-    return f"/v1/fetches/{fetch_id}/manifest"
-
-
 def fetch_summary_url(base_url: str, fetch_id: str) -> str:
     return f"{base_url.rstrip('/')}{fetch_summary_path(fetch_id)}"
-
-
-def fetch_manifest_url(base_url: str, fetch_id: str) -> str:
-    return f"{base_url.rstrip('/')}{fetch_manifest_path(fetch_id)}"
 
 
 def collection_path(collection_id: str) -> str:
@@ -131,74 +82,31 @@ def collection_upload_url(base_url: str, collection_id: str) -> str:
     return f"{base_url.rstrip('/')}{collection_upload_path(collection_id)}"
 
 
-def build_images_ready_payload(
-    *, config: WebhookConfig, batch: ImagesReadyBatch, delivered_at: datetime
-) -> dict[str, object]:
-    is_reminder = batch.initial_sent_at is not None
-    event = "images.ready.reminder" if is_reminder else "images.ready"
-    images = [
-        {
-            "image_id": image.image_id,
-            "filename": image.filename,
-            "iso_available": image.iso_available,
-            "download_url": image_iso_download_url(config.base_url, image.image_id),
-        }
-        for image in batch.images
-    ]
-    return {
-        "event": event,
-        "batch_id": batch.batch_id,
-        "delivered_at": isoformat_z(delivered_at),
-        "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
-        "operator_action": _operator_event_field(event=event, field="operator_action"),
-        "reminder_count": batch.reminder_count + (1 if is_reminder else 0),
-        "reminder_interval_seconds": config.reminder_interval_seconds,
-        "images": images,
-        "notification": _images_ready_notification(event=event, images=images),
-    }
-
-
 def build_archive_restore_ready_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
     expires_at: str | None,
-    images: list[dict[str, str]],
+    collections: list[dict[str, str]],
     delivered_at: datetime,
-    reminder_count: int,
-    reminder: bool,
-    restore_type: str = "disc_rebuild",
-    collections: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
-    action, message = _archive_restore_operator_guidance(
-        stage="ready",
-        restore_type=restore_type,
-    )
     payload = _base_archive_restore_payload(
         config=config,
-        event="archive_restore.ready.reminder" if reminder else "archive_restore.ready",
+        event="archive_restore.ready",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
-        collections=collections or [],
+        collections=collections,
     )
     payload.update(
         {
             "expires_at": expires_at,
-            "reminder_count": reminder_count + (1 if reminder else 0),
-            "reminder_interval_seconds": config.reminder_interval_seconds,
             "operator_urgency": "time_sensitive",
-            "operator_action": action,
-            "operator_message": message,
+            "operator_action": "wait for automatic materialization",
+            "operator_message": "Archive retrieval is ready and materialization is starting.",
+            "notification": _archive_restore_notification(
+                event="archive_restore.ready", restore_id=restore_id, collections=collections
+            ),
         }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event=str(payload["event"]),
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections or [],
     )
     return payload
 
@@ -207,24 +115,16 @@ def build_archive_restore_started_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
-    restore_type: str,
     retrieval_tier: str,
     estimated_ready_at: str | None,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
-    action, message = _archive_restore_operator_guidance(
-        stage="started",
-        restore_type=restore_type,
-    )
     payload = _base_archive_restore_payload(
         config=config,
         event="archive_restore.started",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
         collections=collections,
     )
     payload.update(
@@ -232,16 +132,14 @@ def build_archive_restore_started_payload(
             "retrieval_tier": retrieval_tier,
             "estimated_ready_at": estimated_ready_at,
             "operator_urgency": "time_sensitive",
-            "operator_action": action,
-            "operator_message": message,
+            "operator_action": "wait for automatic materialization",
+            "operator_message": "Archive retrieval has started for selected files.",
+            "notification": _archive_restore_notification(
+                event="archive_restore.started",
+                restore_id=restore_id,
+                collections=collections,
+            ),
         }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.started",
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
     )
     return payload
 
@@ -250,37 +148,27 @@ def build_archive_restore_completed_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
-    restore_type: str,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
-    action, message = _archive_restore_operator_guidance(
-        stage="completed",
-        restore_type=restore_type,
-    )
     payload = _base_archive_restore_payload(
         config=config,
         event="archive_restore.completed",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
         collections=collections,
     )
     payload.update(
         {
-            "operator_urgency": "time_sensitive",
-            "operator_action": action,
-            "operator_message": message,
+            "operator_urgency": "passive",
+            "operator_action": "none",
+            "operator_message": "Selected files are verified and available in hot storage.",
+            "notification": _archive_restore_notification(
+                event="archive_restore.completed",
+                restore_id=restore_id,
+                collections=collections,
+            ),
         }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.completed",
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
     )
     return payload
 
@@ -289,8 +177,6 @@ def build_archive_restore_canceled_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
-    restore_type: str,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
@@ -298,65 +184,20 @@ def build_archive_restore_canceled_payload(
         config=config,
         event="archive_restore.canceled",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
         collections=collections,
     )
     payload.update(
         {
             "operator_urgency": "passive",
             "operator_action": "none",
-            "operator_message": "Archive restore was canceled by the operator.",
-        }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.canceled",
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
-    )
-    return payload
-
-
-def build_archive_restore_paused_reminder_payload(
-    *,
-    config: WebhookConfig,
-    restore_id: str,
-    images: list[dict[str, str]],
-    collections: list[dict[str, str]],
-    delivered_at: datetime,
-    reminder_count: int,
-    reminder_interval_seconds: float,
-) -> dict[str, object]:
-    payload = _base_archive_restore_payload(
-        config=config,
-        event="archive_restore.paused.reminder",
-        restore_id=restore_id,
-        restore_type="disc_rebuild",
-        delivered_at=delivered_at,
-        images=images,
-        collections=collections,
-    )
-    payload.update(
-        {
-            "reminder_count": reminder_count + 1,
-            "reminder_interval_seconds": reminder_interval_seconds,
-            "operator_urgency": "time_sensitive",
-            "operator_action": f"Run `djdan disc rebuild resume {restore_id}` when ready",
-            "operator_message": (
-                "Disc rebuild is paused. Resume it when ready to rebuild the image "
-                "and restore disc coverage."
+            "operator_message": "Archive restore was canceled.",
+            "notification": _archive_restore_notification(
+                event="archive_restore.canceled",
+                restore_id=restore_id,
+                collections=collections,
             ),
         }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.paused.reminder",
-        restore_type="disc_rebuild",
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
     )
     return payload
 
@@ -365,8 +206,6 @@ def build_archive_restore_retrying_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
-    restore_type: str,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
     attempts: int,
@@ -379,39 +218,32 @@ def build_archive_restore_retrying_payload(
         config=config,
         event="archive_restore.retrying",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
         collections=collections,
     )
     payload.update(
         {
             "operator_urgency": "time_sensitive",
-            "operator_action": "wait unless failures persist beyond normal connectivity trouble",
-            "operator_message": (
-                "Archive restore hit a retryable issue. Riverhog will keep retrying "
-                "without operator action."
-            ),
+            "operator_action": "wait unless failures persist",
+            "operator_message": "Archive retrieval hit a retryable issue.",
             "attempts": attempts,
             "failed_at": failed_at,
             "next_retry_at": next_retry_at,
             "retry_delay_seconds": retry_delay_seconds,
             "error": error,
+            "notification": _archive_restore_notification(
+                event="archive_restore.retrying",
+                restore_id=restore_id,
+                collections=collections,
+                values={
+                    "attempts": attempts,
+                    "failed_at": failed_at,
+                    "next_retry_at": next_retry_at or "unknown",
+                    "retry_delay_seconds": retry_delay_seconds,
+                    "error": error,
+                },
+            ),
         }
-    )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.retrying",
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
-        values={
-            "attempts": attempts,
-            "failed_at": failed_at,
-            "next_retry_at": next_retry_at or "unknown",
-            "retry_delay_seconds": retry_delay_seconds,
-            "error": error,
-        },
     )
     return payload
 
@@ -420,8 +252,6 @@ def build_archive_restore_failed_payload(
     *,
     config: WebhookConfig,
     restore_id: str,
-    restore_type: str,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
     attempts: int,
@@ -432,76 +262,25 @@ def build_archive_restore_failed_payload(
         config=config,
         event="archive_restore.failed",
         restore_id=restore_id,
-        restore_type=restore_type,
         delivered_at=delivered_at,
-        images=images,
         collections=collections,
     )
     payload.update(
         {
             "operator_urgency": "time_sensitive",
-            "operator_action": "inspect Riverhog recovery logs and session state",
-            "operator_message": (
-                "Archive restore stopped on a non-retryable issue. Riverhog will not "
-                "continue this session automatically."
-            ),
+            "operator_action": "inspect Riverhog archive retrieval logs",
+            "operator_message": "Archive retrieval stopped on a non-retryable issue.",
             "attempts": attempts,
             "failed_at": failed_at,
             "error": error,
+            "notification": _archive_restore_notification(
+                event="archive_restore.failed",
+                restore_id=restore_id,
+                collections=collections,
+                values={"attempts": attempts, "failed_at": failed_at, "error": error},
+            ),
         }
     )
-    payload["notification"] = _archive_restore_notification(
-        event="archive_restore.failed",
-        restore_type=restore_type,
-        restore_id=restore_id,
-        images=images,
-        collections=collections,
-        values={
-            "attempts": attempts,
-            "failed_at": failed_at,
-            "error": error,
-        },
-    )
-    return payload
-
-
-def build_fetch_queued_payload(
-    *,
-    config: WebhookConfig,
-    fetch_id: str,
-    name: str,
-    files: int,
-    bytes: int,
-    discs: list[dict[str, str]],
-    delivered_at: datetime,
-    reminder_count: int,
-    reminder: bool,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "event": "fetches.queued_djdan.reminder" if reminder else "fetches.queued_djdan",
-        "type": "fetch_queued_djdan",
-        "fetch_id": fetch_id,
-        "name": name,
-        "delivered_at": isoformat_z(delivered_at),
-        "reminder_count": reminder_count + (1 if reminder else 0),
-        "reminder_interval_seconds": config.reminder_interval_seconds,
-        "files": files,
-        "bytes": bytes,
-        "discs": discs,
-        "operator_urgency": "time_sensitive",
-        "operator_action": f"Run `djdan fetch {fetch_id}`",
-        "operator_message": (
-            "Riverhog has a fetch queued for optical-media recovery before these files "
-            "can be hot again."
-        ),
-        "notification": _fetch_queued_notification(
-            reminder=reminder,
-            name=name,
-        ),
-    }
-    if config.base_url:
-        payload["fetch_url"] = fetch_summary_url(config.base_url, fetch_id)
-        payload["manifest_url"] = fetch_manifest_url(config.base_url, fetch_id)
     return payload
 
 
@@ -510,28 +289,14 @@ def _base_archive_restore_payload(
     config: WebhookConfig,
     event: str,
     restore_id: str,
-    restore_type: str,
     delivered_at: datetime,
-    images: list[dict[str, str]],
     collections: list[dict[str, str]],
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "event": event,
-        "type": restore_type,
+        "type": "archive_restore",
         "restore_id": restore_id,
         "delivered_at": isoformat_z(delivered_at),
-        "images": [
-            {
-                "image_id": image["image_id"],
-                "filename": image["filename"],
-                **(
-                    {"image_url": image_summary_url(config.base_url, image["image_id"])}
-                    if config.base_url
-                    else {}
-                ),
-            }
-            for image in images
-        ],
         "collections": [
             {
                 "collection_id": collection["collection_id"],
@@ -552,53 +317,6 @@ def _base_archive_restore_payload(
     if config.base_url:
         payload["restore_url"] = archive_restore_url(config.base_url, restore_id)
     return payload
-
-
-def _archive_restore_operator_guidance(*, stage: str, restore_type: str) -> tuple[str, str]:
-    if stage == "started":
-        if restore_type == "fetch_materialization":
-            return (
-                "Wait for Riverhog to finish fetch materialization",
-                (
-                    "Fetch materialization has started for missing fetch-selected files. "
-                    "This is rare, expected to take a long time, and means Riverhog "
-                    "is restoring safely archived collection data."
-                ),
-            )
-        return (
-            "Wait for the archive-restore-ready notification",
-            (
-                "Archive restore has started for lost or damaged disc media. "
-                "This is rare, expected to take a long time, and means Riverhog "
-                "is restoring safely archived collection data so replacement media "
-                "can be rebuilt."
-            ),
-        )
-    if stage == "completed":
-        if restore_type == "fetch_materialization":
-            return (
-                "No operator action required",
-                "Fetch materialization completed and the missing fetch files are hot again.",
-            )
-        return (
-            "No operator action required",
-            "Archive restore completed and temporary restored archive data was cleaned up.",
-        )
-    if restore_type == "fetch_materialization":
-        return (
-            "Wait for Riverhog to finish fetch materialization",
-            (
-                "Restored archive data is ready. Riverhog will materialize missing "
-                "fetch files automatically before cleanup."
-            ),
-        )
-    return (
-        "Rebuild and burn replacement media before the restore expires",
-        (
-            "Archive restore data is ready for replacement media. Complete the "
-            "rebuild and burn workflow before the temporary restore window expires."
-        ),
-    )
 
 
 @lru_cache(maxsize=1)
@@ -704,7 +422,7 @@ def _notification_emoji(actor: str) -> str:
     actors = rendering.get("actors") if isinstance(rendering, dict) else None
     if isinstance(actors, dict) and isinstance(actors.get(actor), str):
         return str(actors[actor])
-    return {"riverhog": "🐷", "djdan": "👨🏻‍🎤"}.get(actor, actor)
+    return {"riverhog": "🐷"}.get(actor, actor)
 
 
 def _notification_int(key: str, *, default: int) -> int:
@@ -750,26 +468,13 @@ def _target_subject(target: str) -> str:
     return leaf
 
 
-def _image_subject(images: Sequence[Mapping[str, object]]) -> str:
-    if not images:
-        return "disc image"
-    first = images[0]
-    subject = str(first.get("filename") or first.get("image_id") or "disc image")
-    if len(images) > 1:
-        subject = f"{subject} +{len(images) - 1}"
-    return subject
-
-
 def _archive_restore_subject(
     *,
     restore_id: str,
-    images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
 ) -> str:
     if collections:
         return _collection_subject(collections[0]["collection_id"])
-    if images:
-        return _image_subject(list(images))
     return restore_id
 
 
@@ -880,49 +585,21 @@ def _jeb_issue_notification(
     )
 
 
-def _images_ready_notification(
-    *,
-    event: str,
-    images: Sequence[Mapping[str, object]],
-) -> dict[str, str]:
-    return _canonical_notification_from_contract(
-        event=event,
-        subject=_image_subject(images),
-    )
-
-
-def _disc_label_needed_notification(*, label_text: str) -> dict[str, str]:
-    return _canonical_notification_from_contract(
-        event="images.disc_label_needed",
-        subject=label_text,
-    )
-
-
-def _fetch_queued_notification(*, reminder: bool, name: str) -> dict[str, str]:
-    return _canonical_notification_from_contract(
-        event="fetches.queued_djdan.reminder" if reminder else "fetches.queued_djdan",
-        subject=_target_subject(name),
-    )
-
-
 def _archive_restore_notification(
     *,
     event: str,
-    restore_type: str,
     restore_id: str,
-    images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
     values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     subject = _archive_restore_subject(
         restore_id=restore_id,
-        images=images,
         collections=collections,
     )
     return _canonical_notification_from_contract(
         event=event,
         subject=subject,
-        notification_type=restore_type,
+        notification_type="archive_restore",
         values=values,
     )
 
@@ -1067,72 +744,7 @@ def build_jeb_event_payload(
     return payload
 
 
-def build_disc_label_needed_payload(
-    *,
-    config: WebhookConfig,
-    image_id: str,
-    disc_id: str,
-    label_text: str,
-    delivered_at: datetime,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "event": "images.disc_label_needed",
-        "type": "disc_lifecycle",
-        "image_id": image_id,
-        "disc_id": disc_id,
-        "label_text": label_text,
-        "delivered_at": isoformat_z(delivered_at),
-        "operator_urgency": _operator_event_field(
-            event="images.disc_label_needed",
-            field="operator_urgency",
-        ),
-        "operator_action": _operator_event_field(
-            event="images.disc_label_needed",
-            field="operator_action",
-        ),
-        "notification": _disc_label_needed_notification(label_text=label_text),
-    }
-    if config.base_url:
-        payload["image_url"] = image_summary_url(config.base_url, image_id)
-    return payload
-
-
 def post_webhook(*, config: WebhookConfig, payload: dict[str, object]) -> None:
     with httpx.Client(timeout=config.timeout_seconds) as client:
         response = client.post(config.url, json=payload)
         response.raise_for_status()
-
-
-class ImagesReadyReminderService:
-    def __init__(self, *, store: ImageReadyReminderStore, config: WebhookConfig) -> None:
-        self.store = store
-        self.config = config
-
-    def deliver_due(self, *, now: datetime | None = None, limit: int = 100) -> int:
-        current = now or utcnow()
-        delivered = 0
-        for batch in self.store.list_due(now=current, limit=limit):
-            try:
-                payload = build_images_ready_payload(
-                    config=self.config, batch=batch, delivered_at=current
-                )
-                post_webhook(config=self.config, payload=payload)
-            except Exception as exc:
-                self.store.mark_failed(
-                    batch.batch_id,
-                    error=str(exc),
-                    next_attempt_at=current
-                    + timedelta(seconds=max(1.0, self.config.retry_seconds)),
-                )
-                continue
-            next_attempt = self.config.next_reminder_at(current)
-            self.store.mark_delivered(
-                batch.batch_id, delivered_at=current, next_attempt_at=next_attempt
-            )
-            delivered += 1
-        return delivered
-
-    async def run_forever(self, *, interval_seconds: float = 30.0) -> None:
-        while True:
-            self.deliver_due()
-            await asyncio.sleep(interval_seconds)

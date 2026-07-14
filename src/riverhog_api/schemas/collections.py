@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from riverhog_api.schemas.archive import ArchiveOut, CollectionManifestOut
 from riverhog_api.schemas.common import RiverhogModel
-from riverhog_api.schemas.images import DiscOut
 
 
 class CollectionUploadFileIn(RiverhogModel):
@@ -63,14 +62,7 @@ class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
     pass
 
 
-class CoverageOut(RiverhogModel):
-    state: Literal["none", "partial", "full"]
-    bytes: int
-
-
 class CollectionSummaryOut(RiverhogModel):
-    model_config = ConfigDict(extra="ignore")
-
     id: str
     files: int
     bytes: int
@@ -79,39 +71,6 @@ class CollectionSummaryOut(RiverhogModel):
     collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
-    disc_coverage: CoverageOut
-    disc_redundancy: CoverageOut
-    image_coverage: list[CollectionCoverageImageOut]
-
-
-class CollectionListItemOut(RiverhogModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    files: int
-    bytes: int
-    hot_bytes: int
-    archive: ArchiveOut | None = None
-    collection_manifest: CollectionManifestOut | None = None
-    archive_format: str | None = None
-    compression: str | None = None
-    disc_coverage: CoverageOut
-    disc_redundancy: CoverageOut
-
-
-class CollectionCoverageImageOut(RiverhogModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    filename: str
-    disc_redundancy_state: Literal["none", "partial", "full"]
-    discs_required: int
-    discs_registered: int
-    discs_verified: int
-    discs_missing: int
-    covered_paths: list[str]
-    covered_paths_total: int | None = None
-    discs: list[DiscOut]
 
 
 class ListCollectionsResponse(RiverhogModel):
@@ -119,10 +78,7 @@ class ListCollectionsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    collections: list[CollectionListItemOut]
-
-
-CollectionSummaryOut.model_rebuild()
+    collections: list[CollectionSummaryOut]
 
 
 class CollectionUploadFileOut(RiverhogModel):

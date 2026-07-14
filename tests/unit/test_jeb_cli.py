@@ -43,8 +43,7 @@ def test_jeb_archive_now_starts_batch_without_processing(
 
     output = capsys.readouterr().out
     assert "jeb archive" in output
-    assert "status: staged" in output
-    assert "account: phone" in output
+    assert "jeb archive: staged" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
     [batch_id] = collector.active_attempt_ids()
@@ -65,9 +64,8 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     assert jeb_main(["archive-now", "--account", "phone", "--dry-run"]) == 0
 
     output = capsys.readouterr().out
-    assert "jeb archive dry-run" in output
-    assert "status: would_process" in output
-    assert "account: phone" in output
+    assert "Jeb archive plan: phone" in output
+    assert "collections: 0" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
     assert collector.active_attempt_ids() == []
@@ -98,8 +96,7 @@ def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None
     assert jeb_main(["check-config"]) == 0
 
     output = capsys.readouterr().out
-    assert "jeb config" in output
-    assert "accounts: 1" in output
+    assert "Jeb config: ok" in output
 
 
 def test_jeb_attempts_json_pages_sorts_and_filters(

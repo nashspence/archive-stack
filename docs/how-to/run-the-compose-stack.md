@@ -16,10 +16,10 @@ cp .env.compose.example .env.compose
 The checked-in scripts prefer `./.env.compose` when it exists and otherwise fall
 back to `./.env.compose.example`.
 
-The checked-in recovery payload passphrase is development/test only. Production
+The checked-in archive passphrase default is development/test only. Production
 Compose deployments should set
-`RIVERHOG_RECOVERY_PAYLOAD_REQUIRE_EXPLICIT_PASSPHRASE=true` and provide
-`RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE` from deployment secrets.
+`RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE=true` and provide
+`RIVERHOG_ARCHIVE_PASSPHRASE` from deployment secrets.
 
 ## Start the Stack
 
