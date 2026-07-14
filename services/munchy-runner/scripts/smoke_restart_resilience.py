@@ -173,7 +173,7 @@ def cleanup_smoke_state(job_id: str, upload_id: str) -> None:
 def storage_hint_from_job_payload(payload: dict) -> dict:
     groups = {
         name: {
-            "archive_mode": group.get("archive_mode", payload["archive_mode"]),
+            "output_mode": group.get("output_mode", payload["output_mode"]),
             "tasks": list(group.get("tasks") or []),
         }
         for name, group in dict(payload["groups"]).items()
@@ -184,7 +184,7 @@ def storage_hint_from_job_payload(payload: dict) -> dict:
             "destination",
             "riverhog",
         ),
-        "archive_mode": payload["archive_mode"],
+        "output_mode": payload["output_mode"],
         "tasks": payload["tasks"],
         "groups": groups,
     }
@@ -271,11 +271,11 @@ def main() -> int:
         "collection_slug": "runner-restart-smoke",
         "collection_timestamp": stamp,
         "workflow_mode": "collection_archive",
-        "archive_mode": "preserve",
+        "output_mode": "preserve",
         "tasks": [],
         "groups": {
             group_name: {
-                "archive_mode": "preserve",
+                "output_mode": "preserve",
                 "tasks": [],
             },
         },
@@ -317,9 +317,9 @@ def main() -> int:
             label="resumed Riverhog retry after runner restart",
         )
         api("POST", f"/v1/jobs/{job_id}/cancel", expect=202)
-        cancelled = wait_job(
+        canceled = wait_job(
             job_id,
-            lambda job: job.get("state") == "cancelled",
+            lambda job: job.get("state") == "canceled",
             timeout_s=30,
             label="safe cancellation of handoff retry",
         )
@@ -333,7 +333,7 @@ def main() -> int:
                     "after_attempts": int(
                         after.get("handoff_attempts", {}).get("riverhog_upload_result") or 0
                     ),
-                    "cancelled_at": cancelled.get("cancelled_at"),
+                    "canceled_at": canceled.get("canceled_at"),
                 },
                 indent=2,
             )

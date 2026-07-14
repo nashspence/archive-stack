@@ -69,26 +69,26 @@ Secret key used for the S3-compatible object store.
 
 Enables path-style S3 requests for backends that require them.
 
-## `RIVERHOG_GLACIER_ENDPOINT_URL`
+## `RIVERHOG_ARCHIVE_ENDPOINT_URL`
 
 - type: URL
 - default: `RIVERHOG_S3_ENDPOINT_URL`
 
 Base URL for the archive-upload object-store API.
 
-## `RIVERHOG_GLACIER_REGION`
+## `RIVERHOG_ARCHIVE_REGION`
 
 - type: string
 - default: `RIVERHOG_S3_REGION`
 
 Region sent to the archive-upload object-store client.
 
-## `RIVERHOG_GLACIER_BUCKET`
+## `RIVERHOG_ARCHIVE_BUCKET`
 
 - type: string
 - default: `RIVERHOG_S3_BUCKET`
 
-Bucket holding collection-native Glacier archive packages.
+Bucket holding collection-native archive packages.
 
 When this differs from `RIVERHOG_S3_BUCKET`, that separate archive bucket must publish
 the same abort-incomplete-multipart lifecycle rule as the committed hot-store
@@ -96,42 +96,42 @@ bucket.
 
 Collection archive packages are streamed to this bucket. Archives that exceed
 the S3 single-object PUT limit, and streamed archives at or above the multipart
-part size, use S3 multipart upload with the configured Glacier metadata and
+part size, use S3 multipart upload with the configured archive metadata and
 storage class applied at multipart creation time.
 
-## `RIVERHOG_GLACIER_ACCESS_KEY_ID`
+## `RIVERHOG_ARCHIVE_ACCESS_KEY_ID`
 
 - type: string
 - default: `RIVERHOG_S3_ACCESS_KEY_ID`
 
-Access key used for Glacier uploads.
+Access key used for archive uploads.
 
-## `RIVERHOG_GLACIER_SECRET_ACCESS_KEY`
+## `RIVERHOG_ARCHIVE_SECRET_ACCESS_KEY`
 
 - type: secret string
 - default: `RIVERHOG_S3_SECRET_ACCESS_KEY`
 
-Secret key used for Glacier uploads.
+Secret key used for archive uploads.
 
-## `RIVERHOG_GLACIER_FORCE_PATH_STYLE`
+## `RIVERHOG_ARCHIVE_FORCE_PATH_STYLE`
 
 - type: boolean
 - default: `RIVERHOG_S3_FORCE_PATH_STYLE`
 
-Enables path-style requests for Glacier-upload backends that require them.
+Enables path-style requests for archive backends that require them.
 
-## `RIVERHOG_GLACIER_PREFIX`
+## `RIVERHOG_ARCHIVE_PREFIX`
 
 - type: normalized path prefix
-- default: `glacier`
+- default: `archive`
 
-New collection Glacier archive packages use opaque archive ids below the
+New collection archive packages use opaque archive ids below the
 configured prefix:
 
 ```text
-glacier/archives/{opaque-archive-id}/archive.tar.age
-glacier/archives/{opaque-archive-id}/manifest.yml.age
-glacier/archives/{opaque-archive-id}/manifest.yml.ots.age
+archive/archives/{opaque-archive-id}/archive.tar.age
+archive/archives/{opaque-archive-id}/manifest.yml.age
+archive/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
 
 The opaque archive id is randomly minted and persisted before upload starts, so
@@ -139,16 +139,16 @@ archive multipart retries and app restarts keep using the same object keys
 without exposing collection slugs in S3 listings.
 
 The encrypted archive tar contains only the logical collection files and uses the
-configured Glacier storage class. Riverhog stores the encrypted collection
+configured archive storage class. Riverhog stores the encrypted collection
 manifest and its matching encrypted OpenTimestamps proof as sibling Standard S3
-objects so operators can inspect and verify them without restoring Deep Archive
+objects so operators can inspect and verify them without restoring S3 Glacier Deep Archive
 data.
 
 Riverhog also publishes recovery aids under the configured prefix:
 
 ```text
-glacier/README.md
-glacier/catalog/collections.yml.age
+archive/README.md
+archive/catalog/collections.yml.age
 ```
 
 `README.md` is plaintext, collection-agnostic guidance for recovering data with
@@ -156,26 +156,26 @@ standard S3, `age`, and `tar` tools. It contains no collection names. The catalo
 is encrypted with the archive passphrase and maps private collection ids to their
 opaque archive object paths.
 
-## `RIVERHOG_GLACIER_BACKEND`
+## `RIVERHOG_ARCHIVE_BACKEND`
 
 - type: string
 - default: `s3`
 
-Opaque backend label recorded on collection Glacier summaries.
+Opaque backend label recorded on collection archive summaries.
 
-## `RIVERHOG_GLACIER_STORAGE_CLASS`
+## `RIVERHOG_ARCHIVE_STORAGE_CLASS`
 
 - type: string
 - default: `DEEP_ARCHIVE`
 
-Intended Glacier storage class recorded on collection Glacier summaries.
+Intended archive storage class recorded on collection archive summaries.
 
-## `RIVERHOG_GLACIER_MULTIPART_PART_BYTES`
+## `RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES`
 
 - type: positive byte count
 - default: `64MiB`
 
-Target S3 multipart part size for collection Glacier archive packages. Riverhog
+Target S3 multipart part size for collection archive packages. Riverhog
 rounds this up when needed to satisfy S3 minimum part size and maximum part
 count constraints.
 
@@ -190,13 +190,13 @@ incomplete multipart parts billable until the upload is completed or aborted,
 so production buckets should also keep an abort-incomplete-multipart lifecycle
 rule as a final cleanup guard.
 
-## `RIVERHOG_GLACIER_MULTIPART_CONCURRENCY`
+## `RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY`
 
 - type: positive integer
 - default: `4`
 
 Maximum number of S3 multipart archive parts Riverhog uploads concurrently for
-one collection Glacier archive. Higher values can improve large migration
+one collection archive. Higher values can improve large migration
 throughput when the server and network have spare capacity, at the cost of
 roughly `part size * concurrency` in buffered archive data plus S3 client
 overhead.
@@ -207,14 +207,14 @@ Riverhog resumes against the same `UploadId`, verifies the recorded parts that
 S3 still has, skips the deterministic contiguous prefix, and uploads any
 remaining parts.
 
-## `RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION`
+## `RIVERHOG_ARCHIVE_ENCRYPTION`
 
 - type: enum, `age_scrypt`
 - default: `age_scrypt`
 
 Collection archive packages stored in the archive bucket are always encrypted
 with standard binary age v1 scrypt files. The archive object uses the configured
-Glacier storage class; the encrypted manifest and proof remain Standard S3
+archive storage class; the encrypted manifest and proof remain Standard S3
 objects. Object metadata records both the stored encrypted object size and the
 logical plaintext byte count/SHA-256 used by Riverhog verification. Any value
 other than `age_scrypt` is rejected at startup.
@@ -224,7 +224,7 @@ header/payload nonce as encrypted-upload state with the S3 `UploadId`, then
 regenerates exact ciphertext parts from the deterministic archive stream on
 retry. The plaintext age file key is not stored in the catalog.
 
-## `RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE`
+## `RIVERHOG_ARCHIVE_PASSPHRASE`
 
 - type: secret string
 - default: `RIVERHOG_RECOVERY_PAYLOAD_PASSPHRASE`
@@ -233,16 +233,16 @@ Passphrase used for archive package, manifest, proof, and recovery-catalog
 encryption. Deployments may share the same passphrase used for disc recovery
 payloads or configure a separate archive-only secret.
 
-## `RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE`
+## `RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE`
 
 - type: boolean
 - default: `false`
 
 When `true`, startup rejects configuration if
-`RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE` is missing or still set to the checked-in
+`RIVERHOG_ARCHIVE_PASSPHRASE` is missing or still set to the checked-in
 development passphrase. Production deployments should set this to `true`.
 
-## `RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR`
+## `RIVERHOG_ARCHIVE_WORK_FACTOR`
 
 - type: integer, `1..22`
 - default: `18`
@@ -254,9 +254,9 @@ should use the default unless operational testing shows a clear need to tune it.
 
 ## Fetch Hot-File Repair
 
-Collections that are safely archived in Glacier but are not yet protected by
-the required verified disc copies remain hot and are not evictable. Riverhog
-audits active fetches in the background at startup, during Glacier recovery
+Collections that are safely stored in the archive but do not yet have the
+required disc redundancy remain hot and are not evictable. Riverhog
+audits active fetches in the background at startup, during archive restore
 sweeps, and before planner refreshes. If a fetch-selected hot file is missing
 or size/checksum mismatched, Riverhog chooses the least surprising recovery path
 for that exact file:
@@ -264,12 +264,12 @@ for that exact file:
 - If registered disc coverage exists, the fetch is queued for the normal
   `djdan fetch` prompt-based media flow.
 - If no registered disc coverage exists for that file, Riverhog automatically
-  creates or resumes a collection Glacier restore session, requests the restore,
+  creates or resumes an archive restore for the collection, requests it,
   polls it, verifies the manifest/proof/archive, and materializes the selected
   files back into hot storage when S3 makes the restored objects readable.
 
-This means Glacier is the only offsite source of truth before physical media
-protection exists. There is no separate pre-disc archive store to configure.
+This means the archive is the only offsite source of truth before disc media
+disc redundancy exists. There is no separate pre-disc archive store to configure.
 
 ## `RIVERHOG_OTS_STAMP_COMMAND`
 
@@ -412,7 +412,7 @@ splitting.
 
 Directory where Riverhog stores provisional image roots and cached collection
 manifest/proof bytes needed for future disc planning. In production this should
-be backed by persistent local storage because Glacier manifest and proof objects
+be backed by persistent local storage because archive manifest and proof objects
 may be uploaded directly to archive storage classes.
 
 ## `RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT`
@@ -421,11 +421,11 @@ may be uploaded directly to archive storage classes.
 - default: `500GB`
 
 Maximum bytes Riverhog will admit as unburned collection data. The count includes
-active collection uploads plus committed collection bytes that are not yet
-protected by enough registered physical image copies. Set to `0` to disable the
+active collection uploads plus committed collection bytes that do not yet have
+the required disc redundancy. Set to `0` to disable the
 admission cap.
 
-## `RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY`
+## `RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY`
 
 - type: duration
 - default: `5m`
@@ -435,12 +435,12 @@ finalization work. Riverhog keeps retrying this server-owned stage indefinitely
 because packaging, S3 multipart archive upload, hot-file promotion, and final
 catalog commit are designed to resume without operator intervention.
 
-## `RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL`
+## `RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL`
 
 - type: duration
 - default: `30s`
 
-How often Riverhog's Glacier-upload worker scans for due collection archive
+How often Riverhog's archive-upload worker scans for due collection archive
 uploads, retries, and restart-recovered work.
 
 Restart-recovered work resumes one durable job record. For interrupted
@@ -448,7 +448,7 @@ collection archive uploads, that job reuses its persisted S3 multipart upload id
 when the remote multipart upload still exists. Once S3 has accepted the archive
 object, Riverhog uploads and records the sibling manifest/proof objects. A
 restart can then resume hot-file promotion without rebuilding or re-uploading
-completed Glacier objects.
+completed archive objects.
 
 ## `RIVERHOG_PLANNER_REFRESH_SWEEP_INTERVAL`
 
@@ -473,8 +473,8 @@ already completed encrypted files and finish the same candidate id.
 Single optional fallback operator notification endpoint. Riverhog posts quiet,
 operator-facing notifications to this endpoint when an event has no explicit
 recipient routing, including collection ingest milestones, ready disc-image
-candidates, persistent archival failures after retries, verified-copy labeling
-handoffs, fetch-required handoffs, and Glacier recovery lifecycle notifications.
+candidates, persistent archival failures after retries, verified-disc labeling
+handoffs, fetch-required handoffs, and archive restore lifecycle notifications.
 Collection upload requests may also include a generic `notify` object with
 `enabled` and `recipients`; those recipients are persisted with the collection
 upload and used for collection lifecycle events instead of this fallback URL.
@@ -492,7 +492,7 @@ Collection events are intentionally sparse so long-running retries do not spam
 operators. Success milestones include `collections.upload_staged`,
 when the full collection has reached server custody, and
 `collections.finalized`, when the collection archive is safely uploaded to
-Glacier, hot-file promotion has finished, and the collection is available
+the archive, hot-file promotion has finished, and the collection is available
 through Riverhog/WebDAV. Failure/attention events include
 `collections.archive_retrying`, paced by
 `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`, and
@@ -507,16 +507,16 @@ failure, Riverhog sends a fresh critical notification so the collection does not
 get forgotten. Ready burn candidates use `images.ready`; if
 operator reminders are explicitly enabled, repeats use `images.ready.reminder`.
 After `djdan` verifies a burned disc but before the operator confirms the
-physical label, it triggers `images.copy_label_needed`. If fetch-selected hot
+physical label, it triggers `images.disc_label_needed`. If fetch-selected hot
 files are missing but registered physical media can recover them, Riverhog emits
 `fetches.queued_djdan` and then `fetches.queued_djdan.reminder` once per
 `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL` while it is still waiting for the
-operator to run `djdan fetch`. Glacier recovery is rare and intentionally more
-explicit: `glacier_recovery.started` means Riverhog has asked Glacier to
-restore archived collection data, `glacier_recovery.ready` means the temporary
-restored data is available, `glacier_recovery.ready.reminder` repeats while
+operator to run `djdan fetch`. Archive restore is rare and intentionally more
+explicit: `archive_restore.started` means Riverhog has asked the archive backend to
+restore archived collection data, `archive_restore.ready` means the temporary
+restored data is available, `archive_restore.ready.reminder` repeats while
 operator action or automatic materialization is still incomplete, and
-`glacier_recovery.completed` means Riverhog has finished the recovery cleanup.
+`archive_restore.completed` means Riverhog has finished the recovery cleanup.
 
 Webhook delivery is best-effort; Riverhog catalog state remains authoritative.
 Notification receivers should keep these operator messages concise and calm:
@@ -529,12 +529,12 @@ file counts, staged bytes, archive bytes, object path, or failure details. When
 a recipient-routed collection notification is delivered, the payload includes
 the selected `recipient`. Ready image payloads include affected image ids,
 filenames, download URLs when
-`RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Copy-label
-payloads include `image_id`, `copy_id`, the exact `label_text`, and an image
+`RIVERHOG_PUBLIC_BASE_URL` is configured, and reminder count. Disc-label
+payloads include `image_id`, `disc_id`, the exact `label_text`, and an image
 link when `RIVERHOG_PUBLIC_BASE_URL` is configured. Fetch-wait payloads include
-the fetch id, target, file/byte counts, candidate copy hints, and links to the
-fetch summary and manifest. Glacier recovery payloads include the recovery
-session id, recovery type, affected images and collections, restore timing, and
+the fetch id, target, file/byte counts, candidate disc hints, and links to the
+fetch summary and manifest. Archive restore payloads include the archive restore
+id, recovery type, affected images and collections, restore timing, and
 precise operator guidance so long bulk restores do not read as data loss.
 Riverhog-family durable issue and reminder notifications default to
 time-sensitive urgency. Critical urgency is reserved for imminent money loss,
@@ -574,7 +574,7 @@ notifications should fan out by recipient. When this is unset,
 
 Outbound timeout for one operator webhook delivery. Collection lifecycle webhook
 failures are logged but never block archival finalization. Ready disc-image,
-fetch-wait, and Glacier recovery delivery failures are retried by background
+fetch-wait, and archive restore delivery failures are retried by background
 workers.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY`
@@ -582,11 +582,11 @@ workers.
 - type: duration
 - default: `60s`
 
-Delay before Riverhog retries a failed ready disc-image, fetch-wait, or Glacier
+Delay before Riverhog retries a failed ready disc-image, fetch-wait, or archive
 recovery webhook delivery.
 
 With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
-`RIVERHOG_GLACIER_RECOVERY_READY_TTL` is shorter than
+`RIVERHOG_ARCHIVE_RESTORE_READY_TTL` is shorter than
 `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT` plus this retry delay.
 
 ## `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL`
@@ -596,7 +596,7 @@ With `RIVERHOG_OPERATOR_WEBHOOK_URL` configured, Riverhog rejects startup if
 
 Interval between repeated durable operator reminders, including Munchy job
 issues, Jeb issues, ready burn candidates, fetches waiting for `djdan fetch`,
-restored collection archive data, and paused or ready recovery sessions. The
+restored collection archive data, and paused or ready archive restores. The
 default provides one daily reminder while operator action is still needed; set
 this to `0s` to disable reminders entirely.
 
@@ -617,21 +617,21 @@ intervals below 24 hours remain exact for tests and retry-like cadences.
 
 Timezone used with `RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME`.
 
-## `RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL`
+## `RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL`
 
 - type: duration
 - default: `30s`
 
-How often Riverhog scans for due Glacier recovery-session transitions such as
+How often Riverhog scans for due archive restore transitions such as
 restore-ready and expiry cleanup.
 
-## `RIVERHOG_GLACIER_RECOVERY_RESTORE_LATENCY`
+## `RIVERHOG_ARCHIVE_RESTORE_LATENCY`
 
 - type: duration
 - default: `48h`
 
-Operator-facing restore-latency estimate shown while one requested recovery
-session waits for archive restore completion. Real readiness is driven by the
+Operator-facing restore-latency estimate shown while one requested archive
+restore waits for backend completion. Real readiness is driven by the
 archive object's restore/readability status when a production archive store is
 configured.
 
@@ -639,16 +639,16 @@ For the default `DEEP_ARCHIVE` archive storage class and `bulk` retrieval tier,
 this default matches AWS's normal S3 Glacier Deep Archive Bulk expectation of
 availability within roughly 48 hours. Riverhog treats it as an estimate only:
 the recovery reaper still polls S3 `HeadObject` restore state and only marks the
-session ready after S3 reports the restored copy is readable.
+archive restore ready after S3 reports the restored object is readable.
 
-## `RIVERHOG_GLACIER_RECOVERY_READY_TTL`
+## `RIVERHOG_ARCHIVE_RESTORE_READY_TTL`
 
 - type: duration
 - default: `24h`
 
 How long Riverhog keeps restored Standard-storage collection archive data or
 rebuilt ISO staging data available after the archive becomes ready before
-automatic cleanup expires that recovery session.
+automatic cleanup expires that archive restore.
 
 For AWS S3 Glacier Flexible Retrieval or Deep Archive objects, Riverhog passes
 this value to `RestoreObject` as whole-object restore days, rounded up to avoid
@@ -656,19 +656,19 @@ shortening the requested operator window. S3 creates a temporary readable copy
 while the underlying object remains in its archive storage class, charges
 Standard-storage rates for that temporary copy, and rounds the expiration to the
 next midnight UTC after the requested duration. Manifest and OTS proof objects
-are stored as Standard S3 siblings and do not require a Glacier restore request.
+are stored as Standard S3 siblings and do not require an archive restore request.
 
 When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, this value must be at least
 `RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT` plus
 `RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY` so one failed ready notification can
 still be retried before cleanup.
 
-## `RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER`
+## `RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER`
 
 - type: enum
 - default: `bulk`
 
-Retrieval tier used for recovery-session cost estimates.
+Retrieval tier used for archive-restore cost estimates.
 For the default `DEEP_ARCHIVE` storage class, `bulk` is the cheapest supported
 path and typically completes within 48 hours; `standard` typically completes
 within 12 hours and costs more. Expedited retrieval is not exposed because AWS
@@ -679,7 +679,7 @@ Allowed values:
 - `bulk`
 - `standard`
 
-## `RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE`
+## `RIVERHOG_ARCHIVE_RESTORE_MODE`
 
 - type: enum
 - default: `auto`
@@ -713,7 +713,7 @@ directory as `/uploads` in both containers.
 
 This directory is temporary ingest custody, not authoritative archive storage.
 Riverhog deletes staged files only after the collection archive is safely
-uploaded and verified in Glacier-compatible storage, the collection files are
+uploaded and verified in archive-compatible storage, the collection files are
 promoted into committed hot storage, or the upload session is canceled or
 expired.
 
@@ -769,7 +769,7 @@ chunk bodies are cleaned up promptly without racing normal uploads.
 - default: `5`
 
 Polling interval after all collection files are staged. The CLI keeps waiting
-until the collection is finalized, which means the Glacier archive package has
+until the collection is finalized, which means the archive package has
 uploaded, verified, hot files have been promoted, and the planner refresh has
 been requested. While waiting, the CLI reports archive phase, multipart progress,
 and hot-promotion progress when the server has those counters.
@@ -795,14 +795,14 @@ first response bytes arrive, especially for images with many small files.
 Reverse-proxy read timeouts for ISO download routes should be at least this
 large or explicitly chosen to bound that preparation window.
 
-### `RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS`
+### `RIVERHOG_DISC_REGISTRATION_TIMEOUT_SECONDS`
 
 - type: positive number of seconds
 - default: `3600`
 
-Client timeout for physical copy registration and copy-state updates. `djdan
+Client timeout for physical disc registration and disc-state updates. `djdan
 burn` uses this after media verification and label confirmation while Riverhog
-records the generated copy id, storage location, and per-file recovery index for
+records the generated disc id, storage location, and per-file recovery index for
 the image. Images with many small files can take noticeably longer than ordinary
 API calls, so the default is intentionally long enough for normal operation.
 
@@ -887,8 +887,8 @@ rejected at startup so stale local-development env files fail loudly.
 - default: unset
 
 Optional public API base URL used when Riverhog builds webhook links back to
-collection uploads, fetch manifests, fetch-scoped cloud-fetch recovery sessions,
-image rebuild sessions, and finalized-image ISO downloads.
+collection uploads, fetch manifests, fetch-scoped fetch materialization archive restores,
+disc rebuild archive restores, and finalized-image ISO downloads.
 
 ## `INCOMPLETE_UPLOAD_TTL`
 
@@ -903,7 +903,7 @@ Service restart does not shorten this TTL or discard unexpired upload state by i
 When the TTL expires:
 
 - for collection ingest, the staged upload is deleted and that file returns to `pending`
-- the pending `tusd` upload is cancelled
+- the pending `tusd` upload is canceled
 - any incomplete staged recovery upload is deleted
 - the fetch entry returns to `pending`
 - the fetch manifest returns to `queued_djdan` if any selected bytes are still not hot

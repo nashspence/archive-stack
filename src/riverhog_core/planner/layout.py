@@ -89,7 +89,6 @@ def manifest_bytes(
     collections: dict[str, list[LayoutFileMeta]],
     path_map: dict[tuple[str, object, int], tuple[str, str]],
     *,
-    volume_id: str | None = None,
     collection_artifact_paths: dict[str, tuple[str, str]] | None = None,
 ) -> bytes:
     payload: list[dict[str, object]] = []
@@ -142,7 +141,7 @@ def manifest_bytes(
             collection_payload["manifest"] = collection_manifest_path
             collection_payload["proof"] = proof_path
         payload.append(collection_payload)
-    return manifest_dump(volume_id or image_id, payload)
+    return manifest_dump(image_id, payload)
 
 
 def _write_placeholder_file(path: Path, size: int) -> None:
@@ -160,7 +159,6 @@ def preview_image(
     encrypt_size: EncryptSize,
     estimate_iso_size: IsoEstimator | None = None,
     artifact_entries: list[PreviewEntry] | None = None,
-    volume_id: str | None = None,
 ) -> IsoLayoutPreview:
     estimator = estimate_iso_size or estimate_iso_size_from_root
 
@@ -170,7 +168,6 @@ def preview_image(
         image_id,
         collections,
         path_map,
-        volume_id=volume_id,
         collection_artifact_paths=artifact_paths,
     )
     readme = recovery_readme_bytes(image_id)

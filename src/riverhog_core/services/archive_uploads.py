@@ -45,8 +45,8 @@ from riverhog_core.recovery_payloads import (
     RecoveryPayloadCodec,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _collection_upload_target_path
-from riverhog_core.services.glacier_reporting import record_glacier_usage_snapshot
 from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
     post_collection_operator_webhook,
@@ -62,7 +62,7 @@ _LOG = logging.getLogger(__name__)
 CollectionUploadFileEntry = tuple[str, int, str, str]
 
 
-class SqlAlchemyGlacierUploadService:
+class SqlAlchemyArchiveUploadService:
     def __init__(
         self,
         config: RuntimeConfig,
@@ -124,8 +124,8 @@ class SqlAlchemyGlacierUploadService:
                 )
         return requeued
 
-    def publish_recovery_catalog(self) -> int:
-        return self._publish_recovery_catalog()
+    def publish_restore_catalog(self) -> int:
+        return self._publish_restore_catalog()
 
     def process_due_uploads(self, *, limit: int = 1) -> int:
         if limit < 1:
@@ -381,7 +381,7 @@ class SqlAlchemyGlacierUploadService:
                 receipt=receipt,
                 upload_files=upload_files,
             )
-            self._publish_recovery_catalog()
+            self._publish_restore_catalog()
             self._post_collection_operator_webhook(
                 event="collections.finalized",
                 collection_id=collection_id,
@@ -665,7 +665,6 @@ class SqlAlchemyGlacierUploadService:
                         bytes=_bytes,
                         sha256=sha256,
                         hot=True,
-                        archived=False,
                     )
                 )
             archive = session.get(CollectionArchiveRecord, collection_id)
@@ -674,7 +673,7 @@ class SqlAlchemyGlacierUploadService:
                 session.add(archive)
             _apply_archive_receipt(archive, receipt)
             session.delete(upload)
-            record_glacier_usage_snapshot(session, config=self._config)
+            record_archive_usage_snapshot(session, config=self._config)
 
     def _record_completed_archive(
         self,
@@ -704,8 +703,8 @@ class SqlAlchemyGlacierUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _publish_recovery_catalog(self) -> int:
-        publish = getattr(self._archive_store, "publish_recovery_catalog", None)
+    def _publish_restore_catalog(self) -> int:
+        publish = getattr(self._archive_store, "publish_restore_catalog", None)
         if not callable(publish):
             return 0
         generated_at = _isoformat_z(utcnow())
@@ -742,7 +741,7 @@ class SqlAlchemyGlacierUploadService:
         try:
             publish(entries=entries, generated_at=generated_at)
         except Exception:
-            _LOG.warning("failed to publish encrypted archive recovery catalog", exc_info=True)
+            _LOG.warning("failed to publish encrypted archive restore catalog", exc_info=True)
             return 0
         return len(entries)
 
@@ -809,7 +808,7 @@ class SqlAlchemyGlacierUploadService:
         notify_operator = False
         attempt_count = 0
         next_retry_at = (
-            _isoformat_z(current + self._config.glacier_upload_retry_delay) if retryable else None
+            _isoformat_z(current + self._config.archive_upload_retry_delay) if retryable else None
         )
 
         with session_scope(self._session_factory) as session:
@@ -888,7 +887,7 @@ class SqlAlchemyGlacierUploadService:
                 "attempts": attempt_count,
                 "failed_at": failed_at,
                 "next_retry_at": next_retry_at,
-                "retry_delay_seconds": self._config.glacier_upload_retry_delay.total_seconds(),
+                "retry_delay_seconds": self._config.archive_upload_retry_delay.total_seconds(),
                 "error": error,
             },
         )
@@ -1244,7 +1243,7 @@ def _ensure_archive_storage_prefix(
 
 def _mint_archive_storage_prefix(session: Session, *, config: RuntimeConfig) -> str:
     for _ in range(16):
-        prefix = f"{config.glacier_prefix}/archives/{secrets.token_hex(16)}"
+        prefix = f"{config.archive_prefix}/archives/{secrets.token_hex(16)}"
         upload_exists = session.scalar(
             select(CollectionUploadRecord.collection_id).where(
                 CollectionUploadRecord.archive_storage_prefix == prefix

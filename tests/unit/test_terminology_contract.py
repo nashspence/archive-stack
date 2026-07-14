@@ -3,10 +3,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 CONTRACT = (
-    Path(__file__).resolve().parents[2]
-    / "contracts"
-    / "terminology"
-    / "user-facing-terms.v1.json"
+    Path(__file__).resolve().parents[2] / "contracts" / "terminology" / "user-facing-terms.v1.json"
 )
 
 
@@ -46,26 +43,28 @@ def test_terminology_contract_shape() -> None:
 def test_terminology_contract_covers_current_top_level_surfaces() -> None:
     terms = {term["id"]: term for term in load_contract()["terms"]}
     required = {
-        "archive_mode",
+        "output_mode",
         "collection",
         "collection_archive",
         "collection_archive_destination",
-        "collection_restore",
+        "fetch_materialization",
         "disc_rebuild",
         "encode_profile",
         "fetch",
         "held_unmatched",
         "hot_eviction",
         "hot_storage",
-        "image_rebuild",
         "jeb",
+        "jeb_account",
+        "jeb_attempt",
         "job",
         "metadata_projection",
         "munchy",
-        "profile_group",
-        "profile_routing",
+        "group",
+        "routing",
+        "routing_preflight",
         "qcut_review",
-        "recovery_session",
+        "archive_restore",
         "riverhog",
         "runner_task",
         "workflow_mode",
@@ -74,9 +73,7 @@ def test_terminology_contract_covers_current_top_level_surfaces() -> None:
 
     needed_surfaces = {"cli:riverhog", "cli:djdan", "cli:munchy", "cli:jeb", "webhook"}
     covered_surfaces = {
-        exposure["surface"]
-        for term in terms.values()
-        for exposure in term["exposed_as"]
+        exposure["surface"] for term in terms.values() for exposure in term["exposed_as"]
     }
     assert needed_surfaces <= covered_surfaces
 
@@ -94,11 +91,13 @@ def test_terms_expose_ontology_shape() -> None:
     assert terms["collection_archive"]["term_type"] == "entity"
     assert terms["collection_archive_destination"]["term_type"] == "policy"
     assert terms["disc_rebuild"]["term_type"] == "activity"
-    assert terms["collection_restore"]["term_type"] == "enum_value"
-    assert terms["image_rebuild"]["term_type"] == "enum_value"
+    assert terms["fetch_materialization"]["term_type"] == "enum_value"
+    assert any(
+        exposure["spelling"] == "disc_rebuild" for exposure in terms["disc_rebuild"]["exposed_as"]
+    )
     assert terms["capture_date"]["term_type"] == "metadata_property"
     assert terms["collection_id"]["term_type"] == "identifier"
-    assert terms["profile_routing"]["term_type"] == "policy"
+    assert terms["routing"]["term_type"] == "policy"
     assert terms["held_unmatched"]["term_type"] == "state"
 
 
@@ -122,6 +121,5 @@ def test_terminology_contract_does_not_reference_work_items() -> None:
     assert all(value != "status" for value in walk_values(contract))
     assert all(value != "needs_review" for value in walk_values(contract))
     assert not any(
-        isinstance(value, str) and "github.com/" in value
-        for value in walk_values(contract)
+        isinstance(value, str) and "github.com/" in value for value in walk_values(contract)
     )

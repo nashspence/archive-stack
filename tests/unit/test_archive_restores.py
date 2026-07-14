@@ -11,24 +11,24 @@ import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveRestoreRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchRecord,
     FetchSelectorRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    GlacierRecoverySessionRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
     CollectionArchivePackage,
     build_collection_archive_package,
 )
-from riverhog_core.domain.enums import FetchState, RecoverySessionState
+from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
 from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
@@ -37,9 +37,9 @@ from riverhog_core.finalized_image_coverage import (
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services import recovery_sessions as recovery_sessions_module
-from riverhog_core.services.copies import SqlAlchemyCopyService
-from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
+from riverhog_core.services import archive_restores as archive_restores_module
+from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
+from riverhog_core.services.discs import SqlAlchemyDiscService
 from tests.fixtures.crypto import FixtureProofStamper, FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
 from tests.unit.db_helpers import sqlite_url
@@ -133,7 +133,7 @@ class _FakeArchiveStore:
         assert manifest_object_path is not None
         assert proof_object_path is not None
         if estimated_ready_at is not None:
-            current = recovery_sessions_module.utcnow()
+            current = archive_restores_module.utcnow()
             ready_at = datetime.fromisoformat(estimated_ready_at.replace("Z", "+00:00"))
             if current < ready_at:
                 return ArchiveRestoreStatus(state="requested", ready_at=estimated_ready_at)
@@ -286,7 +286,6 @@ def _seed_finalized_image(
                         bytes=len(content),
                         sha256=hashlib.sha256(content).hexdigest(),
                         hot=True,
-                        archived=False,
                     )
                 )
 
@@ -298,7 +297,7 @@ def _seed_finalized_image(
                 bytes=sum(len(content) for content in DOCS_FILES.values()),
                 image_root=str(image_root),
                 target_bytes=10_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for relative_path in (
@@ -351,7 +350,7 @@ def _docs_collection_archive_package() -> CollectionArchivePackage:
 
 
 def _seed_collection_archive(sqlite_path: Path, package: CollectionArchivePackage) -> None:
-    archive_prefix = f"glacier/archives/opaque-{package.collection_id}"
+    archive_prefix = f"archive/archives/opaque-{package.collection_id}"
     object_path = f"{archive_prefix}/archive.tar.age"
     manifest_object_path = f"{archive_prefix}/manifest.yml.age"
     proof_object_path = f"{archive_prefix}/manifest.yml.ots.age"
@@ -388,7 +387,6 @@ def _seed_collection_files(
     collection_id: str,
     files: dict[str, bytes],
     hot: bool,
-    archived: bool,
 ) -> None:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
@@ -401,7 +399,6 @@ def _seed_collection_files(
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=hot,
-                    archived=archived,
                 )
             )
 
@@ -412,7 +409,7 @@ def _seed_docs_collection_archive(sqlite_path: Path) -> CollectionArchivePackage
     return package
 
 
-def test_double_copy_loss_creates_queued_recovery_session(tmp_path: Path) -> None:
+def test_double_disc_loss_creates_queued_archive_restore(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(sqlite_url(sqlite_path))
@@ -421,26 +418,26 @@ def test_double_copy_loss_creates_queued_recovery_session(tmp_path: Path) -> Non
     package = _seed_docs_collection_archive(sqlite_path)
 
     config = _config(sqlite_path)
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
 
-    session = recovery_service.get_for_image("20260420T040001Z")
+    restore = recovery_service.get_for_image("20260420T040001Z")
 
-    assert session.id == "rs-20260420T040001Z-rebuild-1"
-    assert session.state == RecoverySessionState.RESTORE_REQUESTED
-    assert session.notification.webhook_configured is False
-    assert [str(image.id) for image in session.images] == ["20260420T040001Z"]
+    assert restore.id == "ar-20260420T040001Z-rebuild-1"
+    assert restore.state == ArchiveRestoreState.REQUESTED
+    assert restore.notification.webhook_configured is False
+    assert [str(image.id) for image in restore.images] == ["20260420T040001Z"]
 
 
-def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
+def test_archive_restores_can_be_listed_and_filtered(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(sqlite_url(sqlite_path))
@@ -449,16 +446,16 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
     package = _seed_docs_collection_archive(sqlite_path)
 
     config = _config(sqlite_path)
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
     recovery_service.create_or_resume_for_collection("docs")
 
     restore_page = recovery_service.list(
@@ -466,8 +463,8 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
         per_page=25,
         sort="created_at",
         order="desc",
-        recovery_type="collection_restore",
-        state="restore_requested",
+        restore_type="fetch_materialization",
+        state="requested",
         collection="docs",
     )
     rebuild_page = recovery_service.list(
@@ -475,20 +472,20 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
         per_page=25,
         sort="id",
         order="asc",
-        recovery_type="image_rebuild",
+        restore_type="disc_rebuild",
         image="20260420T040001Z",
     )
 
     assert restore_page.total == 1
-    assert [session.id for session in restore_page.sessions] == ["rs-docs-restore-1"]
+    assert [restore.id for restore in restore_page.restores] == ["ar-docs-restore-1"]
     assert restore_page.collection == "docs"
     assert rebuild_page.total == 1
-    assert [session.id for session in rebuild_page.sessions] == ["rs-20260420T040001Z-rebuild-1"]
+    assert [restore.id for restore in rebuild_page.restores] == ["ar-20260420T040001Z-rebuild-1"]
 
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
-        completed = session.get(GlacierRecoverySessionRecord, "rs-docs-restore-1")
+        completed = session.get(ArchiveRestoreRecord, "ar-docs-restore-1")
         assert completed is not None
-        completed.state = RecoverySessionState.COMPLETED.value
+        completed.state = ArchiveRestoreState.COMPLETED.value
 
     active_page = recovery_service.list(
         page=1,
@@ -506,11 +503,9 @@ def test_recovery_sessions_can_be_listed_and_filtered(tmp_path: Path) -> None:
     )
 
     assert active_page.terminal == "active"
-    assert [session.id for session in active_page.sessions] == [
-        "rs-20260420T040001Z-rebuild-1"
-    ]
+    assert [restore.id for restore in active_page.restores] == ["ar-20260420T040001Z-rebuild-1"]
     assert terminal_page.terminal == "terminal"
-    assert [session.id for session in terminal_page.sessions] == ["rs-docs-restore-1"]
+    assert [restore.id for restore in terminal_page.restores] == ["ar-docs-restore-1"]
 
     with pytest.raises(BadRequest, match="terminal must be active, terminal, or all"):
         recovery_service.list(
@@ -530,22 +525,22 @@ def test_recovery_ready_ttl_rounds_up_to_restore_hold_days(tmp_path: Path) -> No
     _seed_finalized_image(sqlite_path, image_root)
     package = _seed_docs_collection_archive(sqlite_path)
 
-    config = _config(sqlite_path, glacier_recovery_ready_ttl=timedelta(hours=25))
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    config = _config(sqlite_path, archive_restore_ready_ttl=timedelta(hours=25))
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
-    session = recovery_service.get_for_image("20260420T040001Z")
+    restore = recovery_service.get_for_image("20260420T040001Z")
 
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as db_session:
-        record = db_session.get(GlacierRecoverySessionRecord, session.id)
+        record = db_session.get(ArchiveRestoreRecord, restore.id)
         assert record is not None
         assert record.hold_days == 2
 
@@ -558,19 +553,19 @@ def test_image_recovery_requires_uploaded_collection_archive(tmp_path: Path) -> 
     _seed_finalized_image(sqlite_path, image_root)
 
     config = _config(sqlite_path)
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config, _FakeArchiveStore())
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(config, _FakeArchiveStore())
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
 
-    with pytest.raises(NotFound, match="recovery session not found"):
+    with pytest.raises(NotFound, match="archive restore not found"):
         recovery_service.get_for_image("20260420T040001Z")
 
 
-def test_recovery_session_processes_ready_and_expired_states(
+def test_archive_restore_processes_ready_and_expired_states(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -583,49 +578,49 @@ def test_recovery_session_processes_ready_and_expired_states(
 
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=10),
-        glacier_recovery_ready_ttl=timedelta(seconds=5),
+        archive_restore_latency=timedelta(seconds=10),
+        archive_restore_ready_ttl=timedelta(seconds=5),
     )
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    assert recovery_service.process_due_sessions() == 1
-    requested = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert requested.state == RecoverySessionState.RESTORE_REQUESTED
-    assert requested.restore_ready_at == "2026-04-20T04:00:10Z"
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    assert recovery_service.process_due_restores() == 1
+    requested = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert requested.state == ArchiveRestoreState.REQUESTED
+    assert requested.ready_at == "2026-04-20T04:00:10Z"
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=11),
     )
-    assert recovery_service.process_due_sessions() == 1
-    ready = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert ready.state == RecoverySessionState.READY
-    assert ready.restore_expires_at == "2026-04-20T04:00:16Z"
+    assert recovery_service.process_due_restores() == 1
+    ready = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert ready.state == ArchiveRestoreState.READY
+    assert ready.expires_at == "2026-04-20T04:00:16Z"
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=17),
     )
-    assert recovery_service.process_due_sessions() == 1
-    expired = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert expired.state == RecoverySessionState.EXPIRED
+    assert recovery_service.process_due_restores() == 1
+    expired = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert expired.state == ArchiveRestoreState.EXPIRED
 
-    completed = recovery_service.complete("rs-20260420T040001Z-rebuild-1")
-    assert completed.state == RecoverySessionState.COMPLETED
+    completed = recovery_service.complete("ar-20260420T040001Z-rebuild-1")
+    assert completed.state == ArchiveRestoreState.COMPLETED
 
 
-def test_collection_restore_requests_and_verifies_manifest_and_proof(
+def test_fetch_materialization_requests_and_verifies_manifest_and_proof(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -639,11 +634,11 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
     store = _FakeArchiveStore(collection_packages={"docs": package})
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhooks/operator",
     )
-    recovery_service = SqlAlchemyRecoverySessionService(
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         store,
         recovery_payload_codec=_RECOVERY_CODEC,
@@ -654,45 +649,45 @@ def test_collection_restore_requests_and_verifies_manifest_and_proof(
         payloads.append(payload)
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
+    restore = recovery_service.create_or_resume_for_collection("docs")
 
-    assert session.state == RecoverySessionState.READY
+    assert restore.state == ArchiveRestoreState.READY
     assert store.restore_requests == [
         (
-            "glacier/archives/opaque-docs/archive.tar.age",
-            "glacier/archives/opaque-docs/manifest.yml.age",
-            "glacier/archives/opaque-docs/manifest.yml.ots.age",
+            "archive/archives/opaque-docs/archive.tar.age",
+            "archive/archives/opaque-docs/manifest.yml.age",
+            "archive/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
 
-    assert recovery_service.process_due_sessions() == 1
-    ready = recovery_service.get(session.id)
-    assert ready.state == RecoverySessionState.READY
+    assert recovery_service.process_due_restores() == 1
+    ready = recovery_service.get(restore.id)
+    assert ready.state == ArchiveRestoreState.READY
 
-    completed = recovery_service.complete(session.id)
+    completed = recovery_service.complete(restore.id)
 
-    assert completed.state == RecoverySessionState.COMPLETED
+    assert completed.state == ArchiveRestoreState.COMPLETED
     assert [payload["event"] for payload in payloads] == [
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.completed",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.completed",
     ]
     assert [payload["type"] for payload in payloads] == [
-        "collection_restore",
-        "collection_restore",
-        "collection_restore",
+        "fetch_materialization",
+        "fetch_materialization",
+        "fetch_materialization",
     ]
-    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
-    assert store.manifest_reads == ["glacier/archives/opaque-docs/manifest.yml.age"]
-    assert store.proof_reads == ["glacier/archives/opaque-docs/manifest.yml.ots.age"]
+    assert store.archive_reads == ["archive/archives/opaque-docs/archive.tar.age"]
+    assert store.manifest_reads == ["archive/archives/opaque-docs/manifest.yml.age"]
+    assert store.proof_reads == ["archive/archives/opaque-docs/manifest.yml.ots.age"]
     assert store.cleanup_requests == [
         (
-            "glacier/archives/opaque-docs/archive.tar.age",
-            "glacier/archives/opaque-docs/manifest.yml.age",
-            "glacier/archives/opaque-docs/manifest.yml.ots.age",
+            "archive/archives/opaque-docs/archive.tar.age",
+            "archive/archives/opaque-docs/manifest.yml.age",
+            "archive/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
 
@@ -711,12 +706,12 @@ def test_recovery_completed_notification_retries_after_failure(
     store = _FakeArchiveStore(collection_packages={"docs": package})
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhooks/operator",
         operator_webhook_retry_delay=timedelta(seconds=1),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         store,
         recovery_payload_codec=_RECOVERY_CODEC,
@@ -727,36 +722,36 @@ def test_recovery_completed_notification_retries_after_failure(
     def _post_webhook(*, config, payload):
         nonlocal completed_failures
         events.append(str(payload["event"]))
-        if payload["event"] == "glacier_recovery.completed" and completed_failures == 0:
+        if payload["event"] == "archive_restore.completed" and completed_failures == 0:
             completed_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
-    assert recovery_service.process_due_sessions() == 1
-    completed = recovery_service.complete(session.id)
+    restore = recovery_service.create_or_resume_for_collection("docs")
+    assert recovery_service.process_due_restores() == 1
+    completed = recovery_service.complete(restore.id)
 
-    assert completed.state == RecoverySessionState.COMPLETED
+    assert completed.state == ArchiveRestoreState.COMPLETED
     assert events == [
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.completed",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.completed",
     ]
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=1),
     )
 
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
     assert events == [
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.completed",
-        "glacier_recovery.completed",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.completed",
+        "archive_restore.completed",
     ]
 
 
@@ -773,11 +768,11 @@ def test_recovery_started_notification_retries_while_restore_is_pending(
     _seed_collection_archive(sqlite_path, package)
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=10),
+        archive_restore_latency=timedelta(seconds=10),
         operator_webhook_url="http://example.invalid/webhooks/operator",
         operator_webhook_retry_delay=timedelta(seconds=1),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
         recovery_payload_codec=_RECOVERY_CODEC,
@@ -788,30 +783,30 @@ def test_recovery_started_notification_retries_while_restore_is_pending(
     def _post_webhook(*, config, payload):
         nonlocal started_failures
         events.append(str(payload["event"]))
-        if payload["event"] == "glacier_recovery.started" and started_failures == 0:
+        if payload["event"] == "archive_restore.started" and started_failures == 0:
             started_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
-    assert session.state == RecoverySessionState.RESTORE_REQUESTED
+    restore = recovery_service.create_or_resume_for_collection("docs")
+    assert restore.state == ArchiveRestoreState.REQUESTED
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=1),
     )
 
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
     assert events[:2] == [
-        "glacier_recovery.started",
-        "glacier_recovery.started",
+        "archive_restore.started",
+        "archive_restore.started",
     ]
 
 
-def test_collection_restore_request_failure_records_retryable_session(
+def test_fetch_materialization_request_failure_records_retryable_restore(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -828,48 +823,48 @@ def test_collection_restore_request_failure_records_retryable_session(
     )
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=5),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=5),
         operator_webhook_url="http://example.invalid/webhooks/operator",
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store)
     events: list[str] = []
 
     def _post_webhook(*, config, payload):
         events.append(str(payload["event"]))
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
 
-    session = recovery_service.create_or_resume_for_collection("docs")
+    restore = recovery_service.create_or_resume_for_collection("docs")
 
-    assert session.state == RecoverySessionState.RESTORE_REQUESTED
-    assert session.restore_requested_at is None
-    assert session.notification.failure_count == 1
-    assert session.notification.last_failure == "S3 restore request timed out"
-    assert events == ["glacier_recovery.retrying"]
+    assert restore.state == ArchiveRestoreState.REQUESTED
+    assert restore.requested_at is None
+    assert restore.notification.failure_count == 1
+    assert restore.notification.last_failure == "S3 restore request timed out"
+    assert events == ["archive_restore.retrying"]
     assert store.restore_requests == []
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=5),
     )
 
-    assert recovery_service.process_due_sessions() == 1
-    ready = recovery_service.get(session.id)
-    assert ready.state == RecoverySessionState.READY
-    assert ready.restore_requested_at == "2026-04-20T04:00:05Z"
+    assert recovery_service.process_due_restores() == 1
+    ready = recovery_service.get(restore.id)
+    assert ready.state == ArchiveRestoreState.READY
+    assert ready.requested_at == "2026-04-20T04:00:05Z"
     assert store.restore_requests == [
         (
-            "glacier/archives/opaque-docs/archive.tar.age",
-            "glacier/archives/opaque-docs/manifest.yml.age",
-            "glacier/archives/opaque-docs/manifest.yml.ots.age",
+            "archive/archives/opaque-docs/archive.tar.age",
+            "archive/archives/opaque-docs/manifest.yml.age",
+            "archive/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
 
 
-def test_collection_restore_can_be_canceled_but_image_rebuild_pauses(
+def test_fetch_materialization_can_be_canceled_but_disc_rebuild_pauses(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -883,31 +878,31 @@ def test_collection_restore_can_be_canceled_but_image_rebuild_pauses(
     store = _FakeArchiveStore(collection_packages={"docs": package})
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=10),
+        archive_restore_latency=timedelta(seconds=10),
         operator_webhook_url="http://example.invalid/webhooks/operator",
     )
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store)
     events: list[str] = []
 
     def _post_webhook(*, config, payload):
         events.append(str(payload["event"]))
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
 
     restore = recovery_service.create_or_resume_for_collection("docs")
     canceled = recovery_service.cancel(restore.id)
 
-    assert canceled.state == RecoverySessionState.CANCELED
+    assert canceled.state == ArchiveRestoreState.CANCELED
     assert canceled.canceled_at == "2026-04-20T04:00:00Z"
-    assert events[-1] == "glacier_recovery.canceled"
+    assert events[-1] == "archive_restore.canceled"
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
     rebuild = recovery_service.get_for_image("20260420T040001Z")
 
     with pytest.raises(InvalidState, match="paused and resumed"):
@@ -915,36 +910,36 @@ def test_collection_restore_can_be_canceled_but_image_rebuild_pauses(
 
     paused = recovery_service.pause(rebuild.id)
 
-    assert paused.state == RecoverySessionState.PAUSED
-    assert paused.paused_from_state == "restore_requested"
+    assert paused.state == ArchiveRestoreState.PAUSED
+    assert paused.paused_from_state == "requested"
     assert paused.notification.next_reminder_at == "2026-04-21T04:00:00Z"
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(days=1),
     )
 
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
     reminded = recovery_service.get(rebuild.id)
-    assert reminded.state == RecoverySessionState.PAUSED
+    assert reminded.state == ArchiveRestoreState.PAUSED
     assert reminded.notification.reminder_count == 1
     assert reminded.notification.next_reminder_at == "2026-04-22T04:00:00Z"
-    assert events[-1] == "glacier_recovery.paused.reminder"
+    assert events[-1] == "archive_restore.paused.reminder"
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(days=1, seconds=1),
     )
 
     resumed = recovery_service.resume(rebuild.id)
 
-    assert resumed.state == RecoverySessionState.RESTORE_REQUESTED
+    assert resumed.state == ArchiveRestoreState.REQUESTED
     assert resumed.paused_at is None
     assert resumed.paused_from_state is None
-    assert resumed.restore_requested_at == "2026-04-21T04:00:01Z"
+    assert resumed.requested_at == "2026-04-21T04:00:01Z"
 
 
-def test_collection_restore_materializes_selected_files_to_hot_storage(
+def test_fetch_materialization_materializes_selected_files_to_hot_storage(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -959,23 +954,23 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
     hot_store = _FakeHotStore()
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store, hot_store)
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    session = recovery_service.create_or_resume_for_collection(
+    restore = recovery_service.create_or_resume_for_collection(
         "docs",
         paths=["tax/2022/invoice-123.pdf"],
     )
 
-    materialized = recovery_service.get(session.id)
+    materialized = recovery_service.get(restore.id)
 
-    assert materialized.state == RecoverySessionState.COMPLETED
+    assert materialized.state == ArchiveRestoreState.COMPLETED
     assert materialized.progress.archive_verification == "completed"
     assert materialized.progress.extraction == "completed"
     assert materialized.progress.materialization == "completed"
@@ -991,7 +986,7 @@ def test_collection_restore_materializes_selected_files_to_hot_storage(
         assert row.hot is True
 
 
-def test_missing_fetch_hot_file_without_disc_coverage_restores_from_glacier(
+def test_missing_fetch_hot_file_without_disc_coverage_restores_from_archive(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1002,7 +997,6 @@ def test_missing_fetch_hot_file_without_disc_coverage_restores_from_glacier(
         collection_id="docs",
         files=DOCS_FILES,
         hot=True,
-        archived=True,
     )
     package = _docs_collection_archive_package()
     _seed_collection_archive(sqlite_path, package)
@@ -1016,12 +1010,12 @@ def test_missing_fetch_hot_file_without_disc_coverage_restores_from_glacier(
     hot_store = _FakeHotStore()
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store, hot_store)
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
 
@@ -1031,9 +1025,9 @@ def test_missing_fetch_hot_file_without_disc_coverage_restores_from_glacier(
     assert hot_store.puts == {("docs", restored_path): DOCS_FILES[restored_path]}
     assert store.restore_requests == [
         (
-            "glacier/archives/opaque-docs/archive.tar.age",
-            "glacier/archives/opaque-docs/manifest.yml.age",
-            "glacier/archives/opaque-docs/manifest.yml.ots.age",
+            "archive/archives/opaque-docs/archive.tar.age",
+            "archive/archives/opaque-docs/manifest.yml.age",
+            "archive/archives/opaque-docs/manifest.yml.ots.age",
         )
     ]
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
@@ -1055,7 +1049,6 @@ def test_missing_fetch_hot_file_with_disc_coverage_waits_for_djdan_fetch(
         collection_id="docs",
         files=DOCS_FILES,
         hot=True,
-        archived=True,
     )
     with session_scope(make_session_factory(sqlite_url(sqlite_path))) as session:
         _add_fetch(
@@ -1063,11 +1056,11 @@ def test_missing_fetch_hot_file_with_disc_coverage_waits_for_djdan_fetch(
             target="docs/tax/2022/invoice-123.pdf",
         )
         session.add(
-            FileCopyRecord(
+            FileDiscRecord(
                 collection_id="docs",
                 path="tax/2022/invoice-123.pdf",
-                copy_id="20260530T000000Z-1",
-                volume_id="20260530T000000Z",
+                disc_id="20260530T000000Z-1",
+                image_id="20260530T000000Z",
                 location="test shelf",
                 disc_path="files/000001.age",
                 enc_json="{}",
@@ -1076,7 +1069,7 @@ def test_missing_fetch_hot_file_with_disc_coverage_waits_for_djdan_fetch(
 
     store = _FakeArchiveStore()
     hot_store = _FakeHotStore()
-    recovery_service = SqlAlchemyRecoverySessionService(
+    recovery_service = SqlAlchemyArchiveRestoreService(
         _config(sqlite_path),
         store,
         hot_store,
@@ -1098,7 +1091,7 @@ def test_missing_fetch_hot_file_with_disc_coverage_waits_for_djdan_fetch(
         assert fetch.fetch_state == FetchState.QUEUED_DJDAN.value
 
 
-def test_collection_restore_streams_large_selected_file_to_hot_storage(
+def test_fetch_materialization_streams_large_selected_file_to_hot_storage(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1111,7 +1104,6 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
         collection_id="docs",
         files=files,
         hot=False,
-        archived=True,
     )
     package = build_collection_archive_package(
         collection_id="docs",
@@ -1129,13 +1121,13 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
     hot_store = _FakeHotStore()
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store, hot_store)
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
     recovery_service.create_or_resume_for_collection("docs", paths=["large.bin"])
@@ -1147,7 +1139,7 @@ def test_collection_restore_streams_large_selected_file_to_hot_storage(
     assert max(hot_store.stream_chunk_lengths[key]) < len(content)
 
 
-def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
+def test_fetch_materialization_does_not_materialize_selected_file_with_bad_sha256(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1173,30 +1165,30 @@ def test_collection_restore_does_not_materialize_selected_file_with_bad_sha256(
     hot_store = _FakeHotStore()
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store, hot_store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store, hot_store)
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    session = recovery_service.create_or_resume_for_collection(
+    restore = recovery_service.create_or_resume_for_collection(
         "docs",
         paths=["tax/2022/invoice-123.pdf"],
     )
 
-    failed = recovery_service.get(session.id)
+    failed = recovery_service.get(restore.id)
 
-    assert failed.state == RecoverySessionState.FAILED
+    assert failed.state == ArchiveRestoreState.FAILED
     assert failed.notification.failure_count == 1
     assert failed.notification.last_failure is not None
     assert "member sha256 mismatch" in failed.notification.last_failure
     assert hot_store.puts == {}
 
 
-def test_collection_restore_rejects_empty_proof_before_completion(
+def test_fetch_materialization_rejects_empty_proof_before_completion(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1216,28 +1208,28 @@ def test_collection_restore_rejects_empty_proof_before_completion(
     store = _FakeArchiveStore(collection_packages={"docs": bad_package})
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         store,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    session = recovery_service.create_or_resume_for_collection("docs")
-    assert recovery_service.process_due_sessions() == 1
+    restore = recovery_service.create_or_resume_for_collection("docs")
+    assert recovery_service.process_due_restores() == 1
 
     with pytest.raises(ValueError, match="proof is empty"):
-        recovery_service.complete(session.id)
+        recovery_service.complete(restore.id)
     assert store.cleanup_requests == []
 
 
-def test_collection_restore_rejects_corrupt_archive_before_completion(
+def test_fetch_materialization_rejects_corrupt_archive_before_completion(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1262,25 +1254,25 @@ def test_collection_restore_rejects_corrupt_archive_before_completion(
     store = _FakeArchiveStore(collection_packages={"docs": corrupt_package})
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    recovery_service = SqlAlchemyRecoverySessionService(config, store)
+    recovery_service = SqlAlchemyArchiveRestoreService(config, store)
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: datetime(2026, 4, 20, 4, 0, tzinfo=UTC),
     )
-    session = recovery_service.create_or_resume_for_collection("docs")
-    assert recovery_service.process_due_sessions() == 1
+    restore = recovery_service.create_or_resume_for_collection("docs")
+    assert recovery_service.process_due_restores() == 1
 
     with pytest.raises(ValueError, match="member sha256 mismatch"):
-        recovery_service.complete(session.id)
-    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
+        recovery_service.complete(restore.id)
+    assert store.archive_reads == ["archive/archives/opaque-docs/archive.tar.age"]
     assert store.cleanup_requests == []
 
 
-def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
+def test_disc_rebuild_verifies_manifest_and_proof_before_streaming_archive(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1295,38 +1287,38 @@ def test_image_rebuild_verifies_manifest_and_proof_before_streaming_archive(
 
     config = _config(
         sqlite_path,
-        glacier_recovery_restore_latency=timedelta(seconds=0),
-        glacier_recovery_sweep_interval=timedelta(seconds=0),
+        archive_restore_latency=timedelta(seconds=0),
+        archive_restore_sweep_interval=timedelta(seconds=0),
     )
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         store,
         recovery_payload_codec=_RECOVERY_CODEC,
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
-    assert recovery_service.process_due_sessions() == 1
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    assert recovery_service.process_due_restores() == 1
 
     def _fake_iso(**kwargs: object):
         yield b"rebuilt-iso"
 
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions._run_iso_from_root", _fake_iso)
+    monkeypatch.setattr("riverhog_core.services.archive_restores._run_iso_from_root", _fake_iso)
 
     chunks = list(
         recovery_service.iter_restored_iso(
-            "rs-20260420T040001Z-rebuild-1",
+            "ar-20260420T040001Z-rebuild-1",
             "20260420T040001Z",
         )
     )
 
     assert chunks == [b"rebuilt-iso"]
-    assert store.manifest_reads == ["glacier/archives/opaque-docs/manifest.yml.age"]
-    assert store.proof_reads == ["glacier/archives/opaque-docs/manifest.yml.ots.age"]
-    assert store.archive_reads == ["glacier/archives/opaque-docs/archive.tar.age"]
+    assert store.manifest_reads == ["archive/archives/opaque-docs/manifest.yml.age"]
+    assert store.proof_reads == ["archive/archives/opaque-docs/manifest.yml.ots.age"]
+    assert store.archive_reads == ["archive/archives/opaque-docs/archive.tar.age"]
 
 
 def test_run_iso_from_root_streams_process_stdout(
@@ -1364,10 +1356,10 @@ def test_run_iso_from_root_streams_process_stdout(
         def kill(self) -> None:
             self.returncode = -9
 
-    monkeypatch.setattr(recovery_sessions_module.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(archive_restores_module.subprocess, "Popen", _Proc)
 
     chunks = list(
-        recovery_sessions_module._run_iso_from_root(
+        archive_restores_module._run_iso_from_root(
             image_root=image_root,
             volume_id="20260420T040001Z",
             filename="20260420T040001Z.iso",
@@ -1409,11 +1401,11 @@ def test_run_iso_from_root_reports_process_failure(
         def kill(self) -> None:
             self.returncode = -9
 
-    monkeypatch.setattr(recovery_sessions_module.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(archive_restores_module.subprocess, "Popen", _Proc)
 
     with pytest.raises(RuntimeError, match="synthetic xorriso failure"):
         list(
-            recovery_sessions_module._run_iso_from_root(
+            archive_restores_module._run_iso_from_root(
                 image_root=image_root,
                 volume_id="20260420T040001Z",
                 filename="20260420T040001Z.iso",
@@ -1421,7 +1413,7 @@ def test_run_iso_from_root_reports_process_failure(
         )
 
 
-def test_recovery_session_retries_initial_ready_notification_before_reminders(
+def test_archive_restore_retries_initial_ready_notification_before_reminders(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1435,20 +1427,20 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     config = _config(
         sqlite_path,
         operator_webhook_url="http://example.invalid/webhooks/operator",
-        glacier_recovery_restore_latency=timedelta(seconds=10),
+        archive_restore_latency=timedelta(seconds=10),
         operator_webhook_retry_delay=timedelta(seconds=1),
         operator_webhook_reminder_interval=timedelta(seconds=5),
     )
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     attempts: list[str] = []
     ready_failures = 0
@@ -1456,44 +1448,44 @@ def test_recovery_session_retries_initial_ready_notification_before_reminders(
     def _post_webhook(*, config, payload):
         nonlocal ready_failures
         attempts.append(str(payload["event"]))
-        if payload["event"] == "glacier_recovery.ready" and ready_failures == 0:
+        if payload["event"] == "archive_restore.ready" and ready_failures == 0:
             ready_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
-    assert recovery_service.process_due_sessions() == 1
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
+    assert recovery_service.process_due_restores() == 1
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=11),
     )
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
 
-    failed_delivery = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert failed_delivery.state == RecoverySessionState.READY
+    failed_delivery = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert failed_delivery.state == ArchiveRestoreState.READY
     assert failed_delivery.notification.last_notified_at is None
     assert failed_delivery.notification.reminder_count == 0
-    assert attempts == ["glacier_recovery.started", "glacier_recovery.ready"]
+    assert attempts == ["archive_restore.started", "archive_restore.ready"]
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=12),
     )
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
 
-    retried_delivery = recovery_service.get("rs-20260420T040001Z-rebuild-1")
+    retried_delivery = recovery_service.get("ar-20260420T040001Z-rebuild-1")
     assert retried_delivery.notification.last_notified_at == "2026-04-20T04:00:12Z"
     assert retried_delivery.notification.reminder_count == 0
     assert attempts == [
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.ready",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.ready",
     ]
 
 
-def test_recovery_session_retries_initial_ready_notification_before_expiring(
+def test_archive_restore_retries_initial_ready_notification_before_expiring(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1507,21 +1499,21 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     config = _config(
         sqlite_path,
         operator_webhook_url="http://example.invalid/webhooks/operator",
-        glacier_recovery_restore_latency=timedelta(seconds=10),
-        glacier_recovery_ready_ttl=timedelta(seconds=12),
+        archive_restore_latency=timedelta(seconds=10),
+        archive_restore_ready_ttl=timedelta(seconds=12),
         operator_webhook_retry_delay=timedelta(seconds=1),
         operator_webhook_reminder_interval=timedelta(seconds=5),
     )
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="lost")
 
     attempts: list[str] = []
     ready_failures = 0
@@ -1529,45 +1521,45 @@ def test_recovery_session_retries_initial_ready_notification_before_expiring(
     def _post_webhook(*, config, payload):
         nonlocal ready_failures
         attempts.append(str(payload["event"]))
-        if payload["event"] == "glacier_recovery.ready" and ready_failures == 0:
+        if payload["event"] == "archive_restore.ready" and ready_failures == 0:
             ready_failures += 1
             raise RuntimeError("HTTP 503")
 
     start = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.utcnow", lambda: start)
-    monkeypatch.setattr("riverhog_core.services.recovery_sessions.post_webhook", _post_webhook)
-    assert recovery_service.process_due_sessions() == 1
+    monkeypatch.setattr("riverhog_core.services.archive_restores.utcnow", lambda: start)
+    monkeypatch.setattr("riverhog_core.services.archive_restores.post_webhook", _post_webhook)
+    assert recovery_service.process_due_restores() == 1
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=11),
     )
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
 
-    failed_delivery = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert failed_delivery.state == RecoverySessionState.READY
+    failed_delivery = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert failed_delivery.state == ArchiveRestoreState.READY
     assert failed_delivery.notification.last_notified_at is None
     assert failed_delivery.notification.next_reminder_at == "2026-04-20T04:00:12Z"
-    assert failed_delivery.restore_expires_at == "2026-04-20T04:00:23Z"
+    assert failed_delivery.expires_at == "2026-04-20T04:00:23Z"
 
     monkeypatch.setattr(
-        "riverhog_core.services.recovery_sessions.utcnow",
+        "riverhog_core.services.archive_restores.utcnow",
         lambda: start + timedelta(seconds=22),
     )
-    assert recovery_service.process_due_sessions() == 1
+    assert recovery_service.process_due_restores() == 1
 
-    retried_delivery = recovery_service.get("rs-20260420T040001Z-rebuild-1")
-    assert retried_delivery.state == RecoverySessionState.READY
+    retried_delivery = recovery_service.get("ar-20260420T040001Z-rebuild-1")
+    assert retried_delivery.state == ArchiveRestoreState.READY
     assert retried_delivery.notification.last_notified_at == "2026-04-20T04:00:22Z"
     assert retried_delivery.notification.reminder_count == 0
     assert attempts == [
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.ready",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.ready",
     ]
 
 
-def test_queued_recovery_session_can_group_multiple_images_before_restore_request(
+def test_queued_archive_restore_can_group_multiple_images_before_restore_request(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -1587,27 +1579,27 @@ def test_queued_recovery_session_can_group_multiple_images_before_restore_reques
     package = _seed_docs_collection_archive(sqlite_path)
 
     config = _config(sqlite_path)
-    copy_service = SqlAlchemyCopyService(config, _FakeHotStore())
-    recovery_service = SqlAlchemyRecoverySessionService(
+    disc_service = SqlAlchemyDiscService(config, _FakeHotStore())
+    recovery_service = SqlAlchemyArchiveRestoreService(
         config,
         _FakeArchiveStore(collection_packages={"docs": package}),
     )
 
-    copy_service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    copy_service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
-    copy_service.register("20260420T040003Z", "Shelf C1", copy_id="20260420T040003Z-1")
-    copy_service.register("20260420T040003Z", "Shelf D1", copy_id="20260420T040003Z-2")
+    disc_service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    disc_service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
+    disc_service.register("20260420T040003Z", "Shelf C1", disc_id="20260420T040003Z-1")
+    disc_service.register("20260420T040003Z", "Shelf D1", disc_id="20260420T040003Z-2")
 
-    copy_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
-    copy_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
-    copy_service.update("20260420T040003Z", "20260420T040003Z-1", state="lost")
-    copy_service.update("20260420T040003Z", "20260420T040003Z-2", state="damaged")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
+    disc_service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
+    disc_service.update("20260420T040003Z", "20260420T040003Z-1", state="lost")
+    disc_service.update("20260420T040003Z", "20260420T040003Z-2", state="damaged")
 
-    session = recovery_service.get("rs-20260420T040001Z-rebuild-1")
+    restore = recovery_service.get("ar-20260420T040001Z-rebuild-1")
 
-    assert session.state == RecoverySessionState.RESTORE_REQUESTED
-    assert [str(image.id) for image in session.images] == [
+    assert restore.state == ArchiveRestoreState.REQUESTED
+    assert [str(image.id) for image in restore.images] == [
         "20260420T040001Z",
         "20260420T040003Z",
     ]
-    assert [str(collection.id) for collection in session.collections] == ["docs"]
+    assert [str(collection.id) for collection in restore.collections] == ["docs"]

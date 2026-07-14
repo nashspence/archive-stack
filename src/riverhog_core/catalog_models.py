@@ -35,12 +35,10 @@ class CollectionOperatorSummaryRecord(Base):
     files: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     hot_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
-    archived_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
-    pending_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
-    protected_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
-    physical_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    disc_redundancy_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    disc_coverage_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     has_registered_image: Mapped[int] = mapped_column(Integer, default=0)
-    protection_state: Mapped[str] = mapped_column(String, default="unprotected")
+    disc_redundancy_state: Mapped[str] = mapped_column(String, default="none")
     has_archive: Mapped[int] = mapped_column(Integer, default=0)
     archive_state: Mapped[str | None] = mapped_column(String, default="pending", nullable=True)
     archive_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -110,7 +108,6 @@ class CollectionFileRecord(Base):
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     hot: Mapped[bool] = mapped_column(Boolean, default=True)
-    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
     hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -131,20 +128,20 @@ class CollectionFileRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="files")
-    copies: Mapped[list[FileCopyRecord]] = relationship(
+    discs: Mapped[list[FileDiscRecord]] = relationship(
         back_populates="file",
         cascade="all, delete-orphan",
     )
 
 
-class FileCopyRecord(Base):
-    __tablename__ = "file_copies"
+class FileDiscRecord(Base):
+    __tablename__ = "file_discs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     collection_id: Mapped[str] = mapped_column(String)
     path: Mapped[str] = mapped_column(String)
-    copy_id: Mapped[str] = mapped_column(String)
-    volume_id: Mapped[str] = mapped_column(String)
+    disc_id: Mapped[str] = mapped_column(String)
+    image_id: Mapped[str] = mapped_column(String)
     location: Mapped[str] = mapped_column(String)
     disc_path: Mapped[str] = mapped_column(String)
     enc_json: Mapped[str] = mapped_column(String)
@@ -163,7 +160,7 @@ class FileCopyRecord(Base):
         ),
     )
 
-    file: Mapped[CollectionFileRecord] = relationship(back_populates="copies")
+    file: Mapped[CollectionFileRecord] = relationship(back_populates="discs")
 
 
 class CollectionArchiveRecord(Base):
@@ -260,7 +257,7 @@ class FinalizedImageRecord(Base):
     bytes: Mapped[int] = mapped_column(BigInteger)
     image_root: Mapped[str] = mapped_column(String)
     target_bytes: Mapped[int] = mapped_column(BigInteger)
-    required_copy_count: Mapped[int | None] = mapped_column(Integer, default=2, nullable=True)
+    required_disc_count: Mapped[int | None] = mapped_column(Integer, default=2, nullable=True)
 
     covered_paths: Mapped[list[FinalizedImageCoveredPathRecord]] = relationship(
         back_populates="image",
@@ -274,7 +271,7 @@ class FinalizedImageRecord(Base):
         back_populates="image",
         cascade="all, delete-orphan",
     )
-    copies: Mapped[list[ImageCopyRecord]] = relationship(
+    discs: Mapped[list[ImageDiscRecord]] = relationship(
         back_populates="image",
         cascade="all, delete-orphan",
     )
@@ -296,11 +293,11 @@ class ImageOperatorSummaryRecord(Base):
     files: Mapped[int] = mapped_column(BigInteger, default=0)
     collections: Mapped[int] = mapped_column(BigInteger, default=0)
     collection_ids_text: Mapped[str] = mapped_column(String, default="")
-    physical_protection_state: Mapped[str] = mapped_column(String, default="unprotected")
-    physical_copies_required: Mapped[int] = mapped_column(Integer, default=2)
-    physical_copies_registered: Mapped[int] = mapped_column(BigInteger, default=0)
-    physical_copies_verified: Mapped[int] = mapped_column(BigInteger, default=0)
-    physical_copies_missing: Mapped[int] = mapped_column(BigInteger, default=0)
+    disc_redundancy_state: Mapped[str] = mapped_column(String, default="none")
+    discs_required: Mapped[int] = mapped_column(Integer, default=2)
+    discs_registered: Mapped[int] = mapped_column(BigInteger, default=0)
+    discs_verified: Mapped[int] = mapped_column(BigInteger, default=0)
+    discs_missing: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
@@ -384,25 +381,25 @@ class FinalizedImageCollectionArtifactRecord(Base):
     image: Mapped[FinalizedImageRecord] = relationship(back_populates="collection_artifacts")
 
 
-class GlacierUsageSnapshotRecord(Base):
-    __tablename__ = "glacier_usage_snapshots"
+class ArchiveUsageSnapshotRecord(Base):
+    __tablename__ = "archive_usage_snapshots"
 
     captured_at: Mapped[str] = mapped_column(String, primary_key=True)
     uploaded_images: Mapped[int] = mapped_column(Integer)
     measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
 
 
-class GlacierRecoverySessionRecord(Base):
-    __tablename__ = "glacier_recovery_sessions"
+class ArchiveRestoreRecord(Base):
+    __tablename__ = "archive_restores"
 
-    session_id: Mapped[str] = mapped_column(String, primary_key=True)
-    type: Mapped[str | None] = mapped_column(String, default="image_rebuild", nullable=True)
+    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
+    type: Mapped[str | None] = mapped_column(String, default="disc_rebuild", nullable=True)
     state: Mapped[str] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String)
-    restore_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    restore_ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    restore_next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    restore_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     canceled_at: Mapped[str | None] = mapped_column(String, nullable=True)
     paused_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -451,45 +448,45 @@ class GlacierRecoverySessionRecord(Base):
         default="pending",
         nullable=True,
     )
-    restore_paths_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    paths_json: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index(
-            "ix_glacier_recovery_sessions_state_created",
+            "ix_archive_restores_state_created",
             "state",
             "created_at",
-            "session_id",
+            "restore_id",
         ),
         Index(
-            "ix_glacier_recovery_sessions_type_state_created",
+            "ix_archive_restores_type_state_created",
             "type",
             "state",
             "created_at",
-            "session_id",
+            "restore_id",
         ),
     )
 
-    images: Mapped[list[GlacierRecoverySessionImageRecord]] = relationship(
-        back_populates="session",
+    images: Mapped[list[ArchiveRestoreImageRecord]] = relationship(
+        back_populates="restore",
         cascade="all, delete-orphan",
     )
-    collections: Mapped[list[GlacierRecoverySessionCollectionRecord]] = relationship(
-        back_populates="session",
+    collections: Mapped[list[ArchiveRestoreCollectionRecord]] = relationship(
+        back_populates="restore",
         cascade="all, delete-orphan",
     )
 
 
-class GlacierRecoverySessionImageRecord(Base):
-    __tablename__ = "glacier_recovery_session_images"
+class ArchiveRestoreImageRecord(Base):
+    __tablename__ = "archive_restore_images"
 
-    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
     image_id: Mapped[str] = mapped_column(String, primary_key=True)
     image_order: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["session_id"],
-            ["glacier_recovery_sessions.session_id"],
+            ["restore_id"],
+            ["archive_restores.restore_id"],
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
@@ -499,20 +496,20 @@ class GlacierRecoverySessionImageRecord(Base):
         ),
     )
 
-    session: Mapped[GlacierRecoverySessionRecord] = relationship(back_populates="images")
+    restore: Mapped[ArchiveRestoreRecord] = relationship(back_populates="images")
 
 
-class GlacierRecoverySessionCollectionRecord(Base):
-    __tablename__ = "glacier_recovery_session_collections"
+class ArchiveRestoreCollectionRecord(Base):
+    __tablename__ = "archive_restore_collections"
 
-    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     collection_order: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["session_id"],
-            ["glacier_recovery_sessions.session_id"],
+            ["restore_id"],
+            ["archive_restores.restore_id"],
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
@@ -522,14 +519,14 @@ class GlacierRecoverySessionCollectionRecord(Base):
         ),
     )
 
-    session: Mapped[GlacierRecoverySessionRecord] = relationship(back_populates="collections")
+    restore: Mapped[ArchiveRestoreRecord] = relationship(back_populates="collections")
 
 
-class ImageCopyRecord(Base):
-    __tablename__ = "image_copies"
+class ImageDiscRecord(Base):
+    __tablename__ = "image_discs"
 
     image_id: Mapped[str] = mapped_column(String, primary_key=True)
-    copy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    disc_id: Mapped[str] = mapped_column(String, primary_key=True)
     label_text: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
@@ -544,9 +541,9 @@ class ImageCopyRecord(Base):
         ),
     )
 
-    image: Mapped[FinalizedImageRecord] = relationship(back_populates="copies")
+    image: Mapped[FinalizedImageRecord] = relationship(back_populates="discs")
     operator_summary: Mapped[DiscOperatorSummaryRecord | None] = relationship(
-        back_populates="copy",
+        back_populates="disc",
         cascade="all, delete-orphan",
         uselist=False,
     )
@@ -556,7 +553,7 @@ class DiscOperatorSummaryRecord(Base):
     __tablename__ = "disc_operator_summaries"
 
     image_id: Mapped[str] = mapped_column(String, primary_key=True)
-    copy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    disc_id: Mapped[str] = mapped_column(String, primary_key=True)
     label_text: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
@@ -567,22 +564,22 @@ class DiscOperatorSummaryRecord(Base):
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["image_id", "copy_id"],
-            ["image_copies.image_id", "image_copies.copy_id"],
+            ["image_id", "disc_id"],
+            ["image_discs.image_id", "image_discs.disc_id"],
             ondelete="CASCADE",
             onupdate="CASCADE",
         ),
     )
 
-    copy: Mapped[ImageCopyRecord] = relationship(back_populates="operator_summary")
+    disc: Mapped[ImageDiscRecord] = relationship(back_populates="operator_summary")
 
 
-class ImageCopyEventRecord(Base):
-    __tablename__ = "image_copy_events"
+class ImageDiscEventRecord(Base):
+    __tablename__ = "image_disc_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     image_id: Mapped[str] = mapped_column(String)
-    copy_id: Mapped[str] = mapped_column(String)
+    disc_id: Mapped[str] = mapped_column(String)
     occurred_at: Mapped[str] = mapped_column(String)
     event: Mapped[str] = mapped_column(String)
     state: Mapped[str] = mapped_column(String)
@@ -591,8 +588,8 @@ class ImageCopyEventRecord(Base):
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ["image_id", "copy_id"],
-            ["image_copies.image_id", "image_copies.copy_id"],
+            ["image_id", "disc_id"],
+            ["image_discs.image_id", "image_discs.disc_id"],
             ondelete="CASCADE",
         ),
     )
@@ -696,8 +693,7 @@ class FetchOperatorFileRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
     bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     hot: Mapped[bool] = mapped_column(Boolean, default=False)
-    archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    registered_disc_coverage: Mapped[bool] = mapped_column(Boolean, default=False)
+    disc_coverage: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
@@ -733,16 +729,9 @@ class FetchOperatorFileRecord(Base):
             "path",
         ),
         Index(
-            "ix_fetch_operator_files_archived",
-            "fetch_id",
-            "archived",
-            "collection_id",
-            "path",
-        ),
-        Index(
             "ix_fetch_operator_files_disc",
             "fetch_id",
-            "registered_disc_coverage",
+            "disc_coverage",
             "collection_id",
             "path",
         ),

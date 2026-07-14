@@ -100,6 +100,6 @@ def test_manifest_collection_budget_grows_with_more_files_and_readme_mentions_re
 
     assert one_file > 0
     assert two_files > one_file
-    assert "Archive image: img_001" in readme
+    assert "Image: img_001" in readme
     assert "decrypt DISC.yml.age" in readme
     assert "collections/*.ots.age" in readme

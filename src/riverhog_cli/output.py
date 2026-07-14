@@ -16,7 +16,7 @@ RichText: Any
 FIELD_STYLE = "bold #c0ad6c"
 ENTITY_ID_STYLE = "bold #8ec9cc"
 ATTENTION_STYLE = "bold #ff8933"
-_ATTENTION_TOKENS = {"under_protected", "partially_protected", "partial"}
+_ATTENTION_TOKENS = {"partial"}
 _FETCH_SHOW_FILE_PREVIEW_LIMIT = 8
 
 try:
@@ -177,27 +177,27 @@ def _string_items(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
-def _copy_label(copy: Mapping[str, object]) -> str:
-    copy_id = str(copy.get("id", "unknown"))
-    volume_id = str(copy.get("volume_id", "unknown"))
-    location = str(copy.get("location") or "unassigned")
-    return f"{copy_id} ({volume_id} @ {location})"
+def _disc_label(disc: Mapping[str, object]) -> str:
+    disc_id = str(disc.get("disc_id", "unknown"))
+    image_id = str(disc.get("image_id", "unknown"))
+    location = str(disc.get("location") or "unassigned")
+    return f"{disc_id} ({image_id} @ {location})"
 
 
-def _copy_lines(value: object, *, limit: int = 5) -> str:
+def _disc_lines(value: object, *, limit: int = 5) -> str:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return "none"
-    copies = [copy for copy in value if isinstance(copy, Mapping)]
-    if not copies:
+    discs = [disc for disc in value if isinstance(disc, Mapping)]
+    if not discs:
         return "none"
     lines = [
-        f"{copy.get('label_text') or copy.get('id', 'unknown')} @ "
-        f"{copy.get('location') or 'unassigned'} "
-        f"({copy.get('verification_state', copy.get('state', 'unknown'))})"
-        for copy in copies[:limit]
+        f"{disc.get('label_text') or disc.get('disc_id', 'unknown')} @ "
+        f"{disc.get('location') or 'unassigned'} "
+        f"({disc.get('verification_state', disc.get('state', 'unknown'))})"
+        for disc in discs[:limit]
     ]
-    if len(copies) > limit:
-        lines.append(f"... {len(copies) - limit} more")
+    if len(discs) > limit:
+        lines.append(f"... {len(discs) - limit} more")
     return "\n".join(lines)
 
 
@@ -228,101 +228,41 @@ def _int_value(value: object, *, default: int = 0) -> int:
     return default
 
 
-def _partial_copy_coverage(verified: object, registered: object, required: object) -> bool:
+def _partial_disc_coverage(verified: object, registered: object, required: object) -> bool:
     required_count = _int_value(required)
     return required_count > 0 and (
         _int_value(verified) < required_count or _int_value(registered) < required_count
     )
 
 
-def _copy_coverage_text(verified: object, registered: object, required: object) -> Any:
+def _disc_coverage_text(verified: object, registered: object, required: object) -> Any:
     text = f"{verified}/{registered}/{required}"
-    if _partial_copy_coverage(verified, registered, required):
+    if _partial_disc_coverage(verified, registered, required):
         return _styled_text(text, ATTENTION_STYLE)
     return text
 
 
-def _copy_detail_coverage_text(image: Mapping[str, Any]) -> Any:
-    verified = image.get("physical_copies_verified", 0)
-    registered = image.get("physical_copies_registered", 0)
-    required = image.get("physical_copies_required", 0)
+def _disc_detail_coverage_text(image: Mapping[str, Any]) -> Any:
+    verified = image.get("discs_verified", 0)
+    registered = image.get("discs_registered", 0)
+    required = image.get("discs_required", 0)
     text = f"verified={verified}/{required} registered={registered}/{required}"
-    if _partial_copy_coverage(verified, registered, required):
+    if _partial_disc_coverage(verified, registered, required):
         return _styled_text(text, ATTENTION_STYLE)
     return text
 
 
-def _find_collection_glacier_entry(
+def _find_collection_archive_entry(
     collection_id: str,
-    glacier_payload: Mapping[str, Any],
+    archive_payload: Mapping[str, Any],
 ) -> Mapping[str, Any] | None:
-    collections = glacier_payload.get("collections")
+    collections = archive_payload.get("collections")
     if not isinstance(collections, Sequence):
         return None
     for collection in collections:
         if isinstance(collection, Mapping) and str(collection.get("id")) == collection_id:
             return collection
     return None
-
-
-def _recovery_text(recovery: object, *, total_bytes: int) -> str:
-    if not isinstance(recovery, Mapping):
-        return "available=unknown"
-
-    verified = recovery.get("verified_physical")
-    glacier = recovery.get("glacier")
-    available_items = recovery.get("available")
-    available = (
-        ",".join(str(item) for item in available_items)
-        if isinstance(available_items, Sequence) and available_items
-        else "none"
-    )
-
-    verified_state = (
-        str(verified.get("state", "unknown")) if isinstance(verified, Mapping) else "unknown"
-    )
-    verified_bytes = _int_value(verified.get("bytes", 0)) if isinstance(verified, Mapping) else 0
-    glacier_state = (
-        str(glacier.get("state", "unknown")) if isinstance(glacier, Mapping) else "unknown"
-    )
-    glacier_bytes = _int_value(glacier.get("bytes", 0)) if isinstance(glacier, Mapping) else 0
-    return (
-        f"available={available} "
-        f"verified_physical={verified_state} {verified_bytes}/{total_bytes} "
-        f"glacier={glacier_state} {glacier_bytes}/{total_bytes}"
-    )
-
-
-def format_copy(payload: Mapping[str, Any]) -> str:
-    history = payload.get("history")
-    lines = [
-        f"copy: {payload.get('id', 'unknown')}",
-        f"volume: {payload.get('volume_id', 'unknown')}",
-        f"label: {payload.get('label_text', 'unknown')}",
-        f"location: {payload.get('location') or 'unassigned'}",
-        f"state: {payload.get('state', 'unknown')}",
-        f"verification: {payload.get('verification_state', 'unknown')}",
-    ]
-    if isinstance(history, Sequence):
-        lines.append(f"history: {len(history)} event(s)")
-    return "\n".join(lines)
-
-
-def format_copies(payload: Mapping[str, Any]) -> str:
-    copies = payload.get("copies")
-    if not isinstance(copies, Sequence) or not copies:
-        return "copies: none"
-    lines = [f"copies: {len(copies)}"]
-    for copy in copies:
-        if not isinstance(copy, Mapping):
-            continue
-        lines.append(
-            f"- {copy.get('id', 'unknown')} "
-            f"state={copy.get('state', 'unknown')} "
-            f"verification={copy.get('verification_state', 'unknown')} "
-            f"location={copy.get('location') or 'unassigned'}"
-        )
-    return "\n".join(lines)
 
 
 def _targets_lines(value: object, *, limit: int = 8) -> str:
@@ -377,8 +317,7 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
         f"files={summary.get('files', 0)} "
         f"bytes={summary.get('bytes', 0)} "
         f"hot={summary.get('hot_files', 0)}/{summary.get('files', 0)} "
-        f"archived={summary.get('archived_files', 0)}/{summary.get('files', 0)} "
-        f"disc={summary.get('registered_disc_files', 0)}/{summary.get('files', 0)} "
+        f"disc={summary.get('disc_files', 0)}/{summary.get('files', 0)} "
         f"missing_bytes={summary.get('missing_bytes', 0)}",
     ]
     if summary.get("next_action"):
@@ -398,11 +337,11 @@ def _format_fetch_plain(summary: Mapping[str, Any], manifest: Mapping[str, Any])
                 f"hot={target.get('hot_files', 0)}/{target.get('files', 0)} "
                 f"missing={target.get('missing_files', 0)} "
                 f"disc_missing={target.get('missing_with_disc_files', 0)} "
-                f"cloud_missing={target.get('missing_without_disc_files', 0)}"
+                f"archive_missing={target.get('missing_without_disc_files', 0)}"
             )
-    cloud_lines = _fetch_cloud_plain_lines(summary)
-    if cloud_lines:
-        lines.extend(cloud_lines)
+    archive_lines = _fetch_archive_restore_lines(summary)
+    if archive_lines:
+        lines.extend(archive_lines)
     files_preview = summary.get("files_preview")
     if isinstance(files_preview, Sequence) and files_preview:
         lines.append("files preview:")
@@ -432,8 +371,7 @@ def _fetch_file_plain_lines(file: Mapping[str, Any]) -> list[str]:
         f"- {file.get('target', 'unknown')}",
         f"  bytes: {file.get('bytes', 0)}",
         f"  hot: {str(file.get('hot', False)).lower()}",
-        f"  archived: {str(file.get('archived', False)).lower()}",
-        f"  disc: {str(file.get('registered_disc_coverage', False)).lower()}",
+        f"  disc: {str(file.get('disc_coverage', False)).lower()}",
     ]
 
 
@@ -445,8 +383,7 @@ def _fetch_file_record_text(file: Mapping[str, Any], *, primary: bool) -> Any:
         (
             ("bytes", _bytes_text(file.get("bytes", 0))),
             ("hot", _coverage_bool_text(file.get("hot", False))),
-            ("archived", _coverage_bool_text(file.get("archived", False))),
-            ("disc", _coverage_bool_text(file.get("registered_disc_coverage", False))),
+            ("disc", _coverage_bool_text(file.get("disc_coverage", False))),
         )
     ):
         if index:
@@ -474,12 +411,8 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     table.add_row("bytes", _bytes_text(summary.get("bytes", 0)))
     table.add_row("hot", _count_ratio_text(summary.get("hot_files", 0), summary.get("files", 0)))
     table.add_row(
-        "archive",
-        _count_ratio_text(summary.get("archived_files", 0), summary.get("files", 0)),
-    )
-    table.add_row(
         "disc",
-        _count_ratio_text(summary.get("registered_disc_files", 0), summary.get("files", 0)),
+        _count_ratio_text(summary.get("disc_files", 0), summary.get("files", 0)),
     )
     table.add_row("missing", _bytes_text(summary.get("missing_bytes", 0)))
     if summary.get("next_action"):
@@ -487,7 +420,7 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
             "next",
             f"{summary.get('next_action')} - {summary.get('next_action_reason', '')}",
         )
-    table.add_row("copies", _copy_lines(summary.get("copies")))
+    table.add_row("discs", _disc_lines(summary.get("discs")))
 
     renderables: list[Any] = [RichText("fetch", style="bold"), table]
     target_summaries = summary.get("target_summaries")
@@ -499,7 +432,7 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
             "Hot",
             "Missing",
             "Disc Missing",
-            "Cloud Missing",
+            "Archive Missing",
         )
         for target in target_summaries:
             if not isinstance(target, Mapping):
@@ -514,29 +447,29 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
                 _attention_if_nonzero(target.get("missing_without_disc_files", 0)),
             )
         renderables.extend([RichText("targets", style="bold"), target_table])
-    cloud_fetch = _fetch_cloud_payload(summary)
-    if cloud_fetch is not None and _int_value(cloud_fetch.get("total", 0)) > 0:
-        cloud_table = _quiet_table("Session", "State", "Collections", "Paths", "Ready", "Expires")
-        sessions = cloud_fetch.get("sessions")
-        if isinstance(sessions, Sequence):
-            for session in sessions:
-                if not isinstance(session, Mapping):
+    archive_restores = _fetch_archive_restores_payload(summary)
+    if archive_restores is not None and _int_value(archive_restores.get("total", 0)) > 0:
+        restore_table = _quiet_table("Restore", "State", "Collections", "Paths", "Ready", "Expires")
+        restores = archive_restores.get("restores")
+        if isinstance(restores, Sequence):
+            for restore in restores:
+                if not isinstance(restore, Mapping):
                     continue
-                cloud_table.add_row(
-                    str(session.get("id", "unknown")),
-                    _recovery_state_text(session.get("state", "unknown")),
-                    _preview_lines(_recovery_ids(session, "collections"), limit=3),
-                    _restore_paths_text(session),
-                    str(session.get("restore_ready_at") or "unknown"),
-                    str(session.get("restore_expires_at") or "unknown"),
+                restore_table.add_row(
+                    str(restore.get("id", "unknown")),
+                    _restore_state_text(restore.get("state", "unknown")),
+                    _preview_lines(_restore_related_ids(restore, "collections"), limit=3),
+                    _restore_paths_text(restore),
+                    str(restore.get("ready_at") or "unknown"),
+                    str(restore.get("expires_at") or "unknown"),
                 )
-        if not cloud_table.rows:
-            cloud_table.add_row("none", "", "", "", "", "")
+        if not restore_table.rows:
+            restore_table.add_row("none", "", "", "", "", "")
         renderables.extend(
             [
-                RichText("cloud fetch", style="bold"),
-                _fetch_cloud_scope_text(cloud_fetch),
-                cloud_table,
+                RichText("archive restores", style="bold"),
+                _fetch_archive_restores_scope_text(archive_restores),
+                restore_table,
             ]
         )
     files_preview = summary.get("files_preview")
@@ -573,9 +506,8 @@ def format_fetch_start_plan(payload: Mapping[str, Any]) -> Any:
                 f"name: {payload.get('name', 'unknown')}",
                 f"current state: {payload.get('state', 'unknown')}",
                 f"queued state: {payload.get('queued_state', 'unknown')}",
-                f"cloud: {str(bool(payload.get('cloud'))).lower()}",
-                "recovery session: "
-                f"{str(bool(payload.get('will_create_recovery_session'))).lower()}",
+                f"archive: {str(bool(payload.get('archive'))).lower()}",
+                f"archive restore: {str(bool(payload.get('will_create_archive_restore'))).lower()}",
                 f"files: {payload.get('files', 0)}",
                 f"bytes: {_bytes_text(payload.get('bytes', 0))}",
                 f"missing bytes: {_bytes_text(payload.get('missing_bytes', 0))}",
@@ -589,10 +521,10 @@ def format_fetch_start_plan(payload: Mapping[str, Any]) -> Any:
     table.add_row("name", str(payload.get("name", "unknown")))
     table.add_row("current state", str(payload.get("state", "unknown")))
     table.add_row("queued state", str(payload.get("queued_state", "unknown")))
-    table.add_row("cloud", str(bool(payload.get("cloud"))).lower())
+    table.add_row("archive", str(bool(payload.get("archive"))).lower())
     table.add_row(
-        "recovery session",
-        str(bool(payload.get("will_create_recovery_session"))).lower(),
+        "archive restore",
+        str(bool(payload.get("will_create_archive_restore"))).lower(),
     )
     table.add_row("files", str(payload.get("files", 0)))
     table.add_row("bytes", _bytes_text(payload.get("bytes", 0)))
@@ -601,65 +533,69 @@ def format_fetch_start_plan(payload: Mapping[str, Any]) -> Any:
     return RichGroup(RichText("hot fetch start dry-run", style="bold"), table)
 
 
-def _fetch_cloud_payload(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    payload = summary.get("cloud_fetch")
+def _fetch_archive_restores_payload(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    payload = summary.get("archive_restores")
     if not isinstance(payload, Mapping):
         return None
     return payload
 
 
-def _fetch_cloud_plain_lines(summary: Mapping[str, Any]) -> list[str]:
-    cloud_fetch = _fetch_cloud_payload(summary)
-    if cloud_fetch is None or _int_value(cloud_fetch.get("total", 0)) <= 0:
+def _fetch_archive_restore_lines(summary: Mapping[str, Any]) -> list[str]:
+    archive_restores = _fetch_archive_restores_payload(summary)
+    if archive_restores is None or _int_value(archive_restores.get("total", 0)) <= 0:
         return []
+    returned = archive_restores.get(
+        "restores_returned", len(_archive_restore_items(archive_restores))
+    )
     lines = [
-        "cloud fetch:",
-        f"sessions: {cloud_fetch.get('sessions_returned', len(_cloud_sessions(cloud_fetch)))}/"
-        f"{cloud_fetch.get('total', 0)}",
+        "archive restores:",
+        f"restores: {returned}/{archive_restores.get('total', 0)}",
     ]
-    sessions = cloud_fetch.get("sessions")
-    if not isinstance(sessions, Sequence) or not sessions:
+    restores = archive_restores.get("restores")
+    if not isinstance(restores, Sequence) or not restores:
         lines.append("- none")
         return lines
-    for session in sessions:
-        if not isinstance(session, Mapping):
+    for restore in restores:
+        if not isinstance(restore, Mapping):
             continue
         lines.extend(
             [
-                f"- {session.get('id', 'unknown')} state={session.get('state', 'unknown')}",
-                f"  collections: {_collection_ids_text(_recovery_ids(session, 'collections'))}",
-                f"  paths: {_restore_paths_text(session)}",
-                f"  ready: {session.get('restore_ready_at') or 'unknown'}",
-                f"  expires: {session.get('restore_expires_at') or 'unknown'}",
+                f"- {restore.get('id', 'unknown')} state={restore.get('state', 'unknown')}",
+                "  collections: "
+                f"{_collection_ids_text(_restore_related_ids(restore, 'collections'))}",
+                f"  paths: {_restore_paths_text(restore)}",
+                f"  ready: {restore.get('ready_at') or 'unknown'}",
+                f"  expires: {restore.get('expires_at') or 'unknown'}",
             ]
         )
-        if session.get("latest_message"):
-            lines.append(f"  message: {session.get('latest_message')}")
+        if restore.get("latest_message"):
+            lines.append(f"  message: {restore.get('latest_message')}")
     return lines
 
 
-def _cloud_sessions(cloud_fetch: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    sessions = cloud_fetch.get("sessions")
-    if not isinstance(sessions, Sequence) or isinstance(sessions, (str, bytes, bytearray)):
+def _archive_restore_items(archive_restores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    restores = archive_restores.get("restores")
+    if not isinstance(restores, Sequence) or isinstance(restores, (str, bytes, bytearray)):
         return []
-    return [session for session in sessions if isinstance(session, Mapping)]
+    return [restore for restore in restores if isinstance(restore, Mapping)]
 
 
-def _restore_paths_text(session: Mapping[str, Any]) -> str:
-    paths = session.get("restore_paths")
+def _restore_paths_text(restore: Mapping[str, Any]) -> str:
+    paths = restore.get("paths")
     if paths is None:
         return "all"
     return _preview_lines(_string_items(paths), limit=3)
 
 
-def _fetch_cloud_scope_text(cloud_fetch: Mapping[str, Any]) -> Any:
+def _fetch_archive_restores_scope_text(archive_restores: Mapping[str, Any]) -> Any:
     text = RichText()
+    returned = len(_archive_restore_items(archive_restores))
     fields: list[tuple[str, object]] = [
-        ("sessions", f"{len(_cloud_sessions(cloud_fetch))}/{cloud_fetch.get('total', 0)}")
+        ("restores", f"{returned}/{archive_restores.get('total', 0)}")
     ]
     for label in ("state", "type"):
-        if cloud_fetch.get(label) is not None:
-            fields.append((label, cloud_fetch.get(label)))
+        if archive_restores.get(label) is not None:
+            fields.append((label, archive_restores.get(label)))
     for index, (label, value) in enumerate(fields):
         if index:
             text.append("  ")
@@ -682,8 +618,6 @@ def _format_fetch_files_plain(payload: Mapping[str, Any]) -> str:
         lines.append(f"query: {payload.get('query')}")
     if payload.get("hot") is not None:
         lines.append(f"hot: {str(payload.get('hot')).lower()}")
-    if payload.get("archived") is not None:
-        lines.append(f"archived: {str(payload.get('archived')).lower()}")
     if payload.get("disc_coverage") is not None:
         lines.append(f"disc: {str(payload.get('disc_coverage')).lower()}")
     files = payload.get("files")
@@ -706,8 +640,6 @@ def _fetch_files_scope_text(payload: Mapping[str, Any]) -> Any:
         fields.insert(1, ("query", payload.get("query")))
     if payload.get("hot") is not None:
         fields.append(("hot", str(payload.get("hot")).lower()))
-    if payload.get("archived") is not None:
-        fields.append(("archived", str(payload.get("archived")).lower()))
     if payload.get("disc_coverage") is not None:
         fields.append(("disc", str(payload.get("disc_coverage")).lower()))
     for index, (label, value) in enumerate(fields):
@@ -735,7 +667,7 @@ def format_fetch_files(payload: Mapping[str, Any]) -> Any:
     return RichGroup(*renderables)
 
 
-def _recovery_state_text(value: object) -> Any:
+def _restore_state_text(value: object) -> Any:
     text = str(value)
     normalized = text.casefold().replace("-", "_")
     if normalized in {"expired", "failed"}:
@@ -743,21 +675,21 @@ def _recovery_state_text(value: object) -> Any:
     return _attention_text(text)
 
 
-def _recovery_ids(
-    session: Mapping[str, Any],
+def _restore_related_ids(
+    restore: Mapping[str, Any],
     key: str,
     *,
     id_key: str = "id",
 ) -> list[str]:
-    payload = session.get(key)
+    payload = restore.get(key)
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray)):
         return []
     return [str(item.get(id_key, "unknown")) for item in payload if isinstance(item, Mapping)]
 
 
-def _format_recovery_sessions_plain(payload: Mapping[str, Any]) -> str:
+def _format_archive_restores_plain(payload: Mapping[str, Any]) -> str:
     lines = [
-        "recovery sessions: "
+        "archive restores: "
         f"page {payload.get('page', 1)}/{payload.get('pages', 0)} "
         f"per_page={payload.get('per_page', 25)} "
         f"total={payload.get('total', 0)} "
@@ -767,30 +699,31 @@ def _format_recovery_sessions_plain(payload: Mapping[str, Any]) -> str:
     for label in ("terminal", "type", "state", "collection", "image"):
         if payload.get(label) is not None:
             lines.append(f"{label}: {payload.get(label)}")
-    sessions = payload.get("sessions")
-    if not isinstance(sessions, Sequence) or not sessions:
+    restores = payload.get("restores")
+    if not isinstance(restores, Sequence) or not restores:
         lines.append("- none")
         return "\n".join(lines)
-    for session in sessions:
-        if not isinstance(session, Mapping):
+    for restore in restores:
+        if not isinstance(restore, Mapping):
             continue
         lines.extend(
             [
-                f"- {session.get('id', 'unknown')} "
-                f"type={session.get('type', 'unknown')} "
-                f"state={session.get('state', 'unknown')}",
-                f"  collections: {_collection_ids_text(_recovery_ids(session, 'collections'))}",
-                f"  images: {_collection_ids_text(_recovery_ids(session, 'images'))}",
-                f"  ready: {session.get('restore_ready_at') or 'unknown'}",
-                f"  expires: {session.get('restore_expires_at') or 'unknown'}",
+                f"- {restore.get('id', 'unknown')} "
+                f"type={restore.get('type', 'unknown')} "
+                f"state={restore.get('state', 'unknown')}",
+                "  collections: "
+                f"{_collection_ids_text(_restore_related_ids(restore, 'collections'))}",
+                f"  images: {_collection_ids_text(_restore_related_ids(restore, 'images'))}",
+                f"  ready: {restore.get('ready_at') or 'unknown'}",
+                f"  expires: {restore.get('expires_at') or 'unknown'}",
             ]
         )
-        if session.get("latest_message"):
-            lines.append(f"  message: {session.get('latest_message')}")
+        if restore.get("latest_message"):
+            lines.append(f"  message: {restore.get('latest_message')}")
     return "\n".join(lines)
 
 
-def _recovery_scope_text(payload: Mapping[str, Any]) -> Any:
+def _archive_restore_scope_text(payload: Mapping[str, Any]) -> Any:
     text = RichText()
     fields: list[tuple[str, object]] = [
         ("sort", f"{payload.get('sort', 'created_at')} {payload.get('order', 'desc')}")
@@ -806,11 +739,11 @@ def _recovery_scope_text(payload: Mapping[str, Any]) -> Any:
     return text
 
 
-def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
+def format_archive_restores(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        return _format_recovery_sessions_plain(payload)
+        return _format_archive_restores_plain(payload)
     table = _quiet_table(
-        "Session",
+        "Restore",
         "State",
         "Type",
         "Collections",
@@ -818,45 +751,49 @@ def format_recovery_sessions(payload: Mapping[str, Any]) -> Any:
         "Ready",
         "Expires",
     )
-    sessions = payload.get("sessions")
-    if isinstance(sessions, Sequence):
-        for session in sessions:
-            if not isinstance(session, Mapping):
+    restores = payload.get("restores")
+    if isinstance(restores, Sequence):
+        for restore in restores:
+            if not isinstance(restore, Mapping):
                 continue
             table.add_row(
-                _entity_text(session.get("id", "unknown")),
-                _recovery_state_text(session.get("state", "unknown")),
-                str(session.get("type", "unknown")),
-                _preview_lines(_recovery_ids(session, "collections"), limit=3),
-                _preview_lines(_recovery_ids(session, "images"), limit=3),
-                str(session.get("restore_ready_at") or "unknown"),
-                str(session.get("restore_expires_at") or "unknown"),
+                _entity_text(restore.get("id", "unknown")),
+                _restore_state_text(restore.get("state", "unknown")),
+                str(restore.get("type", "unknown")),
+                _preview_lines(_restore_related_ids(restore, "collections"), limit=3),
+                _preview_lines(_restore_related_ids(restore, "images"), limit=3),
+                str(restore.get("ready_at") or "unknown"),
+                str(restore.get("expires_at") or "unknown"),
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
-    return RichGroup(_page_text("recovery sessions", payload), _recovery_scope_text(payload), table)
+    return RichGroup(
+        _page_text("archive restores", payload),
+        _archive_restore_scope_text(payload),
+        table,
+    )
 
 
-def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
+def _format_archive_restore_plain(payload: Mapping[str, Any]) -> str:
     lines = [
-        f"recovery session: {payload.get('id', 'unknown')}",
+        f"archive restore: {payload.get('id', 'unknown')}",
         f"type: {payload.get('type', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
         f"created_at: {payload.get('created_at', 'unknown')}",
-        f"restore_requested_at: {payload.get('restore_requested_at') or 'none'}",
-        f"restore_ready_at: {payload.get('restore_ready_at') or 'none'}",
-        f"restore_expires_at: {payload.get('restore_expires_at') or 'none'}",
+        f"requested_at: {payload.get('requested_at') or 'none'}",
+        f"ready_at: {payload.get('ready_at') or 'none'}",
+        f"expires_at: {payload.get('expires_at') or 'none'}",
         f"completed_at: {payload.get('completed_at') or 'none'}",
         f"canceled_at: {payload.get('canceled_at') or 'none'}",
         f"paused_at: {payload.get('paused_at') or 'none'}",
     ]
     if payload.get("paused_from_state"):
         lines.append(f"paused_from_state: {payload.get('paused_from_state')}")
-    if payload.get("type") == "collection_restore":
-        restore_paths = _string_items(payload.get("restore_paths"))
-        lines.append("restore_paths:")
-        if restore_paths:
-            lines.extend(f"- {path}" for path in restore_paths)
+    if payload.get("type") == "fetch_materialization":
+        paths = _string_items(payload.get("paths"))
+        lines.append("paths:")
+        if paths:
+            lines.extend(f"- {path}" for path in paths)
         else:
             lines.append("- all")
     if payload.get("latest_message"):
@@ -888,15 +825,15 @@ def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
         for collection in collections:
             if not isinstance(collection, Mapping):
                 continue
-            glacier = collection.get("glacier")
-            glacier_state = (
-                glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+            archive = collection.get("archive")
+            archive_state = (
+                archive.get("state", "unknown") if isinstance(archive, Mapping) else "unknown"
             )
             manifest = collection.get("collection_manifest")
             manifest_state = "uploaded" if isinstance(manifest, Mapping) else "missing"
             lines.append(
                 f"- {collection.get('id', 'unknown')} "
-                f"glacier={glacier_state} "
+                f"archive={archive_state} "
                 f"stored_bytes={collection.get('stored_bytes', 0)} "
                 f"manifest={manifest_state}"
             )
@@ -925,16 +862,16 @@ def _format_recovery_session_plain(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _recovery_collections_table(payload: Mapping[str, Any]) -> Any:
-    table = _quiet_table("Collection", "Glacier", "Stored", "Manifest", "OTS")
+def _archive_restore_collections_table(payload: Mapping[str, Any]) -> Any:
+    table = _quiet_table("Collection", "Archive", "Stored", "Manifest", "OTS")
     collections = payload.get("collections")
     if isinstance(collections, Sequence):
         for collection in collections:
             if not isinstance(collection, Mapping):
                 continue
-            glacier = collection.get("glacier")
-            glacier_state = (
-                str(glacier.get("state", "unknown")) if isinstance(glacier, Mapping) else "unknown"
+            archive = collection.get("archive")
+            archive_state = (
+                str(archive.get("state", "unknown")) if isinstance(archive, Mapping) else "unknown"
             )
             manifest = collection.get("collection_manifest")
             manifest_path = (
@@ -949,7 +886,7 @@ def _recovery_collections_table(payload: Mapping[str, Any]) -> Any:
             )
             table.add_row(
                 str(collection.get("id", "unknown")),
-                _attention_text(glacier_state),
+                _attention_text(archive_state),
                 _bytes_text(collection.get("stored_bytes", 0)),
                 manifest_path,
                 _attention_text(ots_state),
@@ -959,7 +896,7 @@ def _recovery_collections_table(payload: Mapping[str, Any]) -> Any:
     return table
 
 
-def _recovery_images_table(payload: Mapping[str, Any]) -> Any:
+def _archive_restore_images_table(payload: Mapping[str, Any]) -> Any:
     table = _quiet_table("Image", "Rebuild", "Filename", "Collections")
     images = payload.get("images")
     if isinstance(images, Sequence):
@@ -968,7 +905,7 @@ def _recovery_images_table(payload: Mapping[str, Any]) -> Any:
                 continue
             table.add_row(
                 str(image.get("id", "unknown")),
-                _recovery_state_text(image.get("rebuild_state", "unknown")),
+                _restore_state_text(image.get("rebuild_state", "unknown")),
                 str(image.get("filename", "unknown")),
                 _collection_ids_lines(image.get("collection_ids")),
             )
@@ -977,18 +914,18 @@ def _recovery_images_table(payload: Mapping[str, Any]) -> Any:
     return table
 
 
-def format_recovery_session(payload: Mapping[str, Any]) -> Any:
+def format_archive_restore(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        return _format_recovery_session_plain(payload)
+        return _format_archive_restore_plain(payload)
 
     overview = _detail_table()
-    overview.add_row("session", _entity_text(payload.get("id", "unknown")))
+    overview.add_row("restore", _entity_text(payload.get("id", "unknown")))
     overview.add_row("type", str(payload.get("type", "unknown")))
-    overview.add_row("state", _recovery_state_text(payload.get("state", "unknown")))
+    overview.add_row("state", _restore_state_text(payload.get("state", "unknown")))
     overview.add_row("created", str(payload.get("created_at", "unknown")))
-    overview.add_row("restore requested", str(payload.get("restore_requested_at") or "none"))
-    overview.add_row("ready", str(payload.get("restore_ready_at") or "none"))
-    overview.add_row("expires", str(payload.get("restore_expires_at") or "none"))
+    overview.add_row("restore requested", str(payload.get("requested_at") or "none"))
+    overview.add_row("ready", str(payload.get("ready_at") or "none"))
+    overview.add_row("expires", str(payload.get("expires_at") or "none"))
     overview.add_row("completed", str(payload.get("completed_at") or "none"))
     if payload.get("canceled_at"):
         overview.add_row("canceled", str(payload.get("canceled_at")))
@@ -996,11 +933,9 @@ def format_recovery_session(payload: Mapping[str, Any]) -> Any:
         overview.add_row("paused", str(payload.get("paused_at")))
     if payload.get("paused_from_state"):
         overview.add_row("paused from", str(payload.get("paused_from_state")))
-    if payload.get("type") == "collection_restore":
-        restore_paths = _string_items(payload.get("restore_paths"))
-        overview.add_row(
-            "restore paths", _preview_lines(restore_paths, limit=8) if restore_paths else "all"
-        )
+    if payload.get("type") == "fetch_materialization":
+        paths = _string_items(payload.get("paths"))
+        overview.add_row("restore paths", _preview_lines(paths, limit=8) if paths else "all")
     if payload.get("latest_message"):
         overview.add_row("message", str(payload.get("latest_message")))
     notification = payload.get("notification")
@@ -1019,26 +954,26 @@ def format_recovery_session(payload: Mapping[str, Any]) -> Any:
         progress_table = _detail_table()
         progress_table.add_row(
             "archive verification",
-            _recovery_state_text(progress.get("archive_verification", "unknown")),
+            _restore_state_text(progress.get("archive_verification", "unknown")),
         )
         progress_table.add_row(
             "extraction",
-            _recovery_state_text(progress.get("extraction", "unknown")),
+            _restore_state_text(progress.get("extraction", "unknown")),
         )
         progress_table.add_row(
             "materialization",
-            _recovery_state_text(progress.get("materialization", "unknown")),
+            _restore_state_text(progress.get("materialization", "unknown")),
         )
     else:
         progress_table = None
 
     renderables: list[Any] = [
-        RichText(f"recovery session {payload.get('id', 'unknown')}", style="bold"),
+        RichText(f"archive restore {payload.get('id', 'unknown')}", style="bold"),
         overview,
         RichText("collections", style="bold"),
-        _recovery_collections_table(payload),
+        _archive_restore_collections_table(payload),
         RichText("images", style="bold"),
-        _recovery_images_table(payload),
+        _archive_restore_images_table(payload),
     ]
     if progress_table is not None:
         renderables.extend([RichText("progress", style="bold"), progress_table])
@@ -1063,20 +998,29 @@ def _format_collections_plain(payload: Mapping[str, Any]) -> str:
         if not isinstance(collection, Mapping):
             continue
         disc_coverage = collection.get("disc_coverage")
-        disc_text = "unknown"
+        disc_redundancy = collection.get("disc_redundancy")
+        archive = collection.get("archive")
+        coverage_text = "unknown"
+        redundancy_text = "unknown"
+        archive_text = "unknown"
         if isinstance(disc_coverage, Mapping):
-            disc_text = (
-                f"{disc_coverage.get('state', 'unknown')} "
-                f"{disc_coverage.get('verified_physical_bytes', 0)}"
+            coverage_text = (
+                f"{disc_coverage.get('state', 'unknown')} {disc_coverage.get('bytes', 0)}"
             )
+        if isinstance(disc_redundancy, Mapping):
+            redundancy_text = (
+                f"{disc_redundancy.get('state', 'unknown')} {disc_redundancy.get('bytes', 0)}"
+            )
+        if isinstance(archive, Mapping):
+            archive_text = str(archive.get("state", "unknown"))
         lines.append(
             f"- {collection.get('id', 'unknown')} "
-            f"protection={collection.get('protection_state', 'unknown')} "
             f"files={collection.get('files', 0)} "
             f"bytes={collection.get('bytes', 0)} "
             f"hot={collection.get('hot_bytes', 0)}/{collection.get('bytes', 0)} "
-            f"archive={collection.get('archived_bytes', 0)}/{collection.get('bytes', 0)} "
-            f"disc={disc_text}"
+            f"archive={archive_text} "
+            f"disc={coverage_text} "
+            f"redundancy={redundancy_text}"
         )
     return "\n".join(lines)
 
@@ -1085,13 +1029,13 @@ def format_collections(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_collections_plain(payload)
     table = _quiet_table(
-        "Collection",
-        "Protection",
+        "Collection slug",
         "Files",
         "Bytes",
         "Hot",
         "Archive",
-        "Disc",
+        "Disc coverage",
+        "Disc redundancy",
     )
     collections = payload.get("collections")
     if isinstance(collections, Sequence):
@@ -1099,21 +1043,32 @@ def format_collections(payload: Mapping[str, Any]) -> Any:
             if not isinstance(collection, Mapping):
                 continue
             disc_coverage = collection.get("disc_coverage")
+            disc_redundancy = collection.get("disc_redundancy")
+            archive = collection.get("archive")
             if isinstance(disc_coverage, Mapping):
                 disc_text = (
                     f"{disc_coverage.get('state', 'unknown')} "
-                    f"{_bytes_text(disc_coverage.get('verified_physical_bytes', 0))}"
+                    f"{_bytes_text(disc_coverage.get('bytes', 0))}"
                 )
             else:
                 disc_text = "unknown"
+            redundancy_text = "unknown"
+            if isinstance(disc_redundancy, Mapping):
+                redundancy_text = (
+                    f"{disc_redundancy.get('state', 'unknown')} "
+                    f"{_bytes_text(disc_redundancy.get('bytes', 0))}"
+                )
+            archive_text = (
+                str(archive.get("state", "unknown")) if isinstance(archive, Mapping) else "unknown"
+            )
             table.add_row(
                 _entity_text(collection.get("id", "unknown")),
-                _attention_text(collection.get("protection_state", "unknown")),
                 str(collection.get("files", 0)),
                 _bytes_text(collection.get("bytes", 0)),
                 _ratio_text(collection.get("hot_bytes", 0), collection.get("bytes", 0)),
-                _ratio_text(collection.get("archived_bytes", 0), collection.get("bytes", 0)),
+                _attention_text(archive_text),
                 _attention_text(disc_text),
+                _attention_text(redundancy_text),
             )
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
@@ -1188,9 +1143,8 @@ def _optional_mapping(value: object) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
 
 
-def _jeb_account_text(batch: Mapping[str, Any]) -> str:
-    accounts = _string_items(batch.get("accounts"))
-    return ",".join(accounts) if accounts else "-"
+def _jeb_account_text(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("account_id") or "-")
 
 
 def _jeb_state_counts_text(counts: Mapping[str, Any]) -> str:
@@ -1207,28 +1161,28 @@ def _jeb_filters_text(payload: Mapping[str, Any]) -> str:
     return "  ".join(active_filters)
 
 
-def _jeb_batch_plain_line(batch: Mapping[str, Any]) -> str:
+def _jeb_attempt_plain_line(attempt: Mapping[str, Any]) -> str:
     parts = [
-        str(batch.get("attempt_id") or batch.get("id") or "unknown"),
-        f"account={_jeb_account_text(batch)}",
-        f"collection={batch.get('collection_id') or '-'}",
-        f"state={batch.get('state') or 'unknown'}",
-        f"files={batch.get('file_count', 0)}",
-        f"bytes={_bytes_text(batch.get('total_bytes', 0))}",
-        f"cleanup={batch.get('cleanup') or '-'}",
+        str(attempt.get("attempt_id") or "unknown"),
+        f"account={_jeb_account_text(attempt)}",
+        f"collection_slug={attempt.get('collection_slug') or '-'}",
+        f"state={attempt.get('state') or 'unknown'}",
+        f"files={attempt.get('file_count', 0)}",
+        f"bytes={_bytes_text(attempt.get('total_bytes', 0))}",
+        f"cleanup={attempt.get('cleanup') or '-'}",
     ]
-    if batch.get("job_id"):
-        parts.append(f"job={batch.get('job_id')}")
-    if batch.get("updated_at"):
-        parts.append(f"updated={batch.get('updated_at')}")
-    if batch.get("last_error"):
-        parts.append(f"error={_jeb_preview(batch.get('last_error'))}")
+    if attempt.get("job_id"):
+        parts.append(f"job={attempt.get('job_id')}")
+    if attempt.get("updated_at"):
+        parts.append(f"updated={attempt.get('updated_at')}")
+    if attempt.get("last_error"):
+        parts.append(f"error={_jeb_preview(attempt.get('last_error'))}")
     return "  ".join(parts)
 
 
-def _format_jeb_batches_plain(payload: Mapping[str, Any]) -> str:
+def _format_jeb_attempts_plain(payload: Mapping[str, Any]) -> str:
     header = (
-        f"jeb batches: page {payload.get('page', 1)}/{payload.get('pages', 0)} "
+        f"jeb attempts: page {payload.get('page', 1)}/{payload.get('pages', 0)} "
         f"per_page={payload.get('per_page', 25)} "
         f"total={payload.get('total', 0)} "
         f"sort={payload.get('sort', 'updated_at')} "
@@ -1241,18 +1195,18 @@ def _format_jeb_batches_plain(payload: Mapping[str, Any]) -> str:
     if filters_text:
         header += f" {filters_text}"
     lines = [header]
-    batches = _mapping_items(payload.get("batches"))
-    if not batches:
+    attempts = _mapping_items(payload.get("attempts"))
+    if not attempts:
         lines.append("- none")
         return "\n".join(lines)
-    lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in batches)
+    lines.extend(f"- {_jeb_attempt_plain_line(attempt)}" for attempt in attempts)
     return "\n".join(lines)
 
 
-def format_jeb_batches(payload: Mapping[str, Any]) -> Any:
+def format_jeb_attempts(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        return _format_jeb_batches_plain(payload)
-    renderables: list[Any] = [_page_text("jeb batches", payload)]
+        return _format_jeb_attempts_plain(payload)
+    renderables: list[Any] = [_page_text("jeb attempts", payload)]
     scope_items = [
         f"sort={payload.get('sort', 'updated_at')}",
         f"order={payload.get('order', 'desc')}",
@@ -1275,16 +1229,16 @@ def format_jeb_batches(payload: Mapping[str, Any]) -> Any:
         "Cleanup",
         "Updated",
     )
-    for batch in _mapping_items(payload.get("batches")):
+    for attempt in _mapping_items(payload.get("attempts")):
         table.add_row(
-            _entity_text(batch.get("attempt_id") or batch.get("id") or "unknown"),
-            _jeb_account_text(batch),
-            str(batch.get("collection_id") or "-"),
-            _attention_text(batch.get("state") or "unknown"),
-            str(batch.get("file_count", 0)),
-            _bytes_text(batch.get("total_bytes", 0)),
-            str(batch.get("cleanup") or "-"),
-            str(batch.get("updated_at") or "-"),
+            _entity_text(attempt.get("attempt_id") or "unknown"),
+            _jeb_account_text(attempt),
+            str(attempt.get("collection_slug") or "-"),
+            _attention_text(attempt.get("state") or "unknown"),
+            str(attempt.get("file_count", 0)),
+            _bytes_text(attempt.get("total_bytes", 0)),
+            str(attempt.get("cleanup") or "-"),
+            str(attempt.get("updated_at") or "-"),
         )
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "", "")
@@ -1292,39 +1246,33 @@ def format_jeb_batches(payload: Mapping[str, Any]) -> Any:
     return RichGroup(*renderables)
 
 
-def _jeb_source_plain_line(source: Mapping[str, Any]) -> str:
-    enabled = "enabled" if source.get("enabled") else "disabled"
-    path_state = "present" if source.get("path_exists") else "missing"
-    routing = "failed" if source.get("routing_preflight_failed") else "ok"
+def _jeb_account_plain_line(account: Mapping[str, Any]) -> str:
+    enabled = "enabled" if account.get("enabled") else "disabled"
+    path_state = "present" if account.get("path_exists") else "missing"
+    routing = "failed" if account.get("routing_preflight_failed") else "ok"
     parts = [
-        str(source.get("id") or "unknown"),
+        str(account.get("id") or "unknown"),
         enabled,
         f"path={path_state}",
         f"routing_preflight={routing}",
+        f"collection_slug={account.get('collection_slug') or '-'}",
     ]
-    if "eligible_files" in source:
-        parts.append(f"eligible={source.get('eligible_files')} files")
-        parts.append(f"bytes={_bytes_text(source.get('eligible_bytes', 0))}")
-    if source.get("eligible_error"):
-        parts.append(f"eligible_error={_jeb_preview(source.get('eligible_error'))}")
-    collections = _string_items(source.get("collections"))
-    if collections:
-        parts.append(f"collections={','.join(collections)}")
+    if "eligible_files" in account:
+        parts.append(f"eligible={account.get('eligible_files')} files")
+        parts.append(f"bytes={_bytes_text(account.get('eligible_bytes', 0))}")
+    if account.get("eligible_error"):
+        parts.append(f"eligible_error={_jeb_preview(account.get('eligible_error'))}")
     return "  ".join(parts)
 
 
 def _format_jeb_status_plain(payload: Mapping[str, Any]) -> str:
-    sources = _mapping_items(payload.get("sources"))
-    collections = _mapping_items(payload.get("collections"))
+    accounts = _mapping_items(payload.get("accounts"))
     batch_counts = _optional_mapping(payload.get("batches"))
     preflight = _optional_mapping(payload.get("routing_preflight_failures"))
     lines = [
         "jeb status",
-        f"sources: {sum(1 for source in sources if source.get('enabled'))}/{len(sources)} enabled",
-        (
-            "collections: "
-            f"{sum(1 for item in collections if item.get('enabled'))}/{len(collections)} enabled"
-        ),
+        "accounts: "
+        f"{sum(1 for account in accounts if account.get('enabled'))}/{len(accounts)} enabled",
         (
             f"batches: total={batch_counts.get('total', 0)} "
             f"active={batch_counts.get('active', 0)} "
@@ -1340,31 +1288,31 @@ def _format_jeb_status_plain(payload: Mapping[str, Any]) -> str:
             f"{active_operation.get('operation', 'unknown')} "
             f"id={active_operation.get('id', 'unknown')} "
             f"account={active_operation.get('account') or '-'} "
-            f"batch={active_operation.get('batch_id') or '-'}"
+            f"attempt={active_operation.get('attempt_id') or '-'}"
         )
 
-    lines.append("sources:")
-    if sources:
-        lines.extend(f"- {_jeb_source_plain_line(source)}" for source in sources)
+    lines.append("accounts:")
+    if accounts:
+        lines.extend(f"- {_jeb_account_plain_line(account)}" for account in accounts)
     else:
         lines.append("- none")
 
     active_attempts = _optional_mapping(payload.get("active_attempts"))
-    active_batches = _mapping_items(active_attempts.get("batches"))
-    lines.append("active batches:")
-    if active_batches:
-        lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in active_batches)
+    active_attempt_rows = _mapping_items(active_attempts.get("attempts"))
+    lines.append("active attempts:")
+    if active_attempt_rows:
+        lines.extend(f"- {_jeb_attempt_plain_line(attempt)}" for attempt in active_attempt_rows)
         total_active_listed = _int_value(active_attempts.get("total", 0))
-        if total_active_listed > len(active_batches):
-            lines.append(f"- ... {total_active_listed - len(active_batches)} more")
+        if total_active_listed > len(active_attempt_rows):
+            lines.append(f"- ... {total_active_listed - len(active_attempt_rows)} more")
     else:
         lines.append("- none")
 
     recent_failures = _optional_mapping(payload.get("recent_failures"))
-    failure_batches = _mapping_items(recent_failures.get("batches"))
+    failure_attempts = _mapping_items(recent_failures.get("attempts"))
     lines.append("recent failures:")
-    if failure_batches:
-        lines.extend(f"- {_jeb_batch_plain_line(batch)}" for batch in failure_batches)
+    if failure_attempts:
+        lines.extend(f"- {_jeb_attempt_plain_line(attempt)}" for attempt in failure_attempts)
     else:
         lines.append("- none")
 
@@ -1373,7 +1321,7 @@ def _format_jeb_status_plain(payload: Mapping[str, Any]) -> str:
         lines.append("routing preflight:")
         lines.extend(
             (
-                f"- {failure.get('source_id')} "
+                f"- {failure.get('account_id')} "
                 f"kind={failure.get('failure_kind')} "
                 f"unmatched={failure.get('unmatched_count')}/{failure.get('file_count')} "
                 f"updated={failure.get('updated_at')} "
@@ -1384,17 +1332,19 @@ def _format_jeb_status_plain(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _jeb_batch_table(title: str, batches: Sequence[Mapping[str, Any]]) -> Any:
-    table = _quiet_table("Attempt", "Account", "Collection", "State", "Files", "Bytes", "Updated")
-    for batch in batches:
+def _jeb_attempt_table(title: str, attempts: Sequence[Mapping[str, Any]]) -> Any:
+    table = _quiet_table(
+        "Attempt", "Account", "Collection slug", "State", "Files", "Bytes", "Updated"
+    )
+    for attempt in attempts:
         table.add_row(
-            _entity_text(batch.get("attempt_id") or batch.get("id") or "unknown"),
-            _jeb_account_text(batch),
-            str(batch.get("collection_id") or "-"),
-            _attention_text(batch.get("state") or "unknown"),
-            str(batch.get("file_count", 0)),
-            _bytes_text(batch.get("total_bytes", 0)),
-            str(batch.get("updated_at") or "-"),
+            _entity_text(attempt.get("attempt_id") or "unknown"),
+            _jeb_account_text(attempt),
+            str(attempt.get("collection_slug") or "-"),
+            _attention_text(attempt.get("state") or "unknown"),
+            str(attempt.get("file_count", 0)),
+            _bytes_text(attempt.get("total_bytes", 0)),
+            str(attempt.get("updated_at") or "-"),
         )
     if not table.rows:
         table.add_row("none", "", "", "", "", "", "")
@@ -1404,19 +1354,14 @@ def _jeb_batch_table(title: str, batches: Sequence[Mapping[str, Any]]) -> Any:
 def format_jeb_status(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_jeb_status_plain(payload)
-    sources = _mapping_items(payload.get("sources"))
-    collections = _mapping_items(payload.get("collections"))
+    accounts = _mapping_items(payload.get("accounts"))
     batch_counts = _optional_mapping(payload.get("batches"))
     preflight = _optional_mapping(payload.get("routing_preflight_failures"))
 
     summary = _detail_table()
     summary.add_row(
-        "sources",
-        f"{sum(1 for source in sources if source.get('enabled'))}/{len(sources)} enabled",
-    )
-    summary.add_row(
-        "collections",
-        f"{sum(1 for item in collections if item.get('enabled'))}/{len(collections)} enabled",
+        "accounts",
+        f"{sum(1 for account in accounts if account.get('enabled'))}/{len(accounts)} enabled",
     )
     summary.add_row(
         "batches",
@@ -1436,48 +1381,48 @@ def format_jeb_status(payload: Mapping[str, Any]) -> Any:
                 f"{active_operation.get('operation', 'unknown')}  "
                 f"id={active_operation.get('id', 'unknown')}  "
                 f"account={active_operation.get('account') or '-'}  "
-                f"batch={active_operation.get('batch_id') or '-'}"
+                f"attempt={active_operation.get('attempt_id') or '-'}"
             ),
         )
 
-    source_table = _quiet_table(
-        "Source",
+    account_table = _quiet_table(
+        "Account",
         "Enabled",
         "Path",
         "Routing",
         "Backlog",
         "Bytes",
-        "Collections",
+        "Collection slug",
     )
-    for source in sources:
-        source_table.add_row(
-            _entity_text(source.get("id") or "unknown"),
-            str(bool(source.get("enabled"))).lower(),
-            "present" if source.get("path_exists") else _attention_text("missing"),
-            _attention_text("failed") if source.get("routing_preflight_failed") else "ok",
-            str(source.get("eligible_files", "-")),
-            _bytes_text(source.get("eligible_bytes", 0)) if "eligible_bytes" in source else "-",
-            _preview_lines(_string_items(source.get("collections")), limit=3),
+    for account in accounts:
+        account_table.add_row(
+            _entity_text(account.get("id") or "unknown"),
+            str(bool(account.get("enabled"))).lower(),
+            "present" if account.get("path_exists") else _attention_text("missing"),
+            _attention_text("failed") if account.get("routing_preflight_failed") else "ok",
+            str(account.get("eligible_files", "-")),
+            _bytes_text(account.get("eligible_bytes", 0)) if "eligible_bytes" in account else "-",
+            str(account.get("collection_slug") or "-"),
         )
-    if not source_table.rows:
-        source_table.add_row("none", "", "", "", "", "", "")
+    if not account_table.rows:
+        account_table.add_row("none", "", "", "", "", "", "")
 
-    renderables: list[Any] = [RichText("jeb status", style="bold"), summary, source_table]
-    active_batches = _mapping_items(
-        _optional_mapping(payload.get("active_attempts")).get("batches")
+    renderables: list[Any] = [RichText("jeb status", style="bold"), summary, account_table]
+    active_attempts = _mapping_items(
+        _optional_mapping(payload.get("active_attempts")).get("attempts")
     )
-    renderables.append(_jeb_batch_table("active batches", active_batches))
-    failure_batches = _mapping_items(
-        _optional_mapping(payload.get("recent_failures")).get("batches")
+    renderables.append(_jeb_attempt_table("active attempts", active_attempts))
+    failed_attempts = _mapping_items(
+        _optional_mapping(payload.get("recent_failures")).get("attempts")
     )
-    renderables.append(_jeb_batch_table("recent failures", failure_batches))
+    renderables.append(_jeb_attempt_table("recent failures", failed_attempts))
 
     failures = _mapping_items(preflight.get("failures"))
     if failures:
-        preflight_table = _quiet_table("Source", "Kind", "Unmatched", "Updated", "Message")
+        preflight_table = _quiet_table("Account", "Kind", "Unmatched", "Updated", "Message")
         for failure in failures:
             preflight_table.add_row(
-                _entity_text(failure.get("source_id") or "unknown"),
+                _entity_text(failure.get("account_id") or "unknown"),
                 str(failure.get("failure_kind") or "unknown"),
                 f"{failure.get('unmatched_count', 0)}/{failure.get('file_count', 0)}",
                 str(failure.get("updated_at") or "-"),
@@ -1489,20 +1434,20 @@ def format_jeb_status(payload: Mapping[str, Any]) -> Any:
 
 def format_jeb_config_check(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
-        sources = _string_items(payload.get("sources"))
+        accounts = _string_items(payload.get("accounts"))
         lines = [
             "jeb config",
             f"status: {payload.get('status', 'unknown')}",
-            f"sources: {payload.get('source_count', 0)}",
+            f"accounts: {payload.get('account_count', 0)}",
         ]
-        if sources:
-            lines.append("source ids:")
-            lines.extend(f"- {source}" for source in sources)
+        if accounts:
+            lines.append("account ids:")
+            lines.extend(f"- {account}" for account in accounts)
         return "\n".join(lines)
     table = _detail_table()
     table.add_row("status", _attention_text(payload.get("status", "unknown")))
-    table.add_row("sources", str(payload.get("source_count", 0)))
-    table.add_row("source ids", _preview_lines(_string_items(payload.get("sources")), limit=8))
+    table.add_row("accounts", str(payload.get("account_count", 0)))
+    table.add_row("account ids", _preview_lines(_string_items(payload.get("accounts")), limit=8))
     return RichGroup(RichText("jeb config", style="bold"), table)
 
 
@@ -1518,6 +1463,8 @@ def format_jeb_operation(payload: Mapping[str, Any], *, title: str) -> Any:
             lines.append(f"account: {payload.get('account')}")
         if payload.get("batch_id"):
             lines.append(f"batch: {payload.get('batch_id')}")
+        if payload.get("attempt_id"):
+            lines.append(f"attempt: {payload.get('attempt_id')}")
         if operation:
             lines.append(f"operation: {operation.get('operation', 'unknown')}")
             if operation.get("id"):
@@ -1531,6 +1478,8 @@ def format_jeb_operation(payload: Mapping[str, Any], *, title: str) -> Any:
         table.add_row("account", str(payload.get("account")))
     if payload.get("batch_id"):
         table.add_row("batch", _entity_text(payload.get("batch_id", "unknown")))
+    if payload.get("attempt_id"):
+        table.add_row("attempt", _entity_text(payload.get("attempt_id", "unknown")))
     if operation:
         table.add_row("operation", str(operation.get("operation", "unknown")))
         if operation.get("id"):
@@ -1547,7 +1496,7 @@ def format_jeb_archive_plan(payload: Mapping[str, Any]) -> Any:
             "jeb archive dry-run",
             f"status: {payload.get('status', 'unknown')}",
             f"account: {payload.get('account', 'unknown')}",
-            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"collection slug: {payload.get('collection_slug', 'unknown')}",
             f"target: {payload.get('target_name', 'unknown')}",
             f"upload root: {payload.get('upload_root', '-')}",
             f"files: {payload.get('file_count', 0)}",
@@ -1573,7 +1522,7 @@ def format_jeb_archive_plan(payload: Mapping[str, Any]) -> Any:
     table = _detail_table()
     table.add_row("status", _attention_text(payload.get("status", "unknown")))
     table.add_row("account", str(payload.get("account", "unknown")))
-    table.add_row("collection", str(payload.get("collection_id", "unknown")))
+    table.add_row("collection slug", str(payload.get("collection_slug", "unknown")))
     table.add_row("target", str(payload.get("target_name", "unknown")))
     table.add_row("upload root", str(payload.get("upload_root", "-")))
     table.add_row("files", str(payload.get("file_count", 0)))
@@ -1659,12 +1608,12 @@ def _format_images_plain(payload: Mapping[str, Any]) -> str:
                 f"  bytes: {image.get('bytes', 0)} "
                 f"target_bytes={image.get('target_bytes', 0)} "
                 f"fill={image.get('fill', 0)}",
-                "  protection: "
-                f"{image.get('physical_protection_state', 'unknown')} "
-                f"registered={image.get('physical_copies_registered', 0)}/"
-                f"{image.get('physical_copies_required', 0)} "
-                f"verified={image.get('physical_copies_verified', 0)}/"
-                f"{image.get('physical_copies_required', 0)}",
+                "  redundancy: "
+                f"{image.get('disc_redundancy_state', 'unknown')} "
+                f"registered={image.get('discs_registered', 0)}/"
+                f"{image.get('discs_required', 0)} "
+                f"verified={image.get('discs_verified', 0)}/"
+                f"{image.get('discs_required', 0)}",
                 f"  collections: {image.get('collections', 0)} "
                 f"[{_collection_ids_text(image.get('collection_ids'))}]",
             ]
@@ -1676,19 +1625,19 @@ def _format_images_plain(payload: Mapping[str, Any]) -> str:
 def format_images(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_images_plain(payload)
-    table = _quiet_table("Image", "Protection", "Discs", "Files", "Bytes", "Fill", "Collections")
+    table = _quiet_table("Image", "Redundancy", "Discs", "Files", "Bytes", "Fill", "Collections")
     images = payload.get("images")
     if isinstance(images, Sequence):
         for image in images:
             if not isinstance(image, Mapping):
                 continue
-            required = image.get("physical_copies_required", 0)
+            required = image.get("discs_required", 0)
             table.add_row(
                 _entity_text(image.get("id", "unknown")),
-                _attention_text(image.get("physical_protection_state", "unknown")),
-                _copy_coverage_text(
-                    image.get("physical_copies_verified", 0),
-                    image.get("physical_copies_registered", 0),
+                _attention_text(image.get("disc_redundancy_state", "unknown")),
+                _disc_coverage_text(
+                    image.get("discs_verified", 0),
+                    image.get("discs_registered", 0),
                     required,
                 ),
                 str(image.get("files", 0)),
@@ -1716,12 +1665,12 @@ def _format_image_plain(image: Mapping[str, Any]) -> str:
             f"target_bytes={image.get('target_bytes', 0)} "
             f"fill={image.get('fill', 0)} "
             f"files={image.get('files', 0)}",
-            "protection: "
-            f"{image.get('physical_protection_state', 'unknown')} "
-            f"registered={image.get('physical_copies_registered', 0)}/"
-            f"{image.get('physical_copies_required', 0)} "
-            f"verified={image.get('physical_copies_verified', 0)}/"
-            f"{image.get('physical_copies_required', 0)}",
+            "redundancy: "
+            f"{image.get('disc_redundancy_state', 'unknown')} "
+            f"registered={image.get('discs_registered', 0)}/"
+            f"{image.get('discs_required', 0)} "
+            f"verified={image.get('discs_verified', 0)}/"
+            f"{image.get('discs_required', 0)}",
             f"collections: {image.get('collections', 0)}",
             collection_lines,
         ]
@@ -1740,47 +1689,46 @@ def format_image(image: Mapping[str, Any]) -> Any:
     table.add_row("target", _bytes_text(image.get("target_bytes", 0)))
     table.add_row("fill", f"{float(image.get('fill', 0) or 0) * 100:.1f}%")
     table.add_row(
-        "protection",
-        _attention_text(image.get("physical_protection_state", "unknown")),
+        "redundancy",
+        _attention_text(image.get("disc_redundancy_state", "unknown")),
     )
     table.add_row(
         "discs",
-        _copy_detail_coverage_text(image),
+        _disc_detail_coverage_text(image),
     )
     table.add_row("collections", _collection_ids_lines(image.get("collection_ids")))
     return RichGroup(RichText("image", style="bold"), table)
 
 
-def _disc_copy_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    copy_payload = payload.get("copy")
-    if isinstance(copy_payload, Mapping):
-        return copy_payload
+def _disc_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    disc_payload = payload.get("disc")
+    if isinstance(disc_payload, Mapping):
+        return disc_payload
     return payload
 
 
 def _format_disc_plain(payload: Mapping[str, Any]) -> str:
-    copy_payload = _disc_copy_payload(payload)
+    disc_payload = _disc_payload(payload)
     lines = [
-        f"disc: {copy_payload.get('id', 'unknown')}",
-        f"image: {payload.get('image_id', copy_payload.get('image_id', 'unknown'))}",
-        f"volume: {copy_payload.get('volume_id', 'unknown')}",
-        f"label: {copy_payload.get('label_text', 'unknown')}",
-        f"location: {copy_payload.get('location') or 'unassigned'}",
-        f"state: {copy_payload.get('state', 'unknown')}",
-        f"verification: {copy_payload.get('verification_state', 'unknown')}",
+        f"disc: {disc_payload.get('disc_id', 'unknown')}",
+        f"image: {payload.get('image_id', disc_payload.get('image_id', 'unknown'))}",
+        f"label: {disc_payload.get('label_text', 'unknown')}",
+        f"location: {disc_payload.get('location') or 'unassigned'}",
+        f"state: {disc_payload.get('state', 'unknown')}",
+        f"verification: {disc_payload.get('verification_state', 'unknown')}",
     ]
-    history = copy_payload.get("history")
+    history = disc_payload.get("history")
     if isinstance(history, Sequence):
         lines.append(f"history: {len(history)} event(s)")
-    recovery_session = payload.get("recovery_session")
-    if isinstance(recovery_session, Mapping):
+    archive_restore = payload.get("archive_restore")
+    if isinstance(archive_restore, Mapping):
         lines.append(
             "rebuild: "
-            f"{recovery_session.get('id', 'unknown')} "
-            f"state={recovery_session.get('state', 'unknown')}"
+            f"{archive_restore.get('id', 'unknown')} "
+            f"state={archive_restore.get('state', 'unknown')}"
         )
-        if recovery_session.get("latest_message"):
-            lines.append(f"rebuild_message: {recovery_session.get('latest_message')}")
+        if archive_restore.get("latest_message"):
+            lines.append(f"rebuild_message: {archive_restore.get('latest_message')}")
     return "\n".join(lines)
 
 
@@ -1788,36 +1736,35 @@ def format_disc(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_disc_plain(payload)
 
-    copy_payload = _disc_copy_payload(payload)
+    disc_payload = _disc_payload(payload)
     table = _detail_table()
-    table.add_row("disc", _entity_text(copy_payload.get("id", "unknown")))
+    table.add_row("disc", _entity_text(disc_payload.get("disc_id", "unknown")))
     table.add_row(
         "image",
-        str(payload.get("image_id", copy_payload.get("image_id", "unknown"))),
+        str(payload.get("image_id", disc_payload.get("image_id", "unknown"))),
     )
-    table.add_row("volume", str(copy_payload.get("volume_id", "unknown")))
-    table.add_row("label", str(copy_payload.get("label_text", "unknown")))
-    table.add_row("location", str(copy_payload.get("location") or "unassigned"))
-    table.add_row("state", _attention_text(copy_payload.get("state", "unknown")))
+    table.add_row("label", str(disc_payload.get("label_text", "unknown")))
+    table.add_row("location", str(disc_payload.get("location") or "unassigned"))
+    table.add_row("state", _attention_text(disc_payload.get("state", "unknown")))
     table.add_row(
         "verification",
-        _attention_text(copy_payload.get("verification_state", "unknown")),
+        _attention_text(disc_payload.get("verification_state", "unknown")),
     )
-    if copy_payload.get("created_at"):
-        table.add_row("created", str(copy_payload.get("created_at")))
+    if disc_payload.get("created_at"):
+        table.add_row("created", str(disc_payload.get("created_at")))
 
-    recovery_session = payload.get("recovery_session")
-    if isinstance(recovery_session, Mapping):
-        table.add_row("rebuild", _entity_text(recovery_session.get("id", "unknown")))
+    archive_restore = payload.get("archive_restore")
+    if isinstance(archive_restore, Mapping):
+        table.add_row("rebuild", _entity_text(archive_restore.get("id", "unknown")))
         table.add_row(
             "rebuild state",
-            _recovery_state_text(recovery_session.get("state", "unknown")),
+            _restore_state_text(archive_restore.get("state", "unknown")),
         )
-        if recovery_session.get("latest_message"):
-            table.add_row("rebuild message", str(recovery_session.get("latest_message")))
+        if archive_restore.get("latest_message"):
+            table.add_row("rebuild message", str(archive_restore.get("latest_message")))
 
     renderables: list[Any] = [RichText("disc", style="bold"), table]
-    history = copy_payload.get("history")
+    history = disc_payload.get("history")
     if isinstance(history, Sequence) and history:
         history_table = _quiet_table("At", "Event", "State", "Verification", "Location")
         for item in history:
@@ -1838,11 +1785,11 @@ def _disc_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     items = payload.get("discs")
     if isinstance(items, Sequence):
         return [item for item in items if isinstance(item, Mapping)]
-    copies = payload.get("copies")
+    discs = payload.get("discs")
     image_id = payload.get("image_id")
-    if not isinstance(copies, Sequence):
+    if not isinstance(discs, Sequence):
         return []
-    return [{**copy, "image_id": image_id} for copy in copies if isinstance(copy, Mapping)]
+    return [{**disc, "image_id": image_id} for disc in discs if isinstance(disc, Mapping)]
 
 
 def _format_discs_plain(payload: Mapping[str, Any]) -> str:
@@ -1852,7 +1799,7 @@ def _format_discs_plain(payload: Mapping[str, Any]) -> str:
     lines = ["discs:"]
     for disc in discs:
         lines.append(
-            f"- {disc.get('id', 'unknown')} "
+            f"- {disc.get('disc_id', 'unknown')} "
             f"image={disc.get('image_id', 'unknown')} "
             f"state={disc.get('state', 'unknown')} "
             f"verification={disc.get('verification_state', 'unknown')} "
@@ -1867,7 +1814,7 @@ def format_discs(payload: Mapping[str, Any]) -> Any:
     table = _quiet_table("Disc", "Image", "State", "Verification", "Location")
     for item in _disc_items(payload):
         table.add_row(
-            _entity_text(item.get("id", "unknown")),
+            _entity_text(item.get("disc_id", "unknown")),
             str(item.get("image_id", "unknown")),
             _attention_text(item.get("state", "unknown")),
             _attention_text(item.get("verification_state", "unknown")),
@@ -1886,41 +1833,40 @@ def format_discs(payload: Mapping[str, Any]) -> Any:
 
 def _format_collection_summary_plain(
     payload: Mapping[str, Any],
-    glacier_payload: Mapping[str, Any],
+    archive_payload: Mapping[str, Any],
 ) -> str:
     collection_id = str(payload.get("id", "unknown"))
+    disc_coverage = payload.get("disc_coverage")
+    disc_redundancy = payload.get("disc_redundancy")
     lines = [
         f"collection: {collection_id}",
-        "protection: "
-        f"{payload.get('protection_state', 'unknown')} "
-        f"protected_bytes={payload.get('protected_bytes', 0)}/{payload.get('bytes', 0)}",
-        "storage: "
-        f"files={payload.get('files', 0)} "
-        f"hot_bytes={payload.get('hot_bytes', 0)} "
-        f"archived_bytes={payload.get('archived_bytes', 0)} "
-        f"pending_bytes={payload.get('pending_bytes', 0)}",
+        f"storage: files={payload.get('files', 0)} hot_bytes={payload.get('hot_bytes', 0)}",
     ]
-    lines.append(
-        "recovery: "
-        + _recovery_text(
-            payload.get("recovery"),
-            total_bytes=_int_value(payload.get("bytes", 0)),
-        )
-    )
-    collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
-    direct_glacier = payload.get("glacier")
-    if isinstance(direct_glacier, Mapping):
+    if isinstance(disc_coverage, Mapping):
         lines.append(
-            "glacier: "
-            f"{direct_glacier.get('state', 'unknown')} "
-            f"stored_bytes={direct_glacier.get('stored_bytes', 0)} "
-            f"backend={direct_glacier.get('backend') or 'unknown'} "
-            f"storage_class={direct_glacier.get('storage_class') or 'unknown'}"
+            "disc coverage: "
+            f"{disc_coverage.get('state', 'unknown')} "
+            f"bytes={disc_coverage.get('bytes', 0)}"
         )
-        if direct_glacier.get("object_path"):
-            lines.append(f"glacier_path: {direct_glacier.get('object_path')}")
-        if direct_glacier.get("failure"):
-            lines.append(f"glacier_failure: {direct_glacier.get('failure')}")
+    if isinstance(disc_redundancy, Mapping):
+        lines.append(
+            "disc redundancy: "
+            f"{disc_redundancy.get('state', 'unknown')} bytes={disc_redundancy.get('bytes', 0)}"
+        )
+    collection_archive = _find_collection_archive_entry(collection_id, archive_payload)
+    direct_archive = payload.get("archive")
+    if isinstance(direct_archive, Mapping):
+        lines.append(
+            "archive: "
+            f"{direct_archive.get('state', 'unknown')} "
+            f"stored_bytes={direct_archive.get('stored_bytes', 0)} "
+            f"backend={direct_archive.get('backend') or 'unknown'} "
+            f"storage_class={direct_archive.get('storage_class') or 'unknown'}"
+        )
+        if direct_archive.get("object_path"):
+            lines.append(f"archive_path: {direct_archive.get('object_path')}")
+        if direct_archive.get("failure"):
+            lines.append(f"archive_failure: {direct_archive.get('failure')}")
 
     collection_manifest = payload.get("collection_manifest")
     if isinstance(collection_manifest, Mapping):
@@ -1934,19 +1880,11 @@ def _format_collection_summary_plain(
             f"ots: {ots_state} path={collection_manifest.get('ots_object_path') or 'missing'}"
         )
 
-    disc_coverage = payload.get("disc_coverage")
-    if isinstance(disc_coverage, Mapping):
+    if isinstance(collection_archive, Mapping):
         lines.append(
-            "disc_coverage="
-            f"{disc_coverage.get('state', 'unknown')} "
-            f"verified_physical_bytes={disc_coverage.get('verified_physical_bytes', 0)}"
-        )
-
-    if isinstance(collection_glacier, Mapping):
-        lines.append(
-            "glacier_footprint: "
-            f"bytes={collection_glacier.get('bytes', 0)} "
-            f"measured_storage_bytes={collection_glacier.get('measured_storage_bytes', 0)}"
+            "archive_footprint: "
+            f"bytes={collection_archive.get('bytes', 0)} "
+            f"measured_storage_bytes={collection_archive.get('measured_storage_bytes', 0)}"
         )
 
     lines.append("coverage:")
@@ -1956,8 +1894,8 @@ def _format_collection_summary_plain(
         return "\n".join(lines)
 
     image_costs: dict[str, Mapping[str, Any]] = {}
-    if isinstance(collection_glacier, Mapping):
-        contributions = collection_glacier.get("images")
+    if isinstance(collection_archive, Mapping):
+        contributions = collection_archive.get("images")
         if isinstance(contributions, Sequence):
             image_costs = {
                 str(item.get("image_id")): item
@@ -1969,17 +1907,17 @@ def _format_collection_summary_plain(
         if not isinstance(image, Mapping):
             continue
         image_id = str(image.get("id", "unknown"))
-        protection_state = image.get("physical_protection_state", "unknown")
+        disc_redundancy_state = image.get("disc_redundancy_state", "unknown")
         covered_paths = ", ".join(str(path) for path in image.get("covered_paths", [])) or "none"
         lines.extend(
             [
                 f"- {image_id} ({image.get('filename', 'unknown')})",
-                "  protection: "
-                f"{protection_state} "
-                f"registered={image.get('physical_copies_registered', 0)}/"
-                f"{image.get('physical_copies_required', 0)} "
-                f"verified={image.get('physical_copies_verified', 0)}/"
-                f"{image.get('physical_copies_required', 0)}",
+                "  redundancy: "
+                f"{disc_redundancy_state} "
+                f"registered={image.get('discs_registered', 0)}/"
+                f"{image.get('discs_required', 0)} "
+                f"verified={image.get('discs_verified', 0)}/"
+                f"{image.get('discs_required', 0)}",
                 f"  paths: {covered_paths}",
             ]
         )
@@ -1989,65 +1927,31 @@ def _format_collection_summary_plain(
                 "  collection_archive_contribution: "
                 f"represented_bytes={contribution.get('represented_bytes', 0)}"
             )
-        copies = image.get("copies")
-        lines.append("  copies:")
-        if not isinstance(copies, Sequence) or not copies:
+        discs = image.get("discs")
+        lines.append("  discs:")
+        if not isinstance(discs, Sequence) or not discs:
             lines.append("  - none")
         else:
-            for copy in copies:
-                if not isinstance(copy, Mapping):
+            for disc in discs:
+                if not isinstance(disc, Mapping):
                     continue
                 lines.append(
                     "  - "
-                    f"{copy.get('id', 'unknown')} "
-                    f"label={copy.get('label_text', 'unknown')} "
-                    f"location={copy.get('location') or 'unassigned'} "
-                    f"state={copy.get('state', 'unknown')} "
-                    f"verification={copy.get('verification_state', 'unknown')}"
+                    f"{disc.get('disc_id', 'unknown')} "
+                    f"label={disc.get('label_text', 'unknown')} "
+                    f"location={disc.get('location') or 'unassigned'} "
+                    f"state={disc.get('state', 'unknown')} "
+                    f"verification={disc.get('verification_state', 'unknown')}"
                 )
     return "\n".join(lines)
 
 
-def _collection_recovery_rows(
-    table: Any,
-    recovery: object,
-    *,
-    total_bytes: int,
-) -> None:
-    if not isinstance(recovery, Mapping):
-        table.add_row("recovery", "unknown")
-        return
-
-    available = _string_items(recovery.get("available"))
-    table.add_row("available", ", ".join(available) if available else "none")
-
-    verified = recovery.get("verified_physical")
-    if isinstance(verified, Mapping):
-        table.add_row(
-            "verified physical",
-            _attention_text(
-                f"{verified.get('state', 'unknown')} "
-                f"{_ratio_text(verified.get('bytes', 0), total_bytes)}"
-            ),
-        )
-
-    glacier = recovery.get("glacier")
-    if isinstance(glacier, Mapping):
-        table.add_row(
-            "deep archive",
-            _attention_text(
-                f"{glacier.get('state', 'unknown')} "
-                f"{_ratio_text(glacier.get('bytes', 0), total_bytes)}"
-            ),
-        )
-
-
 def _collection_image_costs(
-    collection_glacier: Mapping[str, Any] | None,
+    collection_archive: Mapping[str, Any] | None,
 ) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(collection_glacier, Mapping):
+    if not isinstance(collection_archive, Mapping):
         return {}
-    contributions = collection_glacier.get("images")
+    contributions = collection_archive.get("images")
     if not isinstance(contributions, Sequence):
         return {}
     return {str(item.get("image_id")): item for item in contributions if isinstance(item, Mapping)}
@@ -2055,17 +1959,17 @@ def _collection_image_costs(
 
 def _collection_coverage_table(
     payload: Mapping[str, Any],
-    collection_glacier: Mapping[str, Any] | None,
+    collection_archive: Mapping[str, Any] | None,
 ) -> Any:
-    table = _quiet_table("Image", "Protection", "Discs", "Archive", "Copies", "Paths")
-    image_costs = _collection_image_costs(collection_glacier)
+    table = _quiet_table("Image", "Redundancy", "Counts", "Archive", "Discs", "Paths")
+    image_costs = _collection_image_costs(collection_archive)
     images = payload.get("image_coverage")
     if isinstance(images, Sequence):
         for image in images:
             if not isinstance(image, Mapping):
                 continue
             image_id = str(image.get("id", "unknown"))
-            required = image.get("physical_copies_required", 0)
+            required = image.get("discs_required", 0)
             contribution = image_costs.get(image_id)
             archive_text = (
                 _bytes_text(contribution.get("represented_bytes", 0))
@@ -2074,14 +1978,14 @@ def _collection_coverage_table(
             )
             table.add_row(
                 _entity_text(image_id),
-                _attention_text(image.get("physical_protection_state", "unknown")),
-                _copy_coverage_text(
-                    image.get("physical_copies_verified", 0),
-                    image.get("physical_copies_registered", 0),
+                _attention_text(image.get("disc_redundancy_state", "unknown")),
+                _disc_coverage_text(
+                    image.get("discs_verified", 0),
+                    image.get("discs_registered", 0),
                     required,
                 ),
                 archive_text,
-                _copy_lines(image.get("copies"), limit=4),
+                _disc_lines(image.get("discs"), limit=4),
                 _preview_lines_with_total(
                     _string_items(image.get("covered_paths")),
                     limit=4,
@@ -2099,48 +2003,52 @@ def _collection_coverage_table(
 
 def format_collection_summary(
     payload: Mapping[str, Any],
-    glacier_payload: Mapping[str, Any],
+    archive_payload: Mapping[str, Any],
 ) -> Any:
     if not _rich_enabled():
-        return _format_collection_summary_plain(payload, glacier_payload)
+        return _format_collection_summary_plain(payload, archive_payload)
 
     collection_id = str(payload.get("id", "unknown"))
     total_bytes = _int_value(payload.get("bytes", 0))
-    collection_glacier = _find_collection_glacier_entry(collection_id, glacier_payload)
+    collection_archive = _find_collection_archive_entry(collection_id, archive_payload)
 
     overview = _detail_table()
-    overview.add_row("protection", _attention_text(payload.get("protection_state", "unknown")))
-    overview.add_row("protected", _ratio_text(payload.get("protected_bytes", 0), total_bytes))
     overview.add_row("files", str(payload.get("files", 0)))
     overview.add_row("bytes", _bytes_text(total_bytes))
     overview.add_row("hot", _ratio_text(payload.get("hot_bytes", 0), total_bytes))
-    overview.add_row("archive", _ratio_text(payload.get("archived_bytes", 0), total_bytes))
-    overview.add_row("pending", _bytes_text(payload.get("pending_bytes", 0)))
-    _collection_recovery_rows(overview, payload.get("recovery"), total_bytes=total_bytes)
 
     disc_coverage = payload.get("disc_coverage")
     if isinstance(disc_coverage, Mapping):
         overview.add_row(
-            "disc",
+            "disc coverage",
             _attention_text(
                 f"{disc_coverage.get('state', 'unknown')} "
-                f"{_ratio_text(disc_coverage.get('verified_physical_bytes', 0), total_bytes)}"
+                f"{_ratio_text(disc_coverage.get('bytes', 0), total_bytes)}"
+            ),
+        )
+    disc_redundancy = payload.get("disc_redundancy")
+    if isinstance(disc_redundancy, Mapping):
+        overview.add_row(
+            "disc redundancy",
+            _attention_text(
+                f"{disc_redundancy.get('state', 'unknown')} "
+                f"{_ratio_text(disc_redundancy.get('bytes', 0), total_bytes)}"
             ),
         )
 
-    direct_glacier = payload.get("glacier")
-    if isinstance(direct_glacier, Mapping):
+    direct_archive = payload.get("archive")
+    if isinstance(direct_archive, Mapping):
         overview.add_row(
-            "glacier",
-            f"{direct_glacier.get('state', 'unknown')} "
-            f"{_bytes_text(direct_glacier.get('stored_bytes', 0))} stored "
-            f"{direct_glacier.get('backend') or 'unknown'} "
-            f"{direct_glacier.get('storage_class') or 'unknown'}",
+            "archive",
+            f"{direct_archive.get('state', 'unknown')} "
+            f"{_bytes_text(direct_archive.get('stored_bytes', 0))} stored "
+            f"{direct_archive.get('backend') or 'unknown'} "
+            f"{direct_archive.get('storage_class') or 'unknown'}",
         )
-        if direct_glacier.get("object_path"):
-            overview.add_row("glacier path", str(direct_glacier.get("object_path")))
-        if direct_glacier.get("failure"):
-            overview.add_row("glacier failure", str(direct_glacier.get("failure")))
+        if direct_archive.get("object_path"):
+            overview.add_row("archive path", str(direct_archive.get("object_path")))
+        if direct_archive.get("failure"):
+            overview.add_row("archive failure", str(direct_archive.get("failure")))
 
     collection_manifest = payload.get("collection_manifest")
     if isinstance(collection_manifest, Mapping):
@@ -2159,25 +2067,25 @@ def format_collection_summary(
             ),
         )
 
-    if isinstance(collection_glacier, Mapping):
+    if isinstance(collection_archive, Mapping):
         overview.add_row(
             "footprint",
-            f"{_bytes_text(collection_glacier.get('bytes', 0))} logical, "
-            f"{_bytes_text(collection_glacier.get('measured_storage_bytes', 0))} measured",
+            f"{_bytes_text(collection_archive.get('bytes', 0))} logical, "
+            f"{_bytes_text(collection_archive.get('measured_storage_bytes', 0))} measured",
         )
 
     return RichGroup(
         RichText(f"collection {collection_id}", style="bold"),
         overview,
         RichText("coverage", style="bold"),
-        _collection_coverage_table(payload, collection_glacier),
+        _collection_coverage_table(payload, collection_archive),
     )
 
 
-def format_glacier_report(payload: Mapping[str, Any]) -> str:
+def format_archive_report(payload: Mapping[str, Any]) -> str:
     totals = payload.get("totals")
     lines = [
-        "glacier: "
+        "archive: "
         f"scope={payload.get('scope', 'all')} "
         f"measured_at={payload.get('measured_at', 'unknown')}",
     ]
@@ -2210,9 +2118,9 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
         for collection in collections:
             if not isinstance(collection, Mapping):
                 continue
-            glacier = collection.get("glacier")
-            glacier_state = (
-                glacier.get("state", "unknown") if isinstance(glacier, Mapping) else "unknown"
+            archive = collection.get("archive")
+            archive_state = (
+                archive.get("state", "unknown") if isinstance(archive, Mapping) else "unknown"
             )
             manifest = collection.get("collection_manifest")
             ots_state = (
@@ -2223,12 +2131,12 @@ def format_glacier_report(payload: Mapping[str, Any]) -> str:
             lines.append(
                 f"- {collection.get('id', 'unknown')} "
                 f"bytes={collection.get('bytes', 0)} "
-                f"glacier={glacier_state} "
+                f"archive={archive_state} "
                 f"ots={ots_state} "
                 f"measured_storage_bytes={collection.get('measured_storage_bytes', 0)}"
             )
-            if isinstance(glacier, Mapping) and glacier.get("object_path"):
-                lines.append(f"  glacier_path: {glacier.get('object_path')}")
+            if isinstance(archive, Mapping) and archive.get("object_path"):
+                lines.append(f"  archive_path: {archive.get('object_path')}")
             if isinstance(manifest, Mapping) and manifest.get("object_path"):
                 lines.append(f"  collection_manifest: {manifest.get('object_path')}")
 
@@ -2334,8 +2242,8 @@ def _format_find_plain(payload: Mapping[str, Any]) -> str:
         lines.append(f"collection: {payload.get('collection')}")
     if payload.get("hot") is not None:
         lines.append(f"hot: {str(payload.get('hot')).lower()}")
-    if payload.get("archived") is not None:
-        lines.append(f"archived: {str(payload.get('archived')).lower()}")
+    if payload.get("disc_coverage") is not None:
+        lines.append(f"disc: {str(payload.get('disc_coverage')).lower()}")
     files = payload.get("files")
     if not isinstance(files, Sequence) or not files:
         lines.append("- none")
@@ -2348,7 +2256,7 @@ def _format_find_plain(payload: Mapping[str, Any]) -> str:
                 f"- {file.get('target', 'unknown')}",
                 f"  bytes: {file.get('bytes', 0)}",
                 f"  hot: {str(file.get('hot', False)).lower()}",
-                f"  archived: {str(file.get('archived', False)).lower()}",
+                f"  disc: {str(file.get('disc_coverage', False)).lower()}",
             ]
         )
     return "\n".join(lines)
@@ -2365,8 +2273,8 @@ def _find_scope_text(payload: Mapping[str, Any]) -> Any:
         fields.append(("collection", payload.get("collection")))
     if payload.get("hot") is not None:
         fields.append(("hot", str(payload.get("hot")).lower()))
-    if payload.get("archived") is not None:
-        fields.append(("archived", str(payload.get("archived")).lower()))
+    if payload.get("disc_coverage") is not None:
+        fields.append(("disc", str(payload.get("disc_coverage")).lower()))
     for index, (label, value) in enumerate(fields):
         if index:
             text.append("  ")
@@ -2382,7 +2290,7 @@ def _find_record_text(file: Mapping[str, Any]) -> Any:
         (
             ("bytes", _bytes_text(file.get("bytes", 0))),
             ("hot", str(file.get("hot", False)).lower()),
-            ("archived", str(file.get("archived", False)).lower()),
+            ("disc", str(file.get("disc_coverage", False)).lower()),
         )
     ):
         if index:
@@ -2545,9 +2453,9 @@ def format_collection_upload(payload: Mapping[str, Any]) -> Any:
             finalized = _detail_table()
             finalized.add_row("Files", str(collection.get("files", 0)))
             finalized.add_row("Bytes", _bytes_text(collection.get("bytes", 0)))
-            glacier = collection.get("glacier")
-            if isinstance(glacier, Mapping):
-                finalized.add_row("Glacier", str(glacier.get("state", "unknown")))
+            archive = collection.get("archive")
+            if isinstance(archive, Mapping):
+                finalized.add_row("Archive", str(archive.get("state", "unknown")))
             renderables.extend([RichText("finalized", style="bold"), finalized])
             return RichGroup(*renderables)
 
@@ -2583,9 +2491,9 @@ def format_collection_upload(payload: Mapping[str, Any]) -> Any:
         lines.append(
             f"finalized: {collection.get('files', 0)} files {collection.get('bytes', 0)} bytes"
         )
-        glacier = collection.get("glacier")
-        if isinstance(glacier, Mapping):
-            lines.append(f"glacier: {glacier.get('state', 'unknown')}")
+        archive = collection.get("archive")
+        if isinstance(archive, Mapping):
+            lines.append(f"archive: {archive.get('state', 'unknown')}")
         return "\n".join(lines)
 
     files = payload.get("files")
@@ -2633,7 +2541,7 @@ def format_files(payload: Mapping[str, Any]) -> str:
                 f"- {file.get('target', 'unknown')}",
                 f"  bytes: {file.get('bytes', 0)}",
                 f"  hot: {str(file.get('hot', False)).lower()}",
-                f"  archived: {str(file.get('archived', False)).lower()}",
+                f"  disc: {str(file.get('disc_coverage', False)).lower()}",
             ]
         )
     return "\n".join(lines)

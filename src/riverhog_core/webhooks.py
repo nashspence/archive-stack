@@ -91,12 +91,12 @@ def image_summary_url(base_url: str, image_id: str) -> str:
     return f"{base_url.rstrip('/')}{image_summary_path(image_id)}"
 
 
-def recovery_session_path(session_id: str) -> str:
-    return f"/v1/recovery-sessions/{session_id}"
+def archive_restore_path(restore_id: str) -> str:
+    return f"/v1/archive-restores/{restore_id}"
 
 
-def recovery_session_url(base_url: str, session_id: str) -> str:
-    return f"{base_url.rstrip('/')}{recovery_session_path(session_id)}"
+def archive_restore_url(base_url: str, restore_id: str) -> str:
+    return f"{base_url.rstrip('/')}{archive_restore_path(restore_id)}"
 
 
 def fetch_summary_path(fetch_id: str) -> str:
@@ -158,34 +158,34 @@ def build_images_ready_payload(
     }
 
 
-def build_recovery_ready_payload(
+def build_archive_restore_ready_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    restore_expires_at: str | None,
+    restore_id: str,
+    expires_at: str | None,
     images: list[dict[str, str]],
     delivered_at: datetime,
     reminder_count: int,
     reminder: bool,
-    recovery_type: str = "image_rebuild",
+    restore_type: str = "disc_rebuild",
     collections: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
-    action, message = _recovery_operator_guidance(
+    action, message = _archive_restore_operator_guidance(
         stage="ready",
-        recovery_type=recovery_type,
+        restore_type=restore_type,
     )
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.ready.reminder" if reminder else "glacier_recovery.ready",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.ready.reminder" if reminder else "archive_restore.ready",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections or [],
     )
     payload.update(
         {
-            "restore_expires_at": restore_expires_at,
+            "expires_at": expires_at,
             "reminder_count": reminder_count + (1 if reminder else 0),
             "reminder_interval_seconds": config.reminder_interval_seconds,
             "operator_urgency": "time_sensitive",
@@ -193,36 +193,36 @@ def build_recovery_ready_payload(
             "operator_message": message,
         }
     )
-    payload["notification"] = _recovery_notification(
+    payload["notification"] = _archive_restore_notification(
         event=str(payload["event"]),
-        recovery_type=recovery_type,
-        session_id=session_id,
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections or [],
     )
     return payload
 
 
-def build_recovery_started_payload(
+def build_archive_restore_started_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     retrieval_tier: str,
     estimated_ready_at: str | None,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
-    action, message = _recovery_operator_guidance(
+    action, message = _archive_restore_operator_guidance(
         stage="started",
-        recovery_type=recovery_type,
+        restore_type=restore_type,
     )
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.started",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.started",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -236,34 +236,34 @@ def build_recovery_started_payload(
             "operator_message": message,
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.started",
-        recovery_type=recovery_type,
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.started",
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections,
     )
     return payload
 
 
-def build_recovery_completed_payload(
+def build_archive_restore_completed_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
-    action, message = _recovery_operator_guidance(
+    action, message = _archive_restore_operator_guidance(
         stage="completed",
-        recovery_type=recovery_type,
+        restore_type=restore_type,
     )
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.completed",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.completed",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -275,30 +275,30 @@ def build_recovery_completed_payload(
             "operator_message": message,
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.completed",
-        recovery_type=recovery_type,
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.completed",
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections,
     )
     return payload
 
 
-def build_recovery_canceled_payload(
+def build_archive_restore_canceled_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
 ) -> dict[str, object]:
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.canceled",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.canceled",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -307,34 +307,34 @@ def build_recovery_canceled_payload(
         {
             "operator_urgency": "passive",
             "operator_action": "none",
-            "operator_message": "Glacier recovery was canceled by the operator.",
+            "operator_message": "Archive restore was canceled by the operator.",
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.canceled",
-        recovery_type=recovery_type,
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.canceled",
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections,
     )
     return payload
 
 
-def build_recovery_paused_reminder_payload(
+def build_archive_restore_paused_reminder_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
+    restore_id: str,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
     reminder_count: int,
     reminder_interval_seconds: float,
 ) -> dict[str, object]:
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.paused.reminder",
-        session_id=session_id,
-        recovery_type="image_rebuild",
+        event="archive_restore.paused.reminder",
+        restore_id=restore_id,
+        restore_type="disc_rebuild",
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -344,28 +344,28 @@ def build_recovery_paused_reminder_payload(
             "reminder_count": reminder_count + 1,
             "reminder_interval_seconds": reminder_interval_seconds,
             "operator_urgency": "time_sensitive",
-            "operator_action": f"Run `djdan disc rebuild resume {session_id}` when ready",
+            "operator_action": f"Run `djdan disc rebuild resume {restore_id}` when ready",
             "operator_message": (
-                "Image rebuild recovery is paused. Resume it when ready to rebuild the image "
+                "Disc rebuild is paused. Resume it when ready to rebuild the image "
                 "and restore disc coverage."
             ),
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.paused.reminder",
-        recovery_type="image_rebuild",
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.paused.reminder",
+        restore_type="disc_rebuild",
+        restore_id=restore_id,
         images=images,
         collections=collections,
     )
     return payload
 
 
-def build_recovery_retrying_payload(
+def build_archive_restore_retrying_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
@@ -375,11 +375,11 @@ def build_recovery_retrying_payload(
     retry_delay_seconds: float,
     error: str,
 ) -> dict[str, object]:
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.retrying",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.retrying",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -389,7 +389,7 @@ def build_recovery_retrying_payload(
             "operator_urgency": "time_sensitive",
             "operator_action": "wait unless failures persist beyond normal connectivity trouble",
             "operator_message": (
-                "Glacier recovery hit a retryable issue. Riverhog will keep retrying "
+                "Archive restore hit a retryable issue. Riverhog will keep retrying "
                 "without operator action."
             ),
             "attempts": attempts,
@@ -399,10 +399,10 @@ def build_recovery_retrying_payload(
             "error": error,
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.retrying",
-        recovery_type=recovery_type,
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.retrying",
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections,
         values={
@@ -416,11 +416,11 @@ def build_recovery_retrying_payload(
     return payload
 
 
-def build_recovery_failed_payload(
+def build_archive_restore_failed_payload(
     *,
     config: WebhookConfig,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
     delivered_at: datetime,
@@ -428,11 +428,11 @@ def build_recovery_failed_payload(
     failed_at: str,
     error: str,
 ) -> dict[str, object]:
-    payload = _base_recovery_payload(
+    payload = _base_archive_restore_payload(
         config=config,
-        event="glacier_recovery.failed",
-        session_id=session_id,
-        recovery_type=recovery_type,
+        event="archive_restore.failed",
+        restore_id=restore_id,
+        restore_type=restore_type,
         delivered_at=delivered_at,
         images=images,
         collections=collections,
@@ -442,7 +442,7 @@ def build_recovery_failed_payload(
             "operator_urgency": "time_sensitive",
             "operator_action": "inspect Riverhog recovery logs and session state",
             "operator_message": (
-                "Glacier recovery stopped on a non-retryable issue. Riverhog will not "
+                "Archive restore stopped on a non-retryable issue. Riverhog will not "
                 "continue this session automatically."
             ),
             "attempts": attempts,
@@ -450,10 +450,10 @@ def build_recovery_failed_payload(
             "error": error,
         }
     )
-    payload["notification"] = _recovery_notification(
-        event="glacier_recovery.failed",
-        recovery_type=recovery_type,
-        session_id=session_id,
+    payload["notification"] = _archive_restore_notification(
+        event="archive_restore.failed",
+        restore_type=restore_type,
+        restore_id=restore_id,
         images=images,
         collections=collections,
         values={
@@ -472,7 +472,7 @@ def build_fetch_queued_payload(
     name: str,
     files: int,
     bytes: int,
-    copies: list[dict[str, str]],
+    discs: list[dict[str, str]],
     delivered_at: datetime,
     reminder_count: int,
     reminder: bool,
@@ -487,7 +487,7 @@ def build_fetch_queued_payload(
         "reminder_interval_seconds": config.reminder_interval_seconds,
         "files": files,
         "bytes": bytes,
-        "copies": copies,
+        "discs": discs,
         "operator_urgency": "time_sensitive",
         "operator_action": f"Run `djdan fetch {fetch_id}`",
         "operator_message": (
@@ -505,20 +505,20 @@ def build_fetch_queued_payload(
     return payload
 
 
-def _base_recovery_payload(
+def _base_archive_restore_payload(
     *,
     config: WebhookConfig,
     event: str,
-    session_id: str,
-    recovery_type: str,
+    restore_id: str,
+    restore_type: str,
     delivered_at: datetime,
     images: list[dict[str, str]],
     collections: list[dict[str, str]],
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "event": event,
-        "type": recovery_type,
-        "session_id": session_id,
+        "type": restore_type,
+        "restore_id": restore_id,
         "delivered_at": isoformat_z(delivered_at),
         "images": [
             {
@@ -550,52 +550,52 @@ def _base_recovery_payload(
         ],
     }
     if config.base_url:
-        payload["session_url"] = recovery_session_url(config.base_url, session_id)
+        payload["restore_url"] = archive_restore_url(config.base_url, restore_id)
     return payload
 
 
-def _recovery_operator_guidance(*, stage: str, recovery_type: str) -> tuple[str, str]:
+def _archive_restore_operator_guidance(*, stage: str, restore_type: str) -> tuple[str, str]:
     if stage == "started":
-        if recovery_type == "collection_restore":
+        if restore_type == "fetch_materialization":
             return (
-                "Wait for Riverhog to finish cloud-fetch recovery",
+                "Wait for Riverhog to finish fetch materialization",
                 (
-                    "Cloud-fetch recovery has started for missing fetch-selected files. "
+                    "Fetch materialization has started for missing fetch-selected files. "
                     "This is rare, expected to take a long time, and means Riverhog "
-                    "is recovering the safely archived collection data."
+                    "is restoring safely archived collection data."
                 ),
             )
         return (
-            "Wait for the recovery-ready notification",
+            "Wait for the archive-restore-ready notification",
             (
-                "Glacier recovery has started for lost or damaged disc media. "
+                "Archive restore has started for lost or damaged disc media. "
                 "This is rare, expected to take a long time, and means Riverhog "
-                "is recovering safely archived collection data so replacement media "
+                "is restoring safely archived collection data so replacement media "
                 "can be rebuilt."
             ),
         )
     if stage == "completed":
-        if recovery_type == "collection_restore":
+        if restore_type == "fetch_materialization":
             return (
                 "No operator action required",
-                "Cloud-fetch recovery completed and the missing fetch files are hot again.",
+                "Fetch materialization completed and the missing fetch files are hot again.",
             )
         return (
             "No operator action required",
-            "Glacier recovery completed and temporary restored archive data was cleaned up.",
+            "Archive restore completed and temporary restored archive data was cleaned up.",
         )
-    if recovery_type == "collection_restore":
+    if restore_type == "fetch_materialization":
         return (
-            "Wait for Riverhog to finish cloud-fetch materialization",
+            "Wait for Riverhog to finish fetch materialization",
             (
-                "Cloud-fetch recovery data is ready. Riverhog will materialize missing "
+                "Restored archive data is ready. Riverhog will materialize missing "
                 "fetch files automatically before cleanup."
             ),
         )
     return (
         "Rebuild and burn replacement media before the restore expires",
         (
-            "Glacier recovery data is ready for replacement media. Complete the "
+            "Archive restore data is ready for replacement media. Complete the "
             "rebuild and burn workflow before the temporary restore window expires."
         ),
     )
@@ -760,9 +760,9 @@ def _image_subject(images: Sequence[Mapping[str, object]]) -> str:
     return subject
 
 
-def _recovery_subject(
+def _archive_restore_subject(
     *,
-    session_id: str,
+    restore_id: str,
     images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
 ) -> str:
@@ -770,7 +770,7 @@ def _recovery_subject(
         return _collection_subject(collections[0]["collection_id"])
     if images:
         return _image_subject(list(images))
-    return session_id
+    return restore_id
 
 
 def _collection_notification(
@@ -796,17 +796,17 @@ def _munchy_job_subject(job: Mapping[str, object]) -> str:
     return "munchy job"
 
 
-def _jeb_batch_subject(batch: Mapping[str, object]) -> str:
-    source_id = str(batch.get("source_id") or "")
-    if source_id:
-        return source_id
-    collection_slug = str(batch.get("collection_slug") or "")
+def _jeb_issue_subject(context: Mapping[str, object]) -> str:
+    account_id = str(context.get("account_id") or "")
+    if account_id:
+        return account_id
+    collection_slug = str(context.get("collection_slug") or "")
     if collection_slug:
         return _collection_subject(collection_slug)
-    batch_id = str(batch.get("id") or "")
-    if batch_id:
-        return _target_subject(batch_id)
-    return "jeb batch"
+    context_id = str(context.get("id") or "")
+    if context_id:
+        return _target_subject(context_id)
+    return "Jeb issue"
 
 
 def _munchy_operator_urgency(*, event: str, severity: str) -> str:
@@ -828,10 +828,10 @@ def _jeb_operator_urgency(*, event: str, severity: str) -> str:
 
 
 def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> str:
-    if event == "jeb.issue" and component == "profile_routing":
-        return "fix Munchy profile routing, then run Jeb archive-now for the source"
+    if event == "jeb.issue" and component == "routing":
+        return "fix Munchy routing, then run Jeb archive-now for the account"
     if event == "jeb.issue" and component == "munchy_preflight":
-        return "repair Munchy routing preflight, then run Jeb archive-now for the source"
+        return "repair Munchy routing preflight, then run Jeb archive-now for the account"
     if event == "jeb.issue" and severity in {"critical", "error", "warning"}:
         return "inspect Jeb issue details"
     return _operator_event_field(event=event, field="operator_action")
@@ -843,7 +843,7 @@ def _jeb_notification_summary(*, component: str, error: str) -> str:
         return text
     if "metadata projection requires valid GPS coordinates" in text:
         return "Missing GPS metadata. Next: fix metadata projection config, then retry Jeb archive."
-    if component == "profile_routing":
+    if component == "routing":
         return _truncate(text or "Munchy routing preflight failed. Next: fix routes.", 120)
     if component == "munchy_preflight":
         return _truncate(text or "Munchy preflight failed. Next: repair Munchy.", 120)
@@ -867,15 +867,15 @@ def _munchy_job_notification(
     )
 
 
-def _jeb_batch_notification(
+def _jeb_issue_notification(
     *,
     event: str,
-    batch: Mapping[str, object],
+    context: Mapping[str, object],
     values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     return _canonical_notification_from_contract(
         event=event,
-        subject=_jeb_batch_subject(batch),
+        subject=_jeb_issue_subject(context),
         values=values,
     )
 
@@ -891,9 +891,9 @@ def _images_ready_notification(
     )
 
 
-def _copy_label_needed_notification(*, label_text: str) -> dict[str, str]:
+def _disc_label_needed_notification(*, label_text: str) -> dict[str, str]:
     return _canonical_notification_from_contract(
-        event="images.copy_label_needed",
+        event="images.disc_label_needed",
         subject=label_text,
     )
 
@@ -905,24 +905,24 @@ def _fetch_queued_notification(*, reminder: bool, name: str) -> dict[str, str]:
     )
 
 
-def _recovery_notification(
+def _archive_restore_notification(
     *,
     event: str,
-    recovery_type: str,
-    session_id: str,
+    restore_type: str,
+    restore_id: str,
     images: Sequence[Mapping[str, object]],
     collections: list[dict[str, str]],
     values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
-    subject = _recovery_subject(
-        session_id=session_id,
+    subject = _archive_restore_subject(
+        restore_id=restore_id,
         images=images,
         collections=collections,
     )
     return _canonical_notification_from_contract(
         event=event,
         subject=subject,
-        notification_type=recovery_type,
+        notification_type=restore_type,
         values=values,
     )
 
@@ -1010,7 +1010,7 @@ def build_munchy_job_payload(
 def build_jeb_event_payload(
     *,
     event: str,
-    batch: Mapping[str, object],
+    context: Mapping[str, object],
     message: str,
     severity: str,
     delivered_at: datetime,
@@ -1031,7 +1031,7 @@ def build_jeb_event_payload(
         detail_values["error"] = message
     payload: dict[str, object] = {
         "event": event,
-        "type": "jeb_batch",
+        "type": "jeb_issue",
         "source": "jeb",
         "actor": "jeb",
         "delivered_at": isoformat_z(delivered_at),
@@ -1044,16 +1044,17 @@ def build_jeb_event_payload(
         "severity": severity,
         "message": notification_summary,
         "detailed_message": message,
-        "batch_id": str(batch.get("id") or ""),
-        "source_id": str(batch.get("source_id") or ""),
-        "target_name": str(batch.get("target_name") or ""),
-        "target_type": str(batch.get("target_type") or ""),
-        "collection_slug": str(batch.get("collection_slug") or ""),
-        "collection_timestamp": str(batch.get("collection_timestamp") or ""),
-        "state": str(batch.get("state") or ""),
-        "notification": _jeb_batch_notification(
+        "attempt_id": str(context.get("id") or "") if context.get("batch_id") else "",
+        "batch_id": str(context.get("batch_id") or ""),
+        "account_id": str(context.get("account_id") or ""),
+        "target_name": str(context.get("target_name") or ""),
+        "target_type": str(context.get("target_type") or ""),
+        "collection_slug": str(context.get("collection_slug") or ""),
+        "collection_timestamp": str(context.get("collection_timestamp") or ""),
+        "state": str(context.get("state") or ""),
+        "notification": _jeb_issue_notification(
             event=event,
-            batch=batch,
+            context=context,
             values=detail_values,
         ),
     }
@@ -1066,30 +1067,30 @@ def build_jeb_event_payload(
     return payload
 
 
-def build_copy_label_needed_payload(
+def build_disc_label_needed_payload(
     *,
     config: WebhookConfig,
     image_id: str,
-    copy_id: str,
+    disc_id: str,
     label_text: str,
     delivered_at: datetime,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "event": "images.copy_label_needed",
-        "type": "copy_lifecycle",
+        "event": "images.disc_label_needed",
+        "type": "disc_lifecycle",
         "image_id": image_id,
-        "copy_id": copy_id,
+        "disc_id": disc_id,
         "label_text": label_text,
         "delivered_at": isoformat_z(delivered_at),
         "operator_urgency": _operator_event_field(
-            event="images.copy_label_needed",
+            event="images.disc_label_needed",
             field="operator_urgency",
         ),
         "operator_action": _operator_event_field(
-            event="images.copy_label_needed",
+            event="images.disc_label_needed",
             field="operator_action",
         ),
-        "notification": _copy_label_needed_notification(label_text=label_text),
+        "notification": _disc_label_needed_notification(label_text=label_text),
     }
     if config.base_url:
         payload["image_url"] = image_summary_url(config.base_url, image_id)

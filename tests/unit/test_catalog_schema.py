@@ -5,13 +5,13 @@ from sqlalchemy import BigInteger
 from sqlalchemy.orm import DeclarativeBase
 
 from riverhog_core.catalog_models import (
+    ArchiveUsageSnapshotRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
     FetchEntryRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageRecord,
-    GlacierUsageSnapshotRecord,
     PlannedCandidateRecord,
 )
 
@@ -20,8 +20,8 @@ from riverhog_core.catalog_models import (
     ("model", "column"),
     [
         (CollectionFileRecord, "bytes"),
-        (FileCopyRecord, "part_bytes"),
-        (FileCopyRecord, "recovery_bytes"),
+        (FileDiscRecord, "part_bytes"),
+        (FileDiscRecord, "recovery_bytes"),
         (CollectionArchiveRecord, "stored_bytes"),
         (CollectionArchiveRecord, "manifest_stored_bytes"),
         (CollectionArchiveRecord, "ots_stored_bytes"),
@@ -30,7 +30,7 @@ from riverhog_core.catalog_models import (
         (PlannedCandidateRecord, "min_fill_bytes"),
         (FinalizedImageRecord, "bytes"),
         (FinalizedImageRecord, "target_bytes"),
-        (GlacierUsageSnapshotRecord, "measured_storage_bytes"),
+        (ArchiveUsageSnapshotRecord, "measured_storage_bytes"),
         (FetchEntryRecord, "bytes"),
         (FetchEntryRecord, "recovery_bytes"),
         (FetchEntryRecord, "uploaded_bytes"),

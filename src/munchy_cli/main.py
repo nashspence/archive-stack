@@ -28,10 +28,10 @@ from munchy.job_authoring import (
     routing_report_text,
 )
 from munchy.local_routing import routing_plan_files
-from munchy.profile_routing import (
-    profile_routing_plan,
-)
 from munchy.profiles import EncodeProfile, ProfileError, load_encode_profiles
+from munchy.routing import (
+    routing_plan,
+)
 from munchy.runner_client import (
     ATTENTION_STYLE,
     DEFAULT_UPLOAD_CHUNK_MIB,
@@ -72,7 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped env
 app = typer.Typer(help="Munchy media ingest CLI.")
 profile_app = typer.Typer(help="Encode profile operations.")
 job_app = typer.Typer(help="Runner job operations.")
-routing_app = typer.Typer(help="Profile routing authoring tools.")
+routing_app = typer.Typer(help="Routing authoring tools.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(job_app, name="job")
 app.add_typer(routing_app, name="routing")
@@ -145,7 +145,7 @@ def _entity_text(value: object) -> Any:
 def _attention_text(value: object) -> Any:
     text = str(value)
     normalized = text.casefold().replace("-", "_")
-    if normalized in {"failed", "cancelled", "canceled"} or "error" in normalized:
+    if normalized in {"failed", "canceled"} or "error" in normalized:
         return _styled_text(text, ATTENTION_STYLE)
     return text
 
@@ -353,23 +353,23 @@ def explain_routing(
         Path,
         typer.Option("--config", "-c", exists=True, dir_okay=False, readable=True),
     ],
-    target_prefix: Annotated[
+    destination_prefix: Annotated[
         str | None,
         typer.Option(
-            "--target-prefix",
+            "--destination-prefix",
             help="Optional upload-path prefix to apply before routing.",
         ),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Explain how profile routing classifies local files."""
+    """Explain how routing classifies local files."""
 
     try:
         config = load_munchy_job_config(config_path)
     except (ConfigError, MunchyJobAuthoringError) as exc:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
     defaults = configured_job_defaults(config)
-    routing = defaults.get("profile_routing")
+    routing = defaults.get("routing")
     if not isinstance(routing, Mapping):
         raise typer.BadParameter(
             "config must define job.routing",
@@ -382,7 +382,7 @@ def explain_routing(
     raw_groups = configured_groups(config)
     if not raw_groups:
         raise typer.BadParameter(
-            "profile routing explain requires explicit groups",
+            "routing explain requires explicit groups",
             param_hint="--config",
         )
     try:
@@ -392,16 +392,16 @@ def explain_routing(
         }
     except MunchyJobAuthoringError as exc:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
-    prefix = target_prefix
+    prefix = destination_prefix
     if prefix is None:
-        raw_prefix = defaults.get("target_prefix") or defaults.get("upload_prefix")
+        raw_prefix = defaults.get("destination_prefix")
         prefix = str(raw_prefix) if raw_prefix else None
     try:
-        candidates = discover_local_candidates(source, target_prefix=prefix, group=None)
+        candidates = discover_local_candidates(source, destination_prefix=prefix, group=None)
     except MunchyJobAuthoringError as exc:
         raise typer.BadParameter(str(exc), param_hint="SOURCE") from exc
-    files = routing_plan_files(candidates, profile_routing=routing)
-    plan = profile_routing_plan(routing, files, group_names=set(groups)).as_dict()
+    files = routing_plan_files(candidates, routing=routing)
+    plan = routing_plan(routing, files, group_names=set(groups)).as_dict()
     if json_mode:
         emit(plan, json_mode=True)
     else:
@@ -416,7 +416,7 @@ def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:
         return "\n".join(
             [
                 f"job: {request.job_id}",
-                f"input upload: {request.upload_id}",
+                f"input upload: {request.input_upload_id}",
                 f"files: {len(request.files)}",
                 f"bytes: {total_bytes}",
                 f"state: {job.get('state', 'unknown')}",
@@ -424,7 +424,7 @@ def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:
         )
     table = _detail_table()
     table.add_row("job", _entity_text(request.job_id))
-    table.add_row("input upload", request.upload_id)
+    table.add_row("input upload", request.input_upload_id)
     table.add_row("files", str(len(request.files)))
     table.add_row("bytes", format_bytes(total_bytes))
     table.add_row("state", _attention_text(job.get("state", "unknown")))
@@ -446,7 +446,7 @@ def _job_start_plan_payload(
         "runner_url": runner_url,
         "runner_ready": runner_ready,
         "job_id": request.job_id,
-        "input_upload_id": request.upload_id,
+        "input_upload_id": request.input_upload_id,
         "files_total": len(request.files),
         "bytes_total": sum(item.bytes for item in request.files),
         "workflow_mode": job_payload.get("workflow_mode"),
@@ -455,7 +455,7 @@ def _job_start_plan_payload(
         "collection_archive_destination": _mapping(
             job_payload.get("collection_archive"), label="collection_archive"
         ).get("destination"),
-        "archive_mode": job_payload.get("archive_mode"),
+        "output_mode": job_payload.get("output_mode"),
         "tasks": list(job_payload.get("tasks") or []),
         "groups": sorted(
             str(group) for group in _mapping(job_payload.get("groups"), label="groups")
@@ -478,7 +478,7 @@ def format_job_start_plan(payload: Mapping[str, Any]) -> Any:
             f"workflow: {payload.get('workflow_mode', 'unknown')}",
             f"collection: {payload.get('collection_slug') or 'n/a'}",
             f"destination: {payload.get('collection_archive_destination') or 'n/a'}",
-            f"archive mode: {payload.get('archive_mode', 'unknown')}",
+            f"output mode: {payload.get('output_mode', 'unknown')}",
             f"files: {payload.get('files_total', 0)}",
             f"bytes: {format_bytes(int(payload.get('bytes_total', 0) or 0))}",
             f"tasks: {', '.join(str(task) for task in _sequence(payload.get('tasks'))) or 'none'}",
@@ -499,7 +499,7 @@ def format_job_start_plan(payload: Mapping[str, Any]) -> Any:
     table.add_row("workflow", str(payload.get("workflow_mode", "unknown")))
     table.add_row("collection", str(payload.get("collection_slug") or "n/a"))
     table.add_row("destination", str(payload.get("collection_archive_destination") or "n/a"))
-    table.add_row("archive mode", str(payload.get("archive_mode", "unknown")))
+    table.add_row("output mode", str(payload.get("output_mode", "unknown")))
     table.add_row("files", str(payload.get("files_total", 0)))
     table.add_row("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0)))
     table.add_row(
@@ -661,10 +661,10 @@ def plan_review_sweep(
             help=f"Munchy job YAML config; defaults to {MUNCHY_CONFIG_ENV}",
         ),
     ] = None,
-    target_prefix: Annotated[
+    destination_prefix: Annotated[
         str | None,
         typer.Option(
-            "--target-prefix",
+            "--destination-prefix",
             help="Optional upload-path prefix to apply before routing.",
         ),
     ] = None,
@@ -684,7 +684,7 @@ def plan_review_sweep(
         plan = build_review_sweep_plan(
             source=source,
             config_path=config_path,
-            target_prefix=target_prefix,
+            destination_prefix=destination_prefix,
         )
     except (ConfigError, MunchyJobAuthoringError) as exc:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
@@ -727,11 +727,14 @@ def start_job(
     ] = None,
     group: Annotated[
         str | None,
-        typer.Option("--group", help="Profile group for direct group-path uploads"),
+        typer.Option("--group", help="Group for direct group-path uploads"),
     ] = None,
-    target_prefix: Annotated[
+    destination_prefix: Annotated[
         str | None,
-        typer.Option("--target-prefix", help="Optional target path prefix inside the upload"),
+        typer.Option(
+            "--destination-prefix",
+            help="Optional destination path prefix inside the upload",
+        ),
     ] = None,
     workflow_mode: Annotated[
         str | None,
@@ -755,9 +758,9 @@ def start_job(
         ),
     ] = None,
     job_id: Annotated[str | None, typer.Option("--job-id", help="Runner job id")] = None,
-    upload_id: Annotated[
+    input_upload_id: Annotated[
         str | None,
-        typer.Option("--upload-id", help="Runner input upload id"),
+        typer.Option("--input-upload-id", help="Runner input upload id"),
     ] = None,
     upload_workers: Annotated[
         int,
@@ -802,8 +805,8 @@ def start_job(
                 collection=collection,
                 collection_timestamp=collection_timestamp,
                 job_id=job_id,
-                upload_id=upload_id,
-                target_prefix=target_prefix,
+                input_upload_id=input_upload_id,
+                destination_prefix=destination_prefix,
                 group=group,
                 workflow_mode=workflow_mode,
                 collection_archive_destination=collection_archive_destination,
@@ -992,7 +995,7 @@ def resume_job(
     interval: Annotated[float, typer.Option("--interval", min=0.5)] = 10.0,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Resume a failed or cancelled runner job after repair."""
+    """Resume a failed or canceled runner job after repair."""
 
     client = MunchyRunnerClient(runner_url_setting(runner_url))
     try:
@@ -1029,9 +1032,9 @@ def cancel_job(
         job = client.cancel_job(job_id, cleanup=cleanup)
         if wait or cleanup:
             job = client.wait_for_job(job_id, interval=interval)
-            if cleanup and job.get("state") == "cancelled" and not job.get("cleanup_completed_at"):
+            if cleanup and job.get("state") == "canceled" and not job.get("cleanup_completed_at"):
                 job = client.cancel_job(job_id, cleanup=True)
-            if job.get("state") != "cancelled":
+            if job.get("state") != "canceled":
                 raise RuntimeError(f"job did not cancel cleanly: {format_job_status_line(job)}")
     except Exception as exc:
         _exit_runner_error(exc)

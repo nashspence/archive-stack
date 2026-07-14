@@ -66,14 +66,14 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         }
         assert read_json(f"http://{host}:{port}/health/ready") == {
             "service": "jeb",
-            "source_count": 1,
+            "account_count": 1,
             "status": "ok",
         }
         status = read_json(f"http://{host}:{port}/v1/jeb/status")
-        sources = status["sources"]
-        assert isinstance(sources, list)
-        assert sources[0]["id"] == "phone"
-        assert sources[0]["eligible_files"] == 1
+        accounts = status["accounts"]
+        assert isinstance(accounts, list)
+        assert accounts[0]["id"] == "phone"
+        assert accounts[0]["eligible_files"] == 1
     finally:
         server.shutdown()
         server.server_close()
@@ -105,7 +105,7 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
     processed = threading.Event()
 
     class FailingRunner:
-        def advance(self, collector: Collector, batch_id: str) -> None:
+        def advance(self, collector: Collector, attempt_id: str) -> None:
             processed.set()
             raise AssertionError("dry-run must not process a batch")
 
@@ -127,8 +127,8 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
         assert payload["total_bytes"] == 5
         assert payload["batch_id"]
         assert payload["job_id"]
-        assert collector.active_batch_ids() == []
-        assert collector.list_batches(terminal="all")["total"] == 0
+        assert collector.active_attempt_ids() == []
+        assert collector.list_attempts(terminal="all")["total"] == 0
         assert not processed.is_set()
     finally:
         server.shutdown()
@@ -139,12 +139,12 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
     processed = threading.Event()
-    processed_batch_ids: list[str] = []
+    processed_attempt_ids: list[str] = []
 
     class CompleteRunner:
-        def advance(self, collector: Collector, batch_id: str) -> None:
-            processed_batch_ids.append(batch_id)
-            collector.set_batch_state(batch_id, "target_complete")
+        def advance(self, collector: Collector, attempt_id: str) -> None:
+            processed_attempt_ids.append(attempt_id)
+            collector.set_attempt_state(attempt_id, "target_complete")
             processed.set()
 
     collector = Collector(config_from_env(env), target_runners={"munchy": CompleteRunner()})
@@ -161,13 +161,14 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
         assert payload["status"] == "started"
         assert payload["account"] == "phone"
         assert payload["batch_id"]
+        assert payload["attempt_id"]
         operation = payload["operation"]
         assert isinstance(operation, dict)
         assert operation["operation"] == "archive-now"
         assert operation["account"] == "phone"
-        assert operation["batch_id"] == payload["batch_id"]
+        assert operation["attempt_id"] == payload["attempt_id"]
         assert processed.wait(timeout=5)
-        assert processed_batch_ids == [payload["batch_id"]]
+        assert processed_attempt_ids == [payload["attempt_id"]]
     finally:
         server.shutdown()
         server.server_close()

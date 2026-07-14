@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog admits a collection only after its collection-native Glacier archive package is uploaded and verified.
+Riverhog admits a collection only after its collection-native archive package is uploaded and verified.
 
 ## Reason
 

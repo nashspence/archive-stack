@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb.collector import BATCH_LIST_SORT_FIELDS, Collector, UnrecoverableJebError, iso
+from jeb.collector import ATTEMPT_LIST_SORT_FIELDS, Collector, UnrecoverableJebError, iso
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class JebServiceOperation:
     operation: str
     started_at: str
     account: str | None
-    batch_id: str | None
+    attempt_id: str | None
     thread: threading.Thread
 
     def summary(self) -> dict[str, Any]:
@@ -34,8 +34,8 @@ class JebServiceOperation:
         }
         if self.account is not None:
             payload["account"] = self.account
-        if self.batch_id is not None:
-            payload["batch_id"] = self.batch_id
+        if self.attempt_id is not None:
+            payload["attempt_id"] = self.attempt_id
         return payload
 
 
@@ -59,7 +59,7 @@ class JebServiceOperations:
         operation: str,
         run: Callable[[], None],
         account: str | None = None,
-        batch_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._prune_locked()
@@ -90,7 +90,7 @@ class JebServiceOperations:
                 operation=operation,
                 started_at=iso(),
                 account=account,
-                batch_id=batch_id,
+                attempt_id=attempt_id,
                 thread=thread,
             )
             self._active = active_operation
@@ -113,14 +113,14 @@ class JebServiceOperations:
                     "Jeb operation already running: "
                     f"{active_summary['operation']} {active_summary['id']}"
                 )
-            batch_id = prepare()
-            if batch_id is None:
+            attempt_id = prepare()
+            if attempt_id is None:
                 return None, None
             operation_id = uuid.uuid4().hex[:12]
 
             def target() -> None:
                 try:
-                    run(batch_id)
+                    run(attempt_id)
                 except Exception:
                     LOG.exception(
                         "Jeb service operation failed",
@@ -137,12 +137,12 @@ class JebServiceOperations:
                 operation=operation,
                 started_at=iso(),
                 account=account,
-                batch_id=batch_id,
+                attempt_id=attempt_id,
                 thread=thread,
             )
             self._active = active_operation
             thread.start()
-            return batch_id, active_operation.summary()
+            return attempt_id, active_operation.summary()
 
 
 @dataclass(frozen=True)
@@ -251,7 +251,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         HTTPStatus.OK,
                         {
                             "service": "jeb",
-                            "source_count": len(state.collector.config.sources),
+                            "account_count": len(state.collector.config.accounts),
                             "status": "ok",
                         },
                     )
@@ -263,8 +263,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         HTTPStatus.OK,
                         {
                             "status": "ok",
-                            "source_count": len(state.collector.config.sources),
-                            "sources": [source.id for source in state.collector.config.sources],
+                            "account_count": len(state.collector.config.accounts),
+                            "accounts": [account.id for account in state.collector.config.accounts],
                         },
                     )
                     return
@@ -276,17 +276,17 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     payload["active_operation"] = state.operations.active_summary()
                     _response(self, HTTPStatus.OK, payload)
                     return
-                if split.path == "/v1/jeb/batches":
+                if split.path == "/v1/jeb/attempts":
                     sort = _first(params, "sort", "updated_at") or "updated_at"
-                    if sort not in BATCH_LIST_SORT_FIELDS:
+                    if sort not in ATTEMPT_LIST_SORT_FIELDS:
                         raise ValueError(
-                            "sort must be one of: " + ", ".join(sorted(BATCH_LIST_SORT_FIELDS))
+                            "sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS))
                         )
                     state.collector.init_db()
                     _response(
                         self,
                         HTTPStatus.OK,
-                        state.collector.list_batches(
+                        state.collector.list_attempts(
                             page=_positive_int(params, "page", 1),
                             per_page=_positive_int(params, "per_page", 25),
                             sort=sort,
@@ -295,7 +295,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             terminal=_terminal(params),
                             state=_first(params, "state"),
                             account=_first(params, "account"),
-                            collection=_first(params, "collection"),
+                            collection_slug=_first(params, "collection_slug"),
                             target=_first(params, "target"),
                         ),
                     )
@@ -331,36 +331,38 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         _response(
                             self,
                             HTTPStatus.OK,
-                            state.collector.archive_plan(source_id=account, process=process),
+                            state.collector.archive_plan(account_id=account, process=process),
                         )
                         return
                     archive_operation: dict[str, Any] | None = None
                     if process:
-                        batch_id, archive_operation = state.operations.prepare_and_start(
+                        attempt_id, archive_operation = state.operations.prepare_and_start(
                             operation="archive-now",
                             account=account,
                             prepare=lambda: state.collector.archive_now(
-                                source_id=account,
+                                account_id=account,
                                 process=False,
                             ),
-                            run=state.collector.process_batch,
+                            run=state.collector.process_attempt,
                         )
                     else:
-                        batch_id = state.collector.archive_now(source_id=account, process=False)
-                    if batch_id is None:
+                        attempt_id = state.collector.archive_now(account_id=account, process=False)
+                    if attempt_id is None:
                         _response(
                             self,
                             HTTPStatus.OK,
                             {"status": "no_eligible_files", "account": account},
                         )
                         return
+                    attempt = state.collector.load_attempt(attempt_id)
                     _response(
                         self,
                         HTTPStatus.ACCEPTED,
                         {
                             "status": "started",
                             "account": account,
-                            "batch_id": batch_id,
+                            "attempt_id": attempt_id,
+                            "batch_id": str(attempt["batch_id"]),
                             "operation": archive_operation,
                         },
                     )

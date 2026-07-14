@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Annotated
+from typing import Literal
 
 from fastapi import APIRouter, Query, Request, Response
 
@@ -26,21 +25,6 @@ from riverhog_api.urls import public_tusd_upload_url
 router = APIRouter(tags=["collections"])
 
 
-class CollectionProtectionFilter(StrEnum):
-    UNDER_PROTECTED = "under_protected"
-    CLOUD_ONLY = "cloud_only"
-    PHYSICAL_ONLY = "physical_only"
-    FULLY_PROTECTED = "fully_protected"
-
-
-_CORE_PROTECTION_FILTERS = {
-    "under_protected": "partially_protected",
-    "cloud_only": "unprotected",
-    "physical_only": "partially_protected",
-    "fully_protected": "protected",
-}
-
-
 @router.get("/collections", response_model=ListCollectionsResponse)
 def list_collections(
     container: ContainerDep,
@@ -49,16 +33,13 @@ def list_collections(
     q: str | None = Query(None),
     sort: str = Query("id"),
     order: str = Query("asc"),
-    protection_state: Annotated[CollectionProtectionFilter | None, Query()] = None,
+    disc_redundancy: Literal["none", "partial", "full"] | None = Query(None),
 ) -> ListCollectionsResponse:
-    service_protection_state = (
-        _CORE_PROTECTION_FILTERS[protection_state.value] if protection_state is not None else None
-    )
     summary = container.collections.list(
         page=page,
         per_page=per_page,
         q=q,
-        protection_state=service_protection_state,
+        disc_redundancy_state=disc_redundancy,
         sort=sort,
         order=order,
     )

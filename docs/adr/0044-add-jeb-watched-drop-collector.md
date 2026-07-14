@@ -34,7 +34,7 @@ configuration.
 ## Consequences
 
 Riverhog remains the custody boundary. Munchy remains the media conversion and
-profile-routing layer. Jeb becomes the generic bridge from watched landing
+routing layer. Jeb becomes the generic bridge from watched landing
 directories into Munchy.
 
 Transient failures are operationally normal and retry silently. Unrecoverable

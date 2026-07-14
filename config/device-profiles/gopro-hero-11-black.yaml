@@ -13,14 +13,14 @@ section:
   - .jpeg
   - .gpr
   - .sav
-  archive_mode: preserve
+  output_mode: preserve
   media_preflight: false
-  profile_group: preserve
+  group: preserve
   groups:
     preserve:
-      archive_mode: preserve
+      output_mode: preserve
     preserve-no-metadata:
-      archive_mode: preserve
+      output_mode: preserve
       metadata_projection: false
   routing:
     extra_exiftool_tags:

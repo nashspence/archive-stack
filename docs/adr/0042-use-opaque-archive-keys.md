@@ -1,4 +1,4 @@
-# ADR-0042: Use Opaque Glacier Archive Keys
+# ADR-0042: Use Opaque Archive Keys
 
 ## Decision
 
@@ -6,9 +6,9 @@ New collection archive packages are stored under randomly minted opaque archive
 ids instead of canonical collection ids:
 
 ```text
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
 
 The archive id is random and persisted on the collection upload row before the

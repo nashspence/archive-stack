@@ -5,7 +5,7 @@ from pathlib import Path
 import munchy.local_routing as local_routing
 from munchy.local_files import LocalFileCandidate
 from munchy.local_routing import routing_plan_files
-from munchy.profile_routing import profile_routing_plan
+from munchy.routing import routing_plan
 
 
 def test_routing_plan_files_collects_only_declared_sidecar_tags(
@@ -73,8 +73,8 @@ def test_routing_plan_files_collects_only_declared_sidecar_tags(
         ),
     ]
 
-    files = routing_plan_files(candidates, profile_routing=routing)
-    plan = profile_routing_plan(routing, files, group_names={"video"})
+    files = routing_plan_files(candidates, routing=routing)
+    plan = routing_plan(routing, files, group_names={"video"})
 
     assert calls == [(sidecar, ("Make", "Model"))]
     assert plan.ok
@@ -153,8 +153,8 @@ def test_routing_plan_files_collects_primary_facts_after_sidecar_facts(
         ),
     ]
 
-    files = routing_plan_files(candidates, profile_routing=routing)
-    plan = profile_routing_plan(routing, files, group_names={"video"})
+    files = routing_plan_files(candidates, routing=routing)
+    plan = routing_plan(routing, files, group_names={"video"})
 
     assert [path for path, _tags in calls] == [sidecar, primary]
     assert calls[0] == (sidecar, ("Make",))

@@ -41,7 +41,7 @@ Feature: File introspection API
     Scenario: File target returns sha256 and collection fields
       When the client gets "/v1/files?target=docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
-      And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "archived"
+      And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "disc_coverage"
 
   Rule: GET /v1/files/{target}/content serves raw bytes for hot files
 

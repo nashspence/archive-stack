@@ -11,7 +11,7 @@ URLs, and deployment overlays belong outside this repository.
 
 ## Account Model
 
-The account slug is Jeb's stable identity for a source. For account
+The account slug is Jeb's stable identity for a watched landing directory. For account
 `example-camera`, Jeb watches:
 
 ```text
@@ -42,8 +42,8 @@ if Munchy reports that the job configuration cannot handle the set, Jeb stops
 before upload and notifies the operator. If Munchy accepts the set, Jeb uploads
 every eligible file in the batch.
 
-Jeb must not interpret Munchy's route plan, `leave` results, route ids, profile
-groups, or culling decisions as instructions for which source files to upload or
+Jeb must not interpret Munchy's route plan, `leave` results, route ids, groups,
+or culling decisions as instructions for which source files to upload or
 delete. Munchy owns routing, metadata projection, preserve/encode/leave/cull
 semantics, and Riverhog archive contents. After Munchy reports the configured
 safe Riverhog success state, Jeb cleanup applies to the complete source batch it
@@ -136,13 +136,13 @@ complete generic env example.
 ```sh
 jeb check-config
 jeb status
-jeb batches
+jeb attempts
 jeb once
 jeb archive-now --account example-camera
 ```
 
 `archive-now` starts an immediate account batch for currently eligible files and
-returns after the deployed Jeb service accepts the operation. Use `batches` or
+returns after the deployed Jeb service accepts the operation. Use `attempts` or
 `status` to follow the resulting work. Use `--no-process` to create the batch
 without processing it in the same command. Use `--dry-run` to preview the exact
 archive action without creating a batch, uploading files, starting a runner job,
@@ -150,24 +150,24 @@ or recording routing preflight failures. `--no-process` is still a mutating
 staged-batch operation; combine it with `--dry-run` only when previewing that
 staged-batch plan.
 
-`status` is read-only and summarizes configured accounts, eligible source
+`status` is read-only and summarizes configured accounts, eligible input
 backlog, batch state counts, active attempts, recent failures, and routing
 preflight failures. Use `--json` for compact machine-readable output, or
 `--no-backlog` to skip source directory scans.
 
-`batches` is read-only and lists batch attempts, which are the operational
+`attempts` is read-only and lists processing attempts, which are the operational
 records that move through active, retry, failure, and cleanup states. It follows
 the Riverhog CLI family paging shape:
 
 ```sh
-jeb batches --page 1 --per-page 25 --sort updated_at --order desc
-jeb batches --terminal all --account example-camera --json
-jeb batches --state cleanup_failed --query failed
+jeb attempts --page 1 --per-page 25 --sort updated_at --order desc
+jeb attempts --terminal all --account example-camera --json
+jeb attempts --state cleanup_failed --query failed
 ```
 
-Supported batch filters include `--terminal active|terminal|all`, `--state`,
-`--account`, `--collection`, `--target`, and `--query`/`-q`. Supported sort
-fields are `updated_at`, `created_at`, `collection`, `collection_timestamp`,
+Supported attempt filters include `--terminal active|terminal|all`, `--state`,
+`--account`, `--collection-slug`, `--target`, and `--query`/`-q`. Supported sort
+fields are `updated_at`, `created_at`, `collection_slug`, `collection_timestamp`,
 `target`, `state`, `file_count`, `bytes`, `attempt`, and `job_id`.
 
 ## Service CLI
@@ -180,7 +180,7 @@ command.
 ```sh
 jeb-service check-config
 jeb-service status
-jeb-service batches
+jeb-service attempts
 jeb-service once
 jeb-service run
 jeb-service archive-now --account example-camera
@@ -191,7 +191,7 @@ jeb-service archive-now --account example-camera
 Riverhog exposes the authenticated remote API under:
 
 - `GET /v1/jeb/status`
-- `GET /v1/jeb/batches`
+- `GET /v1/jeb/attempts`
 - `GET /v1/jeb/config/check`
 - `POST /v1/jeb/once`
 - `POST /v1/jeb/archive-now`

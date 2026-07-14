@@ -71,8 +71,7 @@ def parse_int_range_values(values: list[int | str] | tuple[int | str, ...]) -> l
                 numbers.append(int(item))
             except ValueError as exc:
                 raise ValueError(
-                    "value must be an integer or inclusive range like "
-                    "24..60, 24-60, or 24..60:4"
+                    "value must be an integer or inclusive range like 24..60, 24-60, or 24..60:4"
                 ) from exc
     if not numbers:
         raise ValueError("at least one value is required")
@@ -183,19 +182,19 @@ def ensure_review_sweep_has_variants(sweep: Mapping[str, Any]) -> None:
         raise ValueError("review.sweep requires axes, variants, or a shorthand axis")
 
 
-def review_archive_mode_for_profile(profile: Mapping[str, Any]) -> str:
+def review_output_mode_for_profile(profile: Mapping[str, Any]) -> str:
     archive = profile.get("archive")
     if not isinstance(archive, Mapping):
-        return "av1_nvenc"
+        return "video"
     if str(archive.get("codec") or "").strip() == "opus":
         return "audio"
-    return "av1_nvenc"
+    return "video"
 
 
-def review_tasks_for_archive_mode(archive_mode: str) -> list[str]:
-    if archive_mode == "audio":
+def review_tasks_for_output_mode(output_mode: str) -> list[str]:
+    if output_mode == "audio":
         return ["audio_review"]
-    if archive_mode == "av1_nvenc":
+    if output_mode == "video":
         return ["qcut_video"]
     return []
 
@@ -240,8 +239,8 @@ def encode_profile_with_settings(
         raise ValueError(f"invalid review sweep encode profile: {exc}") from exc
 
 
-def default_encode_profile_for_archive_mode(archive_mode: str) -> dict[str, Any]:
-    if archive_mode == "audio":
+def default_encode_profile_for_output_mode(output_mode: str) -> dict[str, Any]:
+    if output_mode == "audio":
         return {
             "schema_version": 1,
             "target": "munchy-audio",

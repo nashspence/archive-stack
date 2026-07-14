@@ -15,7 +15,7 @@ import httpx
 import pytest
 from pytest_bdd import given, parsers, then, when
 
-from riverhog_core.domain.enums import RecoverySessionState
+from riverhog_core.domain.enums import ArchiveRestoreState
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.fs_paths import normalize_collection_id
 from tests.fixtures.acceptance import AcceptanceSystem
@@ -367,7 +367,7 @@ def _riverhog_bool_flag(argv: list[str], positive: str, negative: str) -> bool |
 
 def _riverhog_find_query(argv: list[str]) -> str | None:
     options_with_values = {"--page", "--per-page", "--sort", "--order", "--collection"}
-    value_flags = {"--json", "--hot", "--not-hot", "--archived", "--not-archived"}
+    value_flags = {"--json", "--hot", "--not-hot", "--disc", "--no-disc"}
     index = 2
     while index < len(argv):
         current = argv[index]
@@ -405,20 +405,20 @@ def _response_manifest_entry(
     raise AssertionError(f"manifest entry not found: {entry_id}")
 
 
-def _response_copy_payload(context: AcceptanceScenarioContext) -> dict[str, Any]:
+def _response_disc_payload(context: AcceptanceScenarioContext) -> dict[str, Any]:
     payload = _json_payload(_require_response(context))
-    return payload["copy"]
+    return payload["disc"]
 
 
-def _listed_copy_payload(
+def _listed_disc_payload(
     context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
 ) -> dict[str, Any]:
     payload = _json_payload(_require_response(context))
-    for copy in payload["copies"]:
-        if copy["id"] == copy_id:
-            return copy
-    raise AssertionError(f"listed copy not found: {copy_id}")
+    for disc in payload["discs"]:
+        if disc["disc_id"] == disc_id:
+            return disc
+    raise AssertionError(f"listed disc not found: {disc_id}")
 
 
 def _ensure_collection_fixture(acceptance_system: AcceptanceSystem, collection_id: str) -> None:
@@ -432,7 +432,6 @@ def _ensure_collection_fixture(acceptance_system: AcceptanceSystem, collection_i
             collection_id,
             DOCS_FILES,
             hot_paths={path.lstrip("/") for path in DOCS_FILES},
-            archived_paths=set(),
         )
         acceptance_system.mark_collection_archive_uploaded(collection_id)
         return
@@ -479,10 +478,10 @@ def _ensure_candidate_fixture(
 ) -> None:
     if candidate_id in {str(current) for current in acceptance_system.state.candidates_by_id}:
         return
-    if candidate_id in {fixture.id for fixture in IMAGE_FIXTURES}:
+    if candidate_id in {fixture.candidate_id for fixture in IMAGE_FIXTURES}:
         acceptance_system.seed_planner_fixtures()
         return
-    if candidate_id in {fixture.id for fixture in SPLIT_IMAGE_FIXTURES}:
+    if candidate_id in {fixture.candidate_id for fixture in SPLIT_IMAGE_FIXTURES}:
         acceptance_system.seed_split_planner_fixtures()
         return
     raise AssertionError(f"unsupported candidate fixture: {candidate_id}")
@@ -493,7 +492,7 @@ def _create_started_fetch_for_target(
     target: str,
     *,
     expected_fetch_id: str | None = None,
-    cloud: bool = False,
+    archive: bool = False,
 ) -> str:
     response = acceptance_system.request(
         "POST",
@@ -507,7 +506,7 @@ def _create_started_fetch_for_target(
     response = acceptance_system.request(
         "POST",
         f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
-        json_body={"cloud": cloud},
+        json_body={"archive": archive},
     )
     assert response.status_code == 200, response.text
     return fetch_id
@@ -540,15 +539,15 @@ def _prepare_riverhog_expectation(
         }
         collection = _riverhog_option_value(argv, "--collection")
         hot = _riverhog_bool_flag(argv, "--hot", "--not-hot")
-        archived = _riverhog_bool_flag(argv, "--archived", "--not-archived")
+        disc_coverage = _riverhog_bool_flag(argv, "--disc", "--no-disc")
         if query is not None:
             params["q"] = query
         if collection is not None:
             params["collection"] = collection
         if hot is not None:
             params["hot"] = hot
-        if archived is not None:
-            params["archived"] = archived
+        if disc_coverage is not None:
+            params["disc_coverage"] = disc_coverage
         context.expected_api_payload = acceptance_system.request(
             "GET",
             "/v1/search",
@@ -566,11 +565,11 @@ def _prepare_riverhog_expectation(
         query = _riverhog_option_value(argv, "--query")
         if query is None:
             query = _riverhog_option_value(argv, "--search")
-        protection = _riverhog_option_value(argv, "--protection")
+        disc_redundancy = _riverhog_option_value(argv, "--disc-redundancy")
         if query is not None:
             params["q"] = query
-        if protection is not None:
-            params["protection_state"] = protection
+        if disc_redundancy is not None:
+            params["disc_redundancy"] = disc_redundancy
         first_page = acceptance_system.request("GET", "/v1/collections", params=params).json()
         collections = [
             collection
@@ -596,12 +595,12 @@ def _prepare_riverhog_expectation(
         total = len(collections)
         pages = (total + per_page - 1) // per_page if total else 0
 
-        def compact_glacier(collection: dict[str, Any]) -> dict[str, object] | None:
-            glacier = collection.get("glacier")
-            if not isinstance(glacier, dict):
+        def compact_archive(collection: dict[str, Any]) -> dict[str, object] | None:
+            archive = collection.get("archive")
+            if not isinstance(archive, dict):
                 return None
             return {
-                key: glacier[key]
+                key: archive[key]
                 for key in (
                     "state",
                     "storage_class",
@@ -610,18 +609,14 @@ def _prepare_riverhog_expectation(
                     "last_verified_at",
                     "failure",
                 )
-                if key in glacier
+                if key in archive
             }
 
         def compact_disc_coverage(collection: dict[str, Any]) -> dict[str, object] | None:
             disc_coverage = collection.get("disc_coverage")
             if not isinstance(disc_coverage, dict):
                 return None
-            return {
-                key: disc_coverage[key]
-                for key in ("state", "covered_bytes", "verified_physical_bytes")
-                if key in disc_coverage
-            }
+            return {key: disc_coverage[key] for key in ("state", "bytes") if key in disc_coverage}
 
         def compact_collection(collection: dict[str, Any]) -> dict[str, object]:
             payload: dict[str, object] = {
@@ -631,18 +626,16 @@ def _prepare_riverhog_expectation(
                     "files",
                     "bytes",
                     "hot_bytes",
-                    "archived_bytes",
-                    "pending_bytes",
-                    "protected_bytes",
-                    "protection_state",
+                    "disc_coverage",
+                    "disc_redundancy",
                     "archive_format",
                     "compression",
                 )
                 if key in collection
             }
-            glacier = compact_glacier(collection)
-            if glacier is not None:
-                payload["glacier"] = glacier
+            archive = compact_archive(collection)
+            if archive is not None:
+                payload["archive"] = archive
             disc_coverage = compact_disc_coverage(collection)
             if disc_coverage is not None:
                 payload["disc_coverage"] = disc_coverage
@@ -656,7 +649,7 @@ def _prepare_riverhog_expectation(
             "sort": sort,
             "order": order.casefold(),
             "query": query,
-            "protection_state": protection,
+            "disc_redundancy": disc_redundancy,
             "collections": [
                 compact_collection(collection)
                 for collection in collections[(page - 1) * per_page : page * per_page]
@@ -706,16 +699,13 @@ def _prepare_riverhog_expectation(
         }
         query = _riverhog_option_value(argv, "--query")
         hot = _riverhog_bool_flag(argv, "--hot", "--not-hot")
-        archived = _riverhog_bool_flag(argv, "--archived", "--not-archived")
-        disc = _riverhog_bool_flag(argv, "--disc", "--no-disc")
+        disc_coverage = _riverhog_bool_flag(argv, "--disc", "--no-disc")
         if query is not None:
             params["q"] = query
         if hot is not None:
             params["hot"] = hot
-        if archived is not None:
-            params["archived"] = archived
-        if disc is not None:
-            params["disc_coverage"] = disc
+        if disc_coverage is not None:
+            params["disc_coverage"] = disc_coverage
         context.expected_api_payload = acceptance_system.request(
             "GET",
             f"/v1/fetches/{fetch_id}/files",
@@ -794,13 +784,13 @@ def _prepare_djdan_expectation(
         }
         query = _riverhog_option_value(argv, "--query")
         collection = _riverhog_option_value(argv, "--collection")
-        has_copies = _riverhog_bool_flag(argv, "--has-discs", "--no-discs")
+        has_discs = _riverhog_bool_flag(argv, "--has-discs", "--no-discs")
         if query is not None:
             params["q"] = query
         if collection is not None:
             params["collection"] = collection
-        if has_copies is not None:
-            params["has_copies"] = has_copies
+        if has_discs is not None:
+            params["has_discs"] = has_discs
         context.expected_api_payload = acceptance_system.request(
             "GET", "/v1/images", params=params
         ).json()
@@ -816,37 +806,37 @@ def _prepare_djdan_expectation(
 
     if argv[1:3] == ["disc", "add"]:
         image_id = argv[3]
-        context.expected_api_endpoint = ("POST", f"/v1/images/{image_id}/copies")
+        context.expected_api_endpoint = ("POST", f"/v1/images/{image_id}/discs")
         body: dict[str, object] = {"location": _riverhog_option_value(argv, "--at")}
-        copy_id = _riverhog_option_value(argv, "--copy-id")
-        if copy_id is not None:
-            body["copy_id"] = copy_id
+        disc_id = _riverhog_option_value(argv, "--disc-id")
+        if disc_id is not None:
+            body["disc_id"] = disc_id
         context.expected_api_payload = acceptance_system.request(
             "POST",
-            f"/v1/images/{image_id}/copies",
+            f"/v1/images/{image_id}/discs",
             json_body=body,
         ).json()
         return
 
     if argv[1:3] == ["disc", "list"] and len(argv) > 3 and not argv[3].startswith("-"):
         image_id = argv[3]
-        context.expected_api_endpoint = ("GET", f"/v1/images/{image_id}/copies")
+        context.expected_api_endpoint = ("GET", f"/v1/images/{image_id}/discs")
         context.expected_api_payload = acceptance_system.request(
             "GET",
-            f"/v1/images/{image_id}/copies",
+            f"/v1/images/{image_id}/discs",
         ).json()
         return
 
     if argv[1:3] == ["disc", "location"]:
-        copy_id = argv[3]
-        image_id = copy_id.rsplit("-", 1)[0]
+        disc_id = argv[3]
+        image_id = disc_id.rsplit("-", 1)[0]
         context.expected_api_endpoint = (
             "PATCH",
-            f"/v1/images/{image_id}/copies/{copy_id}",
+            f"/v1/images/{image_id}/discs/{disc_id}",
         )
         context.expected_api_payload = acceptance_system.request(
             "PATCH",
-            f"/v1/images/{image_id}/copies/{copy_id}",
+            f"/v1/images/{image_id}/discs/{disc_id}",
             json_body={"location": _riverhog_option_value(argv, "--to")},
         ).json()
         return
@@ -998,8 +988,8 @@ def given_collection_exists_and_is_fully_hot(
     _ensure_collection_fixture(acceptance_system, collection_id)
 
 
-@given(parsers.parse('collection "{collection_id}" has uploaded Glacier archive package'))
-def given_collection_has_uploaded_glacier_archive_package(
+@given(parsers.parse('collection "{collection_id}" has uploaded archive package'))
+def given_collection_has_uploaded_archive_package(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
 ) -> None:
@@ -1007,20 +997,18 @@ def given_collection_has_uploaded_glacier_archive_package(
     acceptance_system.mark_collection_archive_uploaded(collection_id)
 
 
-@given(
-    parsers.parse('collection Glacier archiving fails for "{collection_id}" with error "{error}"')
-)
+@given(parsers.parse('collection archive upload fails for "{collection_id}" with error "{error}"'))
 @given(
     parsers.parse(
-        'the glacier upload fixture fails for collection "{collection_id}" with error "{error}"'
+        'the archive upload fixture fails for collection "{collection_id}" with error "{error}"'
     )
 )
-def given_collection_glacier_archiving_fails(
+def given_collection_archive_archiving_fails(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
     error: str,
 ) -> None:
-    acceptance_system.fail_collection_glacier_upload(collection_id, error=error)
+    acceptance_system.fail_collection_archive_upload(collection_id, error=error)
 
 
 @given(
@@ -1066,14 +1054,14 @@ def given_target_is_valid(acceptance_system: AcceptanceSystem, target: str) -> N
     _ensure_target_fixture(acceptance_system, target)
 
 
-@given(parsers.parse('file "{target}" is archived'))
-def given_file_is_archived(acceptance_system: AcceptanceSystem, target: str) -> None:
+@given(parsers.parse('file "{target}" has disc coverage'))
+def given_file_has_disc_coverage(acceptance_system: AcceptanceSystem, target: str) -> None:
     acceptance_system.seed_docs_archive()
     resp = acceptance_system.request("GET", "/v1/files", params={"target": target})
     assert resp.status_code == 200, resp.text
     files = resp.json()["files"]
     assert files
-    assert all(record["archived"] for record in files)
+    assert all(record["disc_coverage"] for record in files)
 
 
 @given(parsers.parse('file "{target}" is not hot'))
@@ -1094,8 +1082,8 @@ def given_hot_backing_bytes_for_file_are_missing(
     acceptance_system.delete_hot_backing_file(target)
 
 
-@given(parsers.parse('archived target "{target}" has queued fetch "{fetch_id}"'))
-def given_archived_target_has_queued_fetch(
+@given(parsers.parse('disc-covered target "{target}" has queued fetch "{fetch_id}"'))
+def given_target_with_disc_coverage_has_queued_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
@@ -1104,8 +1092,8 @@ def given_archived_target_has_queued_fetch(
     _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
-@given(parsers.parse('split archived fetch "{fetch_id}" exists for target "{target}"'))
-def given_split_archived_fetch_exists(
+@given(parsers.parse('split disc-covered fetch "{fetch_id}" exists for target "{target}"'))
+def given_split_fetch_with_disc_coverage_exists(
     acceptance_system: AcceptanceSystem,
     fetch_id: str,
     target: str,
@@ -1114,8 +1102,8 @@ def given_split_archived_fetch_exists(
     _create_started_fetch_for_target(acceptance_system, target, expected_fetch_id=fetch_id)
 
 
-@given(parsers.parse('split archived target "{target}" has queued fetch "{fetch_id}"'))
-def given_split_archived_target_has_queued_fetch(
+@given(parsers.parse('split disc-covered target "{target}" has queued fetch "{fetch_id}"'))
+def given_split_target_with_disc_coverage_has_queued_fetch(
     acceptance_system: AcceptanceSystem,
     target: str,
     fetch_id: str,
@@ -1205,93 +1193,93 @@ def given_djdan_server_validation_failure_fixture(acceptance_system: AcceptanceS
     )
 
 
-@given(parsers.parse('the optical reader fixture fails for copy id "{copy_id}"'))
-@when(parsers.parse('the optical reader fixture fails for copy id "{copy_id}"'))
-@given(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
-@when(parsers.parse('the configured optical reader cannot recover copy id "{copy_id}"'))
-def given_djdan_reader_failure_for_copy(
+@given(parsers.parse('the optical reader fixture fails for disc id "{disc_id}"'))
+@when(parsers.parse('the optical reader fixture fails for disc id "{disc_id}"'))
+@given(parsers.parse('the configured optical reader cannot recover disc id "{disc_id}"'))
+@when(parsers.parse('the configured optical reader cannot recover disc id "{disc_id}"'))
+def given_djdan_reader_failure_for_disc(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.configure_djdan_fixture(fetch_id="fx-1", fail_copy_ids={copy_id})
+    acceptance_system.configure_djdan_fixture(fetch_id="fx-1", fail_disc_ids={disc_id})
 
 
 @given(
-    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
+    parsers.parse('the burn fixture confirms labeled disc id "{disc_id}" at location "{location}"')
 )
 @when(
-    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
+    parsers.parse('the burn fixture confirms labeled disc id "{disc_id}" at location "{location}"')
 )
 @then(
-    parsers.parse('the burn fixture confirms labeled copy id "{copy_id}" at location "{location}"')
+    parsers.parse('the burn fixture confirms labeled disc id "{disc_id}" at location "{location}"')
 )
-@given(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
-@when(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
-@then(parsers.parse('the operator confirms labeled copy id "{copy_id}" at location "{location}"'))
-def given_burn_fixture_confirms_labeled_copy(
+@given(parsers.parse('the operator confirms labeled disc id "{disc_id}" at location "{location}"'))
+@when(parsers.parse('the operator confirms labeled disc id "{disc_id}" at location "{location}"'))
+@then(parsers.parse('the operator confirms labeled disc id "{disc_id}" at location "{location}"'))
+def given_burn_fixture_confirms_labeled_disc(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
     location: str,
 ) -> None:
-    acceptance_system.confirm_djdan_burn_copy(copy_id, location=location)
+    acceptance_system.confirm_djdan_burn_disc(disc_id, location=location)
 
 
-@given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
-@when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is still available'))
-@given(parsers.parse('unlabeled copy id "{copy_id}" is still available'))
-@when(parsers.parse('unlabeled copy id "{copy_id}" is still available'))
-def given_burn_fixture_says_unlabeled_copy_is_available(
+@given(parsers.parse('the burn fixture says unlabeled disc id "{disc_id}" is still available'))
+@when(parsers.parse('the burn fixture says unlabeled disc id "{disc_id}" is still available'))
+@given(parsers.parse('unlabeled disc id "{disc_id}" is still available'))
+@when(parsers.parse('unlabeled disc id "{disc_id}" is still available'))
+def given_burn_fixture_says_unlabeled_disc_is_available(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.set_djdan_burn_copy_available(copy_id, available=True)
+    acceptance_system.set_djdan_burn_disc_available(disc_id, available=True)
 
 
-@given(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
-@when(parsers.parse('the burn fixture says unlabeled copy id "{copy_id}" is unavailable'))
-@given(parsers.parse('unlabeled copy id "{copy_id}" is unavailable'))
-@when(parsers.parse('unlabeled copy id "{copy_id}" is unavailable'))
-def given_burn_fixture_says_unlabeled_copy_is_unavailable(
+@given(parsers.parse('the burn fixture says unlabeled disc id "{disc_id}" is unavailable'))
+@when(parsers.parse('the burn fixture says unlabeled disc id "{disc_id}" is unavailable'))
+@given(parsers.parse('unlabeled disc id "{disc_id}" is unavailable'))
+@when(parsers.parse('unlabeled disc id "{disc_id}" is unavailable'))
+def given_burn_fixture_says_unlabeled_disc_is_unavailable(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.set_djdan_burn_copy_available(copy_id, available=False)
+    acceptance_system.set_djdan_burn_disc_available(disc_id, available=False)
 
 
-@given(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
-@when(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
-@then(parsers.parse('the burn fixture fails while burning copy id "{copy_id}"'))
-@given(parsers.parse('burning copy id "{copy_id}" fails'))
-@when(parsers.parse('burning copy id "{copy_id}" fails'))
-@then(parsers.parse('burning copy id "{copy_id}" fails'))
-def given_burn_fixture_fails_while_burning_copy(
+@given(parsers.parse('the burn fixture fails while burning disc id "{disc_id}"'))
+@when(parsers.parse('the burn fixture fails while burning disc id "{disc_id}"'))
+@then(parsers.parse('the burn fixture fails while burning disc id "{disc_id}"'))
+@given(parsers.parse('burning disc id "{disc_id}" fails'))
+@when(parsers.parse('burning disc id "{disc_id}" fails'))
+@then(parsers.parse('burning disc id "{disc_id}" fails'))
+def given_burn_fixture_fails_while_burning_disc(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.fail_djdan_burn_copy(copy_id)
+    acceptance_system.fail_djdan_burn_disc(disc_id)
 
 
-@given(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
-@when(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
-@then(parsers.parse('the burn fixture fails while verifying burned media for copy id "{copy_id}"'))
-@given(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
-@when(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
-@then(parsers.parse('burned-media verification fails for copy id "{copy_id}"'))
+@given(parsers.parse('the burn fixture fails while verifying burned media for disc id "{disc_id}"'))
+@when(parsers.parse('the burn fixture fails while verifying burned media for disc id "{disc_id}"'))
+@then(parsers.parse('the burn fixture fails while verifying burned media for disc id "{disc_id}"'))
+@given(parsers.parse('burned-media verification fails for disc id "{disc_id}"'))
+@when(parsers.parse('burned-media verification fails for disc id "{disc_id}"'))
+@then(parsers.parse('burned-media verification fails for disc id "{disc_id}"'))
 def given_burn_fixture_fails_while_verifying_burned_media(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.fail_djdan_burn_copy_verification(copy_id)
+    acceptance_system.fail_djdan_burn_disc_verification(disc_id)
 
 
-@given(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
-@when(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
-@then(parsers.parse('burned-media verification fails once for copy id "{copy_id}"'))
+@given(parsers.parse('burned-media verification fails once for disc id "{disc_id}"'))
+@when(parsers.parse('burned-media verification fails once for disc id "{disc_id}"'))
+@then(parsers.parse('burned-media verification fails once for disc id "{disc_id}"'))
 def given_burn_fixture_fails_once_while_verifying_burned_media(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    acceptance_system.fail_djdan_burn_copy_verification_once(copy_id)
+    acceptance_system.fail_djdan_burn_disc_verification_once(disc_id)
 
 
 @when("the burn fixture clears all burn failures")
@@ -1417,14 +1405,14 @@ def given_candidate_covers_collection(
     acceptance_context.tracked_collection_id = collection_id
 
 
-@given(parsers.parse('copy "{copy_id}" already exists'))
-def given_copy_already_exists(
+@given(parsers.parse('disc "{disc_id}" already exists'))
+def given_disc_already_exists(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
     _ensure_candidate_fixture(acceptance_system, IMAGE_ID)
     acceptance_system.planning.finalize_image(IMAGE_ID)
-    acceptance_system.copies.register("20260420T040001Z", "Shelf B1", copy_id=copy_id)
+    acceptance_system.discs.register("20260420T040001Z", "Shelf B1", disc_id=disc_id)
 
 
 @given(parsers.parse('candidate "{candidate_id}" is finalized'))
@@ -1444,33 +1432,33 @@ def given_fixture_finalized_image_exists_for_photos(
     acceptance_system.seed_finalized_image(SECOND_IMAGE_ID, force_ready=True)
 
 
-@given(parsers.parse('image rebuild session "{session_id}" exists for image "{image_id}"'))
-def given_image_rebuild_session_exists_for_image(
+@given(parsers.parse('disc rebuild archive restore "{restore_id}" exists for image "{image_id}"'))
+def given_disc_rebuild_restore_exists_for_image(
     acceptance_system: AcceptanceSystem,
-    session_id: str,
+    restore_id: str,
     image_id: str,
 ) -> None:
-    acceptance_system.ensure_image_rebuild_session(session_id=session_id, image_id=image_id)
+    acceptance_system.ensure_disc_rebuild_restore(restore_id=restore_id, image_id=image_id)
 
 
-@given(parsers.parse('recovery session "{session_id}" restore remains pending'))
-def given_recovery_session_restore_remains_pending(
+@given(parsers.parse('archive restore "{restore_id}" restore remains pending'))
+def given_archive_restore_remains_pending(
     acceptance_system: AcceptanceSystem,
-    session_id: str,
+    restore_id: str,
 ) -> None:
     now = datetime.now(UTC)
     now_text = now.isoformat(timespec="seconds").replace("+00:00", "Z")
     future_text = (now + timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
     with acceptance_system.state.lock:
-        record = acceptance_system.state.recovery_sessions_by_id.get(session_id)
-        assert record is not None, f"recovery session not found: {session_id}"
-        record.state = RecoverySessionState.RESTORE_REQUESTED
-        record.restore_requested_at = record.restore_requested_at or now_text
-        record.restore_ready_at = future_text
-        record.restore_next_poll_at = future_text
-        record.restore_expires_at = None
+        record = acceptance_system.state.archive_restores_by_id.get(restore_id)
+        assert record is not None, f"archive restore not found: {restore_id}"
+        record.state = ArchiveRestoreState.REQUESTED
+        record.requested_at = record.requested_at or now_text
+        record.ready_at = future_text
+        record.next_poll_at = future_text
+        record.expires_at = None
         record.latest_message = (
-            "Archive restore requested; wait until the session is ready before burning "
+            "Archive restore requested; wait until the restore is ready before burning "
             "replacement media."
         )
 
@@ -1507,8 +1495,8 @@ def given_collection_contains_file(
     assert path.lstrip("/") in set(_search_collection_file_paths(acceptance_system, collection_id))
 
 
-@given(parsers.parse('collection "{collection_id}" keeps only path "{path}" and is archived'))
-def given_collection_keeps_only_path_and_is_archived(
+@given(parsers.parse('collection "{collection_id}" keeps only disc-covered path "{path}"'))
+def given_collection_keeps_only_disc_coverage_path(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
     path: str,
@@ -1517,17 +1505,15 @@ def given_collection_keeps_only_path_and_is_archived(
         collection_id,
         [path],
         hot=False,
-        archived=True,
     )
 
 
 @given(
     parsers.parse(
-        'collection "{collection_id}" keeps only finalized image '
-        '"{image_id}" coverage and is archived'
+        'collection "{collection_id}" keeps only finalized image "{image_id}" disc coverage'
     )
 )
-def given_collection_keeps_only_finalized_image_coverage_and_is_archived(
+def given_collection_keeps_only_finalized_image_disc_coverage(
     acceptance_system: AcceptanceSystem,
     collection_id: str,
     image_id: str,
@@ -1536,7 +1522,6 @@ def given_collection_keeps_only_finalized_image_coverage_and_is_archived(
         collection_id,
         image_id,
         hot=False,
-        archived=True,
     )
 
 
@@ -1748,13 +1733,13 @@ def when_client_uploads_every_required_collection_file(
     payload = response.json()
     upload_collection_id = str(payload["collection_id"])
     normalized_collection_id = normalize_collection_id(collection_id)
-    failure_configured = acceptance_system.collection_glacier_failure_configured(
+    failure_configured = acceptance_system.collection_archive_failure_configured(
         normalized_collection_id
     )
     if failure_configured:
-        acceptance_system.fail_collection_glacier_upload(
+        acceptance_system.fail_collection_archive_upload(
             upload_collection_id,
-            error=acceptance_system.collection_glacier_failure(normalized_collection_id),
+            error=acceptance_system.collection_archive_failure(normalized_collection_id),
         )
     for file_payload in payload["files"]:
         _upload_collection_file(
@@ -1764,7 +1749,7 @@ def when_client_uploads_every_required_collection_file(
             path=str(file_payload["path"]),
         )
     if failure_configured:
-        acceptance_system.wait_for_collection_glacier_state(upload_collection_id, "retrying")
+        acceptance_system.wait_for_collection_archive_state(upload_collection_id, "retrying")
         payload = acceptance_system.wait_for_collection_upload_state(
             upload_collection_id, "archiving"
         )
@@ -1777,7 +1762,7 @@ def when_client_uploads_every_required_collection_file(
         assert refresh.status_code == 200, refresh.text
         payload = refresh.json()
     if payload.get("state") == "archiving":
-        acceptance_system.defer_collection_glacier_archiving(upload_collection_id)
+        acceptance_system.defer_collection_archive_archiving(upload_collection_id)
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
@@ -1796,13 +1781,13 @@ def when_client_waits_for_collection_upload_state(
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
-@when(parsers.parse('the client retries collection Glacier archiving for "{collection_id}"'))
-def when_client_retries_collection_glacier_archiving(
+@when(parsers.parse('the client retries collection archive upload for "{collection_id}"'))
+def when_client_retries_collection_archive_archiving(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    acceptance_system.clear_collection_glacier_upload_failure(
+    acceptance_system.clear_collection_archive_upload_failure(
         _collection_id_for_context(acceptance_context, collection_id)
     )
     response = _start_collection_upload(acceptance_system, collection_id)
@@ -1815,14 +1800,14 @@ def when_client_retries_collection_glacier_archiving(
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
 
-@when(parsers.parse('collection "{collection_id}" starts Glacier archiving'))
-def when_collection_starts_glacier_archiving(
+@when(parsers.parse('collection "{collection_id}" starts Archive archiving'))
+def when_collection_starts_archive_archiving(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
-    acceptance_system.start_collection_glacier_archiving(collection_id)
-    acceptance_system.wait_for_collection_glacier_state(collection_id, "retrying")
+    acceptance_system.start_collection_archive_archiving(collection_id)
+    acceptance_system.wait_for_collection_archive_state(collection_id, "retrying")
     payload = acceptance_system.wait_for_collection_upload_state(collection_id, "archiving")
     _set_response(acceptance_context, httpx.Response(200, json=payload))
 
@@ -1907,14 +1892,14 @@ def when_client_starts_fetch_for_djdan(
     response = acceptance_system.request(
         "POST",
         f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
-        json_body={"cloud": False},
+        json_body={"archive": False},
     )
     _set_response(acceptance_context, response)
 
 
-@given(parsers.parse('the client starts fetch "{fetch_id}" for cloud'))
-@when(parsers.parse('the client starts fetch "{fetch_id}" for cloud'))
-def when_client_starts_fetch_for_cloud(
+@given(parsers.parse('the client starts fetch "{fetch_id}" for archive'))
+@when(parsers.parse('the client starts fetch "{fetch_id}" for archive'))
+def when_client_starts_fetch_for_archive(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     fetch_id: str,
@@ -1922,18 +1907,18 @@ def when_client_starts_fetch_for_cloud(
     response = acceptance_system.request(
         "POST",
         f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
-        json_body={"cloud": True},
+        json_body={"archive": True},
     )
     _set_response(acceptance_context, response)
 
 
-@given(parsers.parse('the client posts to "{path}" with id "{copy_id}" and location "{location}"'))
-@when(parsers.parse('the client posts to "{path}" with id "{copy_id}" and location "{location}"'))
-def when_client_registers_copy(
+@given(parsers.parse('the client posts to "{path}" with id "{disc_id}" and location "{location}"'))
+@when(parsers.parse('the client posts to "{path}" with id "{disc_id}" and location "{location}"'))
+def when_client_registers_disc(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
-    copy_id: str,
+    disc_id: str,
     location: str,
 ) -> None:
     if acceptance_context.tracked_collection_id is not None:
@@ -1945,7 +1930,7 @@ def when_client_registers_copy(
     response = acceptance_system.request(
         "POST",
         path,
-        json_body={"copy_id": copy_id, "location": location},
+        json_body={"disc_id": disc_id, "location": location},
     )
     _set_response(acceptance_context, response)
     if acceptance_context.tracked_collection_id is not None:
@@ -1958,7 +1943,7 @@ def when_client_registers_copy(
 
 @given(parsers.parse('the client posts to "{path}" with location "{location}"'))
 @when(parsers.parse('the client posts to "{path}" with location "{location}"'))
-def when_client_registers_generated_copy(
+def when_client_registers_generated_disc(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
@@ -1990,7 +1975,7 @@ def when_client_registers_generated_copy(
         'and verification_state "{verification_state}"'
     )
 )
-def when_client_patches_copy(
+def when_client_patches_disc(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
@@ -2012,7 +1997,7 @@ def when_client_patches_copy(
 
 @given(parsers.parse('the client patches "{path}" with state "{state}"'))
 @when(parsers.parse('the client patches "{path}" with state "{state}"'))
-def when_client_patches_copy_state_only(
+def when_client_patches_disc_state_only(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
@@ -2034,7 +2019,7 @@ def when_client_patches_copy_state_only(
         'and verification_state "{verification_state}"'
     )
 )
-def when_client_patches_copy_state_and_verification(
+def when_client_patches_disc_state_and_verification(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     path: str,
@@ -2092,31 +2077,31 @@ def given_captured_webhook_sink_times_out_event(
     )
 
 
-@given(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
-@when(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
-@then(parsers.parse('the client waits for collection "{collection_id}" glacier state "{state}"'))
-def when_the_client_waits_for_collection_glacier_state(
+@given(parsers.parse('the client waits for collection "{collection_id}" archive state "{state}"'))
+@when(parsers.parse('the client waits for collection "{collection_id}" archive state "{state}"'))
+@then(parsers.parse('the client waits for collection "{collection_id}" archive state "{state}"'))
+def when_the_client_waits_for_collection_archive_state(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
-    acceptance_system.wait_for_collection_glacier_state(
+    acceptance_system.wait_for_collection_archive_state(
         _collection_id_for_context(acceptance_context, collection_id),
         state,
     )
 
 
-@given(parsers.parse('the client waits for recovery session "{session_id}" state "{state}"'))
-@when(parsers.parse('the client waits for recovery session "{session_id}" state "{state}"'))
-def when_the_client_waits_for_recovery_session_state(
+@given(parsers.parse('the client waits for archive restore "{restore_id}" state "{state}"'))
+@when(parsers.parse('the client waits for archive restore "{restore_id}" state "{state}"'))
+def when_the_client_waits_for_archive_restore_state(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
-    session_id: str,
+    restore_id: str,
     state: str,
 ) -> None:
-    acceptance_system.wait_for_recovery_session_state(session_id, state)
-    response = acceptance_system.request("GET", f"/v1/recovery-sessions/{session_id}")
+    acceptance_system.wait_for_archive_restore_state(restore_id, state)
+    response = acceptance_system.request("GET", f"/v1/archive-restores/{restore_id}")
     _set_response(acceptance_context, response)
 
 
@@ -2479,8 +2464,8 @@ def then_collection_hot_bytes_equal_bytes(
     assert payload.hot_bytes == payload.bytes
 
 
-@then(parsers.parse('collection "{collection_id}" has archived_bytes equal to 0'))
-def then_collection_archived_bytes_equal_zero(
+@then(parsers.parse('collection "{collection_id}" has no disc coverage'))
+def then_collection_has_no_disc_coverage(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
@@ -2488,19 +2473,7 @@ def then_collection_archived_bytes_equal_zero(
     payload = acceptance_system.collections.get(
         _collection_id_for_context(acceptance_context, collection_id)
     )
-    assert payload.archived_bytes == 0
-
-
-@then(parsers.parse('collection "{collection_id}" has pending_bytes equal to bytes'))
-def then_collection_pending_bytes_equal_bytes(
-    acceptance_system: AcceptanceSystem,
-    acceptance_context: AcceptanceScenarioContext,
-    collection_id: str,
-) -> None:
-    payload = acceptance_system.collections.get(
-        _collection_id_for_context(acceptance_context, collection_id)
-    )
-    assert payload.pending_bytes == payload.bytes
+    assert payload.disc_coverage.bytes == 0
 
 
 @then(parsers.parse('collection "{collection_id}" is eligible for planning'))
@@ -2512,11 +2485,11 @@ def then_collection_is_eligible_for_planning(
     payload = acceptance_system.collections.get(
         _collection_id_for_context(acceptance_context, collection_id)
     )
-    assert payload.pending_bytes > 0
+    assert payload.disc_coverage.bytes < payload.bytes
 
 
-@then(parsers.parse('collection "{collection_id}" glacier state is "{state}"'))
-def then_collection_glacier_state_is(
+@then(parsers.parse('collection "{collection_id}" archive state is "{state}"'))
+def then_collection_archive_state_is(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
@@ -2528,7 +2501,7 @@ def then_collection_glacier_state_is(
         f"/v1/collections/{quote(expected_collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
-    assert response.json()["glacier"]["state"] == state
+    assert response.json()["archive"]["state"] == state
 
 
 @then(parsers.parse('collection "{collection_id}" manifest state is "{state}"'))
@@ -2567,14 +2540,6 @@ def then_named_collection_ots_proof_state_is(
     assert manifest["ots_state"] == state
 
 
-@then("pending_bytes equals bytes minus archived_bytes")
-def then_pending_bytes_equals_bytes_minus_archived_bytes(
-    acceptance_context: AcceptanceScenarioContext,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert payload["pending_bytes"] == payload["bytes"] - payload["archived_bytes"]
-
-
 @then("hot_bytes is between 0 and bytes")
 def then_hot_bytes_is_between_zero_and_bytes(
     acceptance_context: AcceptanceScenarioContext,
@@ -2583,65 +2548,47 @@ def then_hot_bytes_is_between_zero_and_bytes(
     assert 0 <= payload["hot_bytes"] <= payload["bytes"]
 
 
-@then("archived_bytes is between 0 and bytes")
-def then_archived_bytes_is_between_zero_and_bytes(
+@then("disc coverage bytes is between 0 and bytes")
+def then_disc_coverage_bytes_is_between_zero_and_bytes(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert 0 <= payload["archived_bytes"] <= payload["bytes"]
+    assert 0 <= payload["disc_coverage"]["bytes"] <= payload["bytes"]
 
 
-@then(parsers.parse('collection protection_state is "{state}"'))
-def then_collection_protection_state_is(
+@then(parsers.parse('collection disc redundancy state is "{state}"'))
+def then_collection_disc_redundancy_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["protection_state"] == state
+    assert payload["disc_redundancy"]["state"] == state
 
 
-@then(parsers.parse("protected_bytes is {count:d}"))
-def then_protected_bytes_is(
+@then(parsers.parse("disc redundancy bytes is {count:d}"))
+def then_disc_redundancy_bytes_is(
     acceptance_context: AcceptanceScenarioContext,
     count: int,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["protected_bytes"] == count
+    assert payload["disc_redundancy"]["bytes"] == count
 
 
-@then("protected_bytes equals bytes")
-def then_protected_bytes_equals_bytes(
+@then("disc redundancy bytes equals bytes")
+def then_disc_redundancy_bytes_equals_bytes(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["protected_bytes"] == payload["bytes"]
+    assert payload["disc_redundancy"]["bytes"] == payload["bytes"]
 
 
-@then(parsers.parse('collection verified_physical recovery state is "{state}"'))
-def then_collection_verified_physical_recovery_state_is(
-    acceptance_context: AcceptanceScenarioContext,
-    state: str,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert payload["recovery"]["verified_physical"]["state"] == state, payload["recovery"]
-
-
-@then(parsers.parse('collection Glacier recovery state is "{state}"'))
-def then_collection_glacier_recovery_state_is(
+@then(parsers.parse('collection archive state is "{state}"'))
+def then_response_collection_archive_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["recovery"]["glacier"]["state"] == state, payload["recovery"]
-
-
-@then(parsers.parse('collection glacier state is "{state}"'))
-def then_response_collection_glacier_state_is(
-    acceptance_context: AcceptanceScenarioContext,
-    state: str,
-) -> None:
-    payload = _json_payload(_require_response(acceptance_context))
-    assert payload["glacier"]["state"] == state
+    assert payload["archive"]["state"] == state
 
 
 @then(parsers.parse('collection manifest state is "{state}"'))
@@ -2685,15 +2632,15 @@ def then_collection_image_coverage_includes_image(
     assert image_id in ids
 
 
-@then(parsers.parse('collection image coverage for image "{image_id}" includes copy "{copy_id}"'))
-def then_collection_image_coverage_for_image_includes_copy(
+@then(parsers.parse('collection image coverage for image "{image_id}" includes disc "{disc_id}"'))
+def then_collection_image_coverage_for_image_includes_disc(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     image = next(image for image in payload["image_coverage"] if image["id"] == image_id)
-    assert copy_id in [copy["id"] for copy in image["copies"]]
+    assert disc_id in [disc["disc_id"] for disc in image["discs"]]
 
 
 @then(parsers.parse('collection image coverage for image "{image_id}" includes path "{path}"'))
@@ -2799,12 +2746,12 @@ def then_response_content_type_is(
     assert content_type in response.headers.get("content-type", "")
 
 
-@then("each file result contains available copies if archived")
-def then_each_file_result_contains_copies_if_archived(
+@then("each file result contains disc coverage")
+def then_each_file_result_contains_disc_coverage(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert all("archived" in result for result in payload["files"])
+    assert all("disc_coverage" in result for result in payload["files"])
 
 
 @then("every returned target is valid input for fetch creation")
@@ -2931,20 +2878,20 @@ def when_client_gets_manifest_for_returned_fetch(
     _set_response(acceptance_context, response)
 
 
-@then(parsers.parse('fetch manifest entry "{entry_id}" has at least one copy with a disc_path'))
-def then_fetch_manifest_entry_has_copies_with_disc_path(
+@then(parsers.parse('fetch manifest entry "{entry_id}" has at least one disc with a disc_path'))
+def then_fetch_manifest_entry_has_discs_with_disc_path(
     acceptance_context: AcceptanceScenarioContext,
     entry_id: str,
 ) -> None:
     entry = _response_manifest_entry(acceptance_context, entry_id)
-    copies: list[object] = []
+    discs: list[object] = []
     for part in entry.get("parts", []):
-        copies.extend(part.get("copies", []))  # type: ignore[arg-type]
-    if not copies:
-        copies = list(entry.get("copies", []))
-    assert copies, f"manifest entry {entry_id} has no copies"
-    assert all(c.get("disc_path") for c in copies), (  # type: ignore[union-attr]
-        f"manifest entry {entry_id} has copies with missing disc_path"
+        discs.extend(part.get("discs", []))  # type: ignore[arg-type]
+    if not discs:
+        discs = list(entry.get("discs", []))
+    assert discs, f"manifest entry {entry_id} has no discs"
+    assert all(c.get("disc_path") for c in discs), (  # type: ignore[union-attr]
+        f"manifest entry {entry_id} has discs with missing disc_path"
     )
 
 
@@ -3167,16 +3114,15 @@ def _collection_archive_object_path(
         f"/v1/collections/{quote(collection_id, safe='/')}",
     )
     assert response.status_code == 200, response.text
-    return str(response.json()["glacier"]["object_path"])
+    return str(response.json()["archive"]["object_path"])
 
 
 @then(
     parsers.parse(
-        "the {storage} bucket contains collection Glacier archive package for collection "
-        '"{collection_id}"'
+        'the {storage} bucket contains collection archive package for collection "{collection_id}"'
     )
 )
-def then_bucket_contains_collection_glacier_archive_package(
+def then_bucket_contains_collection_archive_package(
     acceptance_system: AcceptanceSystem,
     storage: str,
     collection_id: str,
@@ -3189,11 +3135,11 @@ def then_bucket_contains_collection_glacier_archive_package(
 
 @then(
     parsers.parse(
-        "the {storage} bucket does not contain collection Glacier archive package for collection "
+        "the {storage} bucket does not contain collection archive package for collection "
         '"{collection_id}"'
     )
 )
-def then_bucket_does_not_contain_collection_glacier_archive_package(
+def then_bucket_does_not_contain_collection_archive_package(
     acceptance_system: AcceptanceSystem,
     storage: str,
     collection_id: str,
@@ -3227,11 +3173,11 @@ def then_bucket_object_for_collection_records_archive_metadata(
 
 @then(
     parsers.parse(
-        "the {credentials} credentials cannot read collection Glacier archive package "
+        "the {credentials} credentials cannot read collection archive package "
         'for collection "{collection_id}" from the {storage} bucket'
     )
 )
-def then_credentials_cannot_read_collection_glacier_archive_package(
+def then_credentials_cannot_read_collection_archive_package(
     acceptance_system: AcceptanceSystem,
     credentials: str,
     collection_id: str,
@@ -3461,9 +3407,9 @@ def then_response_plan_candidates_contain_only(
 @then(
     'each finalized image contains "id", "filename", "finalized_at", "bytes", '
     '"target_bytes", "fill", "files", "collections", "collection_ids", "iso_ready", '
-    '"physical_protection_state", "physical_copies_required", '
-    '"physical_copies_registered", "physical_copies_verified", and '
-    '"physical_copies_missing"'
+    '"disc_redundancy_state", "discs_required", '
+    '"discs_registered", "discs_verified", and '
+    '"discs_missing"'
 )
 def then_each_finalized_image_contains_expected_fields(
     acceptance_context: AcceptanceScenarioContext,
@@ -3480,15 +3426,13 @@ def then_each_finalized_image_contains_expected_fields(
         "collections",
         "collection_ids",
         "iso_ready",
-        "physical_protection_state",
-        "physical_copies_required",
-        "physical_copies_registered",
-        "physical_copies_verified",
-        "physical_copies_missing",
+        "disc_redundancy_state",
+        "discs_required",
+        "discs_registered",
+        "discs_verified",
+        "discs_missing",
     }
     assert all(expected.issubset(image) for image in payload["images"])
-    assert all("protection_state" not in image for image in payload["images"])
-    assert all("glacier" not in image for image in payload["images"])
 
 
 @then("finalized images are returned newest-first")
@@ -3558,45 +3502,45 @@ def then_response_finalized_images_contain_only(
     assert [image["id"] for image in payload["images"]] == [image_id]
 
 
-@then("each finalized image has physical_copies_registered greater than 0")
-def then_each_finalized_image_has_physical_copies_registered(
+@then("each finalized image has discs_registered greater than 0")
+def then_each_finalized_image_has_discs_registered(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert payload["images"]
-    assert all(image["physical_copies_registered"] > 0 for image in payload["images"])
+    assert all(image["discs_registered"] > 0 for image in payload["images"])
 
 
-@then(parsers.parse('the response image physical_protection_state is "{state}"'))
-def then_response_image_physical_protection_state_is(
+@then(parsers.parse('the response image disc_redundancy_state is "{state}"'))
+def then_response_disc_redundancy_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["physical_protection_state"] == state
+    assert payload["disc_redundancy_state"] == state
 
 
-@then(parsers.parse('the response collection glacier object_path is under "{prefix}"'))
-def then_response_collection_glacier_object_path_is_under(
+@then(parsers.parse('the response collection archive object_path is under "{prefix}"'))
+def then_response_collection_archive_object_path_is_under(
     acceptance_context: AcceptanceScenarioContext,
     prefix: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    object_path = str(payload["glacier"]["object_path"])
+    object_path = str(payload["archive"]["object_path"])
     assert object_path.startswith(prefix)
 
 
-@then(parsers.parse('the response recovery session id is "{session_id}"'))
-def then_response_recovery_session_id_is(
+@then(parsers.parse('the response archive restore id is "{restore_id}"'))
+def then_response_archive_restore_id_is(
     acceptance_context: AcceptanceScenarioContext,
-    session_id: str,
+    restore_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["id"] == session_id
+    assert payload["id"] == restore_id
 
 
-@then(parsers.parse('the response recovery session state is "{state}"'))
-def then_response_recovery_session_state_is(
+@then(parsers.parse('the response archive restore state is "{state}"'))
+def then_response_archive_restore_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
@@ -3604,27 +3548,27 @@ def then_response_recovery_session_state_is(
     assert payload["state"] == state
 
 
-@then(parsers.parse('the response recovery session type is "{session_type}"'))
-def then_response_recovery_session_type_is(
+@then(parsers.parse('the response archive restore type is "{restore_type}"'))
+def then_response_archive_restore_type_is(
     acceptance_context: AcceptanceScenarioContext,
-    session_type: str,
+    restore_type: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert payload["type"] == session_type
+    assert payload["type"] == restore_type
 
 
-@then(parsers.parse('the response cloud-fetch sessions contain recovery session "{session_id}"'))
-def then_response_cloud_fetch_sessions_contain_recovery_session(
+@then(parsers.parse('the response archive restores contain archive restore "{restore_id}"'))
+def then_response_archive_restores_contain_archive_restore(
     acceptance_context: AcceptanceScenarioContext,
-    session_id: str,
+    restore_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    sessions_payload = payload.get("cloud_fetch", payload)
-    assert session_id in {session["id"] for session in sessions_payload["sessions"]}
+    restores_payload = payload.get("archive_restores", payload)
+    assert restore_id in {restore["id"] for restore in restores_payload["restores"]}
 
 
-@then(parsers.parse('the response recovery session list terminal is "{terminal}"'))
-def then_response_recovery_session_list_terminal_is(
+@then(parsers.parse('the response archive restore list terminal is "{terminal}"'))
+def then_response_archive_restore_list_terminal_is(
     acceptance_context: AcceptanceScenarioContext,
     terminal: str,
 ) -> None:
@@ -3632,17 +3576,17 @@ def then_response_recovery_session_list_terminal_is(
     assert payload["terminal"] == terminal
 
 
-@then(parsers.parse('the response recovery session list contains only "{session_id}"'))
-def then_response_recovery_session_list_contains_only(
+@then(parsers.parse('the response archive restore list contains only "{restore_id}"'))
+def then_response_archive_restore_list_contains_only(
     acceptance_context: AcceptanceScenarioContext,
-    session_id: str,
+    restore_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert [session["id"] for session in payload["sessions"]] == [session_id]
+    assert [restore["id"] for restore in payload["restores"]] == [restore_id]
 
 
-@then(parsers.parse('the response recovery session images contain only "{image_id}"'))
-def then_response_recovery_session_images_contain_only(
+@then(parsers.parse('the response archive restore images contain only "{image_id}"'))
+def then_response_archive_restore_images_contain_only(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
 ) -> None:
@@ -3650,16 +3594,16 @@ def then_response_recovery_session_images_contain_only(
     assert [image["id"] for image in payload["images"]] == [image_id]
 
 
-@then("the response recovery session images are empty")
-def then_response_recovery_session_images_are_empty(
+@then("the response archive restore images are empty")
+def then_response_archive_restore_images_are_empty(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert payload["images"] == []
 
 
-@then(parsers.parse('the response recovery session collections contain only "{collection_id}"'))
-def then_response_recovery_session_collections_contain_only(
+@then(parsers.parse('the response archive restore collections contain only "{collection_id}"'))
+def then_response_archive_restore_collections_contain_only(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
@@ -3667,8 +3611,8 @@ def then_response_recovery_session_collections_contain_only(
     assert [collection["id"] for collection in payload["collections"]] == [collection_id]
 
 
-@then(parsers.parse('the response recovery session collections include "{collection_id}"'))
-def then_response_recovery_session_collections_include(
+@then(parsers.parse('the response archive restore collections include "{collection_id}"'))
+def then_response_archive_restore_collections_include(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
@@ -3678,26 +3622,26 @@ def then_response_recovery_session_collections_include(
 
 @then(
     parsers.parse(
-        'the response recovery session collection "{collection_id}" glacier state is "{state}"'
+        'the response archive restore collection "{collection_id}" archive state is "{state}"'
     )
 )
-def then_response_recovery_session_collection_glacier_state_is(
+def then_response_archive_restore_collection_archive_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    assert collection["glacier"]["state"] == state
+    assert collection["archive"]["state"] == state
 
 
 @then(
     parsers.parse(
-        'the response recovery session collection "{collection_id}" '
+        'the response archive restore collection "{collection_id}" '
         'collection manifest state is "{state}"'
     )
 )
-def then_response_recovery_session_collection_manifest_state_is(
+def then_response_archive_restore_collection_manifest_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
@@ -3711,10 +3655,10 @@ def then_response_recovery_session_collection_manifest_state_is(
 
 @then(
     parsers.parse(
-        'the response recovery session collection "{collection_id}" OTS proof state is "{state}"'
+        'the response archive restore collection "{collection_id}" OTS proof state is "{state}"'
     )
 )
-def then_response_recovery_session_collection_ots_state_is(
+def then_response_archive_restore_collection_ots_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
@@ -3726,8 +3670,8 @@ def then_response_recovery_session_collection_ots_state_is(
     assert manifest["ots_state"] == state
 
 
-@then(parsers.parse('the response recovery session image "{image_id}" rebuild_state is "{state}"'))
-def then_response_recovery_session_image_rebuild_state_is(
+@then(parsers.parse('the response archive restore image "{image_id}" rebuild_state is "{state}"'))
+def then_response_archive_restore_disc_rebuild_state_is(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
     state: str,
@@ -3737,8 +3681,8 @@ def then_response_recovery_session_image_rebuild_state_is(
     assert image["rebuild_state"] == state
 
 
-@then(parsers.parse('the response recovery session latest_message contains "{text}"'))
-def then_response_recovery_session_latest_message_contains(
+@then(parsers.parse('the response archive restore latest_message contains "{text}"'))
+def then_response_archive_restore_latest_message_contains(
     acceptance_context: AcceptanceScenarioContext,
     text: str,
 ) -> None:
@@ -3746,8 +3690,8 @@ def then_response_recovery_session_latest_message_contains(
     assert text in str(payload["latest_message"])
 
 
-@then(parsers.parse('the response recovery session archive_verification is "{state}"'))
-def then_response_recovery_session_archive_verification_is(
+@then(parsers.parse('the response archive restore archive_verification is "{state}"'))
+def then_response_archive_restore_archive_verification_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
@@ -3755,8 +3699,8 @@ def then_response_recovery_session_archive_verification_is(
     assert payload["progress"]["archive_verification"] == state
 
 
-@then(parsers.parse('the response recovery session extraction is "{state}"'))
-def then_response_recovery_session_extraction_is(
+@then(parsers.parse('the response archive restore extraction is "{state}"'))
+def then_response_archive_restore_extraction_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
@@ -3764,8 +3708,8 @@ def then_response_recovery_session_extraction_is(
     assert payload["progress"]["extraction"] == state
 
 
-@then(parsers.parse('the response recovery session materialization is "{state}"'))
-def then_response_recovery_session_materialization_is(
+@then(parsers.parse('the response archive restore materialization is "{state}"'))
+def then_response_archive_restore_materialization_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
@@ -3883,24 +3827,24 @@ def then_captured_webhook_attempt_integer_field_equals(
     assert int(attempt[field]) == value
 
 
-@then("the response Glacier totals measured_storage_bytes is greater than 0")
-def then_response_glacier_totals_measured_storage_bytes_is_greater_than_zero(
+@then("the response Archive totals measured_storage_bytes is greater than 0")
+def then_response_archive_totals_measured_storage_bytes_is_greater_than_zero(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert int(payload["totals"]["measured_storage_bytes"]) > 0
 
 
-@then("the response Glacier totals uploaded_collections is greater than 0")
-def then_response_glacier_totals_uploaded_collections_is_greater_than_zero(
+@then("the response Archive totals uploaded_collections is greater than 0")
+def then_response_archive_totals_uploaded_collections_is_greater_than_zero(
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     assert int(payload["totals"]["uploaded_collections"]) > 0
 
 
-@then(parsers.parse('the response Glacier images contain only "{image_id}"'))
-def then_response_glacier_images_contain_only(
+@then(parsers.parse('the response Archive images contain only "{image_id}"'))
+def then_response_archive_images_contain_only(
     acceptance_context: AcceptanceScenarioContext,
     image_id: str,
 ) -> None:
@@ -3908,23 +3852,23 @@ def then_response_glacier_images_contain_only(
     assert [image["id"] for image in payload["images"]] == [image_id]
 
 
-@then(parsers.parse('the response Glacier collection "{collection_id}" glacier state is "{state}"'))
-def then_response_glacier_collection_glacier_state_is(
+@then(parsers.parse('the response Archive collection "{collection_id}" archive state is "{state}"'))
+def then_response_archive_collection_archive_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
     collection = next(item for item in payload["collections"] if item["id"] == collection_id)
-    assert collection["glacier"]["state"] == state
+    assert collection["archive"]["state"] == state
 
 
 @then(
     parsers.parse(
-        'the response Glacier collection "{collection_id}" measured_storage_bytes is greater than 0'
+        'the response Archive collection "{collection_id}" measured_storage_bytes is greater than 0'
     )
 )
-def then_response_glacier_collection_measured_storage_bytes_is_greater_than_zero(
+def then_response_archive_collection_measured_storage_bytes_is_greater_than_zero(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
@@ -3935,10 +3879,10 @@ def then_response_glacier_collection_measured_storage_bytes_is_greater_than_zero
 
 @then(
     parsers.parse(
-        'the response Glacier collection "{collection_id}" collection manifest state is "{state}"'
+        'the response Archive collection "{collection_id}" collection manifest state is "{state}"'
     )
 )
-def then_response_glacier_collection_manifest_state_is(
+def then_response_archive_collection_manifest_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
@@ -3951,9 +3895,9 @@ def then_response_glacier_collection_manifest_state_is(
 
 
 @then(
-    parsers.parse('the response Glacier collection "{collection_id}" OTS proof state is "{state}"')
+    parsers.parse('the response Archive collection "{collection_id}" OTS proof state is "{state}"')
 )
-def then_response_glacier_collection_ots_state_is(
+def then_response_archive_collection_ots_state_is(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
     state: str,
@@ -3965,8 +3909,8 @@ def then_response_glacier_collection_ots_state_is(
     assert manifest["ots_state"] == state
 
 
-@then(parsers.parse('the response Glacier collections contain only "{collection_id}"'))
-def then_response_glacier_collections_contain_only(
+@then(parsers.parse('the response Archive collections contain only "{collection_id}"'))
+def then_response_archive_collections_contain_only(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
@@ -4002,72 +3946,72 @@ def then_response_body_is_binary_iso_content(
     assert response.content
 
 
-@then(parsers.parse('the response contains copy id "{copy_id}"'))
-def then_response_contains_copy_id(
+@then(parsers.parse('the response contains disc id "{disc_id}"'))
+def then_response_contains_disc_id(
     acceptance_context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    assert _response_copy_payload(acceptance_context)["id"] == copy_id
+    assert _response_disc_payload(acceptance_context)["disc_id"] == disc_id
 
 
-@then(parsers.re(r'the response copy contains "(?P<first>[^"]+)"(?P<rest>.*)'))
-def then_response_copy_contains_fields(
+@then(parsers.re(r'the response disc contains "(?P<first>[^"]+)"(?P<rest>.*)'))
+def then_response_disc_contains_fields(
     acceptance_context: AcceptanceScenarioContext,
     first: str,
     rest: str,
 ) -> None:
-    assert set([first, *_quoted_values(rest)]).issubset(_response_copy_payload(acceptance_context))
+    assert set([first, *_quoted_values(rest)]).issubset(_response_disc_payload(acceptance_context))
 
 
-@then(parsers.parse('the response copy state is "{state}"'))
-def then_response_copy_state_is(
+@then(parsers.parse('the response disc state is "{state}"'))
+def then_response_disc_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
-    assert _response_copy_payload(acceptance_context)["state"] == state
+    assert _response_disc_payload(acceptance_context)["state"] == state
 
 
-@then(parsers.parse('the response copy verification_state is "{state}"'))
-def then_response_copy_verification_state_is(
+@then(parsers.parse('the response disc verification_state is "{state}"'))
+def then_response_disc_verification_state_is(
     acceptance_context: AcceptanceScenarioContext,
     state: str,
 ) -> None:
-    assert _response_copy_payload(acceptance_context)["verification_state"] == state
+    assert _response_disc_payload(acceptance_context)["verification_state"] == state
 
 
-@then(parsers.parse('the response copies contain only "{first_copy_id}" and "{second_copy_id}"'))
-def then_response_copies_contain_only(
+@then(parsers.parse('the response discs contain only "{first_disc_id}" and "{second_disc_id}"'))
+def then_response_discs_contain_only(
     acceptance_context: AcceptanceScenarioContext,
-    first_copy_id: str,
-    second_copy_id: str,
+    first_disc_id: str,
+    second_disc_id: str,
 ) -> None:
     payload = _json_payload(_require_response(acceptance_context))
-    assert [copy["id"] for copy in payload["copies"]] == [first_copy_id, second_copy_id]
+    assert [disc["disc_id"] for disc in payload["discs"]] == [first_disc_id, second_disc_id]
 
 
 @then(
     parsers.re(
-        r"the response copy history contains events "
+        r"the response disc history contains events "
         r'"(?P<first>[^"]+)"(?P<rest>.*) in order'
     )
 )
-def then_response_copy_history_contains_events(
+def then_response_disc_history_contains_events(
     acceptance_context: AcceptanceScenarioContext,
     first: str,
     rest: str,
 ) -> None:
-    history = _response_copy_payload(acceptance_context)["history"]
+    history = _response_disc_payload(acceptance_context)["history"]
     assert [entry["event"] for entry in history] == [first, *_quoted_values(rest)]
 
 
 @then(
     parsers.parse(
-        'the response copy history entry {index:d} has event "{event}", '
+        'the response disc history entry {index:d} has event "{event}", '
         'state "{state}", verification_state "{verification_state}", '
         'and location "{location}"'
     )
 )
-def then_response_copy_history_entry_matches(
+def then_response_disc_history_entry_matches(
     acceptance_context: AcceptanceScenarioContext,
     index: int,
     event: str,
@@ -4075,7 +4019,7 @@ def then_response_copy_history_entry_matches(
     verification_state: str,
     location: str,
 ) -> None:
-    history = _response_copy_payload(acceptance_context)["history"]
+    history = _response_disc_payload(acceptance_context)["history"]
     assert history[index - 1] == {
         "at": history[index - 1]["at"],
         "event": event,
@@ -4087,37 +4031,37 @@ def then_response_copy_history_entry_matches(
 
 @then(
     parsers.re(
-        r'listed copy "(?P<copy_id>[^"]+)" history contains events '
+        r'listed disc "(?P<disc_id>[^"]+)" history contains events '
         r'"(?P<first>[^"]+)"(?P<rest>.*) in order'
     )
 )
-def then_listed_copy_history_contains_events(
+def then_listed_disc_history_contains_events(
     acceptance_context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
     first: str,
     rest: str,
 ) -> None:
-    history = _listed_copy_payload(acceptance_context, copy_id)["history"]
+    history = _listed_disc_payload(acceptance_context, disc_id)["history"]
     assert [entry["event"] for entry in history] == [first, *_quoted_values(rest)]
 
 
 @then(
     parsers.parse(
-        'listed copy "{copy_id}" history entry {index:d} has event "{event}", '
+        'listed disc "{disc_id}" history entry {index:d} has event "{event}", '
         'state "{state}", verification_state "{verification_state}", '
         'and location "{location}"'
     )
 )
-def then_listed_copy_history_entry_matches(
+def then_listed_disc_history_entry_matches(
     acceptance_context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
     index: int,
     event: str,
     state: str,
     verification_state: str,
     location: str,
 ) -> None:
-    history = _listed_copy_payload(acceptance_context, copy_id)["history"]
+    history = _listed_disc_payload(acceptance_context, disc_id)["history"]
     assert history[index - 1] == {
         "at": history[index - 1]["at"],
         "event": event,
@@ -4176,25 +4120,14 @@ def then_both_responses_contain_same_value_for_field(
     assert payloads[0][field] == payloads[1][field]
 
 
-@then(parsers.parse('collection "{collection_id}" archived_bytes increases'))
-def then_collection_archived_bytes_increases(
+@then(parsers.parse('collection "{collection_id}" disc coverage increases'))
+def then_collection_disc_coverage_increases(
     acceptance_context: AcceptanceScenarioContext,
     collection_id: str,
 ) -> None:
     assert (
-        acceptance_context.after_collections[collection_id]["archived_bytes"]
-        > acceptance_context.before_collections[collection_id]["archived_bytes"]
-    )
-
-
-@then(parsers.parse('collection "{collection_id}" pending_bytes decreases'))
-def then_collection_pending_bytes_decreases(
-    acceptance_context: AcceptanceScenarioContext,
-    collection_id: str,
-) -> None:
-    assert (
-        acceptance_context.after_collections[collection_id]["pending_bytes"]
-        < acceptance_context.before_collections[collection_id]["pending_bytes"]
+        acceptance_context.after_collections[collection_id]["disc_coverage"]["bytes"]
+        > acceptance_context.before_collections[collection_id]["disc_coverage"]["bytes"]
     )
 
 
@@ -4231,18 +4164,18 @@ def then_fetch_manifest_entry_lists_split_parts(
 
 @then(
     parsers.parse(
-        'fetch manifest entry "{entry_id}" part {part_index:d} is recoverable from copy "{copy_id}"'
+        'fetch manifest entry "{entry_id}" part {part_index:d} is recoverable from disc "{disc_id}"'
     )
 )
-def then_fetch_manifest_part_recovers_from_copy(
+def then_fetch_manifest_part_recovers_from_disc(
     acceptance_context: AcceptanceScenarioContext,
     entry_id: str,
     part_index: int,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
     entry = _response_manifest_entry(acceptance_context, entry_id)
     part = entry["parts"][part_index]
-    assert [copy["copy"] for copy in part["copies"]] == [copy_id]
+    assert [disc["disc_id"] for disc in part["discs"]] == [disc_id]
 
 
 @then(
@@ -4263,7 +4196,7 @@ def then_fetch_manifest_part_hashes_match_fixture(
     assert [part["recovery_bytes"] for part in entry["parts"]] == [
         len(fixture_encrypt_bytes(part)) for part in SPLIT_FILE_PARTS
     ]
-    assert [part["copies"][0]["recovery_sha256"] for part in entry["parts"]] == [
+    assert [part["discs"][0]["recovery_sha256"] for part in entry["parts"]] == [
         hashlib.sha256(fixture_encrypt_bytes(part)).hexdigest() for part in SPLIT_FILE_PARTS
     ]
 
@@ -4315,9 +4248,9 @@ def then_stdout_matches_expected_api_payload(
     assert acceptance_context.expected_api_endpoint == (method, path)
     actual = acceptance_context.stdout_json
     expected = acceptance_context.expected_api_payload
-    if path == "/v1/glacier":
-        actual = _normalized_glacier_payload(actual)
-        expected = _normalized_glacier_payload(expected)
+    if path == "/v1/archive":
+        actual = _normalized_archive_payload(actual)
+        expected = _normalized_archive_payload(expected)
     assert actual == expected
 
 
@@ -4338,7 +4271,7 @@ def then_stdout_matches_compact_collection_list_payload(
         assert "covered_paths" not in json.dumps(collection, sort_keys=True)
 
 
-def _normalized_glacier_payload(payload: object) -> object:
+def _normalized_archive_payload(payload: object) -> object:
     if not isinstance(payload, dict):
         return payload
     normalized = dict(payload)
@@ -4379,14 +4312,14 @@ def then_stdout_mentions_fetch_id(
     assert fetch_id in _require_command(acceptance_context).stdout
 
 
-@then("stdout mentions at least one candidate copy id")
-def then_stdout_mentions_candidate_copy_id(
+@then("stdout mentions at least one candidate disc id")
+def then_stdout_mentions_candidate_disc_id(
     acceptance_system: AcceptanceSystem,
     acceptance_context: AcceptanceScenarioContext,
 ) -> None:
     fetch = acceptance_system.fetches.get("fx-1")
     stdout = _require_command(acceptance_context).stdout
-    assert any(str(copy.id) in stdout for copy in fetch.copies)
+    assert any(str(disc.id) in stdout for disc in fetch.discs)
 
 
 @then(parsers.parse('stdout reports fetch state "{state}"'))
@@ -4417,47 +4350,47 @@ def then_target_for_fetch_is_hot(
         assert bool(files) and all(record["hot"] for record in files)
 
 
-@then(parsers.parse('image "{image_id}" has physical_copies_registered {count:d}'))
-def then_image_has_physical_copies_registered(
+@then(parsers.parse('image "{image_id}" has discs_registered {count:d}'))
+def then_image_has_discs_registered(
     acceptance_system: AcceptanceSystem,
     image_id: str,
     count: int,
 ) -> None:
     resp = acceptance_system.request("GET", f"/v1/images/{image_id}")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["physical_copies_registered"] == count
+    assert resp.json()["discs_registered"] == count
 
 
-@then(parsers.parse('copy "{copy_id}" for image "{image_id}" state is "{state}"'))
-def then_copy_for_image_state_is(
+@then(parsers.parse('disc "{disc_id}" for image "{image_id}" state is "{state}"'))
+def then_disc_for_image_state_is(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
     image_id: str,
     state: str,
 ) -> None:
-    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/copies")
+    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/discs")
     assert resp.status_code == 200, resp.text
-    payload = resp.json()["copies"]
-    copy = next(item for item in payload if item["id"] == copy_id)
-    assert copy["state"] == state
+    payload = resp.json()["discs"]
+    disc = next(item for item in payload if item["disc_id"] == disc_id)
+    assert disc["state"] == state
 
 
 @then(
     parsers.parse(
-        'copy "{copy_id}" for image "{image_id}" verification_state is "{verification_state}"'
+        'disc "{disc_id}" for image "{image_id}" verification_state is "{verification_state}"'
     )
 )
-def then_copy_for_image_verification_state_is(
+def then_disc_for_image_verification_state_is(
     acceptance_system: AcceptanceSystem,
-    copy_id: str,
+    disc_id: str,
     image_id: str,
     verification_state: str,
 ) -> None:
-    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/copies")
+    resp = acceptance_system.request("GET", f"/v1/images/{image_id}/discs")
     assert resp.status_code == 200, resp.text
-    payload = resp.json()["copies"]
-    copy = next(item for item in payload if item["id"] == copy_id)
-    assert copy["verification_state"] == verification_state
+    payload = resp.json()["discs"]
+    disc = next(item for item in payload if item["disc_id"] == disc_id)
+    assert disc["verification_state"] == verification_state
 
 
 @then("the downloaded ISO passes ISO verification")
@@ -4636,12 +4569,12 @@ def then_recovery_upload_is_absent(
     assert acceptance_system.recovery_upload_absent(fetch_id)
 
 
-@then(parsers.parse('stderr mentions copy id "{copy_id}"'))
-def then_stderr_mentions_copy_id(
+@then(parsers.parse('stderr mentions disc id "{disc_id}"'))
+def then_stderr_mentions_disc_id(
     acceptance_context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    assert copy_id in _require_command(acceptance_context).stderr
+    assert disc_id in _require_command(acceptance_context).stderr
 
 
 @then(parsers.parse('stderr mentions "{text}"'))
@@ -4660,12 +4593,12 @@ def then_stderr_does_not_mention_text(
     assert text not in _require_command(acceptance_context).stderr
 
 
-@then(parsers.parse('stderr does not mention copy id "{copy_id}"'))
-def then_stderr_does_not_mention_copy_id(
+@then(parsers.parse('stderr does not mention disc id "{disc_id}"'))
+def then_stderr_does_not_mention_disc_id(
     acceptance_context: AcceptanceScenarioContext,
-    copy_id: str,
+    disc_id: str,
 ) -> None:
-    assert copy_id not in _require_command(acceptance_context).stderr
+    assert disc_id not in _require_command(acceptance_context).stderr
 
 
 @then("the returned offset matches the previously uploaded bytes")

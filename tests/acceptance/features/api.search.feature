@@ -11,11 +11,11 @@ Feature: Search API
     When the client gets "/v1/search?q=invoice&page=1&per_page=25"
     Then the response status is 200
     And the response query is "invoice"
-    And the response contains "query", "collection", "hot", "archived", "page", "per_page", "total", "pages", "sort", "order", and "files"
+    And the response contains "query", "collection", "hot", "disc_coverage", "page", "per_page", "total", "pages", "sort", "order", and "files"
     And the response contains at least one file result
     And each file result contains a projected-path selector
     And each file result contains current hot availability
-    And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "archived"
+    And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "disc_coverage"
 
   Scenario: Search selectors are directly reusable
     When the client gets "/v1/search?q=japan&page=1&per_page=25"
@@ -33,7 +33,7 @@ Feature: Search API
     Then the response status is 200
     And the response contains target "docs/tax/2022/invoice-123.pdf"
 
-  Scenario: Search can filter by collection and archive state
-    When the client gets "/v1/search?collection=docs&archived=true&sort=bytes&order=desc"
+  Scenario: Search can filter by collection and disc coverage
+    When the client gets "/v1/search?collection=docs&disc_coverage=true&sort=bytes&order=desc"
     Then the response status is 200
-    And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "archived"
+    And each file entry contains "target", "collection", "path", "bytes", "sha256", "hot", and "disc_coverage"

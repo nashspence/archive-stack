@@ -52,13 +52,13 @@ def create_s3_client(config: RuntimeConfig) -> Any:
     )
 
 
-def create_glacier_s3_client(config: RuntimeConfig) -> Any:
+def create_archive_s3_client(config: RuntimeConfig) -> Any:
     return _create_s3_client(
-        endpoint_url=config.glacier_endpoint_url,
-        region=config.glacier_region,
-        access_key_id=config.glacier_access_key_id,
-        secret_access_key=config.glacier_secret_access_key,
-        force_path_style=config.glacier_force_path_style,
+        endpoint_url=config.archive_endpoint_url,
+        region=config.archive_region,
+        access_key_id=config.archive_access_key_id,
+        secret_access_key=config.archive_secret_access_key,
+        force_path_style=config.archive_force_path_style,
         max_pool_connections=config.s3_max_pool_connections,
     )
 
@@ -95,14 +95,14 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
         region=config.s3_region,
     )
     if (
-        config.glacier_bucket == config.s3_bucket
-        and config.glacier_endpoint_url == config.s3_endpoint_url
+        config.archive_bucket == config.s3_bucket
+        and config.archive_endpoint_url == config.s3_endpoint_url
     ):
         return
     _ensure_bucket_exists(
-        create_glacier_s3_client(config),
-        bucket=config.glacier_bucket,
-        region=config.glacier_region,
+        create_archive_s3_client(config),
+        bucket=config.archive_bucket,
+        region=config.archive_region,
     )
 
 
@@ -120,19 +120,19 @@ def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> Non
             )
 
     if (
-        config.glacier_bucket == config.s3_bucket
-        and config.glacier_endpoint_url == config.s3_endpoint_url
+        config.archive_bucket == config.s3_bucket
+        and config.archive_endpoint_url == config.s3_endpoint_url
     ):
         return
 
-    glacier_client = create_glacier_s3_client(config)
+    archive_client = create_archive_s3_client(config)
     for prefix in prefixes:
-        paginator = glacier_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=config.glacier_bucket, Prefix=prefix):
+        paginator = archive_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=config.archive_bucket, Prefix=prefix):
             contents = page.get("Contents", [])
             if not contents:
                 continue
-            glacier_client.delete_objects(
-                Bucket=config.glacier_bucket,
+            archive_client.delete_objects(
+                Bucket=config.archive_bucket,
                 Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
             )

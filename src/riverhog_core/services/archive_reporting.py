@@ -8,9 +8,9 @@ from datetime import datetime
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
-from riverhog_core.archive_compliance import normalize_glacier_state
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveUsageSnapshotRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -18,20 +18,20 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    GlacierUsageSnapshotRecord,
 )
-from riverhog_core.domain.enums import GlacierState
+from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
+    ArchiveCollectionContribution,
+    ArchiveStatus,
+    ArchiveUsageCollection,
+    ArchiveUsageImage,
+    ArchiveUsageReport,
+    ArchiveUsageSnapshot,
+    ArchiveUsageTotals,
     CollectionManifestStatus,
-    GlacierArchiveStatus,
-    GlacierCollectionContribution,
-    GlacierUsageCollection,
-    GlacierUsageImage,
-    GlacierUsageReport,
-    GlacierUsageSnapshot,
-    GlacierUsageTotals,
 )
 from riverhog_core.domain.types import CollectionId, ImageId
+from riverhog_core.durability import normalize_archive_state
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.webhooks import utcnow
 
@@ -42,7 +42,7 @@ class _FinalizedImageSummaryRow:
     filename: str
 
 
-class SqlAlchemyGlacierReportingService:
+class SqlAlchemyArchiveReportingService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
         self._session_factory = make_session_factory(config.database_url)
@@ -52,7 +52,7 @@ class SqlAlchemyGlacierReportingService:
         *,
         image_id: str | None = None,
         collection: str | None = None,
-    ) -> GlacierUsageReport:
+    ) -> ArchiveUsageReport:
         measured_at = _isoformat_z(utcnow())
 
         with session_scope(self._session_factory) as session:
@@ -75,24 +75,24 @@ class SqlAlchemyGlacierReportingService:
 
             totals = _totals_from_collections(collection_reports)
 
-            history: tuple[GlacierUsageSnapshot, ...] = ()
+            history: tuple[ArchiveUsageSnapshot, ...] = ()
             if image_id is None and collection is None:
                 _ensure_usage_snapshot(session, totals=totals)
                 session.flush()
                 history = tuple(
-                    GlacierUsageSnapshot(
+                    ArchiveUsageSnapshot(
                         captured_at=record.captured_at,
                         uploaded_collections=record.uploaded_images,
                         measured_storage_bytes=record.measured_storage_bytes,
                     )
                     for record in session.scalars(
-                        select(GlacierUsageSnapshotRecord).order_by(
-                            GlacierUsageSnapshotRecord.captured_at.desc()
+                        select(ArchiveUsageSnapshotRecord).order_by(
+                            ArchiveUsageSnapshotRecord.captured_at.desc()
                         )
                     ).all()
                 )
 
-        return GlacierUsageReport(
+        return ArchiveUsageReport(
             scope=_scope_name(image_id=image_id, collection=collection),
             measured_at=measured_at,
             totals=totals,
@@ -102,7 +102,7 @@ class SqlAlchemyGlacierReportingService:
         )
 
 
-def record_glacier_usage_snapshot(session: Session, *, config: RuntimeConfig) -> None:
+def record_archive_usage_snapshot(session: Session, *, config: RuntimeConfig) -> None:
     _ = config
     image_rows = _filtered_image_rows(session, image_id=None, collection=None)
     image_ids = [row.image_id for row in image_rows]
@@ -160,7 +160,7 @@ def _filtered_image_rows(
 def _image_usage_reports(
     session: Session,
     image_rows: Sequence[_FinalizedImageSummaryRow],
-) -> tuple[GlacierUsageImage, ...]:
+) -> tuple[ArchiveUsageImage, ...]:
     image_ids = [row.image_id for row in image_rows]
     if not image_ids:
         return ()
@@ -176,7 +176,7 @@ def _image_usage_reports(
     for row in collection_rows:
         collection_ids_by_image[row.image_id].add(row.collection_id)
     return tuple(
-        GlacierUsageImage(
+        ArchiveUsageImage(
             id=ImageId(row.image_id),
             filename=row.filename,
             collection_ids=sorted(collection_ids_by_image.get(row.image_id, set())),
@@ -191,7 +191,7 @@ def _direct_collection_usage_reports(
     image_ids: Sequence[str],
     image_filenames: Mapping[str, str],
     collection_filter: str | None,
-) -> list[GlacierUsageCollection]:
+) -> list[ArchiveUsageCollection]:
     collection_query = select(CollectionRecord.id).order_by(CollectionRecord.id.asc())
     if collection_filter is not None:
         collection_query = collection_query.where(CollectionRecord.id == collection_filter)
@@ -222,19 +222,19 @@ def _direct_collection_usage_reports(
         image_filenames=image_filenames,
         collection_filter=collection_filter,
     )
-    reports: list[GlacierUsageCollection] = []
+    reports: list[ArchiveUsageCollection] = []
     seen: set[str] = set()
     for collection_id in collection_ids:
         seen.add(collection_id)
         archive = archives_by_collection.get(collection_id)
         measured_storage_bytes = _collection_measured_storage_bytes(archive)
         reports.append(
-            GlacierUsageCollection(
+            ArchiveUsageCollection(
                 id=CollectionId(collection_id),
                 bytes=bytes_by_collection.get(collection_id, 0),
                 measured_storage_bytes=measured_storage_bytes,
                 images=tuple(image_contributions.get(collection_id, ())),
-                glacier=_collection_glacier_archive_status(archive),
+                archive=_collection_archive_status(archive),
                 collection_manifest=_collection_manifest_status(archive),
                 archive_format=archive.archive_format if archive is not None else None,
                 compression=archive.compression if archive is not None else None,
@@ -275,13 +275,13 @@ def _direct_collection_usage_reports(
         if upload.collection_id in seen:
             continue
         reports.append(
-            GlacierUsageCollection(
+            ArchiveUsageCollection(
                 id=CollectionId(upload.collection_id),
                 bytes=upload_bytes_by_collection.get(upload.collection_id, 0),
                 measured_storage_bytes=0,
                 images=(),
-                glacier=GlacierArchiveStatus(
-                    state=_upload_glacier_state_from_values(
+                archive=ArchiveStatus(
+                    state=_upload_archive_state_from_values(
                         state=upload.state,
                         archive_phase=upload.archive_phase,
                     ),
@@ -301,7 +301,7 @@ def _image_contributions_by_collection(
     image_ids: Sequence[str],
     image_filenames: Mapping[str, str],
     collection_filter: str | None,
-) -> dict[str, tuple[GlacierCollectionContribution, ...]]:
+) -> dict[str, tuple[ArchiveCollectionContribution, ...]]:
     if not image_ids:
         return {}
     contribution_query = (
@@ -329,10 +329,10 @@ def _image_contributions_by_collection(
         )
     rows = session.execute(contribution_query).all()
 
-    result: dict[str, list[GlacierCollectionContribution]] = defaultdict(list)
+    result: dict[str, list[ArchiveCollectionContribution]] = defaultdict(list)
     for row in rows:
         result[row.collection_id].append(
-            GlacierCollectionContribution(
+            ArchiveCollectionContribution(
                 image_id=ImageId(row.image_id),
                 filename=image_filenames.get(row.image_id, row.image_id),
                 represented_bytes=int(row.represented_bytes or 0),
@@ -347,7 +347,7 @@ def _image_contributions_by_collection(
 
 
 def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None or normalize_glacier_state(archive.state).value != "uploaded":
+    if archive is None or normalize_archive_state(archive.state).value != "uploaded":
         return 0
     return (
         int(archive.stored_bytes or 0)
@@ -356,13 +356,13 @@ def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) 
     )
 
 
-def _collection_glacier_archive_status(
+def _collection_archive_status(
     archive: CollectionArchiveRecord | None,
-) -> GlacierArchiveStatus:
+) -> ArchiveStatus:
     if archive is None:
-        return GlacierArchiveStatus()
-    return GlacierArchiveStatus(
-        state=normalize_glacier_state(archive.state),
+        return ArchiveStatus()
+    return ArchiveStatus(
+        state=normalize_archive_state(archive.state),
         object_path=archive.object_path,
         stored_bytes=archive.stored_bytes,
         backend=archive.backend,
@@ -379,7 +379,7 @@ def _collection_manifest_status(
     if archive is None:
         return None
     ots_state = "uploaded" if archive.ots_object_path else "pending"
-    if normalize_glacier_state(archive.state).value == "failed":
+    if normalize_archive_state(archive.state).value == "failed":
         ots_state = "failed"
     return CollectionManifestStatus(
         object_path=archive.manifest_object_path,
@@ -390,29 +390,29 @@ def _collection_manifest_status(
     )
 
 
-def _upload_glacier_state(upload: CollectionUploadRecord) -> GlacierState:
-    return _upload_glacier_state_from_values(
+def _upload_archive_state(upload: CollectionUploadRecord) -> ArchiveState:
+    return _upload_archive_state_from_values(
         state=upload.state,
         archive_phase=upload.archive_phase,
     )
 
 
-def _upload_glacier_state_from_values(
+def _upload_archive_state_from_values(
     *,
     state: str | None,
     archive_phase: str | None,
-) -> GlacierState:
+) -> ArchiveState:
     if state == "failed":
-        return GlacierState.FAILED
+        return ArchiveState.FAILED
     if archive_phase == "retry_wait":
-        return GlacierState.RETRYING
+        return ArchiveState.RETRYING
     if state == "archiving":
-        return GlacierState.UPLOADING
-    return GlacierState.PENDING
+        return ArchiveState.UPLOADING
+    return ArchiveState.PENDING
 
 
-def _totals_from_collections(collections: tuple[GlacierUsageCollection, ...]) -> GlacierUsageTotals:
-    return GlacierUsageTotals(
+def _totals_from_collections(collections: tuple[ArchiveUsageCollection, ...]) -> ArchiveUsageTotals:
+    return ArchiveUsageTotals(
         collections=len(collections),
         uploaded_collections=sum(
             1 for collection in collections if collection.measured_storage_bytes > 0
@@ -424,15 +424,15 @@ def _totals_from_collections(collections: tuple[GlacierUsageCollection, ...]) ->
 def _ensure_usage_snapshot(
     session: Session,
     *,
-    totals: GlacierUsageTotals,
+    totals: ArchiveUsageTotals,
 ) -> None:
     latest = session.scalar(
-        select(GlacierUsageSnapshotRecord).order_by(GlacierUsageSnapshotRecord.captured_at.desc())
+        select(ArchiveUsageSnapshotRecord).order_by(ArchiveUsageSnapshotRecord.captured_at.desc())
     )
     if latest is not None and _snapshot_matches(latest, totals=totals):
         return
     session.add(
-        GlacierUsageSnapshotRecord(
+        ArchiveUsageSnapshotRecord(
             captured_at=_isoformat_z(utcnow()),
             uploaded_images=totals.uploaded_collections,
             measured_storage_bytes=totals.measured_storage_bytes,
@@ -441,9 +441,9 @@ def _ensure_usage_snapshot(
 
 
 def _snapshot_matches(
-    latest: GlacierUsageSnapshotRecord,
+    latest: ArchiveUsageSnapshotRecord,
     *,
-    totals: GlacierUsageTotals,
+    totals: ArchiveUsageTotals,
 ) -> bool:
     return (
         latest.uploaded_images == totals.uploaded_collections

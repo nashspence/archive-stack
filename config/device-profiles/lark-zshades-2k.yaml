@@ -5,17 +5,17 @@ parameters:
   device_id:
     required: true
 section:
-  upload_prefix: '{device_id}-video'
+  destination_prefix: '{device_id}-video'
   file_extensions:
   - .mp4
   - .jpg
   - .jpeg
-  profile_group: video-av1-webm
+  group: video-av1-webm
   groups:
     preserve:
-      archive_mode: preserve
+      output_mode: preserve
     video-av1-webm:
-      archive_mode: av1_nvenc
+      output_mode: video
   routing:
     routes:
     - id: video-2k30-hevc

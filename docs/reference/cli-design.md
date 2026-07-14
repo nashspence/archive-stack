@@ -11,20 +11,20 @@ Riverhog is collection-first:
 - `riverhog collection ...` owns collection catalog, detail, file listing, and
   upload session controls.
 - `riverhog hot ...` owns named fetch manifests, hot-file eviction, and
-  fetch-scoped cloud archive materialization.
+  fetch-scoped archive materialization.
 - `riverhog hot fetch show` is the bounded preflight/progress view.
 - `riverhog hot fetch files` is the paged, searchable, sortable selected-file
   drill-down for a fetch.
 - `riverhog hot fetch cancel` is the single cancellation path for active
-  fetches, whether they were queued for optical media or cloud materialization.
+  fetches, whether they were queued for optical media or archive materialization.
 
 Djdan is optical-media-first:
 
 - `djdan burn` clears the burn backlog.
 - `djdan fetch` clears the fetch backlog from discs.
 - `djdan image ...` owns finalized images, planner output, downloads, and image
-  rebuild sessions.
-- `djdan disc ...` owns burned disc/copy catalog and state changes.
+  disc rebuild archive restores.
+- `djdan disc ...` owns burned disc catalog and state changes.
 
 Avoid compatibility aliases. Prefer a small canonical surface over a broad one.
 
@@ -45,7 +45,7 @@ Visual emphasis should be sparse and role-based:
 
 - Field names and table column headers use bold `#c0ad6c`.
 - Entity ids in tables and detail views use bold `#8ec9cc`.
-- Under-protected or partial coverage values use bold `#ff8933`.
+- Partial coverage values use bold `#ff8933`.
 - Upload progress uses the same roles: labels use the field color, collection ids
   use the entity color, and partial/failed/retry states use the attention color.
   Active byte-transfer progress must be derived only from bytes accepted by the
@@ -74,7 +74,7 @@ transactionally maintained summary data rather than read-time scans.
 The public CLI family uses these owning views:
 
 - `riverhog hot fetch list|show|files` reads fetch-keyed summary and file
-  projections; `show` returns bounded entry and recovery-session previews.
+  projections; `show` returns bounded entry and archive-restore previews.
 - `munchy job list` pages indexed runner job summaries; `job show` is keyed by
   one exact job id.
 - `jeb status` uses bounded active-attempt and recent-failure pages plus state
@@ -82,7 +82,7 @@ The public CLI family uses these owning views:
   inspection is current filesystem state, not history, and can be skipped with
   `--no-backlog`.
 - `djdan image plan|list` and `djdan disc list` use server-paged planner, image,
-  and disc projections. `djdan disc rebuild list` uses the recovery-session
+  and disc projections. `djdan disc rebuild list` uses the archive-restore
   API's `terminal=active` database filter by default and never composes active
   history by fetching state pages in the CLI.
 
@@ -95,7 +95,7 @@ audit work.
 Mutating commands must provide `--dry-run` when the action is bulk,
 destructive, expensive, asynchronous, externally side-effecting, selector-based,
 or selected by config/route logic rather than by one exact object id. This
-includes uploads, evictions, cleanup, queued background work, runner/device/cloud
+includes uploads, evictions, cleanup, queued background work, runner/device/archive
 fanout, and commands whose target set is discovered from selectors or local
 filesystem scans.
 

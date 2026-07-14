@@ -138,7 +138,7 @@ def test_assign_paths_and_manifest_bytes_support_multipart_files_and_collection_
 
     manifest = yaml.safe_load(
         manifest_bytes(
-            "img_003",
+            "RIVERHOG-IMG-003",
             {
                 "docs": [
                     {
@@ -158,13 +158,13 @@ def test_assign_paths_and_manifest_bytes_support_multipart_files_and_collection_
                 ]
             },
             path_map,
-            volume_id="RIVERHOG-IMG-003",
             collection_artifact_paths={
                 "docs": ("collections/000001.yml.age", "collections/000001.ots.age")
             },
         ).decode("utf-8")
     )
 
+    assert manifest["image"]["id"] == "RIVERHOG-IMG-003"
     collection = manifest["collections"][0]
     assert collection["manifest"] == "collections/000001.yml.age"
     assert collection["proof"] == "collections/000001.ots.age"

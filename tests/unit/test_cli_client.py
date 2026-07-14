@@ -195,7 +195,7 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.method, str(request.url), request.read().decode("utf-8")))
-        return httpx.Response(200, json={"status": "ok", "batches": []})
+        return httpx.Response(200, json={"status": "ok", "attempts": []})
 
     transport = httpx.MockTransport(handler)
 
@@ -206,7 +206,7 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
 
     client = ApiClient(base_url="https://api.test")
     client.get_jeb_status(include_backlog=False)
-    client.list_jeb_batches(
+    client.list_jeb_attempts(
         page=2,
         per_page=50,
         sort="created_at",
@@ -214,7 +214,7 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
         terminal="all",
         state="failed",
         account="camera",
-        collection="weekly",
+        collection_slug="weekly",
         target="archive",
         query="metadata",
     )
@@ -227,9 +227,9 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
         ("GET", "https://api.test/v1/jeb/status?include_backlog=false", ""),
         (
             "GET",
-            "https://api.test/v1/jeb/batches?"
+            "https://api.test/v1/jeb/attempts?"
             "page=2&per_page=50&sort=created_at&order=asc&terminal=all&"
-            "state=failed&account=camera&collection=weekly&target=archive&q=metadata",
+            "state=failed&account=camera&collection_slug=weekly&target=archive&q=metadata",
             "",
         ),
         ("GET", "https://api.test/v1/jeb/config/check", ""),
@@ -247,12 +247,12 @@ def test_jeb_client_methods_use_canonical_endpoints(monkeypatch) -> None:
     ]
 
 
-def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) -> None:
+def test_archive_restore_client_methods_use_canonical_endpoints(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.method, str(request.url), request.read().decode("utf-8")))
-        return httpx.Response(200, json={"id": "rs-docs-restore-1", "sessions": []})
+        return httpx.Response(200, json={"id": "ar-docs-restore-1", "restores": []})
 
     transport = httpx.MockTransport(handler)
 
@@ -262,41 +262,41 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.list_recovery_sessions(
+    client.list_archive_restores(
         page=2,
         per_page=10,
         sort="state",
         order="asc",
         terminal="active",
-        recovery_type="collection_restore",
+        restore_type="fetch_materialization",
         state="ready",
         collection="tax/2022 reports",
     )
-    client.start_fetch("fx-1", cloud=True)
+    client.start_fetch("fx-1", archive=True)
     client.start_fetch("fx-2", dry_run=True)
     client.evict_hot_targets(["docs/"], dry_run=True)
     client.cancel_fetch("fx-1")
-    client.get_recovery_session("rs-docs-restore-1")
-    client.complete_recovery_session("rs-docs-restore-1")
-    client.cancel_recovery_session("rs-docs-restore-1")
-    client.pause_recovery_session("rs-20260420T040001Z-rebuild-1")
-    client.resume_recovery_session("rs-20260420T040001Z-rebuild-1")
+    client.get_archive_restore("ar-docs-restore-1")
+    client.complete_archive_restore("ar-docs-restore-1")
+    client.cancel_archive_restore("ar-docs-restore-1")
+    client.pause_archive_restore("ar-20260420T040001Z-rebuild-1")
+    client.resume_archive_restore("ar-20260420T040001Z-rebuild-1")
 
     assert captured[0][0] == "GET"
     assert captured[0][1] == (
-        "https://api.test/v1/recovery-sessions?page=2&per_page=10&sort=state&"
-        "order=asc&terminal=active&type=collection_restore&state=ready&"
+        "https://api.test/v1/archive-restores?page=2&per_page=10&sort=state&"
+        "order=asc&terminal=active&type=fetch_materialization&state=ready&"
         "collection=tax%2F2022+reports"
     )
     assert captured[1] == (
         "POST",
         "https://api.test/v1/fetches/fx-1/start",
-        '{"cloud":true,"dry_run":false}',
+        '{"archive":true,"dry_run":false}',
     )
     assert captured[2] == (
         "POST",
         "https://api.test/v1/fetches/fx-2/start",
-        '{"cloud":false,"dry_run":true}',
+        '{"archive":false,"dry_run":true}',
     )
     assert captured[3] == (
         "POST",
@@ -310,27 +310,27 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     )
     assert captured[5] == (
         "GET",
-        "https://api.test/v1/recovery-sessions/rs-docs-restore-1",
+        "https://api.test/v1/archive-restores/ar-docs-restore-1",
         "",
     )
     assert captured[6] == (
         "POST",
-        "https://api.test/v1/recovery-sessions/rs-docs-restore-1/complete",
+        "https://api.test/v1/archive-restores/ar-docs-restore-1/complete",
         "",
     )
     assert captured[7] == (
         "POST",
-        "https://api.test/v1/recovery-sessions/rs-docs-restore-1/cancel",
+        "https://api.test/v1/archive-restores/ar-docs-restore-1/cancel",
         "",
     )
     assert captured[8] == (
         "POST",
-        "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/pause",
+        "https://api.test/v1/archive-restores/ar-20260420T040001Z-rebuild-1/pause",
         "",
     )
     assert captured[9] == (
         "POST",
-        "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/resume",
+        "https://api.test/v1/archive-restores/ar-20260420T040001Z-rebuild-1/resume",
         "",
     )
 
@@ -391,10 +391,10 @@ def test_list_collections_uses_collection_listing_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.list_collections(page=1, per_page=10, q="docs", protection_state="fully_protected")
+    client.list_collections(page=1, per_page=10, q="docs", disc_redundancy="full")
 
     assert captured == [
-        "https://api.test/v1/collections?page=1&per_page=10&q=docs&protection_state=fully_protected"
+        "https://api.test/v1/collections?page=1&per_page=10&q=docs&disc_redundancy=full"
     ]
 
 
@@ -515,7 +515,7 @@ def test_search_includes_pagination_sort_and_filter_params(monkeypatch) -> None:
                 "query": "invoice",
                 "collection": "docs",
                 "hot": True,
-                "archived": False,
+                "disc_coverage": False,
                 "sort": "bytes",
                 "order": "desc",
                 "files": [],
@@ -538,13 +538,13 @@ def test_search_includes_pagination_sort_and_filter_params(monkeypatch) -> None:
         order="desc",
         collection="docs",
         hot=True,
-        archived=False,
+        disc_coverage=False,
     )
 
     assert captured == [
         "https://api.test/v1/search?"
         "page=2&per_page=10&sort=bytes&order=desc&"
-        "q=invoice&collection=docs&hot=true&archived=false"
+        "q=invoice&collection=docs&hot=true&disc_coverage=false"
     ]
 
 
@@ -599,20 +599,20 @@ def test_finalize_image_uses_candidate_finalize_endpoint(monkeypatch) -> None:
     assert captured == [("POST", "https://api.test/v1/plan/candidates/img_2026-04-20_01/finalize")]
 
 
-def test_copy_registration_uses_long_timeout(monkeypatch) -> None:
-    monkeypatch.delenv("RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS", raising=False)
+def test_disc_registration_uses_long_timeout(monkeypatch) -> None:
+    monkeypatch.delenv("RIVERHOG_DISC_REGISTRATION_TIMEOUT_SECONDS", raising=False)
     captured: list[tuple[str, str, float | None]] = []
 
     def fake_request(self: ApiClient, method: str, path: str, **kwargs) -> httpx.Response:
         _ = self
         captured.append((method, path, kwargs.get("timeout")))
-        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+        return httpx.Response(200, json={"disc": {"disc_id": "20260420T040001Z-1"}})
 
     monkeypatch.setattr(ApiClient, "_request", fake_request)
 
     client = ApiClient(base_url="https://api.test")
-    client.register_copy("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    client.update_copy(
+    client.register_disc("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    client.update_disc(
         "20260420T040001Z",
         "20260420T040001Z-1",
         state="verified",
@@ -620,8 +620,8 @@ def test_copy_registration_uses_long_timeout(monkeypatch) -> None:
     )
 
     assert captured == [
-        ("POST", "/v1/images/20260420T040001Z/copies", 3600.0),
-        ("PATCH", "/v1/images/20260420T040001Z/copies/20260420T040001Z-1", 3600.0),
+        ("POST", "/v1/images/20260420T040001Z/discs", 3600.0),
+        ("PATCH", "/v1/images/20260420T040001Z/discs/20260420T040001Z-1", 3600.0),
     ]
 
 
@@ -703,7 +703,7 @@ def test_download_iso_discards_partial_file_after_stream_error(
     assert not (tmp_path / ".image.iso.part").exists()
 
 
-def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> None:
+def test_get_archive_report_uses_archive_endpoint_with_filters(monkeypatch) -> None:
     captured: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -728,9 +728,9 @@ def test_get_glacier_report_uses_glacier_endpoint_with_filters(monkeypatch) -> N
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.get_glacier_report(collection="docs")
+    client.get_archive_report(collection="docs")
 
-    assert captured == ["https://api.test/v1/glacier?collection=docs"]
+    assert captured == ["https://api.test/v1/archive?collection=docs"]
 
 
 def test_create_or_resume_fetch_entry_upload_uses_manifest_entry_endpoint(monkeypatch) -> None:
@@ -988,12 +988,12 @@ def test_api_client_closes_http_client_after_transient_status(monkeypatch) -> No
     assert created == 2
 
 
-def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
+def test_register_disc_uses_disc_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.method, str(request.url), request.read().decode("utf-8")))
-        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+        return httpx.Response(200, json={"disc": {"disc_id": "20260420T040001Z-1"}})
 
     transport = httpx.MockTransport(handler)
 
@@ -1003,12 +1003,12 @@ def test_register_copy_uses_generated_copy_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.register_copy("20260420T040001Z", "Shelf B1")
+    client.register_disc("20260420T040001Z", "Shelf B1")
 
     assert captured == [
         (
             "POST",
-            "https://api.test/v1/images/20260420T040001Z/copies",
+            "https://api.test/v1/images/20260420T040001Z/discs",
             '{"location":"Shelf B1"}',
         )
     ]
@@ -1051,12 +1051,12 @@ def test_list_and_get_discs_use_disc_endpoints(monkeypatch) -> None:
     ]
 
 
-def test_notify_copy_label_needed_uses_copy_endpoint(monkeypatch) -> None:
+def test_notify_disc_label_needed_uses_disc_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.method, str(request.url), request.read().decode("utf-8")))
-        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+        return httpx.Response(200, json={"disc": {"disc_id": "20260420T040001Z-1"}})
 
     transport = httpx.MockTransport(handler)
 
@@ -1066,23 +1066,23 @@ def test_notify_copy_label_needed_uses_copy_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.notify_copy_label_needed("20260420T040001Z", "20260420T040001Z-1")
+    client.notify_disc_label_needed("20260420T040001Z", "20260420T040001Z-1")
 
     assert captured == [
         (
             "POST",
-            "https://api.test/v1/images/20260420T040001Z/copies/20260420T040001Z-1/label-needed",
+            "https://api.test/v1/images/20260420T040001Z/discs/20260420T040001Z-1/label-needed",
             "",
         )
     ]
 
 
-def test_update_copy_uses_copy_patch_endpoint(monkeypatch) -> None:
+def test_update_disc_uses_disc_patch_endpoint(monkeypatch) -> None:
     captured: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.method, str(request.url), request.read().decode("utf-8")))
-        return httpx.Response(200, json={"copy": {"id": "20260420T040001Z-1"}})
+        return httpx.Response(200, json={"disc": {"disc_id": "20260420T040001Z-1"}})
 
     transport = httpx.MockTransport(handler)
 
@@ -1092,7 +1092,7 @@ def test_update_copy_uses_copy_patch_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(ApiClient, "_client", fake_client)
 
     client = ApiClient(base_url="https://api.test")
-    client.update_copy(
+    client.update_disc(
         "20260420T040001Z",
         "20260420T040001Z-1",
         location="Shelf B2",
@@ -1103,7 +1103,7 @@ def test_update_copy_uses_copy_patch_endpoint(monkeypatch) -> None:
     assert captured == [
         (
             "PATCH",
-            "https://api.test/v1/images/20260420T040001Z/copies/20260420T040001Z-1",
+            "https://api.test/v1/images/20260420T040001Z/discs/20260420T040001Z-1",
             '{"location":"Shelf B2","state":"verified","verification_state":"verified"}',
         )
     ]

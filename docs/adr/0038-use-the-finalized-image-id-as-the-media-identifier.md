@@ -6,4 +6,4 @@ Riverhog uses the finalized compact UTC image ID as the durable media-facing ima
 
 ## Reason
 
-The same artifact needs one stable identity across API records, ISO filenames, disc manifests, copy IDs, labels, and recovery flows.
+The same artifact needs one stable identity across API records, ISO filenames, disc manifests, disc ids, labels, and recovery flows.

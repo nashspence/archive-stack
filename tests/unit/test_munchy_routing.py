@@ -2,22 +2,22 @@ from __future__ import annotations
 
 import pytest
 
-from munchy.profile_routing import (
-    ProfileRoutingFile,
+from munchy.routing import (
+    RoutingFile,
     apply_sidecar_rules,
     exiftool_routing_facts,
-    match_profile_route,
-    profile_routing_exiftool_tags,
-    profile_routing_file_requires_exiftool,
-    profile_routing_file_requires_probe,
-    profile_routing_plan,
+    match_route,
     routing_exiftool_summary,
+    routing_exiftool_tags,
     routing_file_facts,
+    routing_file_requires_exiftool,
+    routing_file_requires_probe,
+    routing_plan,
     sidecar_exiftool_fact_requests,
 )
 
 
-def test_profile_routing_uses_ordered_predicates_and_output_directory() -> None:
+def test_routing_uses_ordered_predicates_and_output_directory() -> None:
     routing = {
         "routes": [
             {
@@ -40,9 +40,9 @@ def test_profile_routing_uses_ordered_predicates_and_output_directory() -> None:
         ]
     }
 
-    native = match_profile_route(routing, "nash-iphone-se2/IMG_0001.MOV")
-    saved = match_profile_route(routing, "nash-iphone-se2/imported/clip.mp4")
-    other_source = match_profile_route(routing, "katie-pixel-8/imported/clip.mp4")
+    native = match_route(routing, "nash-iphone-se2/IMG_0001.MOV")
+    saved = match_route(routing, "nash-iphone-se2/imported/clip.mp4")
+    other_source = match_route(routing, "katie-pixel-8/imported/clip.mp4")
 
     assert native is not None
     assert native.route_id == "iphone-native-video"
@@ -55,7 +55,7 @@ def test_profile_routing_uses_ordered_predicates_and_output_directory() -> None:
     assert other_source is None
 
 
-def test_profile_routing_can_intentionally_order_broad_review_first() -> None:
+def test_routing_can_intentionally_order_broad_review_first() -> None:
     routing = {
         "routes": [
             {
@@ -71,14 +71,14 @@ def test_profile_routing_can_intentionally_order_broad_review_first() -> None:
         ]
     }
 
-    match = match_profile_route(routing, "phone/IMG_0001.MOV")
+    match = match_route(routing, "phone/IMG_0001.MOV")
 
     assert match is not None
     assert match.route_id == "phone-library-review"
     assert match.group == "library-review"
 
 
-def test_profile_routing_uses_ffprobe_facts_before_falling_through() -> None:
+def test_routing_uses_ffprobe_facts_before_falling_through() -> None:
     calls = 0
 
     def load_probe() -> dict[str, object]:
@@ -114,7 +114,7 @@ def test_profile_routing_uses_ffprobe_facts_before_falling_through() -> None:
         ]
     }
 
-    match = match_profile_route(
+    match = match_route(
         routing,
         "phone/IMG_0001.MOV",
         probe_summary_loader=load_probe,
@@ -125,7 +125,7 @@ def test_profile_routing_uses_ffprobe_facts_before_falling_through() -> None:
     assert match.route_id == "iphone-video-review"
 
 
-def test_profile_routing_skips_expensive_facts_for_prior_path_only_route() -> None:
+def test_routing_skips_expensive_facts_for_prior_path_only_route() -> None:
     routing = {
         "routes": [
             {
@@ -149,11 +149,11 @@ def test_profile_routing_skips_expensive_facts_for_prior_path_only_route() -> No
     state_facts = routing_file_facts("camera/leinfo.sav")
     video_facts = routing_file_facts("camera/GX010001.MP4")
 
-    assert profile_routing_file_requires_probe(routing, state_facts) is False
-    assert profile_routing_file_requires_exiftool(routing, state_facts) is False
-    assert profile_routing_file_requires_probe(routing, video_facts) is True
+    assert routing_file_requires_probe(routing, state_facts) is False
+    assert routing_file_requires_exiftool(routing, state_facts) is False
+    assert routing_file_requires_probe(routing, video_facts) is True
     assert (
-        profile_routing_file_requires_exiftool(
+        routing_file_requires_exiftool(
             routing,
             routing_file_facts(
                 "camera/GX010001.MP4",
@@ -164,7 +164,7 @@ def test_profile_routing_skips_expensive_facts_for_prior_path_only_route() -> No
     )
 
 
-def test_profile_routing_lazy_match_does_not_probe_path_excluded_route() -> None:
+def test_routing_lazy_match_does_not_probe_path_excluded_route() -> None:
     calls = 0
 
     def load_probe() -> dict[str, object]:
@@ -192,7 +192,7 @@ def test_profile_routing_lazy_match_does_not_probe_path_excluded_route() -> None
         ]
     }
 
-    match = match_profile_route(
+    match = match_route(
         routing,
         "camera/leinfo.sav",
         probe_summary_loader=load_probe,
@@ -203,7 +203,7 @@ def test_profile_routing_lazy_match_does_not_probe_path_excluded_route() -> None
     assert match.route_id == "device-state"
 
 
-def test_profile_route_metadata_need_detection_traverses_gates() -> None:
+def test_route_metadata_need_detection_traverses_gates() -> None:
     calls = 0
 
     def load_facts() -> dict[str, object]:
@@ -237,7 +237,7 @@ def test_profile_route_metadata_need_detection_traverses_gates() -> None:
         ],
     }
 
-    match = match_profile_route(
+    match = match_route(
         routing,
         "phone/IMG_0001.HEIC",
         routing_facts_loader=load_facts,
@@ -248,7 +248,7 @@ def test_profile_route_metadata_need_detection_traverses_gates() -> None:
     assert match.route_id == "iphone-photo"
 
 
-def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
+def test_routing_pairs_live_photo_before_video_fallback() -> None:
     routing = {
         "pairings": [
             {
@@ -284,7 +284,7 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
         ],
     }
     files = [
-        ProfileRoutingFile(
+        RoutingFile(
             path="phone/IMG_0001.HEIC",
             bytes=10,
             routing_facts=routing_file_facts(
@@ -292,7 +292,7 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
                 exiftool_summary={"tags": {"content_identifier": "pair-1"}},
             ),
         ),
-        ProfileRoutingFile(
+        RoutingFile(
             path="phone/IMG_0001.MOV",
             bytes=20,
             routing_facts=routing_file_facts(
@@ -302,7 +302,7 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
         ),
     ]
 
-    plan = profile_routing_plan(routing, files, group_names={"live-photo", "video"})
+    plan = routing_plan(routing, files, group_names={"live-photo", "video"})
 
     assert plan.ok is True
     assert [item["group"] for item in plan.matches] == ["live-photo", "live-photo"]
@@ -314,7 +314,7 @@ def test_profile_routing_pairs_live_photo_before_video_fallback() -> None:
     ]
 
 
-def test_profile_routing_attaches_xmp_sidecar_as_evidence() -> None:
+def test_routing_attaches_xmp_sidecar_as_evidence() -> None:
     routing = {
         "sidecars": [
             {
@@ -332,11 +332,11 @@ def test_profile_routing_attaches_xmp_sidecar_as_evidence() -> None:
         ],
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
-            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+            RoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            RoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
         ],
         group_names={"video"},
     )
@@ -354,7 +354,7 @@ def test_profile_routing_attaches_xmp_sidecar_as_evidence() -> None:
     assert plan.matches[1]["sidecar_for"] == "phone/IMG_0001.MOV"
 
 
-def test_profile_routing_can_match_primary_from_generic_sidecar_facts() -> None:
+def test_routing_can_match_primary_from_generic_sidecar_facts() -> None:
     routing = {
         "sidecars": [
             {
@@ -403,11 +403,11 @@ def test_profile_routing_can_match_primary_from_generic_sidecar_facts() -> None:
             }
         )
     )
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="camera/C0001.MP4", bytes=100),
-            ProfileRoutingFile(
+            RoutingFile(path="camera/C0001.MP4", bytes=100),
+            RoutingFile(
                 path="camera/C0001M01.XML",
                 bytes=20,
                 sidecar_facts=sidecar_facts,
@@ -477,7 +477,7 @@ def test_sidecar_facts_can_unlock_primary_exiftool_collection() -> None:
         require_configured_facts=False,
     )
 
-    assert profile_routing_file_requires_exiftool(
+    assert routing_file_requires_exiftool(
         routing,
         base_facts_by_path["camera/C0001.MP4"],
     )
@@ -565,7 +565,7 @@ def test_sidecar_fact_extractors_must_reference_requested_tags() -> None:
         sidecar_exiftool_fact_requests(routing, facts_by_path)
 
 
-def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> None:
+def test_routing_fails_when_configured_sidecar_facts_are_missing() -> None:
     routing = {
         "sidecars": [
             {
@@ -593,9 +593,9 @@ def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> No
         ],
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
-        [ProfileRoutingFile(path="camera/C0001.MP4", bytes=100)],
+        [RoutingFile(path="camera/C0001.MP4", bytes=100)],
         group_names={"video"},
     )
 
@@ -603,12 +603,13 @@ def test_profile_routing_fails_when_configured_sidecar_facts_are_missing() -> No
     assert plan.matches == []
     assert plan.unmatched[0]["path"] == "camera/C0001.MP4"
     assert plan.unmatched[0]["reason"] == "sidecar_facts_failed"
-    assert "camera_xml: configured sidecar facts source not found" in (
-        plan.unmatched[0]["sidecar_facts_error"]
+    assert (
+        "camera_xml: configured sidecar facts source not found"
+        in (plan.unmatched[0]["sidecar_facts_error"])
     )
 
 
-def test_profile_routing_fails_when_configured_sidecar_facts_are_unparsable() -> None:
+def test_routing_fails_when_configured_sidecar_facts_are_unparsable() -> None:
     routing = {
         "sidecars": [
             {
@@ -631,11 +632,11 @@ def test_profile_routing_fails_when_configured_sidecar_facts_are_unparsable() ->
         ],
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="camera/C0001.MP4", bytes=100),
-            ProfileRoutingFile(
+            RoutingFile(path="camera/C0001.MP4", bytes=100),
+            RoutingFile(
                 path="camera/C0001M01.XML",
                 bytes=20,
                 sidecar_facts_error="exiftool returned invalid JSON",
@@ -647,12 +648,13 @@ def test_profile_routing_fails_when_configured_sidecar_facts_are_unparsable() ->
     assert plan.ok is False
     assert plan.unmatched[0]["path"] == "camera/C0001.MP4"
     assert plan.unmatched[0]["reason"] == "sidecar_facts_failed"
-    assert "camera/C0001M01.XML: exiftool returned invalid JSON" in (
-        plan.unmatched[0]["sidecar_facts_error"]
+    assert (
+        "camera/C0001M01.XML: exiftool returned invalid JSON"
+        in (plan.unmatched[0]["sidecar_facts_error"])
     )
 
 
-def test_profile_routing_leaves_sidecar_evidence_for_left_primary() -> None:
+def test_routing_leaves_sidecar_evidence_for_left_primary() -> None:
     routing = {
         "sidecars": [
             {
@@ -670,11 +672,11 @@ def test_profile_routing_leaves_sidecar_evidence_for_left_primary() -> None:
         ],
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
-            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+            RoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            RoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
         ],
         group_names={"video"},
     )
@@ -691,7 +693,7 @@ def test_profile_routing_leaves_sidecar_evidence_for_left_primary() -> None:
     assert plan.unmatched == []
 
 
-def test_profile_routing_rejects_sidecar_evidence_for_unmatched_primary() -> None:
+def test_routing_rejects_sidecar_evidence_for_unmatched_primary() -> None:
     routing = {
         "sidecars": [
             {
@@ -703,11 +705,11 @@ def test_profile_routing_rejects_sidecar_evidence_for_unmatched_primary() -> Non
         "routes": [],
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
-            ProfileRoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
+            RoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            RoutingFile(path="phone/IMG_0001.MOV.xmp", bytes=20),
         ],
         group_names={"video"},
     )
@@ -729,11 +731,11 @@ def test_profile_routing_rejects_sidecar_evidence_for_unmatched_primary() -> Non
             "sidecar_for": "phone/IMG_0001.MOV",
             "probe_error": None,
             "facts_error": None,
-        }
+        },
     ]
 
 
-def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
+def test_routing_leave_action_excludes_intentional_leftovers() -> None:
     routing = {
         "routes": [
             {
@@ -749,11 +751,11 @@ def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
         ]
     }
 
-    plan = profile_routing_plan(
+    plan = routing_plan(
         routing,
         [
-            ProfileRoutingFile(path="phone/IMG_0001.MOV", bytes=100),
-            ProfileRoutingFile(path="phone/downloads/sent-by-someone.mp4", bytes=200),
+            RoutingFile(path="phone/IMG_0001.MOV", bytes=100),
+            RoutingFile(path="phone/downloads/sent-by-someone.mp4", bytes=200),
         ],
         group_names={"video"},
     )
@@ -776,8 +778,8 @@ def test_profile_routing_leave_action_excludes_intentional_leftovers() -> None:
     ]
 
 
-def test_profile_routing_exiftool_tags_adds_explicit_vendor_tags_once() -> None:
-    tags = profile_routing_exiftool_tags(
+def test_routing_exiftool_tags_adds_explicit_vendor_tags_once() -> None:
+    tags = routing_exiftool_tags(
         {
             "extra_exiftool_tags": [
                 "AndroidCaptureFPS",
@@ -792,9 +794,9 @@ def test_profile_routing_exiftool_tags_adds_explicit_vendor_tags_once() -> None:
     assert "SpecialTypeID" in tags
 
 
-def test_profile_routing_exiftool_tags_rejects_shell_like_tags() -> None:
+def test_routing_exiftool_tags_rejects_shell_like_tags() -> None:
     try:
-        profile_routing_exiftool_tags({"extra_exiftool_tags": ["Make;rm"]})
+        routing_exiftool_tags({"extra_exiftool_tags": ["Make;rm"]})
     except ValueError as exc:
         assert "invalid ExifTool routing tag" in str(exc)
     else:  # pragma: no cover - defensive assertion
@@ -1010,9 +1012,7 @@ def test_exiftool_routing_facts_keeps_repeated_embedded_gps_scalar() -> None:
                 "Composite:GPSLongitude": "122 deg 44' 25.58\"",
                 "Composite:Copy1:GPSLongitude": "122 deg 44' 25.58\" W",
                 "Composite:GPSLongitudeRef": "West",
-                "Composite:GPSPosition": (
-                    "48 deg 59' 58.21\" N, 122 deg 44' 25.58\" W"
-                ),
+                "Composite:GPSPosition": ("48 deg 59' 58.21\" N, 122 deg 44' 25.58\" W"),
             }
         )
     )

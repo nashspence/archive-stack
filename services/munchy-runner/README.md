@@ -11,15 +11,15 @@ The runner is intentionally generic:
 - no private rclone destinations
 - no operator webhook configuration
 
-Private deployment configuration supplies source directories, profile-group
+Private deployment configuration supplies source directories, group
 mappings, review destinations, webhook recipients, Riverhog credentials, and
 GPU service-manager details.
 
 ## Responsibilities
 
 - receive resumable source uploads through TUS
-- require uploaded paths shaped as `<profile-group>/<file>`
-- map profile groups to Munchy encode profiles
+- require uploaded paths shaped as `<group>/<file>`
+- map groups to Munchy encode profiles
 - persist uploads, jobs, retry state, and notification state in SQLite
 - preflight disk usage before accepting work
 - submit GPU encode work to `munchy-av1-nvenc`
@@ -54,7 +54,7 @@ munchy job cancel <job-id> --runner-url http://127.0.0.1:8092 --cleanup
 `--terminal`, `--state`, `--workflow`, `--destination`, `--cancel-requested`,
 or `--storage-wait`.
 
-Start a standalone job with either a direct profile group:
+Start a standalone job with either a direct group:
 
 ```bash
 munchy job start ./incoming/camera --collection example-camera --group video --destination riverhog
@@ -75,7 +75,7 @@ munchy profile validate config/examples/munchy/job.yaml
 munchy profile show config/examples/munchy/av1-nvenc-profile.yaml
 ```
 
-Explain profile routing before submitting or deploying a job config:
+Explain routing before submitting or deploying a job config:
 
 ```bash
 munchy routing explain ./incoming/phone --config config/examples/munchy/job.yaml
@@ -116,7 +116,7 @@ Important environment variables:
 - `MUNCHY_RUNNER_MAX_RUNNING_JOBS`
 - `MUNCHY_RUNNER_STORAGE_WAIT_SECONDS`
 
-Archive-only profile groups are encoded eagerly as soon as files are uploaded.
+Archive-only groups are encoded eagerly as soon as files are uploaded.
 `MUNCHY_RUNNER_EAGER_ARCHIVE_PIPELINE_BATCHES` controls how many eager archive
 batches may be queued/running on the GPU target at once; the target still owns
 the actual encode concurrency limit. The default is `3`, which keeps one batch
@@ -150,10 +150,10 @@ encoded emit `job.upload_waiting.reminder` according to the shared
 
 ## Upload Shape
 
-Every source file belongs to a profile group:
+Every source file belongs to a group:
 
 ```text
-<profile-group>/<file>
+<group>/<file>
 ```
 
 For example:
@@ -164,10 +164,10 @@ slow-motion/C0002.MP4
 front-sensor/recording.webm
 ```
 
-The runner rejects ambiguous uploads that omit the profile-group directory.
+The runner rejects ambiguous uploads that omit the group directory.
 
-For structured profile-routing jobs, the CLI uploads ordinary relative paths and
-the runner assigns profile groups from the job's routing rules.
+For structured routing jobs, the CLI uploads ordinary relative paths and
+the runner assigns groups from the job's routing rules.
 
 ## Archive Handoff Lifecycle
 
@@ -184,7 +184,7 @@ waits for Riverhog to make the collection visible as finalized. `wait = "staged"
 waits only until all session files have been accepted and the session has been
 completed.
 
-Archive-only profile groups are encoded eagerly as uploaded source files become
+Archive-only groups are encoded eagerly as uploaded source files become
 complete. This lets the runner overlap source upload, GPU encode work, and
 Riverhog upload while keeping local storage pressure low.
 

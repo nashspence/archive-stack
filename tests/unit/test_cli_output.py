@@ -4,6 +4,9 @@ import pytest
 from rich.console import Console
 
 from riverhog_cli.output import (
+    format_archive_report,
+    format_archive_restore,
+    format_archive_restores,
     format_collection_summary,
     format_collection_upload,
     format_collections,
@@ -12,15 +15,12 @@ from riverhog_cli.output import (
     format_fetch,
     format_fetches,
     format_find,
-    format_glacier_report,
     format_hot_evict,
     format_image,
     format_images,
     format_jeb_archive_plan,
-    format_jeb_batches,
+    format_jeb_attempts,
     format_jeb_status,
-    format_recovery_session,
-    format_recovery_sessions,
 )
 
 
@@ -63,7 +63,7 @@ def test_format_find_uses_target_as_primary_id(
                 "query": "invoice",
                 "collection": "docs",
                 "hot": None,
-                "archived": None,
+                "disc_coverage": None,
                 "files": [
                     {
                         "target": "docs/tax/2022/invoice-123.pdf",
@@ -72,7 +72,7 @@ def test_format_find_uses_target_as_primary_id(
                         "bytes": 34,
                         "sha256": "c" * 64,
                         "hot": False,
-                        "archived": True,
+                        "disc_coverage": True,
                     }
                 ],
             }
@@ -117,7 +117,7 @@ def test_format_collection_upload_uses_upload_color_roles(
     assert "38;2;255;137;51" in rendered
 
 
-def test_format_recovery_sessions_use_session_as_primary_id(
+def test_format_archive_restores_use_restore_as_primary_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
@@ -131,50 +131,50 @@ def test_format_recovery_sessions_use_session_as_primary_id(
         "sort": "created_at",
         "order": "desc",
         "terminal": "active",
-        "type": "image_rebuild",
+        "type": "disc_rebuild",
         "state": None,
         "collection": None,
         "image": None,
-        "sessions": [
+        "restores": [
             {
-                "id": "rs-20260420T040001Z-rebuild-1",
-                "type": "image_rebuild",
-                "state": "restore_requested",
-                "restore_ready_at": None,
-                "restore_expires_at": None,
+                "id": "ar-20260420T040001Z-rebuild-1",
+                "type": "disc_rebuild",
+                "state": "requested",
+                "ready_at": None,
+                "expires_at": None,
                 "collections": [{"id": "docs"}],
                 "images": [{"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}],
             }
         ],
     }
 
-    rendered = _render_styled(format_recovery_sessions(payload))
+    rendered = _render_styled(format_archive_restores(payload))
 
-    assert "rs-20260420T040001Z-rebuild-1" in rendered
-    assert "restore_requested" in rendered
+    assert "ar-20260420T040001Z-rebuild-1" in rendered
+    assert "requested" in rendered
     assert "active" in rendered
     assert rendered.count("38;2;142;201;204") == 1
     assert "38;2;192;173;108" in rendered
 
 
-def test_format_recovery_session_keeps_related_ids_plain(
+def test_format_archive_restore_keeps_related_ids_plain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
 
     rendered = _render_styled(
-        format_recovery_session(
+        format_archive_restore(
             {
-                "id": "rs-docs-restore-1",
-                "type": "collection_restore",
+                "id": "ar-docs-restore-1",
+                "type": "fetch_materialization",
                 "state": "ready",
                 "created_at": "2026-04-20T04:00:00Z",
-                "restore_requested_at": "2026-04-20T04:00:01Z",
-                "restore_ready_at": "2026-04-20T04:00:02Z",
-                "restore_expires_at": "2026-04-21T04:00:02Z",
+                "requested_at": "2026-04-20T04:00:01Z",
+                "ready_at": "2026-04-20T04:00:02Z",
+                "expires_at": "2026-04-21T04:00:02Z",
                 "completed_at": None,
-                "restore_paths": ["tax/2022/invoice-123.pdf"],
+                "paths": ["tax/2022/invoice-123.pdf"],
                 "latest_message": "Restored collection files are ready.",
                 "warnings": [],
                 "progress": {
@@ -186,9 +186,9 @@ def test_format_recovery_session_keeps_related_ids_plain(
                     {
                         "id": "docs",
                         "stored_bytes": 120,
-                        "glacier": {"state": "uploaded"},
+                        "archive": {"state": "uploaded"},
                         "collection_manifest": {
-                            "object_path": "glacier/docs/manifest.yml.age",
+                            "object_path": "archive/docs/manifest.yml.age",
                             "ots_state": "uploaded",
                         },
                     }
@@ -198,7 +198,7 @@ def test_format_recovery_session_keeps_related_ids_plain(
         )
     )
 
-    assert "rs-docs-restore-1" in rendered
+    assert "ar-docs-restore-1" in rendered
     assert "docs" in rendered
     assert rendered.count("38;2;142;201;204") == 1
 
@@ -221,7 +221,7 @@ def test_format_find_renders_long_targets_as_records(
                 "query": "reolink",
                 "collection": None,
                 "hot": None,
-                "archived": None,
+                "disc_coverage": None,
                 "files": [
                     {
                         "target": (
@@ -237,7 +237,7 @@ def test_format_find_renders_long_targets_as_records(
                         "bytes": 88200000,
                         "sha256": "c" * 64,
                         "hot": True,
-                        "archived": True,
+                        "disc_coverage": True,
                     }
                 ],
             }
@@ -256,7 +256,7 @@ def test_format_find_renders_long_targets_as_records(
     assert "bytes: 88.2 MB" in rendered
 
 
-def test_format_images_omits_finalized_image_glacier_context(
+def test_format_images_omits_finalized_image_archive_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
@@ -278,23 +278,16 @@ def test_format_images_omits_finalized_image_glacier_context(
                         "finalized_at": "2026-04-20T04:00:01Z",
                         "collections": 1,
                         "collection_ids": ["docs"],
-                        "physical_protection_state": "partially_protected",
-                        "physical_copies_registered": 1,
-                        "physical_copies_verified": 0,
-                        "physical_copies_required": 2,
-                        "glacier": {
-                            "state": "failed",
-                            "object_path": None,
-                            "failure": "s3 timeout",
-                        },
+                        "disc_redundancy_state": "partial",
+                        "discs_registered": 1,
+                        "discs_verified": 0,
+                        "discs_required": 2,
                     }
                 ],
             }
         )
     )
     assert "0/1/2" in rendered
-    assert "glacier=" not in rendered
-    assert "glacier_failure" not in rendered
 
 
 def test_format_image_lists_collections_vertically(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,10 +304,10 @@ def test_format_image_lists_collections_vertically(monkeypatch: pytest.MonkeyPat
                 "bytes": 100,
                 "target_bytes": 200,
                 "fill": 0.5,
-                "physical_protection_state": "protected",
-                "physical_copies_registered": 2,
-                "physical_copies_verified": 2,
-                "physical_copies_required": 2,
+                "disc_redundancy_state": "full",
+                "discs_registered": 2,
+                "discs_verified": 2,
+                "discs_required": 2,
                 "collections": 2,
                 "collection_ids": [
                     "2026/20260414T010101Z__alpha",
@@ -362,12 +355,8 @@ def test_format_collections_uses_compact_collection_table(
                         "files": 2,
                         "bytes": 100,
                         "hot_bytes": 25,
-                        "archived_bytes": 100,
-                        "protection_state": "partially_protected",
-                        "disc_coverage": {
-                            "state": "partial",
-                            "verified_physical_bytes": 50,
-                        },
+                        "disc_coverage": {"state": "partial", "bytes": 50},
+                        "disc_redundancy": {"state": "partial", "bytes": 50},
                     }
                 ],
             }
@@ -376,9 +365,9 @@ def test_format_collections_uses_compact_collection_table(
 
     assert "collections page 1/1" in rendered
     assert "Collection" in rendered
-    assert "Protection" in rendered
+    assert "Disc redundancy" in rendered
     assert "docs" in rendered
-    assert "partially_protected" in rendered
+    assert "partial" in rendered
     assert "partial" in rendered
 
 
@@ -401,12 +390,8 @@ def test_rich_operator_palette_marks_headers_ids_and_partial_values(
                         "files": 2,
                         "bytes": 100,
                         "hot_bytes": 25,
-                        "archived_bytes": 100,
-                        "protection_state": "partially_protected",
-                        "disc_coverage": {
-                            "state": "partial",
-                            "verified_physical_bytes": 50,
-                        },
+                        "disc_coverage": {"state": "partial", "bytes": 50},
+                        "disc_redundancy": {"state": "partial", "bytes": 0},
                     }
                 ],
             }
@@ -417,7 +402,7 @@ def test_rich_operator_palette_marks_headers_ids_and_partial_values(
     assert "38;2;142;201;204" in rendered
     assert "38;2;255;137;51" in rendered
     assert "docs" in rendered
-    assert "partially_protected" in rendered
+    assert "partial" in rendered
 
 
 def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,12 +420,8 @@ def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.Monk
                     "files": 2,
                     "bytes": 100,
                     "hot_bytes": 25,
-                    "archived_bytes": 100,
-                    "protection_state": "partially_protected",
-                    "disc_coverage": {
-                        "state": "partial",
-                        "verified_physical_bytes": 50,
-                    },
+                    "disc_coverage": {"state": "partial", "bytes": 50},
+                    "disc_redundancy": {"state": "partial", "bytes": 50},
                 }
             ],
         }
@@ -448,7 +429,8 @@ def test_format_collections_can_fall_back_to_plain_text(monkeypatch: pytest.Monk
 
     assert isinstance(rendered, str)
     assert "collections: page 1/1" in rendered
-    assert "docs protection=partially_protected" in rendered
+    assert "docs files=2 bytes=100" in rendered
+    assert "redundancy=partial 50" in rendered
 
 
 def test_format_fetches_uses_compact_fetch_table(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -491,14 +473,14 @@ def test_format_fetches_uses_compact_fetch_table(monkeypatch: pytest.MonkeyPatch
     assert row_line.index("fx-1") < row_line.index("docs/tax/2022/invoice-123.pdf")
 
 
-def test_format_jeb_batches_uses_compact_operator_table(
+def test_format_jeb_attempts_uses_compact_operator_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
 
     rendered = _render_styled(
-        format_jeb_batches(
+        format_jeb_attempts(
             {
                 "page": 1,
                 "pages": 3,
@@ -508,11 +490,11 @@ def test_format_jeb_batches_uses_compact_operator_table(
                 "order": "desc",
                 "terminal": "all",
                 "filters": {"account": "camera"},
-                "batches": [
+                "attempts": [
                     {
                         "attempt_id": "20260713T010203Z__camera__abc123",
-                        "accounts": ["camera"],
-                        "collection_id": "camera",
+                        "account_id": "camera",
+                        "collection_slug": "weekly",
                         "state": "cleanup_done",
                         "file_count": 8,
                         "total_bytes": 1200,
@@ -524,13 +506,13 @@ def test_format_jeb_batches_uses_compact_operator_table(
         )
     )
 
-    assert "jeb batches page 1/3" in rendered
+    assert "jeb attempts page 1/3" in rendered
     assert "20260713T010203Z__camera__abc123" in rendered
     assert "cleanup_done" in rendered
     assert "38;2;142;201;204" in rendered
 
 
-def test_format_jeb_status_uses_summary_sources_and_batches(
+def test_format_jeb_status_uses_accounts_and_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_CLI_PLAIN", raising=False)
@@ -539,7 +521,7 @@ def test_format_jeb_status_uses_summary_sources_and_batches(
     rendered = _render(
         format_jeb_status(
             {
-                "sources": [
+                "accounts": [
                     {
                         "id": "camera",
                         "enabled": True,
@@ -547,10 +529,9 @@ def test_format_jeb_status_uses_summary_sources_and_batches(
                         "routing_preflight_failed": False,
                         "eligible_files": 2,
                         "eligible_bytes": 2048,
-                        "collections": ["camera"],
+                        "collection_slug": "camera",
                     }
                 ],
-                "collections": [{"id": "camera", "enabled": True}],
                 "batches": {
                     "total": 4,
                     "active": 1,
@@ -565,11 +546,11 @@ def test_format_jeb_status_uses_summary_sources_and_batches(
                 },
                 "active_attempts": {
                     "total": 1,
-                    "batches": [
+                    "attempts": [
                         {
                             "attempt_id": "batch-1",
-                            "accounts": ["camera"],
-                            "collection_id": "camera",
+                            "account_id": "camera",
+                            "collection_slug": "camera",
                             "state": "munchy_uploaded",
                             "file_count": 2,
                             "total_bytes": 2048,
@@ -577,7 +558,7 @@ def test_format_jeb_status_uses_summary_sources_and_batches(
                         }
                     ],
                 },
-                "recent_failures": {"total": 0, "batches": []},
+                "recent_failures": {"total": 0, "attempts": []},
                 "routing_preflight_failures": {"total": 0, "failures": []},
             }
         )
@@ -599,7 +580,7 @@ def test_format_jeb_archive_plan_can_fall_back_to_plain_text(
         {
             "status": "would_process",
             "account": "camera",
-            "collection_id": "camera",
+            "collection_slug": "camera",
             "target_name": "munchy",
             "upload_root": "camera",
             "file_count": 1,
@@ -625,12 +606,12 @@ def test_format_jeb_archive_plan_can_fall_back_to_plain_text(
     assert "routing preflight: not_configured ok=true unmatched=0 left=0" in rendered
 
 
-def test_format_jeb_batches_can_fall_back_to_plain_text(
+def test_format_jeb_attempts_can_fall_back_to_plain_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    rendered = format_jeb_batches(
+    rendered = format_jeb_attempts(
         {
             "page": 1,
             "pages": 0,
@@ -640,12 +621,12 @@ def test_format_jeb_batches_can_fall_back_to_plain_text(
             "order": "desc",
             "terminal": "active",
             "filters": {},
-            "batches": [],
+            "attempts": [],
         }
     )
 
     assert rendered == (
-        "jeb batches: page 1/0 per_page=25 total=0 "
+        "jeb attempts: page 1/0 per_page=25 total=0 "
         "sort=updated_at order=desc terminal=active\n- none"
     )
 
@@ -663,7 +644,7 @@ def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -
                 "total": 1,
                 "discs": [
                     {
-                        "id": "20260420T040001Z-1",
+                        "disc_id": "20260420T040001Z-1",
                         "image_id": "20260420T040001Z",
                         "state": "verified",
                         "verification_state": "verified",
@@ -688,7 +669,7 @@ def test_format_discs_uses_compact_disc_table(monkeypatch: pytest.MonkeyPatch) -
                 "total": 1,
                 "discs": [
                     {
-                        "id": "20260420T040001Z-1",
+                        "disc_id": "20260420T040001Z-1",
                         "image_id": "20260420T040001Z",
                         "state": "verified",
                         "verification_state": "verified",
@@ -708,9 +689,8 @@ def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     rendered = _render(
         format_disc(
             {
-                "id": "20260420T040001Z-1",
+                "disc_id": "20260420T040001Z-1",
                 "image_id": "20260420T040001Z",
-                "volume_id": "20260420T040001Z",
                 "label_text": "20260420T040001Z-1",
                 "location": "Shelf B1",
                 "state": "verified",
@@ -737,9 +717,8 @@ def test_format_disc_uses_detail_table(monkeypatch: pytest.MonkeyPatch) -> None:
     styled = _render_styled(
         format_disc(
             {
-                "id": "20260420T040001Z-1",
+                "disc_id": "20260420T040001Z-1",
                 "image_id": "20260420T040001Z",
-                "volume_id": "20260420T040001Z",
                 "label_text": "20260420T040001Z-1",
                 "location": "Shelf B1",
                 "state": "verified",
@@ -856,7 +835,7 @@ def test_format_fetch_partial_entries_do_not_use_coverage_attention_color(
     assert "38;2;255;137;51" not in rendered
 
 
-def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_costs(
+def test_format_collection_summary_surfaces_disc_coverage_labels_and_archive_costs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
@@ -867,27 +846,20 @@ def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_co
             "files": 2,
             "bytes": 33,
             "hot_bytes": 0,
-            "archived_bytes": 33,
-            "pending_bytes": 0,
-            "protection_state": "partially_protected",
-            "protected_bytes": 0,
-            "recovery": {
-                "available": ["glacier"],
-                "verified_physical": {"state": "partial", "bytes": 18},
-                "glacier": {"state": "full", "bytes": 33},
-            },
+            "disc_coverage": {"state": "partial", "bytes": 18},
+            "disc_redundancy": {"state": "none", "bytes": 0},
             "image_coverage": [
                 {
                     "id": "20260420T040001Z",
                     "filename": "20260420T040001Z.iso",
-                    "physical_protection_state": "partially_protected",
-                    "physical_copies_registered": 1,
-                    "physical_copies_verified": 1,
-                    "physical_copies_required": 2,
+                    "disc_redundancy_state": "partial",
+                    "discs_registered": 1,
+                    "discs_verified": 1,
+                    "discs_required": 2,
                     "covered_paths": ["tax/2022/invoice-123.pdf"],
-                    "copies": [
+                    "discs": [
                         {
-                            "id": "20260420T040001Z-1",
+                            "disc_id": "20260420T040001Z-1",
                             "label_text": "20260420T040001Z-1",
                             "location": "Shelf B1",
                             "state": "verified",
@@ -914,14 +886,12 @@ def test_format_collection_summary_surfaces_recovery_paths_labels_and_glacier_co
             ]
         },
     )
-    assert "recovery: available=glacier" in rendered
-    assert "verified_physical=partial 18/33" in rendered
-    assert "glacier=full 33/33" in rendered
-    assert "glacier_footprint: bytes=33 measured_storage_bytes=8200" in rendered
+    assert "disc coverage: partial bytes=18" in rendered
+    assert "disc redundancy: none bytes=0" in rendered
+    assert "archive_footprint: bytes=33 measured_storage_bytes=8200" in rendered
     assert "paths: tax/2022/invoice-123.pdf" in rendered
     assert "collection_archive_contribution: represented_bytes=33" in rendered
     assert "label=20260420T040001Z-1" in rendered
-    assert "glacier/finalized-images" not in rendered
 
 
 def test_format_collection_summary_uses_rich_detail_preview(
@@ -937,38 +907,27 @@ def test_format_collection_summary_uses_rich_detail_preview(
                 "files": 6,
                 "bytes": 600,
                 "hot_bytes": 600,
-                "archived_bytes": 300,
-                "pending_bytes": 300,
-                "protection_state": "under_protected",
-                "protected_bytes": 300,
-                "recovery": {
-                    "available": ["verified_physical", "glacier"],
-                    "verified_physical": {"state": "partial", "bytes": 300},
-                    "glacier": {"state": "full", "bytes": 600},
-                },
                 "collection_manifest": {
                     "object_path": "riverhog/archives/docs/manifest.yml.age",
                     "ots_object_path": "riverhog/archives/docs/manifest.yml.ots.age",
                     "ots_state": "uploaded",
                     "sha256": "abc123",
                 },
-                "disc_coverage": {
-                    "state": "partial",
-                    "verified_physical_bytes": 300,
-                },
+                "disc_coverage": {"state": "partial", "bytes": 300},
+                "disc_redundancy": {"state": "partial", "bytes": 300},
                 "image_coverage": [
                     {
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
-                        "physical_protection_state": "partially_protected",
-                        "physical_copies_registered": 1,
-                        "physical_copies_verified": 1,
-                        "physical_copies_required": 2,
+                        "disc_redundancy_state": "partial",
+                        "discs_registered": 1,
+                        "discs_verified": 1,
+                        "discs_required": 2,
                         "covered_paths": [f"path-{index}.txt" for index in range(4)],
                         "covered_paths_total": 6,
-                        "copies": [
+                        "discs": [
                             {
-                                "id": "20260420T040001Z-1",
+                                "disc_id": "20260420T040001Z-1",
                                 "label_text": "20260420T040001Z-1",
                                 "location": "Shelf B1",
                                 "verification_state": "verified",
@@ -996,7 +955,7 @@ def test_format_collection_summary_uses_rich_detail_preview(
     )
 
     assert "collection docs" in rendered
-    assert "under_protected" in rendered
+    assert "partial" in rendered
     assert "coverage" in rendered
     assert "20260420T040001Z" in rendered
     assert "path-0.txt" in rendered
@@ -1006,14 +965,14 @@ def test_format_collection_summary_uses_rich_detail_preview(
     header_line = next(
         line
         for line in rendered.splitlines()
-        if "Image" in line and "Archive" in line and "Copies" in line and "Paths" in line
+        if "Image" in line and "Archive" in line and "Discs" in line and "Paths" in line
     )
-    assert header_line.index("Archive") < header_line.index("Copies")
-    assert header_line.index("Copies") < header_line.index("Paths")
+    assert header_line.index("Counts") < header_line.index("Archive") < header_line.index("Discs")
+    assert header_line.index("Discs") < header_line.index("Paths")
 
 
-def test_format_glacier_report_surfaces_collection_storage() -> None:
-    rendered = format_glacier_report(
+def test_format_archive_report_surfaces_collection_storage() -> None:
+    rendered = format_archive_report(
         {
             "scope": "collection",
             "measured_at": "2026-04-28T00:00:00Z",
@@ -1033,10 +992,10 @@ def test_format_glacier_report_surfaces_collection_storage() -> None:
                 {
                     "id": "docs",
                     "bytes": 33,
-                    "glacier": {"state": "uploaded"},
+                    "archive": {"state": "uploaded"},
                     "collection_manifest": {
-                        "object_path": "glacier/archives/opaque-abc/manifest.yml.age",
-                        "ots_object_path": "glacier/archives/opaque-abc/manifest.yml.ots.age",
+                        "object_path": "archive/archives/opaque-abc/manifest.yml.age",
+                        "ots_object_path": "archive/archives/opaque-abc/manifest.yml.ots.age",
                     },
                     "archive_format": "tar",
                     "compression": "none",
@@ -1060,7 +1019,7 @@ def test_format_glacier_report_surfaces_collection_storage() -> None:
         }
     )
     assert "collections=1 uploaded_collections=1" in rendered
-    assert "bytes=33 glacier=uploaded ots=uploaded" in rendered
+    assert "bytes=33 archive=uploaded ots=uploaded" in rendered
     assert "measured_storage_bytes=8200" in rendered
     assert "pricing_basis:" not in rendered
     assert "billing:" not in rendered
@@ -1068,4 +1027,4 @@ def test_format_glacier_report_surfaces_collection_storage() -> None:
     assert "estimated_monthly_cost_usd=" not in rendered
     assert "attribution=" not in rendered
     assert "derived_stored_bytes" not in rendered
-    assert "glacier/finalized-images" not in rendered
+    assert "archive/finalized-images" not in rendered

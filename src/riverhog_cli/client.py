@@ -24,7 +24,7 @@ from riverhog_core.tus_upload import TusHttpClient
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 300.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
-_COPY_REGISTRATION_TIMEOUT_SECONDS = 3600.0
+_DISC_REGISTRATION_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 DownloadProgress = Callable[[int, int | None], None]
@@ -265,7 +265,7 @@ class ApiClient:
         order: str = "asc",
         collection: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
+        disc_coverage: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
@@ -279,8 +279,8 @@ class ApiClient:
             params["collection"] = collection
         if hot is not None:
             params["hot"] = hot
-        if archived is not None:
-            params["archived"] = archived
+        if disc_coverage is not None:
+            params["disc_coverage"] = disc_coverage
         return self._json("GET", "/v1/search", params=params)
 
     def get_collection(
@@ -304,7 +304,7 @@ class ApiClient:
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        protection_state: str | None = None,
+        disc_redundancy: str | None = None,
         sort: str = "id",
         order: str = "asc",
     ) -> dict[str, Any]:
@@ -318,8 +318,8 @@ class ApiClient:
             params["order"] = order
         if q:
             params["q"] = q
-        if protection_state:
-            params["protection_state"] = protection_state
+        if disc_redundancy:
+            params["disc_redundancy"] = disc_redundancy
         return self._json("GET", "/v1/collections", params=params)
 
     def get_plan(
@@ -356,7 +356,7 @@ class ApiClient:
         order: str = "desc",
         query: str | None = None,
         collection: str | None = None,
-        has_copies: bool | None = None,
+        has_discs: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -368,11 +368,11 @@ class ApiClient:
             params["q"] = query
         if collection:
             params["collection"] = collection
-        if has_copies is not None:
-            params["has_copies"] = has_copies
+        if has_discs is not None:
+            params["has_discs"] = has_discs
         return self._json("GET", "/v1/images", params=params)
 
-    def get_glacier_report(
+    def get_archive_report(
         self,
         *,
         collection: str | None = None,
@@ -380,7 +380,7 @@ class ApiClient:
         params: dict[str, Any] = {}
         if collection:
             params["collection"] = collection
-        return self._json("GET", "/v1/glacier", params=params)
+        return self._json("GET", "/v1/archive", params=params)
 
     def finalize_image(self, candidate_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/plan/candidates/{candidate_id}/finalize")
@@ -388,13 +388,13 @@ class ApiClient:
     def get_image(self, image_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/images/{image_id}")
 
-    def get_recovery_session_for_image(self, image_id: str) -> dict[str, Any]:
+    def get_archive_restore_for_image(self, image_id: str) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/images/{quote(image_id, safe='/')}/rebuild-session",
+            f"/v1/images/{quote(image_id, safe='/')}/disc-rebuild",
         )
 
-    def list_recovery_sessions(
+    def list_archive_restores(
         self,
         *,
         page: int = 1,
@@ -402,7 +402,7 @@ class ApiClient:
         sort: str = "created_at",
         order: str = "desc",
         terminal: str = "all",
-        recovery_type: str | None = None,
+        restore_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
         image: str | None = None,
@@ -414,41 +414,41 @@ class ApiClient:
             "order": order,
             "terminal": terminal,
         }
-        if recovery_type is not None:
-            params["type"] = recovery_type
+        if restore_type is not None:
+            params["type"] = restore_type
         if state is not None:
             params["state"] = state
         if collection is not None:
             params["collection"] = collection
         if image is not None:
             params["image"] = image
-        return self._json("GET", "/v1/recovery-sessions", params=params)
+        return self._json("GET", "/v1/archive-restores", params=params)
 
-    def get_recovery_session(self, session_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/recovery-sessions/{quote(session_id, safe='/')}")
+    def get_archive_restore(self, restore_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/archive-restores/{quote(restore_id, safe='/')}")
 
-    def complete_recovery_session(self, session_id: str) -> dict[str, Any]:
+    def complete_archive_restore(self, restore_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/complete",
+            f"/v1/archive-restores/{quote(restore_id, safe='/')}/complete",
         )
 
-    def cancel_recovery_session(self, session_id: str) -> dict[str, Any]:
+    def cancel_archive_restore(self, restore_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/cancel",
+            f"/v1/archive-restores/{quote(restore_id, safe='/')}/cancel",
         )
 
-    def pause_recovery_session(self, session_id: str) -> dict[str, Any]:
+    def pause_archive_restore(self, restore_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/pause",
+            f"/v1/archive-restores/{quote(restore_id, safe='/')}/pause",
         )
 
-    def resume_recovery_session(self, session_id: str) -> dict[str, Any]:
+    def resume_archive_restore(self, restore_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/recovery-sessions/{quote(session_id, safe='/')}/resume",
+            f"/v1/archive-restores/{quote(restore_id, safe='/')}/resume",
         )
 
     def _download(
@@ -513,48 +513,48 @@ class ApiClient:
 
     def download_recovered_iso(
         self,
-        session_id: str,
+        restore_id: str,
         image_id: str,
         output: Path | None = None,
         *,
         progress: DownloadProgress | None = None,
     ) -> bytes | int:
         return self._download(
-            "/v1/recovery-sessions/"
-            f"{quote(session_id, safe='/')}/images/{quote(image_id, safe='/')}/iso",
+            "/v1/archive-restores/"
+            f"{quote(restore_id, safe='/')}/images/{quote(image_id, safe='/')}/iso",
             output,
             progress=progress,
         )
 
-    def register_copy(
+    def register_disc(
         self,
         image_id: str,
         location: str,
         *,
-        copy_id: str | None = None,
+        disc_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"location": location}
-        if copy_id is not None:
-            payload["copy_id"] = copy_id
+        if disc_id is not None:
+            payload["disc_id"] = disc_id
         return self._json(
             "POST",
-            f"/v1/images/{image_id}/copies",
+            f"/v1/images/{image_id}/discs",
             json=payload,
             timeout=_timeout_seconds(
-                "RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS",
-                _COPY_REGISTRATION_TIMEOUT_SECONDS,
+                "RIVERHOG_DISC_REGISTRATION_TIMEOUT_SECONDS",
+                _DISC_REGISTRATION_TIMEOUT_SECONDS,
             ),
         )
 
-    def list_copies(self, image_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/images/{image_id}/copies")
+    def list_image_discs(self, image_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/images/{image_id}/discs")
 
     def list_discs(
         self,
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "id",
+        sort: str = "disc_id",
         order: str = "asc",
         query: str | None = None,
         image_id: str | None = None,
@@ -571,20 +571,19 @@ class ApiClient:
             params["image_id"] = image_id
         return self._json("GET", "/v1/discs", params=params)
 
-    def get_disc(self, copy_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/discs/{quote(copy_id, safe='/')}")
+    def get_disc(self, disc_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/discs/{quote(disc_id, safe='/')}")
 
-    def notify_copy_label_needed(self, image_id: str, copy_id: str) -> dict[str, Any]:
+    def notify_disc_label_needed(self, image_id: str, disc_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/images/{quote(image_id, safe='/')}/copies/{quote(copy_id, safe='/')}/"
-            "label-needed",
+            f"/v1/images/{quote(image_id, safe='/')}/discs/{quote(disc_id, safe='/')}/label-needed",
         )
 
-    def update_copy(
+    def update_disc(
         self,
         image_id: str,
-        copy_id: str,
+        disc_id: str,
         *,
         location: str | None = None,
         state: str | None = None,
@@ -599,11 +598,11 @@ class ApiClient:
             payload["verification_state"] = verification_state
         return self._json(
             "PATCH",
-            f"/v1/images/{image_id}/copies/{copy_id}",
+            f"/v1/images/{image_id}/discs/{disc_id}",
             json=payload,
             timeout=_timeout_seconds(
-                "RIVERHOG_COPY_REGISTRATION_TIMEOUT_SECONDS",
-                _COPY_REGISTRATION_TIMEOUT_SECONDS,
+                "RIVERHOG_DISC_REGISTRATION_TIMEOUT_SECONDS",
+                _DISC_REGISTRATION_TIMEOUT_SECONDS,
             ),
         )
 
@@ -650,13 +649,13 @@ class ApiClient:
         self,
         fetch_id: str,
         *,
-        cloud: bool = False,
+        archive: bool = False,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
-            json={"cloud": cloud, "dry_run": dry_run},
+            json={"archive": archive, "dry_run": dry_run},
         )
 
     def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
@@ -690,7 +689,6 @@ class ApiClient:
         order: str = "asc",
         query: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
         disc_coverage: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -703,8 +701,6 @@ class ApiClient:
             params["q"] = query
         if hot is not None:
             params["hot"] = hot
-        if archived is not None:
-            params["archived"] = archived
         if disc_coverage is not None:
             params["disc_coverage"] = disc_coverage
         return self._json(
@@ -764,7 +760,7 @@ class ApiClient:
             params={"include_backlog": str(include_backlog).lower()},
         )
 
-    def list_jeb_batches(
+    def list_jeb_attempts(
         self,
         *,
         page: int = 1,
@@ -774,7 +770,7 @@ class ApiClient:
         terminal: str = "active",
         state: str | None = None,
         account: str | None = None,
-        collection: str | None = None,
+        collection_slug: str | None = None,
         target: str | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
@@ -788,13 +784,13 @@ class ApiClient:
         for key, value in {
             "state": state,
             "account": account,
-            "collection": collection,
+            "collection_slug": collection_slug,
             "target": target,
             "q": query,
         }.items():
             if value is not None:
                 params[key] = value
-        return self._json("GET", "/v1/jeb/batches", params=params)
+        return self._json("GET", "/v1/jeb/attempts", params=params)
 
     def check_jeb_config(self) -> dict[str, Any]:
         return self._json("GET", "/v1/jeb/config/check")

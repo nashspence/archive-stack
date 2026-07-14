@@ -12,17 +12,17 @@ from sqlalchemy import select
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveRestoreCollectionRecord,
+    ArchiveRestoreRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchEntryRecord,
     FetchRecord,
     FetchSelectorRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageRecord,
-    GlacierRecoverySessionCollectionRecord,
-    GlacierRecoverySessionRecord,
 )
-from riverhog_core.domain.enums import FetchState, RecoverySessionState
+from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
 from riverhog_core.domain.errors import InvalidState
 from riverhog_core.recovery_payloads import encrypt_recovery_payload
 from riverhog_core.runtime_config import RuntimeConfig
@@ -178,7 +178,6 @@ def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=True,
-                    archived=True,
                 )
             )
         _add_fetch(
@@ -205,7 +204,7 @@ def test_done_fetch_summary_uses_aggregate_stats_without_materializing_entries(
     assert summary.entries_pending == 0
     assert summary.uploaded_bytes == summary.bytes
     assert summary.missing_bytes == 0
-    assert summary.copies == []
+    assert summary.discs == []
 
     with session_scope(session_factory) as session:
         assert session.scalars(select(FetchEntryRecord)).all() == []
@@ -230,7 +229,6 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=False,
-                    archived=True,
                 )
             )
         _add_fetch(
@@ -252,7 +250,7 @@ def test_waiting_fetch_status_uses_pending_preview_without_materializing_entries
     assert summary.state == FetchState.QUEUED_DJDAN
     assert summary.entries_total == len(files)
     assert summary.entries_pending == len(files)
-    assert summary.copies == []
+    assert summary.discs == []
 
     status = service.status("fx-waiting", limit=3)
 
@@ -306,7 +304,6 @@ def test_cancel_djdan_fetch_discards_uploads_entries_and_returns_to_draft(
                 bytes=len(content),
                 sha256=sha256,
                 hot=False,
-                archived=True,
             )
         )
         _add_fetch(
@@ -378,15 +375,14 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
                 bytes=len(content),
                 sha256=sha256,
                 hot=False,
-                archived=True,
             )
         )
         session.add(
-            FileCopyRecord(
+            FileDiscRecord(
                 collection_id=collection_id,
                 path=path,
-                copy_id="20260530T000000Z-1",
-                volume_id="20260530T000000Z",
+                disc_id="20260530T000000Z-1",
+                image_id="20260530T000000Z",
                 location="red binder",
                 disc_path="files/000001.age",
                 enc_json="{}",
@@ -451,7 +447,7 @@ def test_waiting_fetch_notifications_are_delivered_and_reminded(
     assert payloads[-1]["reminder_count"] == 1
 
 
-def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
+def test_active_archive_fetch_suppresses_media_fetch_notifications_and_uploads(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -461,7 +457,7 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
     collection_id = "docs"
     path = "file.txt"
     target = f"{collection_id}/{path}"
-    content = b"needs cloud recovery\n"
+    content = b"needs archive recovery\n"
     encrypted = encrypt_recovery_payload(content, _RECOVERY_CODEC)
     sha256 = hashlib.sha256(content).hexdigest()
 
@@ -474,7 +470,6 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
                 bytes=len(content),
                 sha256=sha256,
                 hot=False,
-                archived=True,
             )
         )
         _add_fetch(
@@ -499,15 +494,15 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
             )
         )
         session.add(
-            GlacierRecoverySessionRecord(
-                session_id="rs-docs-restore-1",
-                type="collection_restore",
-                state=RecoverySessionState.RESTORE_REQUESTED.value,
+            ArchiveRestoreRecord(
+                restore_id="ar-docs-restore-1",
+                type="fetch_materialization",
+                state=ArchiveRestoreState.REQUESTED.value,
                 created_at="2026-05-31T12:00:00Z",
-                restore_requested_at="2026-05-31T12:00:00Z",
-                restore_ready_at=None,
-                restore_next_poll_at=None,
-                restore_expires_at=None,
+                requested_at="2026-05-31T12:00:00Z",
+                ready_at=None,
+                next_poll_at=None,
+                expires_at=None,
                 completed_at=None,
                 canceled_at=None,
                 paused_at=None,
@@ -516,12 +511,12 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
                 retrieval_tier="Bulk",
                 hold_days=7,
                 warnings_json="[]",
-                restore_paths_json=json.dumps([path]),
+                paths_json=json.dumps([path]),
             )
         )
         session.add(
-            GlacierRecoverySessionCollectionRecord(
-                session_id="rs-docs-restore-1",
+            ArchiveRestoreCollectionRecord(
+                restore_id="ar-docs-restore-1",
                 collection_id=collection_id,
                 collection_order=0,
             )
@@ -547,11 +542,11 @@ def test_active_cloud_fetch_suppresses_media_fetch_notifications_and_uploads(
 
     assert service.deliver_due_queued_notifications(limit=10) == 0
     assert payloads == []
-    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+    with pytest.raises(InvalidState, match="actively being fetch materializationed"):
         service.create_or_resume_upload("fx-1", "e1")
-    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+    with pytest.raises(InvalidState, match="actively being fetch materializationed"):
         service.append_upload_chunk("fx-1", "e1", offset=0, checksum="", content=b"partial")
-    with pytest.raises(InvalidState, match="actively being cloud-fetched"):
+    with pytest.raises(InvalidState, match="actively being fetch materializationed"):
         service.complete("fx-1")
 
 
@@ -594,15 +589,14 @@ def test_stale_sync_does_not_rollback_completed_fetch_state(tmp_path: Path) -> N
                 bytes=len(content),
                 sha256=sha256,
                 hot=False,
-                archived=True,
             )
         )
         session.add(
-            FileCopyRecord(
+            FileDiscRecord(
                 collection_id=collection_id,
                 path=path,
-                copy_id="copy-1",
-                volume_id="vol-1",
+                disc_id="disc-1",
+                image_id="vol-1",
                 location="vault-a/shelf-01",
                 disc_path="files/000001.age",
                 enc_json="{}",
@@ -707,7 +701,6 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
                 bytes=len(content),
                 sha256=sha256,
                 hot=False,
-                archived=True,
             )
         )
         session.add(
@@ -721,11 +714,11 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
             )
         )
         session.add(
-            FileCopyRecord(
+            FileDiscRecord(
                 collection_id=collection_id,
                 path=path,
-                copy_id="copy-1",
-                volume_id="vol-1",
+                disc_id="disc-1",
+                image_id="vol-1",
                 location="vault-a/shelf-01",
                 disc_path="files/000001.age",
                 enc_json="{}",
@@ -744,12 +737,12 @@ def test_cold_fetch_manifest_uses_registered_disc_payload_metadata(tmp_path: Pat
 
     manifest = service.manifest("fx-cold")
     entry = manifest["entries"][0]
-    copy = entry["copies"][0]
+    disc = entry["discs"][0]
 
     assert entry["collection_id"] == collection_id
     assert entry["recovery_bytes"] == len(encrypted)
-    assert copy["recovery_bytes"] == len(encrypted)
-    assert copy["recovery_sha256"] == hashlib.sha256(encrypted).hexdigest()
+    assert disc["recovery_bytes"] == len(encrypted)
+    assert disc["recovery_sha256"] == hashlib.sha256(encrypted).hexdigest()
 
 
 def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) -> None:
@@ -785,7 +778,6 @@ def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) ->
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 hot=False,
-                archived=True,
             )
         )
         session.add(
@@ -800,11 +792,11 @@ def test_cold_split_fetch_complete_uses_registered_part_sizes(tmp_path: Path) ->
         )
         for index, disc_path in enumerate(("files/000001.age", "files/000002.age")):
             session.add(
-                FileCopyRecord(
+                FileDiscRecord(
                     collection_id=collection_id,
                     path=path,
-                    copy_id=f"copy-{index + 1}",
-                    volume_id="vol-1",
+                    disc_id=f"disc-{index + 1}",
+                    image_id="vol-1",
                     location=f"vault-a/shelf-{index + 1:02d}",
                     disc_path=disc_path,
                     enc_json="{}",
@@ -883,7 +875,6 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=False,
-                    archived=True,
                 )
             )
             session.add(
@@ -897,11 +888,11 @@ def test_cold_fetch_manifest_can_select_multiple_collections_by_prefix(
                 )
             )
             session.add(
-                FileCopyRecord(
+                FileDiscRecord(
                     collection_id=collection_id,
                     path=path,
-                    copy_id=f"copy-{index}",
-                    volume_id=f"vol-{index}",
+                    disc_id=f"disc-{index}",
+                    image_id=f"vol-{index}",
                     location=f"vault-a/shelf-{index:02d}",
                     disc_path=f"files/{index:06d}.age",
                     enc_json="{}",
@@ -973,7 +964,6 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=False,
-                    archived=True,
                 )
             )
             session.add(
@@ -987,11 +977,11 @@ def test_cold_fetch_complete_restores_matching_paths_across_collections(
                 )
             )
             session.add(
-                FileCopyRecord(
+                FileDiscRecord(
                     collection_id=collection_id,
                     path=path,
-                    copy_id=f"copy-{index}",
-                    volume_id=f"vol-{index}",
+                    disc_id=f"disc-{index}",
+                    image_id=f"vol-{index}",
                     location=f"vault-a/shelf-{index:02d}",
                     disc_path=f"files/{index:06d}.age",
                     enc_json="{}",

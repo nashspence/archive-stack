@@ -41,7 +41,7 @@ def test_munchy_command_help_has_summaries() -> None:
 
     routing = runner.invoke(app, ["routing", "--help"])
     assert routing.exit_code == 0
-    assert "Explain how profile routing classifies local files." in routing.stdout
+    assert "Explain how routing classifies local files." in routing.stdout
 
 
 def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -321,14 +321,14 @@ def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  
         def cancel_job(self, job_id: str, *, cleanup: bool = False) -> dict[str, object]:
             assert job_id == "job-1"
             assert cleanup is False
-            return {"job_id": "job-1", "state": "cancelled"}
+            return {"job_id": "job-1", "state": "canceled"}
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
     result = runner.invoke(app, ["job", "cancel", "job-1", "--runner-url", "http://runner"])
 
     assert result.exit_code == 0
-    assert "cancelled" in result.stdout
+    assert "canceled" in result.stdout
 
 
 def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -357,15 +357,15 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
 
         def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"upload_id": request.upload_id}
+            return {"input_upload_id": request.input_upload_id}
 
         def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["job_payload"] = request.job_payload
             return {"job_id": request.job_id, "state": "queued"}
 
         def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["uploaded"] = request.upload_id
-            return {"upload_id": request.upload_id, "state": "uploaded"}
+            seen["uploaded"] = request.input_upload_id
+            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
 
         def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, object]:
             assert interval == 0.5
@@ -403,10 +403,10 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     assert result.exit_code == 0
     request = seen["request"]
     assert request.job_id == "camera-20260621T120000Z"
-    assert request.upload_id == "camera-20260621T120000Z"
+    assert request.input_upload_id == "camera-20260621T120000Z"
     assert request.files[0].rel_path == "video/clip.mp4"
     assert request.storage_hint["structured_routing"] is False
-    assert request.storage_hint["groups"]["video"]["archive_mode"] == "av1_nvenc"
+    assert request.storage_hint["groups"]["video"]["output_mode"] == "video"
     assert seen["workflow_mode"] == "collection_archive"
     assert seen["requested_containers"] == []
     assert seen["uploaded"] == "camera-20260621T120000Z"
@@ -501,13 +501,13 @@ def test_munchy_job_start_skips_platform_cruft_before_upload(
 
         def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"upload_id": request.upload_id}
+            return {"input_upload_id": request.input_upload_id}
 
         def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             return {"job_id": request.job_id, "state": "queued"}
 
         def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"upload_id": request.upload_id, "state": "uploaded"}
+            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
@@ -535,7 +535,7 @@ def test_munchy_job_start_skips_platform_cruft_before_upload(
     assert [item.rel_path for item in request.files] == ["video/IMG_0001.MOV"]
 
 
-def test_munchy_job_start_uses_configured_profile_routing(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_munchy_job_start_uses_configured_routing(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     source_dir = tmp_path / "camera"
     source_dir.mkdir()
     (source_dir / "clip.mp4").write_bytes(b"video")
@@ -567,7 +567,7 @@ profiles:
 groups:
   video:
     profile: camera
-    archive_mode: av1_nvenc
+    output_mode: video
     eager_pipeline_batches: 1
     tasks:
       - archive_video
@@ -580,7 +580,7 @@ groups:
         make: Example
         model: Camera
   preserve:
-    archive_mode: preserve
+    output_mode: preserve
     tasks: []
     metadata_projection: false
 """.strip(),
@@ -602,14 +602,14 @@ groups:
 
         def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"upload_id": request.upload_id}
+            return {"input_upload_id": request.input_upload_id}
 
         def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["job_payload"] = request.job_payload
             return {"job_id": request.job_id, "state": "queued"}
 
         def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"upload_id": request.upload_id, "state": "uploaded"}
+            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
@@ -643,7 +643,7 @@ groups:
     assert request.storage_hint["groups"]["preserve"]["tasks"] == []
     assert request.job_payload["collection_archive"]["destination"] == "riverhog"
     assert request.job_payload["riverhog_upload_session_on_failure"] == "cancel"
-    assert request.job_payload["profile_routing"]["routes"][0]["group"] == "video"
+    assert request.job_payload["routing"]["routes"][0]["group"] == "video"
     assert (
         request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
     )
@@ -697,11 +697,11 @@ profiles:
 groups:
   video:
     profile: camera
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
   preserve:
-    archive_mode: preserve
+    output_mode: preserve
     tasks: []
 """.strip(),
         encoding="utf-8",
@@ -723,14 +723,14 @@ groups:
 
         def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"upload_id": request.upload_id}
+            return {"input_upload_id": request.input_upload_id}
 
         def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["job_payload"] = request.job_payload
             return {"job_id": request.job_id, "state": "queued"}
 
         def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"upload_id": request.upload_id, "state": "uploaded"}
+            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
@@ -813,12 +813,12 @@ profiles:
 groups:
   video:
     profile: video
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
       - qcut_video
   preserve:
-    archive_mode: preserve
+    output_mode: preserve
     tasks: []
 """.strip(),
         encoding="utf-8",
@@ -862,7 +862,7 @@ def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_
         """
 job:
   workflow_mode: collection_archive
-  archive_mode: audio
+  output_mode: audio
 
 profiles:
   voice:
@@ -878,7 +878,7 @@ profiles:
 groups:
   voice:
     profile: voice
-    archive_mode: audio
+    output_mode: audio
 """.strip(),
         encoding="utf-8",
     )
@@ -899,13 +899,13 @@ groups:
 
         def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"upload_id": request.upload_id}
+            return {"input_upload_id": request.input_upload_id}
 
         def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
             return {"job_id": request.job_id, "state": "queued"}
 
         def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"upload_id": request.upload_id, "state": "uploaded"}
+            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
@@ -931,7 +931,7 @@ groups:
     assert result.exit_code == 0
     request = seen["request"]
     assert request.files[0].rel_path == "voice/REC_20260628_203040.WAV"
-    assert request.storage_hint["archive_mode"] == "audio"
+    assert request.storage_hint["output_mode"] == "audio"
     assert request.storage_hint["tasks"] == ["archive_audio"]
     assert request.storage_hint["groups"]["voice"]["tasks"] == ["archive_audio"]
     assert request.job_payload["groups"]["voice"]["encode_profile"]["target"] == "munchy-audio"
@@ -947,7 +947,7 @@ def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: igno
     config.write_text(
         """
 job:
-  upload_prefix: phone
+  destination_prefix: phone
   routing:
     routes:
       - id: phone-video
@@ -960,7 +960,7 @@ job:
 
 groups:
   video:
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
 """.strip(),
@@ -994,7 +994,7 @@ def test_munchy_routing_explain_uses_configured_sidecar_facts_only(
     config.write_text(
         """
 job:
-  upload_prefix: camera
+  destination_prefix: camera
   routing:
     sidecars:
       camera_xml:
@@ -1020,7 +1020,7 @@ job:
 
 groups:
   video:
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
 """.strip(),
@@ -1064,7 +1064,7 @@ def test_munchy_routing_explain_skips_expensive_tools_for_path_only_route(
     config.write_text(
         """
 job:
-  upload_prefix: camera
+  destination_prefix: camera
   routing:
     routes:
       - id: device-state
@@ -1085,10 +1085,10 @@ job:
 
 groups:
   state:
-    archive_mode: preserve
+    output_mode: preserve
     tasks: []
   video:
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
 """.strip(),

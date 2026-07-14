@@ -9,7 +9,7 @@ watched-drop scheduler/uploader, and Djdan is the disc workflow CLI.
 ## Critical Risks
 
 Archive custody and source cleanup are the dangerous parts. Be careful around
-upload finalization, catalog migrations, recovery sessions, optical-media
+upload finalization, catalog migrations, archive restores, optical-media
 layout, Munchy source artifacts, Jeb cleanup after target success, webhook
 notifications, and storage credentials.
 

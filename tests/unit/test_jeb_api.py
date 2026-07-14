@@ -9,7 +9,7 @@ from riverhog_api.routers import jeb as jeb_router
 from riverhog_core.domain.errors import BadRequest, InvalidState, ServiceUnavailable
 
 
-def test_jeb_api_forwards_batch_query_to_service(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_jeb_api_forwards_attempt_query_to_service(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = []
 
     def fake_request(
@@ -20,11 +20,11 @@ def test_jeb_api_forwards_batch_query_to_service(monkeypatch: pytest.MonkeyPatch
         json_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         captured.append((method, path, params, json_payload))
-        return {"batches": [], "page": params["page"] if params else 1}
+        return {"attempts": [], "page": params["page"] if params else 1}
 
     monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
 
-    payload = jeb_router.list_jeb_batches(
+    payload = jeb_router.list_jeb_attempts(
         page=2,
         per_page=50,
         sort="created_at",
@@ -32,19 +32,19 @@ def test_jeb_api_forwards_batch_query_to_service(monkeypatch: pytest.MonkeyPatch
         terminal="all",
         state="failed",
         account="camera",
-        collection="weekly",
+        collection_slug="weekly",
         target="archive",
         q="metadata",
     )
 
-    assert payload == {"batches": [], "page": 2}
+    assert payload == {"attempts": [], "page": 2}
     assert captured == [
         (
             "GET",
-            "/v1/jeb/batches",
+            "/v1/jeb/attempts",
             {
                 "account": "camera",
-                "collection": "weekly",
+                "collection_slug": "weekly",
                 "order": "asc",
                 "page": 2,
                 "per_page": 50,

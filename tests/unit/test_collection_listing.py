@@ -6,15 +6,15 @@ from tempfile import TemporaryDirectory
 from tests.fixtures.acceptance import AcceptanceSystem
 
 
-def test_collection_listing_can_include_protected_collections() -> None:
+def test_collection_listing_can_filter_by_full_disc_redundancy() -> None:
     with TemporaryDirectory() as tmp:
         system = AcceptanceSystem.create(Path(tmp))
         try:
             system.seed_planner_fixtures()
             system.planning.finalize_image("img_2026-04-20_01")
-            system.copies.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-1")
-            system.copies.register("20260420T040001Z", "Shelf B2", copy_id="20260420T040001Z-2")
-            system.copies.update(
+            system.discs.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-1")
+            system.discs.register("20260420T040001Z", "Shelf B2", disc_id="20260420T040001Z-2")
+            system.discs.update(
                 "20260420T040001Z",
                 "20260420T040001Z-1",
                 state="verified",
@@ -29,13 +29,12 @@ def test_collection_listing_can_include_protected_collections() -> None:
                     "tax/2022/receipt-456.pdf",
                 ],
                 hot=False,
-                archived=True,
             )
 
             listing = system.request(
                 "GET",
                 "/v1/collections",
-                params={"protection_state": "fully_protected"},
+                params={"disc_redundancy": "full"},
             )
             assert listing.status_code == 200
             listed = listing.json()["collections"]
@@ -47,9 +46,11 @@ def test_collection_listing_can_include_protected_collections() -> None:
             assert summary.status_code == 200
             payload = summary.json()
             assert "image_coverage" in payload
-            assert payload["protection_state"] == "fully_protected"
-            assert payload["protected_bytes"] == payload["bytes"]
-            assert payload["glacier"]["state"] == "uploaded"
+            assert payload["disc_redundancy"] == {
+                "state": "full",
+                "bytes": payload["bytes"],
+            }
+            assert payload["archive"]["state"] == "uploaded"
             assert payload["disc_coverage"]["state"] == "full"
 
             preview = system.request(
@@ -65,18 +66,18 @@ def test_collection_listing_can_include_protected_collections() -> None:
             system.close()
 
 
-def test_collection_recovery_summary_requires_all_split_parts() -> None:
+def test_collection_disc_coverage_requires_all_split_parts() -> None:
     with TemporaryDirectory() as tmp:
         system = AcceptanceSystem.create(Path(tmp))
         try:
             system.seed_split_planner_fixtures()
             system.planning.finalize_image("img_2026-04-20_03")
-            system.copies.register(
+            system.discs.register(
                 "20260420T040003Z",
                 "vault-a/shelf-03",
-                copy_id="20260420T040003Z-1",
+                disc_id="20260420T040003Z-1",
             )
-            system.copies.update(
+            system.discs.update(
                 "20260420T040003Z",
                 "20260420T040003Z-1",
                 state="verified",
@@ -86,7 +87,6 @@ def test_collection_recovery_summary_requires_all_split_parts() -> None:
                 "docs",
                 ["tax/2022/invoice-123.pdf"],
                 hot=False,
-                archived=True,
             )
             system.mark_collection_archive_uploaded("docs")
 
@@ -96,12 +96,12 @@ def test_collection_recovery_summary_requires_all_split_parts() -> None:
             assert payload["disc_coverage"]["state"] == "partial"
 
             system.planning.finalize_image("img_2026-04-20_04")
-            system.copies.register(
+            system.discs.register(
                 "20260420T040004Z",
                 "vault-a/shelf-04",
-                copy_id="20260420T040004Z-1",
+                disc_id="20260420T040004Z-1",
             )
-            system.copies.update(
+            system.discs.update(
                 "20260420T040004Z",
                 "20260420T040004Z-1",
                 state="verified",

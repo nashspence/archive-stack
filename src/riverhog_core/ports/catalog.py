@@ -22,6 +22,6 @@ class CatalogRepo(Protocol):
         order: str,
         collection: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
+        disc_coverage: bool | None = None,
     ) -> dict[str, object]: ...
     def resolve_target_files(self, target: Target) -> list[FileRef]: ...

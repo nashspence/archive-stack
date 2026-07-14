@@ -19,7 +19,7 @@ Ok, session data match recorded md5.
 File contents and their MD5 checksums match.
 ```
 
-If the command exits non-zero, do not burn the image. Download it again and verify the new copy before proceeding.
+If the command exits non-zero, do not burn the image. Download it again and verify the replacement before proceeding.
 
 ## Notes
 

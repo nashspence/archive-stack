@@ -10,9 +10,9 @@ section:
   - .jpg
   - .jpeg
   - .mov
-  archive_mode: preserve
+  output_mode: preserve
   media_preflight: false
-  profile_group: preserve
+  group: preserve
   profiles:
     video-av1-webm:
       name: video-av1-webm
@@ -35,9 +35,9 @@ section:
           vbr: 'on'
   groups:
     preserve:
-      archive_mode: preserve
+      output_mode: preserve
     video-av1-webm:
-      archive_mode: av1_nvenc
+      output_mode: video
       profile: video-av1-webm
   routing:
     gates:

@@ -9,12 +9,12 @@ section:
   - .jpg
   - .jpeg
   - .mp4
-  archive_mode: preserve
+  output_mode: preserve
   media_preflight: false
-  profile_group: preserve
+  group: preserve
   groups:
     preserve:
-      archive_mode: preserve
+      output_mode: preserve
   routing:
     extra_exiftool_tags:
     - AndroidCaptureFPS

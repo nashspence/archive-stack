@@ -14,22 +14,22 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveRestoreCollectionRecord,
+    ArchiveRestoreRecord,
     CollectionFileRecord,
     FetchEntryRecord,
     FetchOperatorFileRecord,
     FetchOperatorSummaryRecord,
     FetchRecord,
     FetchSelectorRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageRecord,
-    GlacierRecoverySessionCollectionRecord,
-    GlacierRecoverySessionRecord,
 )
-from riverhog_core.domain.enums import FetchState, RecoverySessionState
+from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, InvalidState, NotFound
-from riverhog_core.domain.models import FetchCopyHint, FetchListPage, FetchSummary
+from riverhog_core.domain.models import FetchDiscHint, FetchListPage, FetchSummary
 from riverhog_core.domain.selectors import parse_target
-from riverhog_core.domain.types import CopyId
+from riverhog_core.domain.types import DiscId
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.recovery_payloads import (
@@ -41,9 +41,9 @@ from riverhog_core.recovery_payloads import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.compliance import file_is_fully_compliant
-from riverhog_core.services.copy_recovery_metadata import (
-    CopyRecoveryMetadata,
-    read_copy_recovery_metadata,
+from riverhog_core.services.disc_recovery_metadata import (
+    DiscRecoveryMetadata,
+    read_disc_recovery_metadata,
 )
 from riverhog_core.services.hot_fetch_projection import fetch_summary_from_projection
 from riverhog_core.services.resumable_uploads import (
@@ -58,10 +58,10 @@ from riverhog_core.services.target_selection import (
 )
 from riverhog_core.webhooks import WebhookConfig, build_fetch_queued_payload, post_webhook, utcnow
 
-_ACTIVE_CLOUD_FETCH_STATES = {
-    RecoverySessionState.RESTORE_REQUESTED.value,
-    RecoverySessionState.READY.value,
-    RecoverySessionState.PAUSED.value,
+_ACTIVE_ARCHIVE_RESTORE_STATES = {
+    ArchiveRestoreState.REQUESTED.value,
+    ArchiveRestoreState.READY.value,
+    ArchiveRestoreState.PAUSED.value,
 }
 _FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
 _EDITABLE_FETCH_STATES = {FetchState.DRAFT.value}
@@ -70,8 +70,8 @@ _DJDAN_FETCH_STATES = {
     FetchState.UPLOADING.value,
     FetchState.VERIFYING.value,
 }
-_CLOUD_FETCH_STATES = {FetchState.QUEUED_CLOUD.value, FetchState.CLOUD_FETCHING.value}
-_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived", "disc"}
+_ARCHIVE_FETCH_STATES = {FetchState.QUEUED_ARCHIVE.value, FetchState.RESTORING_ARCHIVE.value}
+_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "disc"}
 
 
 def _read_collection_file_content(
@@ -86,9 +86,9 @@ def _read_collection_file_content(
 
 
 @dataclass(frozen=True, slots=True)
-class _ManifestCopy:
-    id: CopyId
-    volume_id: str
+class _ManifestDisc:
+    disc_id: DiscId
+    image_id: str
     location: str
     disc_path: str
     enc: dict[str, object]
@@ -100,8 +100,12 @@ class _ManifestCopy:
     recovery_sha256: str | None
 
     @property
-    def hint(self) -> FetchCopyHint:
-        return FetchCopyHint(id=self.id, volume_id=self.volume_id, location=self.location)
+    def hint(self) -> FetchDiscHint:
+        return FetchDiscHint(
+            disc_id=self.disc_id,
+            image_id=self.image_id,
+            location=self.location,
+        )
 
 
 class SqlAlchemyFetchService:
@@ -243,14 +247,14 @@ class SqlAlchemyFetchService:
                 prefer_entries=True,
             )
 
-    def start(self, fetch_id: str, *, cloud: bool = False) -> FetchSummary:
+    def start(self, fetch_id: str, *, archive: bool = False) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             fetch_record = _get_fetch_record(session, fetch_id)
             _require_startable_fetch(fetch_record)
             if not _fetch_selectors(session, fetch_id):
                 raise InvalidState("fetch has no targets")
             fetch_record.fetch_state = (
-                FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+                FetchState.QUEUED_ARCHIVE.value if archive else FetchState.QUEUED_DJDAN.value
             )
             session.flush()
             return fetch_summary_from_projection(
@@ -258,7 +262,7 @@ class SqlAlchemyFetchService:
                 prefer_entries=True,
             )
 
-    def start_plan(self, fetch_id: str, *, cloud: bool = False) -> dict[str, object]:
+    def start_plan(self, fetch_id: str, *, archive: bool = False) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             fetch_record = _get_fetch_record(session, fetch_id)
             _require_startable_fetch(fetch_record)
@@ -271,19 +275,19 @@ class SqlAlchemyFetchService:
             return {
                 **_fetch_summary_plan_payload(summary),
                 "dry_run": True,
-                "status": "would_queue_cloud" if cloud else "would_queue_djdan",
-                "cloud": cloud,
+                "status": "would_queue_archive" if archive else "would_queue_djdan",
+                "archive": archive,
                 "queued_state": (
-                    FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+                    FetchState.QUEUED_ARCHIVE.value if archive else FetchState.QUEUED_DJDAN.value
                 ),
-                "will_create_recovery_session": cloud,
+                "will_create_archive_restore": archive,
             }
 
     def cancel(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             fetch_record = _get_fetch_record(session, fetch_id)
-            if fetch_record.fetch_state in _CLOUD_FETCH_STATES:
-                raise InvalidState("cloud fetches are canceled through recovery sessions")
+            if fetch_record.fetch_state in _ARCHIVE_FETCH_STATES:
+                raise InvalidState("archive fetches are canceled through archive restores")
             if fetch_record.fetch_state == FetchState.DONE.value:
                 raise InvalidState("completed fetches cannot be canceled")
 
@@ -327,7 +331,7 @@ class SqlAlchemyFetchService:
             if noncompliant:
                 first = noncompliant[0]
                 raise Conflict(
-                    "cannot evict hot file without verified disc protection: "
+                    "cannot evict hot file without verified disc redundancy: "
                     f"{first.collection_id}/{first.path}"
                 )
             would_evict_files = sum(1 for record in selected if record.hot)
@@ -414,7 +418,6 @@ class SqlAlchemyFetchService:
         order: str,
         q: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
         disc_coverage: bool | None = None,
     ) -> dict[str, object]:
         if page < 1:
@@ -432,7 +435,6 @@ class SqlAlchemyFetchService:
                 selected_files,
                 q=q,
                 hot=hot,
-                archived=archived,
                 disc_coverage=disc_coverage,
             )
             total_stmt = select(func.count()).select_from(selected_files)
@@ -445,8 +447,7 @@ class SqlAlchemyFetchService:
                     selected_files.c.path,
                     selected_files.c.bytes,
                     selected_files.c.hot,
-                    selected_files.c.archived,
-                    selected_files.c.registered_disc_coverage,
+                    selected_files.c.disc_coverage,
                 )
                 .select_from(selected_files)
                 .order_by(*_fetch_file_order(selected_files, sort=sort, order=order))
@@ -466,7 +467,6 @@ class SqlAlchemyFetchService:
                 order=order,
                 q=q,
                 hot=hot,
-                archived=archived,
                 disc_coverage=disc_coverage,
                 files=files,
             )
@@ -511,7 +511,7 @@ class SqlAlchemyFetchService:
             )
             _sync_upload_progress(fetch_record, entries, self._upload_store)
             _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
-            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
+            _raise_if_fetch_is_restoring_archive(session, fetch_record, entries)
             entry = _get_entry(entries, entry_id)
 
             target_path = _entry_upload_target_path(entry)
@@ -550,7 +550,7 @@ class SqlAlchemyFetchService:
                 self._hot_store,
                 self._recovery_payload_codec,
             )
-            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
+            _raise_if_fetch_is_restoring_archive(session, fetch_record, entries)
             entry = _get_entry(entries, entry_id)
             _expire_incomplete_upload_for_entry(fetch_record, entry, self._upload_store)
 
@@ -683,7 +683,7 @@ class SqlAlchemyFetchService:
                 _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
                 if fetch_record.fetch_state != FetchState.QUEUED_DJDAN.value:
                     continue
-                if _active_cloud_fetch_session_id(session, fetch_record, entries) is not None:
+                if _active_archive_restore_id(session, fetch_record, entries) is not None:
                     continue
                 if _notify_fetch_queued(
                     config=self._config,
@@ -706,7 +706,7 @@ class SqlAlchemyFetchService:
             )
             _sync_upload_progress(fetch_record, entries, self._upload_store)
             _expire_incomplete_uploads(fetch_record, entries, self._upload_store)
-            _raise_if_fetch_is_cloud_fetching(session, fetch_record, entries)
+            _raise_if_fetch_is_restoring_archive(session, fetch_record, entries)
 
             if fetch_record.fetch_state == FetchState.DONE.value:
                 return {
@@ -727,19 +727,19 @@ class SqlAlchemyFetchService:
                 target_path = _entry_upload_target_path(entry)
                 encrypted = self._upload_store.read_target(target_path)
 
-                copies = _entry_copies(entry)
+                discs = _entry_discs(entry)
                 try:
-                    if copies and any(copy.part_index is not None for copy in copies):
-                        copies = _entry_copies(
+                    if discs and any(disc.part_index is not None for disc in discs):
+                        discs = _entry_discs(
                             entry,
                             recovery_payload_codec=self._recovery_payload_codec,
                             require_recovery_metadata=True,
                         )
-                        part_copies = _ordered_entry_part_copies(entry, copies)
+                        part_discs = _ordered_entry_part_discs(entry, discs)
                         offset = 0
                         plaintext_chunks: list[bytes] = []
-                        for copy in part_copies:
-                            size = _copy_recovery_bytes(copy)
+                        for disc in part_discs:
+                            size = _disc_recovery_bytes(disc)
                             plaintext_chunks.append(
                                 decrypt_recovery_payload(
                                     encrypted[offset : offset + size],
@@ -832,7 +832,7 @@ def _notify_fetch_queued(
                 name=fetch_record.name,
                 files=len(entries),
                 bytes=sum(int(entry.bytes) for entry in entries),
-                copies=_fetch_copy_payload(entries),
+                discs=_fetch_disc_payload(entries),
                 delivered_at=current,
                 reminder_count=current_count,
                 reminder=reminder,
@@ -862,7 +862,7 @@ def _notify_fetch_queued(
     return True
 
 
-def _active_cloud_fetch_session_id(
+def _active_archive_restore_id(
     session: Session,
     fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
@@ -873,73 +873,70 @@ def _active_cloud_fetch_session_id(
     if not paths_by_collection:
         return None
 
-    type_expr = func.coalesce(GlacierRecoverySessionRecord.type, "image_rebuild")
+    type_expr = func.coalesce(ArchiveRestoreRecord.type, "disc_rebuild")
     rows = session.execute(
         select(
-            GlacierRecoverySessionRecord,
-            GlacierRecoverySessionCollectionRecord.collection_id,
+            ArchiveRestoreRecord,
+            ArchiveRestoreCollectionRecord.collection_id,
         )
         .join(
-            GlacierRecoverySessionCollectionRecord,
-            GlacierRecoverySessionCollectionRecord.session_id
-            == GlacierRecoverySessionRecord.session_id,
+            ArchiveRestoreCollectionRecord,
+            ArchiveRestoreCollectionRecord.restore_id == ArchiveRestoreRecord.restore_id,
         )
-        .where(type_expr == "collection_restore")
-        .where(GlacierRecoverySessionRecord.state.in_(_ACTIVE_CLOUD_FETCH_STATES))
-        .where(
-            GlacierRecoverySessionCollectionRecord.collection_id.in_(sorted(paths_by_collection))
-        )
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
+        .where(type_expr == "fetch_materialization")
+        .where(ArchiveRestoreRecord.state.in_(_ACTIVE_ARCHIVE_RESTORE_STATES))
+        .where(ArchiveRestoreCollectionRecord.collection_id.in_(sorted(paths_by_collection)))
+        .order_by(ArchiveRestoreRecord.created_at.desc())
     ).all()
     for record, collection_id in rows:
         fetch_paths = paths_by_collection.get(collection_id)
         if not fetch_paths:
             continue
-        restore_paths = _restore_paths_from_json(record.restore_paths_json)
-        if restore_paths is None or set(restore_paths) & fetch_paths:
-            return str(record.session_id)
+        paths = _paths_from_json(record.paths_json)
+        if paths is None or set(paths) & fetch_paths:
+            return str(record.restore_id)
     return None
 
 
-def _raise_if_fetch_is_cloud_fetching(
+def _raise_if_fetch_is_restoring_archive(
     session: Session,
     fetch_record: FetchRecord,
     entries: list[FetchEntryRecord],
 ) -> None:
-    session_id = _active_cloud_fetch_session_id(session, fetch_record, entries)
-    if session_id is None:
+    restore_id = _active_archive_restore_id(session, fetch_record, entries)
+    if restore_id is None:
         return
     raise InvalidState(
-        f"fetch {fetch_record.fetch_id} is actively being cloud-fetched by {session_id}; "
-        "wait for cloud-fetch to finish before running djdan fetch"
+        f"fetch {fetch_record.fetch_id} is actively being fetch materializationed by {restore_id}; "
+        "wait for the archive restore to finish before running djdan fetch"
     )
 
 
-def _restore_paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
+def _paths_from_json(raw_value: str | None) -> tuple[str, ...] | None:
     if raw_value is None:
         return None
     loaded = json.loads(raw_value)
     if not isinstance(loaded, list):
-        raise InvalidState("cloud-fetch restore paths are corrupt")
+        raise InvalidState("fetch materialization restore paths are corrupt")
     return tuple(str(item) for item in loaded)
 
 
-def _fetch_copy_payload(entries: list[FetchEntryRecord]) -> list[dict[str, str]]:
-    copies: list[dict[str, str]] = []
+def _fetch_disc_payload(entries: list[FetchEntryRecord]) -> list[dict[str, str]]:
+    discs: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for hint in _summary_copies(entries):
-        key = (hint.volume_id, str(hint.id))
+    for hint in _summary_discs(entries):
+        key = (hint.image_id, str(hint.disc_id))
         if key in seen:
             continue
         seen.add(key)
-        copies.append(
+        discs.append(
             {
-                "copy_id": str(hint.id),
-                "volume_id": hint.volume_id,
+                "disc_id": str(hint.disc_id),
+                "image_id": hint.image_id,
                 "location": hint.location,
             }
         )
-    return copies
+    return discs
 
 
 def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
@@ -1030,7 +1027,7 @@ def _require_editable_fetch(fetch_record: FetchRecord) -> None:
 def _require_startable_fetch(fetch_record: FetchRecord) -> None:
     if fetch_record.fetch_state == FetchState.DONE.value:
         raise InvalidState("fetch is already complete")
-    if fetch_record.fetch_state in _DJDAN_FETCH_STATES | _CLOUD_FETCH_STATES:
+    if fetch_record.fetch_state in _DJDAN_FETCH_STATES | _ARCHIVE_FETCH_STATES:
         raise InvalidState("fetch is already started")
     if fetch_record.fetch_state != FetchState.DRAFT.value:
         raise InvalidState(f"fetch cannot be started from state {fetch_record.fetch_state}")
@@ -1047,12 +1044,12 @@ def _selected_files_for_fetch(
     session: Session,
     fetch_id: str,
     *,
-    load_copies: bool,
+    load_discs: bool,
 ) -> list[CollectionFileRecord]:
     selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
     targets = _fetch_target_values(session, fetch_id)
     for target in targets:
-        for record in selected_collection_files(session, target, load_copies=load_copies):
+        for record in selected_collection_files(session, target, load_discs=load_discs):
             selected_by_key[(record.collection_id, record.path)] = record
     if targets and not selected_by_key:
         raise NotFound(f"fetch targets matched no files: {fetch_id}")
@@ -1084,20 +1081,20 @@ def _ensure_fetch_entries(
     if existing:
         return existing
 
-    selected = _selected_files_for_fetch(session, fetch_record.fetch_id, load_copies=False)
+    selected = _selected_files_for_fetch(session, fetch_record.fetch_id, load_discs=False)
     created: list[FetchEntryRecord] = []
     for index, file_record in enumerate(
         sorted(selected, key=lambda item: (item.collection_id, item.path)), start=1
     ):
-        copy_records = _copy_records_for_file(
+        disc_records = _disc_records_for_file(
             session,
             file_record.collection_id,
             file_record.path,
             recovery_payload_codec,
             require_recovery_metadata=True,
         )
-        if copy_records:
-            recovery_bytes = _file_recovery_bytes_from_copies(file_record, copy_records)
+        if disc_records:
+            recovery_bytes = _file_recovery_bytes_from_discs(file_record, disc_records)
         else:
             content = _read_collection_file_content(
                 hot_store,
@@ -1158,9 +1155,13 @@ def _fetch_summary_plan_payload(summary: FetchSummary) -> dict[str, object]:
         "uploaded_bytes": summary.uploaded_bytes,
         "missing_bytes": summary.missing_bytes,
         "upload_state_expires_at": summary.upload_state_expires_at,
-        "copies": [
-            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-            for copy in summary.copies
+        "discs": [
+            {
+                "disc_id": str(disc.disc_id),
+                "image_id": disc.image_id,
+                "location": disc.location,
+            }
+            for disc in summary.discs
         ],
     }
 
@@ -1184,9 +1185,8 @@ def _fetch_status_payload(
         "bytes": summary.bytes,
         "hot_files": file_rollup["hot_files"],
         "hot_bytes": file_rollup["hot_bytes"],
-        "archived_files": file_rollup["archived_files"],
-        "archived_bytes": file_rollup["archived_bytes"],
-        "registered_disc_files": file_rollup["registered_disc_files"],
+        "disc_files": file_rollup["disc_files"],
+        "disc_bytes": file_rollup["disc_bytes"],
         "missing_files": file_rollup["missing_files"],
         "missing_with_disc_files": file_rollup["missing_with_disc_files"],
         "missing_without_disc_files": file_rollup["missing_without_disc_files"],
@@ -1198,9 +1198,13 @@ def _fetch_status_payload(
         "uploaded_bytes": summary.uploaded_bytes,
         "missing_bytes": summary.missing_bytes,
         "upload_state_expires_at": summary.upload_state_expires_at,
-        "copies": [
-            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-            for copy in summary.copies
+        "discs": [
+            {
+                "disc_id": str(disc.disc_id),
+                "image_id": disc.image_id,
+                "location": disc.location,
+            }
+            for disc in summary.discs
         ],
         "entries_limit": limit,
         "entries_returned": len(entries),
@@ -1314,8 +1318,7 @@ def _selected_files_subquery(fetch_id: str) -> Any:
             FetchOperatorFileRecord.path.label("path"),
             FetchOperatorFileRecord.bytes.label("bytes"),
             FetchOperatorFileRecord.hot.label("hot"),
-            FetchOperatorFileRecord.archived.label("archived"),
-            FetchOperatorFileRecord.registered_disc_coverage.label("registered_disc_coverage"),
+            FetchOperatorFileRecord.disc_coverage.label("disc_coverage"),
         )
         .where(FetchOperatorFileRecord.fetch_id == fetch_id)
         .subquery()
@@ -1342,22 +1345,18 @@ def _fetch_file_rollup(session: Session, fetch_id: str) -> dict[str, int]:
                 0,
             ).label("hot_bytes"),
             func.coalesce(
-                func.sum(case((selected_files.c.archived.is_(True), 1), else_=0)),
+                func.sum(case((selected_files.c.disc_coverage.is_(True), 1), else_=0)),
                 0,
-            ).label("archived_files"),
+            ).label("disc_files"),
             func.coalesce(
                 func.sum(
                     case(
-                        (selected_files.c.archived.is_(True), selected_files.c.bytes),
+                        (selected_files.c.disc_coverage.is_(True), selected_files.c.bytes),
                         else_=0,
                     )
                 ),
                 0,
-            ).label("archived_bytes"),
-            func.coalesce(
-                func.sum(case((selected_files.c.registered_disc_coverage.is_(True), 1), else_=0)),
-                0,
-            ).label("registered_disc_files"),
+            ).label("disc_bytes"),
             func.coalesce(
                 func.sum(case((selected_files.c.hot.is_(False), 1), else_=0)),
                 0,
@@ -1368,7 +1367,7 @@ def _fetch_file_rollup(session: Session, fetch_id: str) -> dict[str, int]:
                         (
                             and_(
                                 selected_files.c.hot.is_(False),
-                                selected_files.c.registered_disc_coverage.is_(True),
+                                selected_files.c.disc_coverage.is_(True),
                             ),
                             1,
                         ),
@@ -1383,7 +1382,7 @@ def _fetch_file_rollup(session: Session, fetch_id: str) -> dict[str, int]:
                         (
                             and_(
                                 selected_files.c.hot.is_(False),
-                                selected_files.c.registered_disc_coverage.is_(False),
+                                selected_files.c.disc_coverage.is_(False),
                             ),
                             1,
                         ),
@@ -1399,9 +1398,8 @@ def _fetch_file_rollup(session: Session, fetch_id: str) -> dict[str, int]:
         "bytes": int(row.bytes or 0),
         "hot_files": int(row.hot_files or 0),
         "hot_bytes": int(row.hot_bytes or 0),
-        "archived_files": int(row.archived_files or 0),
-        "archived_bytes": int(row.archived_bytes or 0),
-        "registered_disc_files": int(row.registered_disc_files or 0),
+        "disc_files": int(row.disc_files or 0),
+        "disc_bytes": int(row.disc_bytes or 0),
         "missing_files": int(row.missing_files or 0),
         "missing_with_disc_files": int(row.missing_with_disc_files or 0),
         "missing_without_disc_files": int(row.missing_without_disc_files or 0),
@@ -1414,9 +1412,8 @@ def _empty_fetch_file_rollup() -> dict[str, int]:
         "bytes": 0,
         "hot_files": 0,
         "hot_bytes": 0,
-        "archived_files": 0,
-        "archived_bytes": 0,
-        "registered_disc_files": 0,
+        "disc_files": 0,
+        "disc_bytes": 0,
         "missing_files": 0,
         "missing_with_disc_files": 0,
         "missing_without_disc_files": 0,
@@ -1427,7 +1424,7 @@ def _fetch_target_summaries(session: Session, fetch_id: str) -> list[dict[str, o
     selected_files = _selected_files_subquery(fetch_id)
     summaries: list[dict[str, object]] = []
     for target in _fetch_target_values(session, fetch_id):
-        disc_coverage = selected_files.c.registered_disc_coverage
+        disc_coverage = selected_files.c.disc_coverage
         row = session.execute(
             select(
                 func.count().label("files"),
@@ -1446,25 +1443,13 @@ def _fetch_target_summaries(session: Session, fetch_id: str) -> list[dict[str, o
                     0,
                 ).label("hot_bytes"),
                 func.coalesce(
-                    func.sum(case((selected_files.c.archived.is_(True), 1), else_=0)),
-                    0,
-                ).label("archived_files"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (
-                                selected_files.c.archived.is_(True),
-                                selected_files.c.bytes,
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("archived_bytes"),
-                func.coalesce(
                     func.sum(case((disc_coverage, 1), else_=0)),
                     0,
-                ).label("registered_disc_files"),
+                ).label("disc_files"),
+                func.coalesce(
+                    func.sum(case((disc_coverage, selected_files.c.bytes), else_=0)),
+                    0,
+                ).label("disc_bytes"),
                 func.coalesce(
                     func.sum(case((selected_files.c.hot.is_(False), 1), else_=0)),
                     0,
@@ -1516,9 +1501,8 @@ def _fetch_target_summaries(session: Session, fetch_id: str) -> list[dict[str, o
                 "bytes": int(row.bytes or 0),
                 "hot_files": int(row.hot_files or 0),
                 "hot_bytes": int(row.hot_bytes or 0),
-                "archived_files": int(row.archived_files or 0),
-                "archived_bytes": int(row.archived_bytes or 0),
-                "registered_disc_files": int(row.registered_disc_files or 0),
+                "disc_files": int(row.disc_files or 0),
+                "disc_bytes": int(row.disc_bytes or 0),
                 "missing_files": int(row.missing_files or 0),
                 "missing_with_disc_files": int(row.missing_with_disc_files or 0),
                 "missing_without_disc_files": int(row.missing_without_disc_files or 0),
@@ -1542,8 +1526,7 @@ def _fetch_file_preview(
             selected_files.c.path,
             selected_files.c.bytes,
             selected_files.c.hot,
-            selected_files.c.archived,
-            selected_files.c.registered_disc_coverage,
+            selected_files.c.disc_coverage,
         )
         .select_from(selected_files)
         .order_by(selected_files.c.collection_id, selected_files.c.path)
@@ -1559,8 +1542,7 @@ def _fetch_file_payload(row: Any) -> dict[str, object]:
         "path": row.path,
         "bytes": int(row.bytes),
         "hot": bool(row.hot),
-        "archived": bool(row.archived),
-        "registered_disc_coverage": bool(row.registered_disc_coverage),
+        "disc_coverage": bool(row.disc_coverage),
     }
 
 
@@ -1574,7 +1556,6 @@ def _fetch_files_payload(
     order: str,
     q: str | None,
     hot: bool | None,
-    archived: bool | None,
     disc_coverage: bool | None,
     files: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -1582,7 +1563,6 @@ def _fetch_files_payload(
         "fetch_id": fetch_id,
         "query": q,
         "hot": hot,
-        "archived": archived,
         "disc_coverage": disc_coverage,
         "page": page,
         "per_page": per_page,
@@ -1599,7 +1579,6 @@ def _fetch_file_filters(
     *,
     q: str | None,
     hot: bool | None,
-    archived: bool | None,
     disc_coverage: bool | None,
 ) -> list[ColumnElement[bool]]:
     filters: list[ColumnElement[bool]] = []
@@ -1615,10 +1594,8 @@ def _fetch_file_filters(
         )
     if hot is not None:
         filters.append(selected_files.c.hot.is_(hot))
-    if archived is not None:
-        filters.append(selected_files.c.archived.is_(archived))
     if disc_coverage is not None:
-        filters.append(selected_files.c.registered_disc_coverage.is_(disc_coverage))
+        filters.append(selected_files.c.disc_coverage.is_(disc_coverage))
     return filters
 
 
@@ -1651,15 +1628,9 @@ def _fetch_file_order(selected_files: Any, *, sort: str, order: str) -> tuple[An
             asc(selected_files.c.collection_id),
             asc(selected_files.c.path),
         )
-    if sort == "archived":
-        return (
-            direction(selected_files.c.archived),
-            asc(selected_files.c.collection_id),
-            asc(selected_files.c.path),
-        )
     if sort == "disc":
         return (
-            direction(selected_files.c.registered_disc_coverage),
+            direction(selected_files.c.disc_coverage),
             asc(selected_files.c.collection_id),
             asc(selected_files.c.path),
         )
@@ -1681,7 +1652,7 @@ def _fetch_next_action(summary: FetchSummary, file_rollup: dict[str, int]) -> tu
             return "already_hot", "all selected files are already hot"
         if file_rollup["missing_without_disc_files"] > 0:
             return (
-                "start_cloud",
+                "start_archive",
                 "some missing files have no registered disc coverage",
             )
         return "start_djdan", "missing files have registered disc coverage"
@@ -1691,8 +1662,8 @@ def _fetch_next_action(summary: FetchSummary, file_rollup: dict[str, int]) -> tu
         return "continue_djdan_fetch", "optical media upload is in progress"
     if summary.state == FetchState.VERIFYING:
         return "wait", "server-side verification is in progress"
-    if summary.state in {FetchState.QUEUED_CLOUD, FetchState.CLOUD_FETCHING}:
-        return "monitor_cloud_fetch", "cloud materialization is active"
+    if summary.state in {FetchState.QUEUED_ARCHIVE, FetchState.RESTORING_ARCHIVE}:
+        return "monitor_archive_restore", "archive materialization is active"
     if summary.state == FetchState.DONE:
         return "done", "all selected files are hot"
     if summary.state == FetchState.FAILED:
@@ -1745,17 +1716,17 @@ def _pending_status_entries_from_fetch_query(
     ]
 
 
-def _summary_copies(entries: list[FetchEntryRecord]) -> list[FetchCopyHint]:
+def _summary_discs(entries: list[FetchEntryRecord]) -> list[FetchDiscHint]:
     seen: set[tuple[str, str]] = set()
-    copies: list[FetchCopyHint] = []
+    discs: list[FetchDiscHint] = []
     for entry in entries:
-        for copy in _entry_copies(entry):
-            key = (copy.volume_id, str(copy.id))
+        for disc in _entry_discs(entry):
+            key = (disc.image_id, str(disc.disc_id))
             if key in seen:
                 continue
             seen.add(key)
-            copies.append(copy.hint)
-    return copies
+            discs.append(disc.hint)
+    return discs
 
 
 def _manifest_entry_payload(
@@ -1764,7 +1735,7 @@ def _manifest_entry_payload(
     recovery_payload_codec: RecoveryPayloadCodec,
     fetch_state: FetchState,
 ) -> dict[str, object]:
-    copies = _entry_copies(
+    discs = _entry_discs(
         entry,
         recovery_payload_codec=recovery_payload_codec,
         require_recovery_metadata=True,
@@ -1779,40 +1750,40 @@ def _manifest_entry_payload(
         "upload_state": _entry_upload_state(entry, fetch_state=fetch_state),
         "uploaded_bytes": entry.uploaded_bytes,
         "upload_state_expires_at": entry.upload_expires_at,
-        "copies": [_manifest_copy_payload(copy) for copy in copies],
-        "parts": _manifest_parts_payload(entry, copies),
+        "discs": [_manifest_disc_payload(disc) for disc in discs],
+        "parts": _manifest_parts_payload(entry, discs),
     }
 
 
 def _manifest_parts_payload(
     entry: FetchEntryRecord,
-    copies: list[_ManifestCopy],
+    discs: list[_ManifestDisc],
 ) -> list[dict[str, object]]:
-    if not copies:
+    if not discs:
         return []
 
-    if all(copy.part_index is None for copy in copies):
+    if all(disc.part_index is None for disc in discs):
         return [
             {
                 "index": 0,
                 "bytes": entry.bytes,
                 "sha256": entry.sha256,
                 "recovery_bytes": _entry_recovery_bytes(entry),
-                "copies": [_manifest_copy_payload(copy) for copy in copies],
+                "discs": [_manifest_disc_payload(disc) for disc in discs],
             }
         ]
 
-    if any(copy.part_index is None for copy in copies):
-        raise InvalidState(f"mixed whole-file and multipart copy hints for {entry.entry_id}")
+    if any(disc.part_index is None for disc in discs):
+        raise InvalidState(f"mixed whole-file and multipart disc hints for {entry.entry_id}")
 
-    part_count = max((copy.part_count or 1) for copy in copies)
+    part_count = max((disc.part_count or 1) for disc in discs)
     parts: list[dict[str, object]] = []
     for part_index in range(part_count):
-        part_copies = [copy for copy in copies if copy.part_index == part_index]
-        if not part_copies:
-            raise NotFound(f"missing copy hints for part {part_index} of entry {entry.entry_id}")
-        bytes_hint = part_copies[0].part_bytes
-        sha256_hint = part_copies[0].part_sha256
+        part_discs = [disc for disc in discs if disc.part_index == part_index]
+        if not part_discs:
+            raise NotFound(f"missing disc hints for part {part_index} of entry {entry.entry_id}")
+        bytes_hint = part_discs[0].part_bytes
+        sha256_hint = part_discs[0].part_sha256
         if bytes_hint is None or sha256_hint is None:
             raise NotFound(f"missing part metadata for part {part_index} of entry {entry.entry_id}")
         parts.append(
@@ -1820,50 +1791,50 @@ def _manifest_parts_payload(
                 "index": part_index,
                 "bytes": bytes_hint,
                 "sha256": sha256_hint,
-                "recovery_bytes": _copy_recovery_bytes(part_copies[0]),
-                "copies": [_manifest_copy_payload(copy) for copy in part_copies],
+                "recovery_bytes": _disc_recovery_bytes(part_discs[0]),
+                "discs": [_manifest_disc_payload(disc) for disc in part_discs],
             }
         )
     return parts
 
 
-def _ordered_entry_part_copies(
+def _ordered_entry_part_discs(
     entry: FetchEntryRecord,
-    copies: list[_ManifestCopy],
-) -> list[_ManifestCopy]:
-    if any(copy.part_index is None for copy in copies):
-        raise InvalidState(f"mixed whole-file and multipart copy hints for {entry.entry_id}")
-    part_count = max((copy.part_count or 1) for copy in copies)
-    selected: list[_ManifestCopy] = []
+    discs: list[_ManifestDisc],
+) -> list[_ManifestDisc]:
+    if any(disc.part_index is None for disc in discs):
+        raise InvalidState(f"mixed whole-file and multipart disc hints for {entry.entry_id}")
+    part_count = max((disc.part_count or 1) for disc in discs)
+    selected: list[_ManifestDisc] = []
     for part_index in range(part_count):
-        part_copies = [copy for copy in copies if copy.part_index == part_index]
-        if not part_copies:
-            raise NotFound(f"missing copy hints for part {part_index} of entry {entry.entry_id}")
-        selected.append(part_copies[0])
+        part_discs = [disc for disc in discs if disc.part_index == part_index]
+        if not part_discs:
+            raise NotFound(f"missing disc hints for part {part_index} of entry {entry.entry_id}")
+        selected.append(part_discs[0])
     return selected
 
 
-def _manifest_copy_payload(copy: _ManifestCopy) -> dict[str, object]:
+def _manifest_disc_payload(disc: _ManifestDisc) -> dict[str, object]:
     return {
-        "copy": str(copy.id),
-        "volume_id": copy.volume_id,
-        "location": copy.location,
-        "disc_path": copy.disc_path,
-        "recovery_bytes": _copy_recovery_bytes(copy),
-        "recovery_sha256": _copy_recovery_sha256(copy),
+        "disc_id": str(disc.disc_id),
+        "image_id": disc.image_id,
+        "location": disc.location,
+        "disc_path": disc.disc_path,
+        "recovery_bytes": _disc_recovery_bytes(disc),
+        "recovery_sha256": _disc_recovery_sha256(disc),
     }
 
 
-def _entry_copies(
+def _entry_discs(
     entry: FetchEntryRecord,
     *,
     recovery_payload_codec: RecoveryPayloadCodec | None = None,
     require_recovery_metadata: bool = False,
-) -> list[_ManifestCopy]:
+) -> list[_ManifestDisc]:
     session = object_session(entry)
     if session is None:
         raise RuntimeError("fetch entry is not bound to a session")
-    copy_records = _copy_records_for_file(
+    disc_records = _disc_records_for_file(
         session,
         entry.collection_id,
         entry.path,
@@ -1871,9 +1842,9 @@ def _entry_copies(
         require_recovery_metadata=require_recovery_metadata,
     )
     return [
-        _ManifestCopy(
-            id=CopyId(record.copy_id),
-            volume_id=record.volume_id,
+        _ManifestDisc(
+            disc_id=DiscId(record.disc_id),
+            image_id=record.image_id,
             location=record.location,
             disc_path=record.disc_path,
             enc=json.loads(record.enc_json),
@@ -1884,66 +1855,66 @@ def _entry_copies(
             recovery_bytes=record.recovery_bytes,
             recovery_sha256=record.recovery_sha256,
         )
-        for record in copy_records
+        for record in disc_records
     ]
 
 
-def _copy_records_for_file(
+def _disc_records_for_file(
     session: Session,
     collection_id: str,
     path: str,
     recovery_payload_codec: RecoveryPayloadCodec | None,
     *,
     require_recovery_metadata: bool,
-) -> list[FileCopyRecord]:
-    copy_records = session.scalars(
-        select(FileCopyRecord)
+) -> list[FileDiscRecord]:
+    disc_records = session.scalars(
+        select(FileDiscRecord)
         .where(
-            FileCopyRecord.collection_id == collection_id,
-            FileCopyRecord.path == path,
+            FileDiscRecord.collection_id == collection_id,
+            FileDiscRecord.path == path,
         )
         .order_by(
-            FileCopyRecord.part_index.is_(None),
-            FileCopyRecord.part_index,
-            FileCopyRecord.volume_id,
-            FileCopyRecord.copy_id,
-            FileCopyRecord.location,
+            FileDiscRecord.part_index.is_(None),
+            FileDiscRecord.part_index,
+            FileDiscRecord.image_id,
+            FileDiscRecord.disc_id,
+            FileDiscRecord.location,
         )
     ).all()
     if require_recovery_metadata:
         if recovery_payload_codec is None:
-            raise RuntimeError("recovery payload codec is required to backfill copy metadata")
-        for record in copy_records:
-            _ensure_file_copy_recovery_metadata(session, record, recovery_payload_codec)
-    return list(copy_records)
+            raise RuntimeError("recovery payload codec is required to backfill disc metadata")
+        for record in disc_records:
+            _ensure_file_disc_recovery_metadata(session, record, recovery_payload_codec)
+    return list(disc_records)
 
 
-def _file_recovery_bytes_from_copies(
+def _file_recovery_bytes_from_discs(
     file_record: CollectionFileRecord,
-    copy_records: list[FileCopyRecord],
+    disc_records: list[FileDiscRecord],
 ) -> int:
-    if not copy_records:
+    if not disc_records:
         return 0
 
-    if all(record.part_index is None for record in copy_records):
-        return _record_recovery_bytes(copy_records[0])
+    if all(record.part_index is None for record in disc_records):
+        return _record_recovery_bytes(disc_records[0])
 
-    if any(record.part_index is None for record in copy_records):
-        raise InvalidState(f"mixed whole-file and multipart copy hints for {file_record.path}")
+    if any(record.part_index is None for record in disc_records):
+        raise InvalidState(f"mixed whole-file and multipart disc hints for {file_record.path}")
 
-    part_count = max(record.part_count or 1 for record in copy_records)
+    part_count = max(record.part_count or 1 for record in disc_records)
     total = 0
     for part_index in range(part_count):
-        candidates = [record for record in copy_records if record.part_index == part_index]
+        candidates = [record for record in disc_records if record.part_index == part_index]
         if not candidates:
-            raise NotFound(f"missing copy hints for part {part_index} of {file_record.path}")
+            raise NotFound(f"missing disc hints for part {part_index} of {file_record.path}")
         total += _record_recovery_bytes(candidates[0])
     return total
 
 
-def _ensure_file_copy_recovery_metadata(
+def _ensure_file_disc_recovery_metadata(
     session: Session,
-    record: FileCopyRecord,
+    record: FileDiscRecord,
     recovery_payload_codec: RecoveryPayloadCodec,
 ) -> None:
     needs_recovery_metadata = record.recovery_bytes is None or not record.recovery_sha256
@@ -1953,11 +1924,11 @@ def _ensure_file_copy_recovery_metadata(
     if not needs_recovery_metadata and not needs_part_metadata:
         return
 
-    image = session.get(FinalizedImageRecord, record.volume_id)
+    image = session.get(FinalizedImageRecord, record.image_id)
     if image is None:
-        raise InvalidState(f"finalized image not found for copy metadata: {record.volume_id}")
+        raise InvalidState(f"finalized image not found for disc metadata: {record.image_id}")
 
-    metadata = _read_copy_recovery_metadata(
+    metadata = _read_disc_recovery_metadata(
         image.image_root,
         record.disc_path,
         recovery_payload_codec,
@@ -1970,15 +1941,15 @@ def _ensure_file_copy_recovery_metadata(
         record.part_sha256 = metadata.plaintext_sha256
 
 
-def _read_copy_recovery_metadata(
+def _read_disc_recovery_metadata(
     image_root: str,
     disc_path: str,
     recovery_payload_codec: RecoveryPayloadCodec,
     *,
     include_plaintext: bool,
-) -> CopyRecoveryMetadata:
+) -> DiscRecoveryMetadata:
     try:
-        return read_copy_recovery_metadata(
+        return read_disc_recovery_metadata(
             image_root,
             disc_path,
             recovery_payload_codec,
@@ -1991,22 +1962,22 @@ def _read_copy_recovery_metadata(
         raise InvalidState(f"finalized-image payload could not be decrypted: {disc_path}") from exc
 
 
-def _record_recovery_bytes(record: FileCopyRecord) -> int:
+def _record_recovery_bytes(record: FileDiscRecord) -> int:
     if record.recovery_bytes is None:
-        raise InvalidState(f"missing recovery byte count for copy: {record.copy_id}")
+        raise InvalidState(f"missing recovery byte count for disc: {record.disc_id}")
     return record.recovery_bytes
 
 
-def _copy_recovery_bytes(copy: _ManifestCopy) -> int:
-    if copy.recovery_bytes is None:
-        raise InvalidState(f"missing recovery byte count for copy: {copy.id}")
-    return copy.recovery_bytes
+def _disc_recovery_bytes(disc: _ManifestDisc) -> int:
+    if disc.recovery_bytes is None:
+        raise InvalidState(f"missing recovery byte count for disc: {disc.disc_id}")
+    return disc.recovery_bytes
 
 
-def _copy_recovery_sha256(copy: _ManifestCopy) -> str:
-    if not copy.recovery_sha256:
-        raise InvalidState(f"missing recovery sha256 for copy: {copy.id}")
-    return copy.recovery_sha256
+def _disc_recovery_sha256(disc: _ManifestDisc) -> str:
+    if not disc.recovery_sha256:
+        raise InvalidState(f"missing recovery sha256 for disc: {disc.disc_id}")
+    return disc.recovery_sha256
 
 
 def _entry_upload_state(entry: FetchEntryRecord, *, fetch_state: FetchState) -> str:
@@ -2121,7 +2092,7 @@ def _entry_upload_target_path(entry: FetchEntryRecord) -> str:
 
 
 def _hot_payload_for_fetch(session: Session, fetch_id: str) -> dict[str, object]:
-    selected = _selected_files_for_fetch(session, fetch_id, load_copies=False)
+    selected = _selected_files_for_fetch(session, fetch_id, load_discs=False)
     present_bytes = sum(record.bytes for record in selected if record.hot)
     missing_bytes = sum(record.bytes for record in selected if not record.hot)
     return {

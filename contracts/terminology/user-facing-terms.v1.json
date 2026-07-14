@@ -39,52 +39,69 @@
     {
       "id": "archive",
       "label": "archive",
+      "term_type": "entity",
+      "audiences": [
+        "operator",
+        "api_client"
+      ],
+      "definition": "Cold storage holding durable collection archive packages.",
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "archive",
+          "context": "riverhog hot fetch start --archive"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "archive",
+          "context": "collection archive state"
+        }
+      ]
+    },
+    {
+      "id": "archive_restore",
+      "label": "archive restore",
+      "term_type": "entity",
+      "audiences": [
+        "api_client",
+        "webhook_recipient",
+        "developer"
+      ],
+      "definition": "A durable request to restore archived collection data for fetch materialization or disc rebuild work.",
+      "exposed_as": [
+        {
+          "surface": "api:riverhog",
+          "spelling": "archive_restore",
+          "context": "archive restore API paths and payloads"
+        },
+        {
+          "surface": "webhook",
+          "spelling": "restore_id",
+          "context": "archive restore notifications"
+        }
+      ]
+    },
+    {
+      "id": "archiving",
+      "label": "archiving",
       "term_type": "activity",
       "audiences": [
         "operator",
         "config_author",
         "api_client"
       ],
-      "definition": "Durable preservation output or workflow that moves accepted media toward Riverhog-backed custody.",
+      "definition": "Moving accepted media into durable Riverhog-backed custody.",
       "exposed_as": [
         {
-          "surface": "cli:munchy",
-          "spelling": "archive",
-          "context": "munchy job workflow mode"
+          "surface": "cli:riverhog",
+          "spelling": "archiving",
+          "context": "collection upload status"
         },
         {
-          "surface": "config:munchy",
-          "spelling": "archive",
-          "context": "workflow_mode and encode profile sections"
+          "surface": "api:riverhog",
+          "spelling": "archiving",
+          "context": "collection upload lifecycle state"
         }
-      ]
-    },
-    {
-      "id": "archive_mode",
-      "label": "archive mode",
-      "term_type": "policy",
-      "audiences": [
-        "config_author",
-        "api_client",
-        "developer"
-      ],
-      "definition": "Munchy routing-group strategy that selects preserve, AV1 video conversion, or audio conversion.",
-      "exposed_as": [
-        {
-          "surface": "config:munchy",
-          "spelling": "archive_mode",
-          "context": "job and group config"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "archive_mode",
-          "context": "runner job payload and storage hint"
-        }
-      ],
-      "allowed_values": [
-        "av1_nvenc",
-        "audio",
-        "preserve"
       ]
     },
     {
@@ -99,7 +116,7 @@
       "exposed_as": [
         {
           "surface": "config:munchy",
-          "spelling": "archive_mode = \"audio\"",
+          "spelling": "output_mode = \"audio\"",
           "context": "audio-only groups"
         },
         {
@@ -139,7 +156,7 @@
       "audiences": [
         "operator"
       ],
-      "definition": "The set of finalized images or recovery images that still need physical disc copies.",
+      "definition": "The set of finalized images or recovery images that still need physical discs.",
       "exposed_as": [
         {
           "surface": "cli:djdan",
@@ -199,28 +216,6 @@
       ]
     },
     {
-      "id": "cloud_archive",
-      "label": "cloud archive",
-      "term_type": "entity",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "Cold object storage used for durable collection archive packages, currently backed by Glacier-compatible workflows.",
-      "exposed_as": [
-        {
-          "surface": "cli:riverhog",
-          "spelling": "cloud",
-          "context": "riverhog hot fetch start --cloud"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "glacier",
-          "context": "collection archive state"
-        }
-      ]
-    },
-    {
       "id": "collection",
       "label": "collection",
       "term_type": "entity",
@@ -230,7 +225,7 @@
         "config_author",
         "webhook_recipient"
       ],
-      "definition": "A logical namespace of archived files uploaded from a human-readable slug and accepted as one preservation unit.",
+      "definition": "A logical namespace of files uploaded from a human-readable slug and accepted as one preservation unit.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -258,7 +253,7 @@
         "config_author",
         "api_client"
       ],
-      "definition": "Archive-ready collection output built by Munchy from routed inputs, metadata sidecars, source artifacts, preserve, and encoded derivatives.",
+      "definition": "Archive-ready collection output built by Munchy from routed inputs, metadata sidecars, source artifacts, preserved files, and encoded derivatives.",
       "exposed_as": [
         {
           "surface": "api:munchy-runner",
@@ -328,29 +323,6 @@
       ]
     },
     {
-      "id": "collection_restore",
-      "label": "collection restore",
-      "term_type": "enum_value",
-      "audiences": [
-        "api_client",
-        "webhook_recipient",
-        "developer"
-      ],
-      "definition": "Recovery-session type for cloud materialization of collection archive data needed by a fetch.",
-      "exposed_as": [
-        {
-          "surface": "api:riverhog",
-          "spelling": "collection_restore",
-          "context": "recovery session type"
-        },
-        {
-          "surface": "contract:webhooks",
-          "spelling": "collection_restore",
-          "context": "operator notification contract"
-        }
-      ]
-    },
-    {
       "id": "collection_slug",
       "label": "collection slug",
       "term_type": "identifier",
@@ -376,50 +348,6 @@
           "surface": "webhook",
           "spelling": "collection_slug",
           "context": "job and batch notification payloads"
-        }
-      ]
-    },
-    {
-      "id": "copy",
-      "label": "copy",
-      "term_type": "entity",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "One physical burned disc of a finalized image.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "copy",
-          "context": "disc copy state and labels"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "copy_id",
-          "context": "registered disc copy identity"
-        }
-      ]
-    },
-    {
-      "id": "copy_id",
-      "label": "copy id",
-      "term_type": "identifier",
-      "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "Generated physical-copy identifier and exact label text written on a burned disc.",
-      "exposed_as": [
-        {
-          "surface": "cli:djdan",
-          "spelling": "COPY_ID",
-          "context": "disc and disc rebuild commands"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "copy_id",
-          "context": "copy registration and recovery hints"
         }
       ]
     },
@@ -476,7 +404,7 @@
         "api_client",
         "webhook_recipient"
       ],
-      "definition": "Physical optical media that stores one copy of a finalized image.",
+      "definition": "Physical optical medium that stores a finalized image.",
       "exposed_as": [
         {
           "surface": "cli:djdan",
@@ -487,6 +415,50 @@
           "surface": "docs",
           "spelling": "disc",
           "context": "optical media docs"
+        }
+      ]
+    },
+    {
+      "id": "disc_coverage",
+      "label": "disc coverage",
+      "term_type": "state",
+      "audiences": [
+        "operator",
+        "api_client"
+      ],
+      "definition": "How much collection data is represented on registered discs.",
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "disc coverage",
+          "context": "collection summaries"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "disc_coverage",
+          "context": "collection summaries"
+        }
+      ]
+    },
+    {
+      "id": "disc_id",
+      "label": "disc id",
+      "term_type": "identifier",
+      "audiences": [
+        "operator",
+        "api_client"
+      ],
+      "definition": "Generated identifier and exact label text written on a burned disc.",
+      "exposed_as": [
+        {
+          "surface": "cli:djdan",
+          "spelling": "DISC_ID",
+          "context": "disc and disc rebuild commands"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "disc_id",
+          "context": "disc registration and recovery hints"
         }
       ]
     },
@@ -509,6 +481,48 @@
           "surface": "webhook",
           "spelling": "disc rebuild",
           "context": "operator action guidance"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "disc_rebuild",
+          "context": "archive restore type"
+        },
+        {
+          "surface": "contract:openapi",
+          "spelling": "disc_rebuild",
+          "context": "OpenAPI enum value"
+        },
+        {
+          "surface": "contract:webhooks",
+          "spelling": "disc_rebuild",
+          "context": "operator notification payload"
+        }
+      ]
+    },
+    {
+      "id": "disc_redundancy",
+      "label": "disc redundancy",
+      "term_type": "state",
+      "audiences": [
+        "operator",
+        "api_client"
+      ],
+      "definition": "How fully the required duplicate discs are registered and verified for a collection or image.",
+      "exposed_as": [
+        {
+          "surface": "cli:riverhog",
+          "spelling": "disc redundancy",
+          "context": "collection summaries"
+        },
+        {
+          "surface": "cli:djdan",
+          "spelling": "disc redundancy",
+          "context": "image summaries"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "disc_redundancy",
+          "context": "collection summaries and filters"
         }
       ]
     },
@@ -566,7 +580,7 @@
         "api_client",
         "webhook_recipient"
       ],
-      "definition": "A named manifest of target selectors that can be fulfilled from hot storage, cloud archive data, or optical media.",
+      "definition": "A named manifest of target selectors that can be fulfilled from hot storage, archive data, or optical media.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -586,6 +600,29 @@
       ]
     },
     {
+      "id": "fetch_materialization",
+      "label": "fetch materialization",
+      "term_type": "enum_value",
+      "audiences": [
+        "api_client",
+        "webhook_recipient",
+        "developer"
+      ],
+      "definition": "Archive-restore type for archive materialization of collection archive data needed by a fetch.",
+      "exposed_as": [
+        {
+          "surface": "api:riverhog",
+          "spelling": "fetch_materialization",
+          "context": "archive restore type"
+        },
+        {
+          "surface": "contract:webhooks",
+          "spelling": "fetch_materialization",
+          "context": "operator notification contract"
+        }
+      ]
+    },
+    {
       "id": "file",
       "label": "file",
       "term_type": "entity",
@@ -594,7 +631,7 @@
         "api_client",
         "developer"
       ],
-      "definition": "Logical archived file identified by collection id and stable relative path.",
+      "definition": "Logical file identified by collection id and stable relative path.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -659,6 +696,34 @@
       ]
     },
     {
+      "id": "group",
+      "label": "group",
+      "term_type": "policy",
+      "audiences": [
+        "config_author",
+        "api_client",
+        "developer"
+      ],
+      "definition": "Munchy grouping key used by routes to select output mode, tasks, metadata projection, and encode profile.",
+      "exposed_as": [
+        {
+          "surface": "config:munchy",
+          "spelling": "groups",
+          "context": "Munchy job config"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "group",
+          "context": "runner payload and storage hint"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "groups",
+          "context": "runner capability shape"
+        }
+      ]
+    },
+    {
       "id": "held_unmatched",
       "label": "held unmatched files",
       "term_type": "state",
@@ -672,7 +737,7 @@
         {
           "surface": "config:jeb",
           "spelling": "unmatched_policy = \"hold\"",
-          "context": "source config"
+          "context": "account config"
         },
         {
           "surface": "webhook",
@@ -711,7 +776,7 @@
         "operator",
         "api_client"
       ],
-      "definition": "Fast server-side materialized cache of logical file bytes currently available without optical or cloud recovery.",
+      "definition": "Fast server-side materialized cache of logical file bytes currently available without optical or archive recovery.",
       "exposed_as": [
         {
           "surface": "cli:riverhog",
@@ -744,34 +809,6 @@
           "surface": "api:riverhog",
           "spelling": "image",
           "context": "finalized image resources"
-        }
-      ]
-    },
-    {
-      "id": "image_rebuild",
-      "label": "image_rebuild",
-      "term_type": "enum_value",
-      "audiences": [
-        "api_client",
-        "webhook_recipient",
-        "developer"
-      ],
-      "definition": "Current machine recovery-session type for rebuilding finalized image bytes needed to restore physical disc coverage.",
-      "exposed_as": [
-        {
-          "surface": "api:riverhog",
-          "spelling": "image_rebuild",
-          "context": "recovery session type"
-        },
-        {
-          "surface": "contract:openapi",
-          "spelling": "image_rebuild",
-          "context": "OpenAPI enum value"
-        },
-        {
-          "surface": "contract:webhooks",
-          "spelling": "image_rebuild",
-          "context": "operator notification payload"
         }
       ]
     },
@@ -820,25 +857,48 @@
       ]
     },
     {
-      "id": "jeb_source",
-      "label": "Jeb source",
+      "id": "jeb_account",
+      "label": "Jeb account",
       "term_type": "entity",
       "audiences": [
         "operator",
         "config_author",
         "webhook_recipient"
       ],
-      "definition": "A watched landing directory and upload prefix owned by Jeb.",
+      "definition": "A stable Jeb identity that owns one watched landing directory and its archive schedule.",
       "exposed_as": [
         {
           "surface": "config:jeb",
-          "spelling": "source",
-          "context": "Jeb source config"
+          "spelling": "account",
+          "context": "Jeb account config"
         },
         {
           "surface": "cli:jeb",
-          "spelling": "--source",
+          "spelling": "--account",
           "context": "jeb archive-now"
+        }
+      ]
+    },
+    {
+      "id": "jeb_attempt",
+      "label": "Jeb attempt",
+      "term_type": "entity",
+      "audiences": [
+        "operator",
+        "api_client",
+        "webhook_recipient"
+      ],
+      "definition": "One durable Jeb processing attempt for a batch, including target job and cleanup state.",
+      "exposed_as": [
+        {
+          "surface": "cli:jeb",
+          "spelling": "attempt",
+          "context": "jeb attempts inventory"
+        },
+        {
+          "surface": "api:riverhog",
+          "spelling": "attempt_id",
+          "context": "Jeb attempt payload"
         }
       ]
     },
@@ -972,53 +1032,31 @@
       ]
     },
     {
-      "id": "physical_coverage",
-      "label": "physical coverage",
-      "term_type": "state",
+      "id": "output_mode",
+      "label": "output mode",
+      "term_type": "policy",
       "audiences": [
-        "operator",
-        "api_client"
-      ],
-      "definition": "How many verified burned-disc copies protect the bytes needed to recover a collection or image.",
-      "exposed_as": [
-        {
-          "surface": "cli:riverhog",
-          "spelling": "coverage",
-          "context": "collection summaries"
-        },
-        {
-          "surface": "cli:djdan",
-          "spelling": "physical_protection_state",
-          "context": "image summaries"
-        },
-        {
-          "surface": "api:riverhog",
-          "spelling": "disc_coverage",
-          "context": "collection summaries"
-        }
-      ]
-    },
-    {
-      "id": "preflight",
-      "label": "preflight",
-      "term_type": "activity",
-      "audiences": [
-        "operator",
         "config_author",
+        "api_client",
         "developer"
       ],
-      "definition": "A validation pass that must succeed before upload, archive, or route handoff proceeds.",
+      "definition": "Munchy routing-group strategy that selects video conversion, audio conversion, or source preservation.",
       "exposed_as": [
         {
-          "surface": "cli:munchy",
-          "spelling": "preflight",
-          "context": "media and routing checks"
+          "surface": "config:munchy",
+          "spelling": "output_mode",
+          "context": "job and group config"
         },
         {
-          "surface": "cli:jeb",
-          "spelling": "preflight",
-          "context": "routing preflight before archive"
+          "surface": "api:munchy-runner",
+          "spelling": "output_mode",
+          "context": "runner job payload and storage hint"
         }
+      ],
+      "allowed_values": [
+        "audio",
+        "preserve",
+        "video"
       ]
     },
     {
@@ -1030,73 +1068,17 @@
         "config_author",
         "api_client"
       ],
-      "definition": "Archive mode or group that preserves primary source bytes as archive output without re-encoding.",
+      "definition": "Output mode or group that preserves primary source bytes as archive output without re-encoding.",
       "exposed_as": [
         {
           "surface": "config:munchy",
           "spelling": "preserve",
-          "context": "archive mode and profile group"
+          "context": "output mode and group"
         },
         {
           "surface": "api:munchy-runner",
           "spelling": "preserve",
-          "context": "archive_mode value"
-        }
-      ]
-    },
-    {
-      "id": "profile_group",
-      "label": "profile group",
-      "term_type": "policy",
-      "audiences": [
-        "config_author",
-        "api_client",
-        "developer"
-      ],
-      "definition": "Munchy grouping key used by routes to select archive mode, tasks, metadata projection, and encode profile.",
-      "exposed_as": [
-        {
-          "surface": "config:munchy",
-          "spelling": "groups",
-          "context": "Munchy job config"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "profile_group",
-          "context": "runner payload and storage hint"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "profile_groups",
-          "context": "runner capability shape"
-        }
-      ]
-    },
-    {
-      "id": "profile_routing",
-      "label": "profile routing",
-      "term_type": "policy",
-      "audiences": [
-        "config_author",
-        "operator",
-        "api_client"
-      ],
-      "definition": "Ordered Munchy file classification rules that assign source files to groups or leave them unmatched.",
-      "exposed_as": [
-        {
-          "surface": "cli:munchy",
-          "spelling": "routing",
-          "context": "munchy routing explain"
-        },
-        {
-          "surface": "config:munchy",
-          "spelling": "profile_routing",
-          "context": "routing config"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "profile_routing",
-          "context": "routing preflight and job payload"
+          "context": "output_mode value"
         }
       ]
     },
@@ -1156,37 +1138,9 @@
       "definition": "Restoring derived recovery media from durable source material; operator wording should name the object being rebuilt.",
       "exposed_as": [
         {
-          "surface": "cli:djdan",
-          "spelling": "disc rebuild",
-          "context": "operator rebuild workflow"
-        },
-        {
           "surface": "service",
           "spelling": "rebuild",
           "context": "source artifact support checks"
-        }
-      ]
-    },
-    {
-      "id": "recovery_session",
-      "label": "recovery session",
-      "term_type": "entity",
-      "audiences": [
-        "api_client",
-        "webhook_recipient",
-        "developer"
-      ],
-      "definition": "Current generic machine resource for cloud fetch restoration and image rebuild work.",
-      "exposed_as": [
-        {
-          "surface": "api:riverhog",
-          "spelling": "recovery_session",
-          "context": "recovery API paths and payloads"
-        },
-        {
-          "surface": "webhook",
-          "spelling": "session_id",
-          "context": "recovery notifications"
         }
       ]
     },
@@ -1222,17 +1176,45 @@
         "operator",
         "api_client"
       ],
-      "definition": "One ordered profile-routing rule that matches remaining files and sends them to a group or leaves them out.",
+      "definition": "One ordered routing rule that matches remaining files and sends them to a group or leaves them out.",
       "exposed_as": [
         {
           "surface": "config:munchy",
           "spelling": "routes",
-          "context": "profile_routing routes"
+          "context": "routing routes"
         },
         {
           "surface": "cli:munchy",
           "spelling": "route",
           "context": "routing explain output"
+        }
+      ]
+    },
+    {
+      "id": "routing",
+      "label": "routing",
+      "term_type": "policy",
+      "audiences": [
+        "config_author",
+        "operator",
+        "api_client"
+      ],
+      "definition": "Ordered Munchy file classification rules that assign source files to groups or leave them unmatched.",
+      "exposed_as": [
+        {
+          "surface": "cli:munchy",
+          "spelling": "routing",
+          "context": "munchy routing explain"
+        },
+        {
+          "surface": "config:munchy",
+          "spelling": "routing",
+          "context": "routing config"
+        },
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "routing",
+          "context": "routing preflight and job payload"
         }
       ]
     },
@@ -1244,12 +1226,35 @@
         "config_author",
         "developer"
       ],
-      "definition": "Profile-routing rule that associates related files, such as a Live Photo still and movie, before route matching.",
+      "definition": "Routing rule that associates related files, such as a Live Photo still and movie, before route matching.",
       "exposed_as": [
         {
           "surface": "config:munchy",
           "spelling": "pairings",
-          "context": "profile_routing pairings"
+          "context": "routing pairings"
+        }
+      ]
+    },
+    {
+      "id": "routing_preflight",
+      "label": "routing preflight",
+      "term_type": "activity",
+      "audiences": [
+        "operator",
+        "config_author",
+        "developer"
+      ],
+      "definition": "Validation that submitted files match configured routing before upload or job handoff.",
+      "exposed_as": [
+        {
+          "surface": "api:munchy-runner",
+          "spelling": "routing_preflight",
+          "context": "routing preflight endpoint and result"
+        },
+        {
+          "surface": "cli:jeb",
+          "spelling": "routing preflight",
+          "context": "Jeb routing failure status"
         }
       ]
     },
@@ -1271,18 +1276,8 @@
         },
         {
           "surface": "api:munchy-runner",
-          "spelling": "archive_video",
-          "context": "video archive task"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "archive_audio",
-          "context": "audio archive task"
-        },
-        {
-          "surface": "api:munchy-runner",
-          "spelling": "qcut_video",
-          "context": "review cut task"
+          "spelling": "tasks",
+          "context": "job and group payload"
         }
       ]
     },
@@ -1322,12 +1317,12 @@
         {
           "surface": "config:munchy",
           "spelling": "sidecars",
-          "context": "profile_routing sidecar rules"
+          "context": "routing sidecar rules"
         },
         {
           "surface": "api:munchy-runner",
           "spelling": "evidence",
-          "context": "profile routing match action"
+          "context": "routing match action"
         }
       ]
     },
@@ -1384,7 +1379,7 @@
         {
           "surface": "config:jeb",
           "spelling": "stable_age",
-          "context": "Jeb source config"
+          "context": "Jeb account config"
         }
       ]
     },

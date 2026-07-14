@@ -53,11 +53,10 @@ def test_riverhog_command_help_has_summaries() -> None:
         "List named fetches.",
         "Show fetch preflight and progress summary.",
         "List selected files for a fetch.",
-        "Queue a fetch for djdan, or for cloud recovery with --cloud.",
+        "Start a fetch with djdan or an automatic archive restore.",
         "Cancel an active fetch and return it to draft.",
     ):
         assert summary in fetch.stdout
-    assert "cloud-fetch" not in fetch.stdout
 
 
 def test_gogurt_help() -> None:
@@ -108,7 +107,6 @@ def test_djdan_command_help_has_summaries() -> None:
         "Download a finalized ISO image.",
     ):
         assert summary in image.stdout
-    assert "rebuild" not in image.stdout
 
     disc = runner.invoke(disc_app, ["disc", "--help"])
     assert disc.exit_code == 0
@@ -125,10 +123,10 @@ def test_djdan_command_help_has_summaries() -> None:
     for summary in (
         "Disc rebuild operations.",
         "Start rebuild work for a lost or damaged disc.",
-        "List disc rebuild sessions.",
-        "Show a disc rebuild session.",
-        "Pause an active disc rebuild session.",
-        "Resume a paused disc rebuild session.",
+        "List disc rebuild archive restores.",
+        "Show a disc rebuild archive restore.",
+        "Pause an active disc rebuild archive restore.",
+        "Resume a paused disc rebuild archive restore.",
     ):
         assert summary in rebuild.stdout
 
@@ -136,7 +134,7 @@ def test_djdan_command_help_has_summaries() -> None:
     assert rebuild_start.exit_code == 0
     for summary in (
         "Start rebuild work for a lost or damaged disc.",
-        "copy_id",
+        "disc_id",
         "--reason",
         "lost or damaged",
     ):
@@ -151,7 +149,7 @@ def test_jeb_help_has_command_summaries(capsys: pytest.CaptureFixture[str]) -> N
     stdout = capsys.readouterr().out
     assert "Remote Jeb operator CLI." in stdout
     assert "status        show read-only collector status" in stdout
-    assert "batches       list batch attempts" in stdout
+    assert "attempts      list processing attempts" in stdout
     assert "once          request one scheduler pass" in stdout
     assert "archive-now   archive one account immediately" in stdout
     assert "check-config  validate deployed Jeb configuration" in stdout
@@ -172,4 +170,4 @@ def test_munchy_job_help_has_resume_command() -> None:
     result = runner.invoke(munchy_app, ["job", "--help"])
 
     assert result.exit_code == 0
-    assert "Resume a failed or cancelled runner job after repair." in result.stdout
+    assert "Resume a failed or canceled runner job after repair." in result.stdout

@@ -7,10 +7,10 @@ Riverhog uses named fetches to declare operator recovery intent and
 
 A fetch contains one or more target selectors. The operator can edit a draft
 fetch, start it for the normal `djdan fetch` optical-media workflow, or start it
-with cloud-fetch for automatic Glacier materialization.
+with fetch materialization for automatic archive materialization.
 
 Hot eviction is separate from fetch creation. Eviction refuses any selected file
-that does not have the required verified disc protection.
+that does not have the required verified disc redundancy.
 
 ## Reason
 

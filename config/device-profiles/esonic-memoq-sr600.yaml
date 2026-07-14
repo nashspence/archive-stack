@@ -5,9 +5,9 @@ parameters:
   device_id:
     required: true
 section:
-  upload_prefix: '{device_id}-audio'
-  profile_group: audio-opus
-  archive_mode: audio
+  destination_prefix: '{device_id}-audio'
+  group: audio-opus
+  output_mode: audio
   encode_profile:
     name: '{device_id}-opus'
     source:

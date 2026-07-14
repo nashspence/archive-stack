@@ -13,9 +13,9 @@ section:
   - .hif
   - .heif
   - .arw
-  archive_mode: preserve
+  output_mode: preserve
   media_preflight: false
-  profile_group: preserve
+  group: preserve
   encode_profile: false
   profiles:
     video-av1-webm:
@@ -39,9 +39,9 @@ section:
           vbr: 'on'
   groups:
     preserve:
-      archive_mode: preserve
+      output_mode: preserve
     video-av1-webm:
-      archive_mode: av1_nvenc
+      output_mode: video
       profile: video-av1-webm
       max_parallel_encodes: 4
       eager_pipeline_batches: 1

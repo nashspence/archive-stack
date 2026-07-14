@@ -51,4 +51,4 @@ profiles:
 groups:
   video:
     profile: example-camera
-    archive_mode: av1_nvenc
+    output_mode: video

@@ -8,25 +8,19 @@ class FetchState(StrEnum):
     QUEUED_DJDAN = "queued_djdan"
     UPLOADING = "uploading"
     VERIFYING = "verifying"
-    QUEUED_CLOUD = "queued_cloud"
-    CLOUD_FETCHING = "cloud_fetching"
+    QUEUED_ARCHIVE = "queued_archive"
+    RESTORING_ARCHIVE = "restoring_archive"
     DONE = "done"
     FAILED = "failed"
 
 
-class ProtectionState(StrEnum):
-    UNPROTECTED = "unprotected"
-    PARTIALLY_PROTECTED = "partially_protected"
-    PROTECTED = "protected"
-
-
-class RecoveryCoverageState(StrEnum):
+class CoverageState(StrEnum):
     NONE = "none"
     PARTIAL = "partial"
     FULL = "full"
 
 
-class GlacierState(StrEnum):
+class ArchiveState(StrEnum):
     PENDING = "pending"
     UPLOADING = "uploading"
     UPLOADED = "uploaded"
@@ -34,8 +28,8 @@ class GlacierState(StrEnum):
     FAILED = "failed"
 
 
-class RecoverySessionState(StrEnum):
-    RESTORE_REQUESTED = "restore_requested"
+class ArchiveRestoreState(StrEnum):
+    REQUESTED = "requested"
     READY = "ready"
     PAUSED = "paused"
     EXPIRED = "expired"
@@ -44,7 +38,7 @@ class RecoverySessionState(StrEnum):
     CANCELED = "canceled"
 
 
-class CopyState(StrEnum):
+class DiscState(StrEnum):
     NEEDED = "needed"
     BURNING = "burning"
     VERIFIED = "verified"

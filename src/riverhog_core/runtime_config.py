@@ -22,12 +22,12 @@ DEFAULT_PLANNER_DISC_TARGET_BYTES = 50_000_000_000
 DEFAULT_PLANNER_MIN_FILL_RATIO = 0.99
 DEFAULT_PLANNER_UNPLANNED_SATURATION_BYTES = 300_000_000_000
 DEFAULT_UNBURNED_COLLECTION_BYTES_LIMIT = 500_000_000_000
-DEFAULT_GLACIER_MULTIPART_PART_BYTES = 64 * 1024 * 1024
-DEFAULT_GLACIER_MULTIPART_CONCURRENCY = 4
+DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
+DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
 DEFAULT_HOT_PROMOTION_CONCURRENCY = 8
 DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
-DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR = 18
+DEFAULT_ARCHIVE_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RECOVERY_PAYLOAD_WORK_FACTOR = 12
 DEFAULT_RECOVERY_PAYLOAD_MAX_WORK_FACTOR = 30
@@ -184,7 +184,7 @@ def parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     if not parts:
-        raise ValueError("RIVERHOG_GLACIER_PREFIX must not be empty")
+        raise ValueError("RIVERHOG_ARCHIVE_PREFIX must not be empty")
     return "/".join(parts)
 
 
@@ -220,25 +220,25 @@ class RuntimeConfig:
     upload_session_idle_ttl: timedelta = field(default_factory=lambda: timedelta(days=7))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     log_level: str = DEFAULT_LOG_LEVEL
-    glacier_endpoint_url: str = "http://127.0.0.1:9000"
-    glacier_region: str = "us-east-1"
-    glacier_bucket: str = "riverhog"
-    glacier_access_key_id: str = "minioadmin"
-    glacier_secret_access_key: str = "minioadmin"
-    glacier_force_path_style: bool = True
-    glacier_prefix: str = "glacier"
-    glacier_backend: str = "s3"
-    glacier_storage_class: str = "DEEP_ARCHIVE"
-    glacier_multipart_part_bytes: int = DEFAULT_GLACIER_MULTIPART_PART_BYTES
-    glacier_multipart_concurrency: int = DEFAULT_GLACIER_MULTIPART_CONCURRENCY
+    archive_endpoint_url: str = "http://127.0.0.1:9000"
+    archive_region: str = "us-east-1"
+    archive_bucket: str = "riverhog"
+    archive_access_key_id: str = "minioadmin"
+    archive_secret_access_key: str = "minioadmin"
+    archive_force_path_style: bool = True
+    archive_prefix: str = "archive"
+    archive_backend: str = "s3"
+    archive_storage_class: str = "DEEP_ARCHIVE"
+    archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
+    archive_multipart_concurrency: int = DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY
     hot_promotion_concurrency: int = DEFAULT_HOT_PROMOTION_CONCURRENCY
     hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
-    glacier_archive_encryption: str = "age_scrypt"
-    glacier_archive_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
-    glacier_archive_require_explicit_passphrase: bool = False
-    glacier_archive_work_factor: int = DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR
-    glacier_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
-    glacier_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    archive_encryption: str = "age_scrypt"
+    archive_passphrase: str = DEV_RECOVERY_PAYLOAD_PASSPHRASE
+    archive_require_explicit_passphrase: bool = False
+    archive_work_factor: int = DEFAULT_ARCHIVE_WORK_FACTOR
+    archive_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     operator_webhook_url: str | None = None
     notify_webhook_urls: Mapping[str, str] = field(default_factory=dict)
     notify_default_recipients: tuple[str, ...] = ()
@@ -249,13 +249,11 @@ class RuntimeConfig:
     )
     operator_webhook_reminder_time: str | None = None
     operator_webhook_reminder_timezone: str = "UTC"
-    glacier_recovery_sweep_interval: timedelta = field(
-        default_factory=lambda: timedelta(seconds=30)
-    )
-    glacier_recovery_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
-    glacier_recovery_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    glacier_recovery_retrieval_tier: str = "bulk"
-    glacier_recovery_restore_mode: str = "auto"
+    archive_restore_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    archive_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
+    archive_restore_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    archive_restore_retrieval_tier: str = "bulk"
+    archive_restore_mode: str = "auto"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots",)
     recovery_payload_command: tuple[str, ...] = ("age",)
@@ -289,35 +287,35 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_S3_MAX_POOL_CONNECTIONS must be >= 1")
         if self.upload_session_idle_ttl.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_UPLOAD_SESSION_IDLE_TTL must be > 0")
-        if self.glacier_multipart_part_bytes < 1:
-            raise ValueError("RIVERHOG_GLACIER_MULTIPART_PART_BYTES must be >= 1")
-        if self.glacier_multipart_concurrency < 1:
-            raise ValueError("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY must be >= 1")
+        if self.archive_multipart_part_bytes < 1:
+            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
+        if self.archive_multipart_concurrency < 1:
+            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY must be >= 1")
         if self.hot_promotion_concurrency < 1:
             raise ValueError("RIVERHOG_HOT_PROMOTION_CONCURRENCY must be >= 1")
         if self.hot_single_put_max_bytes < 0:
             raise ValueError("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES must be >= 0")
-        if self.glacier_archive_encryption != "age_scrypt":
-            raise ValueError("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION must be age_scrypt")
-        if self.glacier_archive_work_factor < 1 or self.glacier_archive_work_factor > 22:
-            raise ValueError("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR must be in 1..22")
-        if not self.glacier_archive_passphrase:
-            raise ValueError("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE must be set")
+        if self.archive_encryption != "age_scrypt":
+            raise ValueError("RIVERHOG_ARCHIVE_ENCRYPTION must be age_scrypt")
+        if self.archive_work_factor < 1 or self.archive_work_factor > 22:
+            raise ValueError("RIVERHOG_ARCHIVE_WORK_FACTOR must be in 1..22")
+        if not self.archive_passphrase:
+            raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASE must be set")
         if (
-            self.glacier_archive_require_explicit_passphrase
-            and self.glacier_archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+            self.archive_require_explicit_passphrase
+            and self.archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
         ):
             raise ValueError(
-                "RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
-                "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE to be explicitly set to a "
+                "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
+                "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a "
                 "non-development secret"
             )
         if self.operator_webhook_url or self.notify_webhook_urls:
             minimum_ready_ttl = self.operator_webhook_timeout + self.operator_webhook_retry_delay
-            if self.glacier_recovery_ready_ttl < minimum_ready_ttl:
+            if self.archive_restore_ready_ttl < minimum_ready_ttl:
                 raise ValueError(
                     "invalid operator webhook timing: "
-                    "RIVERHOG_GLACIER_RECOVERY_READY_TTL must be at least the outbound webhook "
+                    "RIVERHOG_ARCHIVE_RESTORE_READY_TTL must be at least the outbound webhook "
                     "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when operator "
                     "notifications are configured"
                 )
@@ -417,17 +415,17 @@ def load_runtime_config() -> RuntimeConfig:
         or ".riverhog/uploads"
     )
 
-    glacier_multipart_part_bytes = _parse_bytes(
-        os.getenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "64MiB"),
-        name="RIVERHOG_GLACIER_MULTIPART_PART_BYTES",
+    archive_multipart_part_bytes = _parse_bytes(
+        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "64MiB"),
+        name="RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
         minimum=1,
     )
-    glacier_multipart_concurrency = _parse_int(
+    archive_multipart_concurrency = _parse_int(
         os.getenv(
-            "RIVERHOG_GLACIER_MULTIPART_CONCURRENCY",
-            str(DEFAULT_GLACIER_MULTIPART_CONCURRENCY),
+            "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
+            str(DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY),
         ),
-        name="RIVERHOG_GLACIER_MULTIPART_CONCURRENCY",
+        name="RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         minimum=1,
     )
     hot_promotion_concurrency = _parse_int(
@@ -443,14 +441,14 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
         minimum=0,
     )
-    glacier_archive_encryption = _parse_choice(
-        os.getenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age_scrypt"),
-        name="RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION",
+    archive_encryption = _parse_choice(
+        os.getenv("RIVERHOG_ARCHIVE_ENCRYPTION", "age_scrypt"),
+        name="RIVERHOG_ARCHIVE_ENCRYPTION",
         allowed={"age_scrypt"},
     )
-    glacier_retry_delay = _parse_duration(os.getenv("RIVERHOG_GLACIER_UPLOAD_RETRY_DELAY", "5m"))
-    glacier_upload_sweep_interval = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_UPLOAD_SWEEP_INTERVAL", "30s")
+    archive_retry_delay = _parse_duration(os.getenv("RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY", "5m"))
+    archive_upload_sweep_interval = _parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
     )
     operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
     notify_webhook_urls = parse_notify_webhook_map(os.environ)
@@ -471,23 +469,21 @@ def load_runtime_config() -> RuntimeConfig:
     operator_webhook_reminder_timezone = (
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
     )
-    glacier_recovery_sweep_interval = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_SWEEP_INTERVAL", "30s")
+    archive_restore_sweep_interval = _parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL", "30s")
     )
-    glacier_recovery_restore_latency = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_RESTORE_LATENCY", "48h")
+    archive_restore_latency = _parse_duration(os.getenv("RIVERHOG_ARCHIVE_RESTORE_LATENCY", "48h"))
+    archive_restore_ready_ttl = _parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_RESTORE_READY_TTL", "24h")
     )
-    glacier_recovery_ready_ttl = _parse_duration(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_READY_TTL", "24h")
-    )
-    glacier_recovery_retrieval_tier = _parse_choice(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER", "bulk"),
-        name="RIVERHOG_GLACIER_RECOVERY_RETRIEVAL_TIER",
+    archive_restore_retrieval_tier = _parse_choice(
+        os.getenv("RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER", "bulk"),
+        name="RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
         allowed={"bulk", "standard"},
     )
-    glacier_recovery_restore_mode = _parse_choice(
-        os.getenv("RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE", "auto"),
-        name="RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE",
+    archive_restore_mode = _parse_choice(
+        os.getenv("RIVERHOG_ARCHIVE_RESTORE_MODE", "auto"),
+        name="RIVERHOG_ARCHIVE_RESTORE_MODE",
         allowed={"auto", "aws"},
     )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
@@ -514,31 +510,30 @@ def load_runtime_config() -> RuntimeConfig:
         ).strip()
         or DEV_RECOVERY_PAYLOAD_PASSPHRASE
     )
-    glacier_archive_passphrase_supplied = "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE" in os.environ
-    glacier_archive_passphrase = (
-        os.getenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", recovery_payload_passphrase).strip()
+    archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ
+    archive_passphrase = (
+        os.getenv("RIVERHOG_ARCHIVE_PASSPHRASE", recovery_payload_passphrase).strip()
         or recovery_payload_passphrase
     )
-    glacier_archive_require_explicit_passphrase = _parse_bool(
-        os.getenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "false")
+    archive_require_explicit_passphrase = _parse_bool(
+        os.getenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "false")
     )
-    glacier_archive_work_factor = _parse_int(
+    archive_work_factor = _parse_int(
         os.getenv(
-            "RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR",
-            str(DEFAULT_GLACIER_ARCHIVE_WORK_FACTOR),
+            "RIVERHOG_ARCHIVE_WORK_FACTOR",
+            str(DEFAULT_ARCHIVE_WORK_FACTOR),
         ),
-        name="RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR",
+        name="RIVERHOG_ARCHIVE_WORK_FACTOR",
         minimum=1,
     )
-    if glacier_archive_work_factor > 22:
-        raise ValueError("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR must be <= 22")
-    if glacier_archive_require_explicit_passphrase and (
-        not glacier_archive_passphrase_supplied
-        or glacier_archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
+    if archive_work_factor > 22:
+        raise ValueError("RIVERHOG_ARCHIVE_WORK_FACTOR must be <= 22")
+    if archive_require_explicit_passphrase and (
+        not archive_passphrase_supplied or archive_passphrase == DEV_RECOVERY_PAYLOAD_PASSPHRASE
     ):
         raise ValueError(
-            "RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
-            "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
+            "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
+            "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
         )
     if recovery_payload_require_explicit_passphrase and (
         not recovery_payload_passphrase_supplied
@@ -641,33 +636,33 @@ def load_runtime_config() -> RuntimeConfig:
         upload_session_idle_ttl=upload_session_idle_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
         log_level=log_level,
-        glacier_endpoint_url=os.getenv("RIVERHOG_GLACIER_ENDPOINT_URL", s3_endpoint_url).rstrip(
+        archive_endpoint_url=os.getenv("RIVERHOG_ARCHIVE_ENDPOINT_URL", s3_endpoint_url).rstrip(
             "/"
         ),
-        glacier_region=os.getenv("RIVERHOG_GLACIER_REGION", s3_region),
-        glacier_bucket=os.getenv("RIVERHOG_GLACIER_BUCKET", s3_bucket),
-        glacier_access_key_id=os.getenv("RIVERHOG_GLACIER_ACCESS_KEY_ID", s3_access_key_id),
-        glacier_secret_access_key=os.getenv(
-            "RIVERHOG_GLACIER_SECRET_ACCESS_KEY",
+        archive_region=os.getenv("RIVERHOG_ARCHIVE_REGION", s3_region),
+        archive_bucket=os.getenv("RIVERHOG_ARCHIVE_BUCKET", s3_bucket),
+        archive_access_key_id=os.getenv("RIVERHOG_ARCHIVE_ACCESS_KEY_ID", s3_access_key_id),
+        archive_secret_access_key=os.getenv(
+            "RIVERHOG_ARCHIVE_SECRET_ACCESS_KEY",
             s3_secret_access_key,
         ),
-        glacier_force_path_style=_parse_bool(
-            os.getenv("RIVERHOG_GLACIER_FORCE_PATH_STYLE", str(s3_force_path_style).lower())
+        archive_force_path_style=_parse_bool(
+            os.getenv("RIVERHOG_ARCHIVE_FORCE_PATH_STYLE", str(s3_force_path_style).lower())
         ),
-        glacier_prefix=_normalize_prefix(os.getenv("RIVERHOG_GLACIER_PREFIX", "glacier")),
-        glacier_backend=os.getenv("RIVERHOG_GLACIER_BACKEND", "s3").strip() or "s3",
-        glacier_storage_class=os.getenv("RIVERHOG_GLACIER_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
+        archive_prefix=_normalize_prefix(os.getenv("RIVERHOG_ARCHIVE_PREFIX", "archive")),
+        archive_backend=os.getenv("RIVERHOG_ARCHIVE_BACKEND", "s3").strip() or "s3",
+        archive_storage_class=os.getenv("RIVERHOG_ARCHIVE_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
         or "DEEP_ARCHIVE",
-        glacier_multipart_part_bytes=glacier_multipart_part_bytes,
-        glacier_multipart_concurrency=glacier_multipart_concurrency,
+        archive_multipart_part_bytes=archive_multipart_part_bytes,
+        archive_multipart_concurrency=archive_multipart_concurrency,
         hot_promotion_concurrency=hot_promotion_concurrency,
         hot_single_put_max_bytes=hot_single_put_max_bytes,
-        glacier_archive_encryption=glacier_archive_encryption,
-        glacier_archive_passphrase=glacier_archive_passphrase,
-        glacier_archive_require_explicit_passphrase=glacier_archive_require_explicit_passphrase,
-        glacier_archive_work_factor=glacier_archive_work_factor,
-        glacier_upload_retry_delay=glacier_retry_delay,
-        glacier_upload_sweep_interval=glacier_upload_sweep_interval,
+        archive_encryption=archive_encryption,
+        archive_passphrase=archive_passphrase,
+        archive_require_explicit_passphrase=archive_require_explicit_passphrase,
+        archive_work_factor=archive_work_factor,
+        archive_upload_retry_delay=archive_retry_delay,
+        archive_upload_sweep_interval=archive_upload_sweep_interval,
         operator_webhook_url=operator_webhook_url,
         notify_webhook_urls=notify_webhook_urls,
         notify_default_recipients=notify_default_recipients,
@@ -676,11 +671,11 @@ def load_runtime_config() -> RuntimeConfig:
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,
         operator_webhook_reminder_time=operator_webhook_reminder_time,
         operator_webhook_reminder_timezone=operator_webhook_reminder_timezone,
-        glacier_recovery_sweep_interval=glacier_recovery_sweep_interval,
-        glacier_recovery_restore_latency=glacier_recovery_restore_latency,
-        glacier_recovery_ready_ttl=glacier_recovery_ready_ttl,
-        glacier_recovery_retrieval_tier=glacier_recovery_retrieval_tier,
-        glacier_recovery_restore_mode=glacier_recovery_restore_mode,
+        archive_restore_sweep_interval=archive_restore_sweep_interval,
+        archive_restore_latency=archive_restore_latency,
+        archive_restore_ready_ttl=archive_restore_ready_ttl,
+        archive_restore_retrieval_tier=archive_restore_retrieval_tier,
+        archive_restore_mode=archive_restore_mode,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         recovery_payload_command=recovery_payload_command,

@@ -232,7 +232,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [target, collection, path, bytes, hot, archived]
+            enum: [target, collection, path, bytes, hot, disc]
             default: target
         - in: query
           name: order
@@ -253,7 +253,7 @@ paths:
               - type: boolean
               - type: "null"
         - in: query
-          name: archived
+          name: disc_coverage
           required: false
           schema:
             oneOf:
@@ -320,7 +320,7 @@ paths:
   /collections:
     get:
       summary: List collection summaries
-      description: Returns one page of collection summaries with optional substring and protection-state filtering.
+      description: Returns one page of collection summaries with optional substring and disc-redundancy filtering.
       operationId: listCollections
       parameters:
         - in: query
@@ -345,12 +345,12 @@ paths:
           required: false
           schema: { type: string, default: asc }
         - in: query
-          name: protection_state
+          name: disc_redundancy
           required: false
-          description: Exact collection protection filter.
+          description: Exact collection disc redundancy filter.
           schema:
             type: string
-            enum: [under_protected, cloud_only, physical_only, fully_protected]
+            enum: [none, partial, full]
       responses:
         "200":
           description: Collection summary listing
@@ -438,7 +438,7 @@ paths:
   /discs:
     get:
       summary: List burned disc records
-      description: Returns one page of generated disc/copy records with sorting and filtering over operator-facing disc metadata.
+      description: Returns one page of generated disc/disc records with sorting and filtering over operator-facing disc metadata.
       operationId: listDiscs
       parameters:
         - in: query
@@ -454,7 +454,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [id, image_id, state, verification_state, location]
+            enum: [disc_id, image_id, state, verification_state, location]
             default: id
         - in: query
           name: order
@@ -480,14 +480,14 @@ paths:
                 $ref: "#/components/schemas/DiscListResponse"
         default:
           $ref: "#/components/responses/Error"
-  /discs/{copy_id}:
+  /discs/{disc_id}:
     get:
       summary: Get one burned disc record
-      description: Returns one generated disc/copy record by copy id, including copy history.
+      description: Returns one generated disc/disc record by disc id, including disc history.
       operationId: getDisc
       parameters:
         - in: path
-          name: copy_id
+          name: disc_id
           required: true
           schema: { type: string }
       responses:
@@ -518,7 +518,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [finalized_at, bytes, physical_copies_registered]
+            enum: [finalized_at, bytes, discs_registered]
             default: finalized_at
         - in: query
           name: order
@@ -536,7 +536,7 @@ paths:
           required: false
           schema: { type: string }
         - in: query
-          name: has_copies
+          name: has_discs
           required: false
           schema: { type: boolean }
       responses:
@@ -567,10 +567,10 @@ paths:
                 $ref: "#/components/schemas/FinalizedImageSummary"
         default:
           $ref: "#/components/responses/Error"
-  /images/{image_id}/rebuild-session:
+  /images/{image_id}/disc-rebuild:
     get:
-      summary: Get the latest image rebuild session for one image
-      description: Returns the latest `image_rebuild` recovery session for one finalized image, including expired or completed sessions.
+      summary: Get the latest disc rebuild archive restore for one image
+      description: Returns the latest `disc_rebuild` archive restore for one finalized image, including expired or completed restores.
       operationId: getImageRebuildSession
       parameters:
         - in: path
@@ -579,18 +579,18 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Recovery session summary
+          description: Archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions:
+  /archive-restores:
     get:
-      summary: List recovery sessions
-      description: Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild sessions, with filters for lifecycle scope, type, state, collection, and image.
-      operationId: listRecoverySessions
+      summary: List archive restores
+      description: Returns a paged inventory of archive-backed fetch materialization and disc rebuild restores, with filters for lifecycle scope, type, state, collection, and image.
+      operationId: listArchiveRestores
       parameters:
         - in: query
           name: page
@@ -613,7 +613,7 @@ paths:
           schema:
             type: string
             enum:
-              [created_at, id, type, state, restore_ready_at, restore_expires_at]
+              [created_at, id, type, state, ready_at, expires_at]
             default: created_at
         - in: query
           name: order
@@ -635,7 +635,7 @@ paths:
           schema:
             oneOf:
               - type: string
-                enum: [collection_restore, image_rebuild]
+                enum: [fetch_materialization, disc_rebuild]
               - type: "null"
         - in: query
           name: state
@@ -643,7 +643,7 @@ paths:
           schema:
             oneOf:
               - type: string
-                enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
+                enum: [requested, ready, paused, expired, completed, failed, canceled]
               - type: "null"
         - in: query
           name: collection
@@ -661,116 +661,116 @@ paths:
               - type: "null"
       responses:
         "200":
-          description: Paged recovery session inventory
+          description: Paged archive restore inventory
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySessionList"
+                $ref: "#/components/schemas/ArchiveRestoreList"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}:
+  /archive-restores/{archive_restore_id}:
     get:
-      summary: Get one recovery session
-      description: Returns one Glacier-backed cloud-fetch or image rebuild session by durable session id.
-      operationId: getRecoverySession
+      summary: Get one archive restore
+      description: Returns one archive-backed fetch materialization or disc rebuild archive restore by durable archive restore id.
+      operationId: getArchiveRestore
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Recovery session summary
+          description: Archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/complete:
+  /archive-restores/{archive_restore_id}/complete:
     post:
-      summary: Complete one ready recovery session
-      description: Marks one ready recovery session complete and records cleanup or lifecycle handoff for restored Standard-storage data.
-      operationId: completeRecoverySession
+      summary: Complete one ready archive restore
+      description: Marks one ready archive restore complete and records cleanup or lifecycle handoff for restored Standard-storage data.
+      operationId: completeArchiveRestore
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Completed recovery session summary
+          description: Completed archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/cancel:
+  /archive-restores/{archive_restore_id}/cancel:
     post:
-      summary: Cancel one active cloud-fetch recovery session
-      description: Cancels one active fetch-scoped cloud-fetch recovery session by durable session id and stops automatic materialization. Image rebuild sessions are paused and resumed instead of canceled.
-      operationId: cancelRecoverySession
+      summary: Cancel one active fetch materialization archive restore
+      description: Cancels one active fetch-scoped fetch materialization archive restore by durable archive restore id and stops automatic materialization. Disc rebuild restores are paused and resumed instead of canceled.
+      operationId: cancelArchiveRestore
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Canceled recovery session summary
+          description: Canceled archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/pause:
+  /archive-restores/{archive_restore_id}/pause:
     post:
-      summary: Pause one active image rebuild session
-      description: Pauses one active `image_rebuild` recovery session and schedules daily operator reminders until it is resumed.
-      operationId: pauseRecoverySession
+      summary: Pause one active disc rebuild archive restore
+      description: Pauses one active `disc_rebuild` archive restore and schedules daily operator reminders until it is resumed.
+      operationId: pauseArchiveRestore
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Paused recovery session summary
+          description: Paused archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/resume:
+  /archive-restores/{archive_restore_id}/resume:
     post:
-      summary: Resume one paused image rebuild session
-      description: Resumes one paused `image_rebuild` recovery session from its previous restore state.
-      operationId: resumeRecoverySession
+      summary: Resume one paused disc rebuild archive restore
+      description: Resumes one paused `disc_rebuild` archive restore from its previous restore state.
+      operationId: resumeArchiveRestore
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Resumed recovery session summary
+          description: Resumed archive restore summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RecoverySession"
+                $ref: "#/components/schemas/ArchiveRestore"
         default:
           $ref: "#/components/responses/Error"
-  /recovery-sessions/{session_id}/images/{image_id}/iso:
+  /archive-restores/{archive_restore_id}/images/{image_id}/iso:
     get:
-      summary: Download one rebuilt recovery-session ISO
-      description: Streams rebuilt ISO bytes for one image in a ready `image_rebuild` recovery session.
+      summary: Download one rebuilt archive-restore ISO
+      description: Streams rebuilt ISO bytes for one image in a ready `disc_rebuild` archive restore.
       operationId: getRecoveredIso
       parameters:
         - in: path
-          name: session_id
+          name: archive_restore_id
           required: true
           schema: { type: string }
         - in: path
@@ -787,11 +787,11 @@ paths:
                 format: binary
         default:
           $ref: "#/components/responses/Error"
-  /glacier:
+  /archive:
     get:
-      summary: Get Glacier usage reporting
-      description: Returns Glacier usage totals, direct per-collection archive state, collection manifest/OTS proof state, image contribution metadata, and overall usage snapshots.
-      operationId: getGlacierReport
+      summary: Get archive usage reporting
+      description: Returns archive usage totals, direct per-collection archive state, collection manifest/OTS proof state, image contribution metadata, and overall usage snapshots.
+      operationId: getArchiveReport
       parameters:
         - in: query
           name: collection
@@ -799,11 +799,11 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Glacier usage report
+          description: Archive usage report
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GlacierUsageReport"
+                $ref: "#/components/schemas/ArchiveUsageReport"
         default:
           $ref: "#/components/responses/Error"
   /plan/candidates/{candidate_id}/finalize:
@@ -845,10 +845,10 @@ paths:
                 format: binary
         default:
           $ref: "#/components/responses/Error"
-  /images/{image_id}/copies:
+  /images/{image_id}/discs:
     get:
-      summary: List generated copy slots for an image
-      description: Returns the generated copy slots for one finalized image identified by `image_id`.
+      summary: List generated disc slots for an image
+      description: Returns the generated disc slots for one finalized image identified by `image_id`.
       operationId: listCopies
       parameters:
         - in: path
@@ -857,21 +857,21 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Copy listing
+          description: Disc listing
           content:
             application/json:
               schema:
                 type: object
-                required: [copies]
+                required: [discs]
                 properties:
-                  copies:
+                  discs:
                     type: array
                     items:
-                      $ref: "#/components/schemas/CopySummary"
+                      $ref: "#/components/schemas/DiscSummary"
         default:
           $ref: "#/components/responses/Error"
     post:
-      summary: Register a physical burned copy
+      summary: Register a physical burned disc
       description: Registers one durable burned-disc record for an already finalized image identified by `image_id`.
       operationId: createCopy
       parameters:
@@ -887,29 +887,29 @@ paths:
               type: object
               required: [location]
               properties:
-                copy_id:
+                disc_id:
                   type: string
-                  description: Optional generated copy id to claim explicitly for this finalized image.
+                  description: Optional generated disc id to claim explicitly for this finalized image.
                 location:
                   type: string
-                  description: Mutable operator-supplied physical location label. Not part of the copy identity.
+                  description: Mutable operator-supplied physical location label. Not part of the disc identity.
       responses:
         "200":
-          description: Copy registered
+          description: Disc registered
           content:
             application/json:
               schema:
                 type: object
-                required: [copy]
+                required: [disc]
                 properties:
-                  copy:
-                    $ref: "#/components/schemas/CopySummary"
+                  disc:
+                    $ref: "#/components/schemas/DiscSummary"
         default:
           $ref: "#/components/responses/Error"
-  /images/{image_id}/copies/{copy_id}:
+  /images/{image_id}/discs/{disc_id}:
     patch:
-      summary: Update one generated copy record
-      description: Updates mutable operational metadata for one generated copy slot on a finalized image.
+      summary: Update one generated disc record
+      description: Updates mutable operational metadata for one generated disc slot on a finalized image.
       operationId: updateCopy
       parameters:
         - in: path
@@ -917,7 +917,7 @@ paths:
           required: true
           schema: { type: string }
         - in: path
-          name: copy_id
+          name: disc_id
           required: true
           schema: { type: string }
       requestBody:
@@ -930,7 +930,7 @@ paths:
                 location:
                   type: string
                   nullable: true
-                  description: Updated physical location label. Not part of copy identity.
+                  description: Updated physical location label. Not part of disc identity.
                 state:
                   type: string
                   nullable: true
@@ -941,21 +941,21 @@ paths:
                   enum: [pending, verified, failed]
       responses:
         "200":
-          description: Updated copy record
+          description: Updated disc record
           content:
             application/json:
               schema:
                 type: object
-                required: [copy]
+                required: [disc]
                 properties:
-                  copy:
-                    $ref: "#/components/schemas/CopySummary"
+                  disc:
+                    $ref: "#/components/schemas/DiscSummary"
         default:
           $ref: "#/components/responses/Error"
-  /images/{image_id}/copies/{copy_id}/label-needed:
+  /images/{image_id}/discs/{disc_id}/label-needed:
     post:
-      summary: Notify that a copy needs labeling
-      description: Sends the best-effort operator notification that a burned and verified copy needs its physical label applied.
+      summary: Notify that a disc needs labeling
+      description: Sends the best-effort operator notification that a burned and verified disc needs its physical label applied.
       operationId: notifyCopyLabelNeeded
       parameters:
         - in: path
@@ -963,26 +963,26 @@ paths:
           required: true
           schema: { type: string }
         - in: path
-          name: copy_id
+          name: disc_id
           required: true
           schema: { type: string }
       responses:
         "200":
-          description: Current copy record
+          description: Current disc record
           content:
             application/json:
               schema:
                 type: object
-                required: [copy]
+                required: [disc]
                 properties:
-                  copy:
-                    $ref: "#/components/schemas/CopySummary"
+                  disc:
+                    $ref: "#/components/schemas/DiscSummary"
         default:
           $ref: "#/components/responses/Error"
   /hot/evict:
     post:
-      summary: Evict protected hot files
-      description: Evicts hot files selected by one or more target selectors, refusing any file without verified disc protection.
+      summary: Evict disc-redundant hot files
+      description: Evicts hot files selected by one or more target selectors, refusing any file without verified disc redundancy.
       operationId: evictHotTargets
       requestBody:
         required: true
@@ -1111,7 +1111,7 @@ paths:
   /fetches/{fetch_id}/start:
     post:
       summary: Start a fetch
-      description: Queues a draft fetch for djdan, or for automatic cloud-fetch recovery when `cloud` is true.
+      description: Queues a draft fetch for djdan, or for automatic fetch materialization when `archive` is true.
       operationId: startFetch
       parameters:
         - in: path
@@ -1157,7 +1157,7 @@ paths:
   /fetches/{fetch_id}/cancel:
     post:
       summary: Cancel a fetch
-      description: Cancels an active djdan or cloud fetch by fetch id. Djdan cancellation discards any in-flight resumable upload resources and returns the fetch to draft. Cloud cancellation cancels active collection-native recovery sessions and returns the fetch to draft when possible.
+      description: Cancels an active djdan or archive fetch by fetch id. Djdan cancellation discards any in-flight resumable upload resources and returns the fetch to draft. Archive cancellation cancels active collection-native archive restores and returns the fetch to draft when possible.
       operationId: cancelFetch
       parameters:
         - in: path
@@ -1184,7 +1184,7 @@ paths:
   /fetches/{fetch_id}/status:
     get:
       summary: Get fetch preflight and progress status
-      description: Returns one named fetch summary plus bounded target/file previews, cloud-fetch recovery sessions, and pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
+      description: Returns one named fetch summary plus bounded target/file previews, fetch materialization archive restores, and pending, partial, or byte-complete entry statuses for human operator display. This endpoint does not backfill finalized-image recovery metadata; use the fetch manifest for automated recovery.
       operationId: getFetchStatus
       parameters:
         - in: path
@@ -1239,7 +1239,7 @@ paths:
           schema:
             type: string
             default: target
-            enum: [target, collection, path, bytes, hot, archived, disc]
+            enum: [target, collection, path, bytes, hot, disc]
         - in: query
           name: order
           required: false
@@ -1249,13 +1249,6 @@ paths:
             enum: [asc, desc]
         - in: query
           name: hot
-          required: false
-          schema:
-            oneOf:
-              - type: boolean
-              - type: "null"
-        - in: query
-          name: archived
           required: false
           schema:
             oneOf:
@@ -1280,7 +1273,7 @@ paths:
   /fetches/{fetch_id}/manifest:
     get:
       summary: Get fetch manifest
-      description: Returns the stable fetch manifest and any unexpired upload progress for one named fetch. Copy recovery lengths come from registered disc-copy metadata, and missing recovery digests are backfilled from the finalized image root before the manifest is returned, so archived-only files do not need hot plaintext to publish a manifest.
+      description: Returns the stable fetch manifest and any unexpired upload progress for one named fetch. Disc recovery lengths come from registered file-disc metadata, and missing recovery digests are backfilled from the finalized image root before the manifest is returned, so disc-covered files do not need hot plaintext to publish a manifest.
       operationId: getFetchManifest
       parameters:
         - in: path
@@ -1486,9 +1479,9 @@ paths:
               schema: { type: object }
         default:
           $ref: "#/components/responses/Error"
-  /jeb/batches:
+  /jeb/attempts:
     get:
-      summary: List Jeb batch attempts
+      summary: List Jeb attempts
       operationId: listJebBatches
       parameters:
         - in: query
@@ -1532,7 +1525,7 @@ paths:
               - type: string
               - type: "null"
         - in: query
-          name: collection
+          name: collection_slug
           required: false
           schema:
             oneOf:
@@ -1554,7 +1547,7 @@ paths:
               - type: "null"
       responses:
         "200":
-          description: Paged Jeb batch attempts
+          description: Paged Jeb attempts
           content:
             application/json:
               schema: { type: object }
@@ -1621,7 +1614,7 @@ components:
       description: Canonical projected-path selector relative to the hot-view root. Directory selectors end with `/` and file selectors do not.
     FetchState:
       type: string
-      enum: [draft, queued_djdan, uploading, verifying, queued_cloud, cloud_fetching, done, failed]
+      enum: [draft, queued_djdan, uploading, verifying, queued_archive, restoring_archive, done, failed]
     FetchEntryUploadState:
       type: string
       enum: [pending, partial, byte_complete, uploaded]
@@ -1638,16 +1631,10 @@ components:
         dry_run:
           type: boolean
           default: false
-    PhysicalProtectionState:
-      type: string
-      enum: [unprotected, partially_protected, protected]
-    CollectionProtectionState:
-      type: string
-      enum: [under_protected, cloud_only, physical_only, fully_protected]
     CoverageState:
       type: string
       enum: [none, partial, full]
-    GlacierArchive:
+    Archive:
       type: object
       required:
         [state, object_path, stored_bytes, backend, storage_class, last_uploaded_at, last_verified_at, failure]
@@ -1707,7 +1694,7 @@ components:
             - type: "null"
         ots_state:
           $ref: "#/components/schemas/CollectionManifestProofState"
-    GlacierUsageTotals:
+    ArchiveUsageTotals:
       type: object
       required:
         [collections, uploaded_collections, measured_storage_bytes]
@@ -1721,7 +1708,7 @@ components:
         measured_storage_bytes:
           type: integer
           minimum: 0
-    GlacierUsageImage:
+    ArchiveUsageImage:
       type: object
       required:
         [
@@ -1737,7 +1724,7 @@ components:
         collection_ids:
           type: array
           items: { type: string }
-    GlacierCollectionContribution:
+    ArchiveCollectionContribution:
       type: object
       required:
         [
@@ -1753,13 +1740,13 @@ components:
         represented_bytes:
           type: integer
           minimum: 0
-    GlacierUsageCollection:
+    ArchiveUsageCollection:
       type: object
       required:
         [
           id,
           bytes,
-          glacier,
+          archive,
           collection_manifest,
           archive_format,
           compression,
@@ -1771,8 +1758,8 @@ components:
         bytes:
           type: integer
           minimum: 0
-        glacier:
-          $ref: "#/components/schemas/GlacierArchive"
+        archive:
+          $ref: "#/components/schemas/Archive"
         collection_manifest:
           oneOf:
             - $ref: "#/components/schemas/CollectionManifest"
@@ -1791,8 +1778,8 @@ components:
         images:
           type: array
           items:
-            $ref: "#/components/schemas/GlacierCollectionContribution"
-    GlacierUsageSnapshot:
+            $ref: "#/components/schemas/ArchiveCollectionContribution"
+    ArchiveUsageSnapshot:
       type: object
       required:
         [captured_at, uploaded_collections, measured_storage_bytes]
@@ -1806,7 +1793,7 @@ components:
         measured_storage_bytes:
           type: integer
           minimum: 0
-    GlacierUsageReport:
+    ArchiveUsageReport:
       type: object
       required:
         [scope, measured_at, totals, images, collections, history]
@@ -1818,19 +1805,19 @@ components:
           type: string
           format: date-time
         totals:
-          $ref: "#/components/schemas/GlacierUsageTotals"
+          $ref: "#/components/schemas/ArchiveUsageTotals"
         images:
           type: array
           items:
-            $ref: "#/components/schemas/GlacierUsageImage"
+            $ref: "#/components/schemas/ArchiveUsageImage"
         collections:
           type: array
           items:
-            $ref: "#/components/schemas/GlacierUsageCollection"
+            $ref: "#/components/schemas/ArchiveUsageCollection"
         history:
           type: array
           items:
-            $ref: "#/components/schemas/GlacierUsageSnapshot"
+            $ref: "#/components/schemas/ArchiveUsageSnapshot"
     CollectionSummary:
       type: object
       required:
@@ -1839,15 +1826,12 @@ components:
           files,
           bytes,
           hot_bytes,
-          archived_bytes,
-          pending_bytes,
-          glacier,
+          archive,
           collection_manifest,
           archive_format,
           compression,
           disc_coverage,
-          protection_state,
-          protected_bytes,
+          disc_redundancy,
           image_coverage,
         ]
       properties:
@@ -1857,10 +1841,8 @@ components:
         files: { type: integer }
         bytes: { type: integer }
         hot_bytes: { type: integer }
-        archived_bytes: { type: integer }
-        pending_bytes: { type: integer }
-        glacier:
-          $ref: "#/components/schemas/GlacierArchive"
+        archive:
+          $ref: "#/components/schemas/Archive"
         collection_manifest:
           $ref: "#/components/schemas/CollectionManifest"
         archive_format:
@@ -1868,11 +1850,9 @@ components:
         compression:
           type: string
         disc_coverage:
-          $ref: "#/components/schemas/CollectionDiscCoverage"
-        protection_state:
-          $ref: "#/components/schemas/CollectionProtectionState"
-        protected_bytes:
-          type: integer
+          $ref: "#/components/schemas/Coverage"
+        disc_redundancy:
+          $ref: "#/components/schemas/Coverage"
         image_coverage:
           type: array
           items:
@@ -1885,15 +1865,12 @@ components:
           files,
           bytes,
           hot_bytes,
-          archived_bytes,
-          pending_bytes,
-          glacier,
+          archive,
           collection_manifest,
           archive_format,
           compression,
           disc_coverage,
-          protection_state,
-          protected_bytes,
+          disc_redundancy,
         ]
       properties:
         id:
@@ -1902,10 +1879,8 @@ components:
         files: { type: integer }
         bytes: { type: integer }
         hot_bytes: { type: integer }
-        archived_bytes: { type: integer }
-        pending_bytes: { type: integer }
-        glacier:
-          $ref: "#/components/schemas/GlacierArchive"
+        archive:
+          $ref: "#/components/schemas/Archive"
         collection_manifest:
           $ref: "#/components/schemas/CollectionManifest"
         archive_format:
@@ -1913,21 +1888,16 @@ components:
         compression:
           type: string
         disc_coverage:
-          $ref: "#/components/schemas/CollectionDiscCoverage"
-        protection_state:
-          $ref: "#/components/schemas/CollectionProtectionState"
-        protected_bytes:
-          type: integer
-    CollectionDiscCoverage:
+          $ref: "#/components/schemas/Coverage"
+        disc_redundancy:
+          $ref: "#/components/schemas/Coverage"
+    Coverage:
       type: object
-      required: [state, covered_bytes, verified_physical_bytes]
+      required: [state, bytes]
       properties:
         state:
           $ref: "#/components/schemas/CoverageState"
-        covered_bytes:
-          type: integer
-          minimum: 0
-        verified_physical_bytes:
+        bytes:
           type: integer
           minimum: 0
     CollectionListResponse:
@@ -2196,11 +2166,11 @@ components:
           collections,
           collection_ids,
           iso_ready,
-          physical_protection_state,
-          physical_copies_required,
-          physical_copies_registered,
-          physical_copies_verified,
-          physical_copies_missing,
+          disc_redundancy_state,
+          discs_required,
+          discs_registered,
+          discs_verified,
+          discs_missing,
         ]
       properties:
         id:
@@ -2231,18 +2201,18 @@ components:
           type: boolean
           const: true
           description: Finalized images are always ISO-ready.
-        physical_protection_state:
-          $ref: "#/components/schemas/PhysicalProtectionState"
-        physical_copies_required:
+        disc_redundancy_state:
+          $ref: "#/components/schemas/CoverageState"
+        discs_required:
           type: integer
           minimum: 1
-        physical_copies_registered:
+        discs_registered:
           type: integer
           minimum: 0
-        physical_copies_verified:
+        discs_verified:
           type: integer
           minimum: 0
-        physical_copies_missing:
+        discs_missing:
           type: integer
           minimum: 0
     FinalizedImageListResponse:
@@ -2263,7 +2233,7 @@ components:
           minimum: 0
         sort:
           type: string
-          enum: [finalized_at, bytes, physical_copies_registered]
+          enum: [finalized_at, bytes, discs_registered]
         order:
           type: string
           enum: [asc, desc]
@@ -2277,13 +2247,13 @@ components:
         [
           id,
           filename,
-          physical_protection_state,
-          physical_copies_required,
-          physical_copies_registered,
-          physical_copies_verified,
-          physical_copies_missing,
+          disc_redundancy_state,
+          discs_required,
+          discs_registered,
+          discs_verified,
+          discs_missing,
           covered_paths,
-          copies,
+          discs,
         ]
       properties:
         id:
@@ -2291,18 +2261,18 @@ components:
           pattern: "^[0-9]{8}T[0-9]{6}Z$"
         filename:
           type: string
-        physical_protection_state:
-          $ref: "#/components/schemas/PhysicalProtectionState"
-        physical_copies_required:
+        disc_redundancy_state:
+          $ref: "#/components/schemas/CoverageState"
+        discs_required:
           type: integer
           minimum: 1
-        physical_copies_registered:
+        discs_registered:
           type: integer
           minimum: 0
-        physical_copies_verified:
+        discs_verified:
           type: integer
           minimum: 0
-        physical_copies_missing:
+        discs_missing:
           type: integer
           minimum: 0
         covered_paths:
@@ -2314,46 +2284,15 @@ components:
           type: integer
           minimum: 0
           description: Total covered path count before any `coverage_path_limit` truncation.
-        copies:
+        discs:
           type: array
           items:
-            $ref: "#/components/schemas/CopySummary"
-    CopySummary:
-      type: object
-      required:
-        [id, volume_id, label_text, location, created_at, state, verification_state, history]
-      properties:
-        id:
-          type: string
-          description: Generated copy id, unique within one finalized image/`volume_id`.
-        volume_id:
-          type: string
-          pattern: "^[0-9]{8}T[0-9]{6}Z$"
-          description: Immutable media identifier for the finalized image this copy belongs to.
-        label_text:
-          type: string
-          description: Exact operator-facing disc label text for this generated copy slot.
-        location:
-          type: string
-          nullable: true
-          description: Mutable physical location label. Not part of copy identity.
-        created_at: { type: string, format: date-time }
-        state:
-          type: string
-          enum: [needed, burning, verified, registered, lost, damaged, retired]
-        verification_state:
-          type: string
-          enum: [pending, verified, failed]
-        history:
-          type: array
-          items:
-            $ref: "#/components/schemas/CopyHistory"
+            $ref: "#/components/schemas/DiscSummary"
     DiscSummary:
       type: object
       required:
         [
-          id,
-          volume_id,
+          disc_id,
           label_text,
           location,
           created_at,
@@ -2363,20 +2302,16 @@ components:
           image_id,
         ]
       properties:
-        id:
+        disc_id:
           type: string
-          description: Generated disc/copy id.
-        volume_id:
-          type: string
-          pattern: "^[0-9]{8}T[0-9]{6}Z$"
-          description: Immutable media identifier for the finalized image this disc belongs to.
+          description: Generated disc id, unique within one finalized image.
         label_text:
           type: string
-          description: Exact operator-facing disc label text for this generated copy slot.
+          description: Exact operator-facing disc label text for this generated disc slot.
         location:
           type: string
           nullable: true
-          description: Mutable physical location label. Not part of copy identity.
+          description: Mutable physical location label. Not part of disc identity.
         created_at: { type: string, format: date-time }
         state:
           type: string
@@ -2387,7 +2322,7 @@ components:
         history:
           type: array
           items:
-            $ref: "#/components/schemas/CopyHistory"
+            $ref: "#/components/schemas/DiscHistory"
         image_id:
           type: string
           pattern: "^[0-9]{8}T[0-9]{6}Z$"
@@ -2414,7 +2349,7 @@ components:
           minimum: 0
         sort:
           type: string
-          enum: [id, image_id, state, verification_state, location]
+          enum: [disc_id, image_id, state, verification_state, location]
         order:
           type: string
           enum: [asc, desc]
@@ -2428,7 +2363,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DiscSummary"
-    CopyHistory:
+    DiscHistory:
       type: object
       required: [at, event, state, verification_state, location]
       properties:
@@ -2443,10 +2378,10 @@ components:
         location:
           type: string
           nullable: true
-    RecoverySessionList:
+    ArchiveRestoreList:
       type: object
       required:
-        [page, per_page, total, pages, sort, order, terminal, type, state, collection, image, sessions]
+        [page, per_page, total, pages, sort, order, terminal, type, state, collection, image, restores]
       properties:
         page:
           type: integer
@@ -2462,7 +2397,7 @@ components:
           minimum: 0
         sort:
           type: string
-          enum: [created_at, id, type, state, restore_ready_at, restore_expires_at]
+          enum: [created_at, id, type, state, ready_at, expires_at]
         order:
           type: string
           enum: [asc, desc]
@@ -2472,12 +2407,12 @@ components:
         type:
           oneOf:
             - type: string
-              enum: [collection_restore, image_rebuild]
+              enum: [fetch_materialization, disc_rebuild]
             - type: "null"
         state:
           oneOf:
             - type: string
-              enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
+              enum: [requested, ready, paused, expired, completed, failed, canceled]
             - type: "null"
         collection:
           oneOf:
@@ -2487,11 +2422,11 @@ components:
           oneOf:
             - type: string
             - type: "null"
-        sessions:
+        restores:
           type: array
           items:
-            $ref: "#/components/schemas/RecoverySession"
-    RecoverySession:
+            $ref: "#/components/schemas/ArchiveRestore"
+    ArchiveRestore:
       type: object
       required:
         [id, type, state, created_at, warnings, notification, progress, collections, images]
@@ -2500,24 +2435,24 @@ components:
           type: string
         type:
           type: string
-          enum: [collection_restore, image_rebuild]
+          enum: [fetch_materialization, disc_rebuild]
         state:
           type: string
-          enum: [restore_requested, ready, paused, expired, completed, failed, canceled]
+          enum: [requested, ready, paused, expired, completed, failed, canceled]
         created_at:
           type: string
           format: date-time
-        restore_requested_at:
+        requested_at:
           oneOf:
             - type: string
               format: date-time
             - type: "null"
-        restore_ready_at:
+        ready_at:
           oneOf:
             - type: string
               format: date-time
             - type: "null"
-        restore_expires_at:
+        expires_at:
           oneOf:
             - type: string
               format: date-time
@@ -2541,7 +2476,7 @@ components:
           oneOf:
             - type: string
             - type: "null"
-        restore_paths:
+        paths:
           oneOf:
             - type: array
               items:
@@ -2558,15 +2493,15 @@ components:
         notification:
           $ref: "#/components/schemas/RecoveryNotificationStatus"
         progress:
-          $ref: "#/components/schemas/RecoverySessionProgress"
+          $ref: "#/components/schemas/ArchiveRestoreProgress"
         collections:
           type: array
           items:
-            $ref: "#/components/schemas/RecoverySessionCollection"
+            $ref: "#/components/schemas/ArchiveRestoreCollection"
         images:
           type: array
           items:
-            $ref: "#/components/schemas/RecoverySessionImage"
+            $ref: "#/components/schemas/ArchiveRestoreImage"
     RecoveryNotificationStatus:
       type: object
       required:
@@ -2606,7 +2541,7 @@ components:
           oneOf:
             - type: string
             - type: "null"
-    RecoverySessionProgress:
+    ArchiveRestoreProgress:
       type: object
       required: [archive_verification, extraction, materialization]
       properties:
@@ -2619,7 +2554,7 @@ components:
         materialization:
           type: string
           enum: [pending, in_progress, completed, failed]
-    RecoverySessionImage:
+    ArchiveRestoreImage:
       type: object
       required: [id, filename, collection_ids, rebuild_state]
       properties:
@@ -2633,14 +2568,14 @@ components:
         rebuild_state:
           type: string
           enum: [pending, restoring_collections, rebuilding, ready, paused, failed, canceled]
-    RecoverySessionCollection:
+    ArchiveRestoreCollection:
       type: object
-      required: [id, glacier, collection_manifest, stored_bytes]
+      required: [id, archive, collection_manifest, stored_bytes]
       properties:
         id:
           type: string
-        glacier:
-          $ref: "#/components/schemas/GlacierArchive"
+        archive:
+          $ref: "#/components/schemas/Archive"
         collection_manifest:
           $ref: "#/components/schemas/CollectionManifest"
         stored_bytes:
@@ -2674,7 +2609,7 @@ components:
     StartFetchRequest:
       type: object
       properties:
-        cloud:
+        archive:
           type: boolean
           default: false
         dry_run:
@@ -2684,13 +2619,13 @@ components:
       allOf:
         - $ref: "#/components/schemas/FetchSummary"
         - type: object
-          required: [dry_run, status, cloud, queued_state, will_create_recovery_session]
+          required: [dry_run, status, archive, queued_state, will_create_archive_restore]
           properties:
             dry_run: { type: boolean }
             status: { type: string }
-            cloud: { type: boolean }
+            archive: { type: boolean }
             queued_state: { type: string }
-            will_create_recovery_session: { type: boolean }
+            will_create_archive_restore: { type: boolean }
     HotEvictRequest:
       type: object
       required: [targets]
@@ -2731,12 +2666,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FetchSummary"
-    FetchCopyHint:
+    FetchDiscHint:
       type: object
-      required: [id, volume_id, location]
+      required: [disc_id, image_id, location]
       properties:
-        id: { type: string }
-        volume_id:
+        disc_id: { type: string }
+        image_id:
           type: string
           pattern: "^[0-9]{8}T[0-9]{6}Z$"
         location: { type: string }
@@ -2758,7 +2693,7 @@ components:
           uploaded_bytes,
           missing_bytes,
           upload_state_expires_at,
-          copies,
+          discs,
         ]
       properties:
         id: { type: string }
@@ -2789,10 +2724,10 @@ components:
             - type: string
               format: date-time
             - type: "null"
-        copies:
+        discs:
           type: array
           items:
-            $ref: "#/components/schemas/FetchCopyHint"
+            $ref: "#/components/schemas/FetchDiscHint"
     FetchStatusEntry:
       type: object
       required:
@@ -2825,9 +2760,8 @@ components:
           bytes,
           hot_files,
           hot_bytes,
-          archived_files,
-          archived_bytes,
-          registered_disc_files,
+          disc_files,
+          disc_bytes,
           missing_files,
           missing_with_disc_files,
           missing_without_disc_files,
@@ -2839,15 +2773,14 @@ components:
         bytes: { type: integer }
         hot_files: { type: integer }
         hot_bytes: { type: integer }
-        archived_files: { type: integer }
-        archived_bytes: { type: integer }
-        registered_disc_files: { type: integer }
+        disc_files: { type: integer }
+        disc_bytes: { type: integer }
         missing_files: { type: integer }
         missing_with_disc_files: { type: integer }
         missing_without_disc_files: { type: integer }
     FetchFile:
       type: object
-      required: [target, collection_id, path, bytes, hot, archived, registered_disc_coverage]
+      required: [target, collection_id, path, bytes, hot, disc_coverage]
       properties:
         target:
           $ref: "#/components/schemas/Target"
@@ -2855,8 +2788,7 @@ components:
         path: { type: string }
         bytes: { type: integer }
         hot: { type: boolean }
-        archived: { type: boolean }
-        registered_disc_coverage: { type: boolean }
+        disc_coverage: { type: boolean }
     FetchStatus:
       allOf:
         - $ref: "#/components/schemas/FetchSummary"
@@ -2865,9 +2797,8 @@ components:
             [
               hot_files,
               hot_bytes,
-              archived_files,
-              archived_bytes,
-              registered_disc_files,
+              disc_files,
+              disc_bytes,
               missing_files,
               missing_with_disc_files,
               missing_without_disc_files,
@@ -2877,7 +2808,7 @@ components:
               files_preview,
               next_action,
               next_action_reason,
-              cloud_fetch,
+              archive_restores,
               entries_limit,
               entries_returned,
               entries,
@@ -2885,9 +2816,8 @@ components:
           properties:
             hot_files: { type: integer }
             hot_bytes: { type: integer }
-            archived_files: { type: integer }
-            archived_bytes: { type: integer }
-            registered_disc_files: { type: integer }
+            disc_files: { type: integer }
+            disc_bytes: { type: integer }
             missing_files: { type: integer }
             missing_with_disc_files: { type: integer }
             missing_without_disc_files: { type: integer }
@@ -2908,8 +2838,8 @@ components:
                 $ref: "#/components/schemas/FetchFile"
             next_action: { type: string }
             next_action_reason: { type: string }
-            cloud_fetch:
-              $ref: "#/components/schemas/RecoverySessionList"
+            archive_restores:
+              $ref: "#/components/schemas/ArchiveRestoreList"
             entries_limit:
               type: integer
               minimum: 0
@@ -2928,7 +2858,6 @@ components:
           fetch_id,
           query,
           hot,
-          archived,
           disc_coverage,
           page,
           per_page,
@@ -2948,10 +2877,6 @@ components:
           oneOf:
             - type: boolean
             - type: "null"
-        archived:
-          oneOf:
-            - type: boolean
-            - type: "null"
         disc_coverage:
           oneOf:
             - type: boolean
@@ -2962,7 +2887,7 @@ components:
         pages: { type: integer }
         sort:
           type: string
-          enum: [target, collection, path, bytes, hot, archived, disc]
+          enum: [target, collection, path, bytes, hot, disc]
         order:
           type: string
           enum: [asc, desc]
@@ -2972,10 +2897,10 @@ components:
             $ref: "#/components/schemas/FetchFile"
     FetchManifestEntryCopy:
       type: object
-      required: [copy, volume_id, location, disc_path, recovery_bytes, recovery_sha256]
+      required: [disc_id, image_id, location, disc_path, recovery_bytes, recovery_sha256]
       properties:
-        copy: { type: string }
-        volume_id:
+        disc_id: { type: string }
+        image_id:
           type: string
           pattern: "^[0-9]{8}T[0-9]{6}Z$"
         location: { type: string }
@@ -2991,7 +2916,7 @@ components:
     FetchManifestEntry:
       type: object
       required:
-        [id, collection_id, path, bytes, sha256, recovery_bytes, upload_state, uploaded_bytes, upload_state_expires_at, copies]
+        [id, collection_id, path, bytes, sha256, recovery_bytes, upload_state, uploaded_bytes, upload_state_expires_at, discs]
       properties:
         id: { type: string }
         collection_id:
@@ -3017,7 +2942,7 @@ components:
             - type: string
               format: date-time
             - type: "null"
-        copies:
+        discs:
           type: array
           items:
             $ref: "#/components/schemas/FetchManifestEntryCopy"
@@ -3027,7 +2952,7 @@ components:
             $ref: "#/components/schemas/FetchManifestPart"
     FetchManifestPart:
       type: object
-      required: [index, bytes, sha256, recovery_bytes, copies]
+      required: [index, bytes, sha256, recovery_bytes, discs]
       properties:
         index: { type: integer }
         bytes:
@@ -3039,7 +2964,7 @@ components:
         recovery_bytes:
           type: integer
           description: Raw encrypted byte length uploaded for this ordered recovery span.
-        copies:
+        discs:
           type: array
           items:
             $ref: "#/components/schemas/FetchManifestEntryCopy"
@@ -3059,7 +2984,7 @@ components:
             $ref: "#/components/schemas/FetchManifestEntry"
     SearchFile:
       type: object
-      required: [target, collection, path, bytes, sha256, hot, archived]
+      required: [target, collection, path, bytes, sha256, hot, disc_coverage]
       properties:
         target:
           $ref: "#/components/schemas/Target"
@@ -3070,10 +2995,10 @@ components:
           type: string
           pattern: "^[0-9a-f]{64}$"
         hot: { type: boolean }
-        archived: { type: boolean }
+        disc_coverage: { type: boolean }
     SearchResponse:
       type: object
-      required: [query, collection, hot, archived, page, per_page, total, pages, sort, order, files]
+      required: [query, collection, hot, disc_coverage, page, per_page, total, pages, sort, order, files]
       properties:
         query:
           oneOf:
@@ -3087,7 +3012,7 @@ components:
           oneOf:
             - type: boolean
             - type: "null"
-        archived:
+        disc_coverage:
           oneOf:
             - type: boolean
             - type: "null"
@@ -3105,7 +3030,7 @@ components:
           minimum: 0
         sort:
           type: string
-          enum: [target, collection, path, bytes, hot, archived]
+          enum: [target, collection, path, bytes, hot, disc]
         order:
           type: string
           enum: [asc, desc]
@@ -3188,7 +3113,7 @@ components:
         note: { type: string }
     FileRecord:
       type: object
-      required: [target, collection, path, bytes, sha256, hot, archived]
+      required: [target, collection, path, bytes, sha256, hot, disc_coverage]
       properties:
         target:
           $ref: "#/components/schemas/Target"
@@ -3203,7 +3128,7 @@ components:
           type: string
           description: SHA-256 hex digest of the file content.
         hot: { type: boolean }
-        archived: { type: boolean }
+        disc_coverage: { type: boolean }
     FilesResponse:
       type: object
       required: [target, page, per_page, total, pages, files]

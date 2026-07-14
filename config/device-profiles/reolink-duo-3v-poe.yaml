@@ -14,8 +14,8 @@ section:
   file_include_globs:
   - RecM*.mp4
   - '{camera_name}_00_*.mp4'
-  profile_group: '{device_id}-video'
-  archive_mode: av1_nvenc
+  group: '{device_id}-video'
+  output_mode: video
   tasks:
   - archive_video
   encode_profile:

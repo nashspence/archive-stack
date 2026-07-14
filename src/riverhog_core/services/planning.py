@@ -19,14 +19,6 @@ from sqlalchemy import func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from riverhog_core.archive_compliance import (
-    copy_counts_as_verified,
-    copy_counts_toward_protection,
-    image_protection_state,
-    normalize_glacier_state,
-    normalize_required_copy_count,
-    registered_copy_shortfall,
-)
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CandidateCoveredPathRecord,
@@ -38,8 +30,8 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyEventRecord,
-    ImageCopyRecord,
+    ImageDiscEventRecord,
+    ImageDiscRecord,
     ImageOperatorSummaryRecord,
     PlannedCandidateRecord,
 )
@@ -47,8 +39,16 @@ from riverhog_core.crypto_age import (
     encrypted_size_for_plaintext_size,
     max_plaintext_size_for_encrypted_budget,
 )
-from riverhog_core.domain.enums import CopyState, GlacierState, VerificationState
+from riverhog_core.domain.enums import ArchiveState, DiscState, VerificationState
 from riverhog_core.domain.errors import InvalidState, NotFound, NotYetImplemented
+from riverhog_core.durability import (
+    disc_counts_as_verified,
+    disc_counts_toward_redundancy,
+    disc_redundancy_state,
+    normalize_archive_state,
+    normalize_required_disc_count,
+    registered_disc_shortfall,
+)
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
@@ -266,7 +266,7 @@ class SqlAlchemyPlanningService:
                 for collection in session.scalars(select(CollectionRecord)).all()
                 if collection.id not in active_upload_collection_ids
                 if collection.archive is not None
-                and normalize_glacier_state(collection.archive.state) == GlacierState.UPLOADED
+                and normalize_archive_state(collection.archive.state) == ArchiveState.UPLOADED
             }
             candidates = [
                 candidate
@@ -345,7 +345,7 @@ class SqlAlchemyPlanningService:
         order: str,
         q: str | None,
         collection: str | None,
-        has_copies: bool | None,
+        has_discs: bool | None,
     ) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             stmt = select(ImageOperatorSummaryRecord)
@@ -360,9 +360,9 @@ class SqlAlchemyPlanningService:
                 )
             if collection:
                 stmt = stmt.where(_image_summary_collection_clause(collection))
-            if has_copies is not None:
-                copy_clause = ImageOperatorSummaryRecord.physical_copies_registered > 0
-                stmt = stmt.where(copy_clause if has_copies else ~copy_clause)
+            if has_discs is not None:
+                disc_clause = ImageOperatorSummaryRecord.discs_registered > 0
+                stmt = stmt.where(disc_clause if has_discs else ~disc_clause)
 
             total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
             pages = math.ceil(total / per_page) if total else 0
@@ -432,7 +432,7 @@ class SqlAlchemyPlanningService:
                     bytes=candidate.bytes,
                     image_root=candidate.image_root,
                     target_bytes=candidate.target_bytes,
-                    required_copy_count=2,
+                    required_disc_count=2,
                 )
                 session.add(image)
                 session.flush()
@@ -482,7 +482,7 @@ class SqlAlchemyPlanningService:
                 ]
                 if coverage_part_rows:
                     session.execute(insert(FinalizedImageCoveragePartRecord), coverage_part_rows)
-                _seed_required_copy_slots(session, image)
+                _seed_required_disc_slots(session, image)
                 session.flush()
                 session.refresh(image)
                 existing = image
@@ -1110,7 +1110,7 @@ def _load_plan_files(
     for collection in collections:
         if collection.archive is None:
             continue
-        if normalize_glacier_state(collection.archive.state) is not GlacierState.UPLOADED:
+        if normalize_archive_state(collection.archive.state) is not ArchiveState.UPLOADED:
             continue
         unfinalized_hot_files = [
             file_record
@@ -2145,7 +2145,6 @@ def _materialize_candidate(
             finalized_id,
             collections,
             path_map,
-            volume_id=finalized_id,
             collection_artifact_paths=artifact_paths,
         )
         _write_encrypted_bytes_if_missing(
@@ -2377,11 +2376,11 @@ class FinalizedImageView(TypedDict):
     collections: int
     collection_ids: list[str]
     iso_ready: bool
-    physical_protection_state: str
-    physical_copies_required: int
-    physical_copies_registered: int
-    physical_copies_verified: int
-    physical_copies_missing: int
+    disc_redundancy_state: str
+    discs_required: int
+    discs_registered: int
+    discs_verified: int
+    discs_missing: int
     _bytes: int
     _collection_ids: list[str]
 
@@ -2431,8 +2430,8 @@ def _image_summary_order(*, sort: str, order: str) -> list[Any]:
             ImageOperatorSummaryRecord.bytes,
             ImageOperatorSummaryRecord.image_id,
         ),
-        "physical_copies_registered": (
-            ImageOperatorSummaryRecord.physical_copies_registered,
+        "discs_registered": (
+            ImageOperatorSummaryRecord.discs_registered,
             ImageOperatorSummaryRecord.image_id,
         ),
     }[sort]
@@ -2457,35 +2456,35 @@ def _finalized_image_view_from_summary(
         "collections": int(row.collections),
         "collection_ids": collection_ids,
         "iso_ready": True,
-        "physical_protection_state": row.physical_protection_state,
-        "physical_copies_required": int(row.physical_copies_required),
-        "physical_copies_registered": int(row.physical_copies_registered),
-        "physical_copies_verified": int(row.physical_copies_verified),
-        "physical_copies_missing": int(row.physical_copies_missing),
+        "disc_redundancy_state": row.disc_redundancy_state,
+        "discs_required": int(row.discs_required),
+        "discs_registered": int(row.discs_registered),
+        "discs_verified": int(row.discs_verified),
+        "discs_missing": int(row.discs_missing),
         "_bytes": int(row.bytes),
         "_collection_ids": collection_ids,
     }
 
 
 def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> FinalizedImageView:
-    copy_rows = session.scalars(
-        select(ImageCopyRecord).where(ImageCopyRecord.image_id == image.image_id)
+    disc_rows = session.scalars(
+        select(ImageDiscRecord).where(ImageDiscRecord.image_id == image.image_id)
     ).all()
-    registered_copy_count = sum(
-        1 for copy in copy_rows if copy_counts_toward_protection(copy.state)
+    registered_disc_count = sum(
+        1 for disc in disc_rows if disc_counts_toward_redundancy(disc.state)
     )
-    verified_copy_count = sum(
+    verified_disc_count = sum(
         1
-        for copy in copy_rows
-        if copy_counts_as_verified(
-            state=copy.state,
-            verification_state=copy.verification_state,
+        for disc in disc_rows
+        if disc_counts_as_verified(
+            state=disc.state,
+            verification_state=disc.verification_state,
         )
     )
-    required_copy_count = normalize_required_copy_count(image.required_copy_count)
-    protection_state = image_protection_state(
-        required_copy_count=required_copy_count,
-        registered_copy_count=registered_copy_count,
+    required_disc_count = normalize_required_disc_count(image.required_disc_count)
+    redundancy_state = disc_redundancy_state(
+        required_disc_count=required_disc_count,
+        registered_disc_count=registered_disc_count,
     )
     collection_ids = sorted(
         session.scalars(
@@ -2515,58 +2514,58 @@ def _finalized_image_view(image: FinalizedImageRecord, session: Session) -> Fina
         "collections": len(collection_ids),
         "collection_ids": collection_ids,
         "iso_ready": True,
-        "physical_protection_state": protection_state.value,
-        "physical_copies_required": required_copy_count,
-        "physical_copies_registered": registered_copy_count,
-        "physical_copies_verified": verified_copy_count,
-        "physical_copies_missing": registered_copy_shortfall(
-            required_copy_count=required_copy_count,
-            registered_copy_count=registered_copy_count,
+        "disc_redundancy_state": redundancy_state.value,
+        "discs_required": required_disc_count,
+        "discs_registered": registered_disc_count,
+        "discs_verified": verified_disc_count,
+        "discs_missing": registered_disc_shortfall(
+            required_disc_count=required_disc_count,
+            registered_disc_count=registered_disc_count,
         ),
         "_bytes": image.bytes,
         "_collection_ids": collection_ids,
     }
 
 
-def _seed_required_copy_slots(session: Session, image: FinalizedImageRecord) -> None:
+def _seed_required_disc_slots(session: Session, image: FinalizedImageRecord) -> None:
     existing_ids = {
-        copy_id
-        for copy_id in session.scalars(
-            select(ImageCopyRecord.copy_id).where(ImageCopyRecord.image_id == image.image_id)
+        disc_id
+        for disc_id in session.scalars(
+            select(ImageDiscRecord.disc_id).where(ImageDiscRecord.image_id == image.image_id)
         ).all()
     }
-    required_copy_count = normalize_required_copy_count(image.required_copy_count)
+    required_disc_count = normalize_required_disc_count(image.required_disc_count)
     ordinal = 1
-    while len(existing_ids) < required_copy_count:
-        copy_id = f"{image.image_id}-{ordinal}"
+    while len(existing_ids) < required_disc_count:
+        disc_id = f"{image.image_id}-{ordinal}"
         ordinal += 1
-        if copy_id in existing_ids:
+        if disc_id in existing_ids:
             continue
         created_at = _utc_now()
         session.add(
-            ImageCopyRecord(
+            ImageDiscRecord(
                 image_id=image.image_id,
-                copy_id=copy_id,
-                label_text=copy_id,
+                disc_id=disc_id,
+                label_text=disc_id,
                 location=None,
                 created_at=created_at,
-                state=CopyState.NEEDED.value,
+                state=DiscState.NEEDED.value,
                 verification_state=VerificationState.PENDING.value,
             )
         )
         session.flush()
         session.add(
-            ImageCopyEventRecord(
+            ImageDiscEventRecord(
                 image_id=image.image_id,
-                copy_id=copy_id,
+                disc_id=disc_id,
                 occurred_at=created_at,
                 event="created",
-                state=CopyState.NEEDED.value,
+                state=DiscState.NEEDED.value,
                 verification_state=VerificationState.PENDING.value,
                 location=None,
             )
         )
-        existing_ids.add(copy_id)
+        existing_ids.add(disc_id)
 
 
 def _utc_now() -> str:
@@ -2651,7 +2650,7 @@ class ImageRootPlanningService:
         order: str,
         q: str | None,
         collection: str | None,
-        has_copies: bool | None,
+        has_discs: bool | None,
     ) -> dict[str, object]:
         if self._list_lookup is None:
             raise NotYetImplemented("ImageRootPlanningService list_images is not configured")
@@ -2662,7 +2661,7 @@ class ImageRootPlanningService:
             order=order,
             q=q,
             collection=collection,
-            has_copies=has_copies,
+            has_discs=has_discs,
         )
 
     def get_image(self, image_id: str) -> ImageRootRecord:

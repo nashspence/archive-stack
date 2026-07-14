@@ -21,14 +21,14 @@ def archive_storage_prefix_from_object_path(object_path: str | None) -> str | No
 
 def archive_id_from_storage_prefix(
     *,
-    glacier_prefix: str,
+    archive_prefix: str,
     storage_prefix: str | None,
 ) -> str | None:
     if not storage_prefix:
         return None
-    normalized_glacier_prefix = glacier_prefix.strip("/")
+    normalized_archive_prefix = archive_prefix.strip("/")
     normalized_storage_prefix = storage_prefix.strip("/")
-    archive_prefix = f"{normalized_glacier_prefix}/archives/"
+    archive_prefix = f"{normalized_archive_prefix}/archives/"
     if not normalized_storage_prefix.startswith(archive_prefix):
         return None
     archive_id = normalized_storage_prefix.removeprefix(archive_prefix).split("/", 1)[0]

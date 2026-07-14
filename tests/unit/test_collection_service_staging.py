@@ -22,7 +22,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyRecord,
+    ImageDiscRecord,
     PlannedCandidateRecord,
 )
 from riverhog_core.collection_archives import (
@@ -39,8 +39,8 @@ from riverhog_core.ports.archive_store import ArchiveUploadReceipt, CollectionAr
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services import collections as collections_service
+from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
-from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import (
     SqlAlchemyPlanningService,
     _load_plan_files,
@@ -291,7 +291,7 @@ class _FakeArchiveStore:
         multipart_tracker=None,
     ):
         _ = multipart_tracker
-        prefix = archive_storage_prefix or f"glacier/archives/fake-{collection_id}"
+        prefix = archive_storage_prefix or f"archive/archives/fake-{collection_id}"
         object_path = f"{prefix}/archive.tar.age"
         manifest_object_path = f"{prefix}/manifest.yml.age"
         proof_object_path = f"{prefix}/manifest.yml.ots.age"
@@ -486,7 +486,6 @@ def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Pa
                 bytes=len(invoice),
                 sha256=hashlib.sha256(invoice).hexdigest(),
                 hot=False,
-                archived=True,
             )
         )
         session.add(
@@ -497,7 +496,7 @@ def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Pa
                 bytes=5100,
                 image_root=str(image_root),
                 target_bytes=10_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         session.add(
@@ -524,7 +523,7 @@ def _seed_docs_collection_with_finalized_image(sqlite_path: Path, image_root: Pa
                 bytes=5100,
                 image_root=str(image_root),
                 target_bytes=10_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         session.add(
@@ -1223,7 +1222,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
         checksum="sha256 " + base64.b64encode(hashlib.sha256(content).digest()).decode("ascii"),
         content=content,
     )
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         _config(sqlite_path),
         _FakeArchiveStore(),
         hot_store,
@@ -1238,7 +1237,7 @@ def test_completed_collection_upload_promotes_from_staging_and_cleans_up(
     assert [payload["event"] for payload in webhook_payloads] == ["collections.upload_staged"]
 
 
-def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
+def test_archive_worker_prioritizes_resumable_multipart_upload(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -1293,7 +1292,7 @@ def test_glacier_archive_worker_prioritizes_resumable_multipart_upload(
             session.add(upload)
 
     archive_store = _RecordingArchiveStore()
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         _FakeHotStore(),
@@ -1332,8 +1331,8 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
         files=[CollectionArchiveFile(path=relpath, content=content, sha256=sha256)],
         stamper=FixtureProofStamper(),
     )
-    manifest_object_path = f"glacier/archives/opaque-{collection_id}/manifest.yml.age"
-    proof_object_path = f"glacier/archives/opaque-{collection_id}/manifest.yml.ots.age"
+    manifest_object_path = f"archive/archives/opaque-{collection_id}/manifest.yml.age"
+    proof_object_path = f"archive/archives/opaque-{collection_id}/manifest.yml.ots.age"
     archive_store.store_collection_artifacts(
         manifest_object_path=manifest_object_path,
         manifest_bytes=package.manifest_bytes,
@@ -1351,7 +1350,6 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
                 bytes=len(content),
                 sha256=sha256,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -1359,7 +1357,7 @@ def test_planner_worker_restores_missing_artifact_cache_from_archive_store(
             CollectionArchiveRecord(
                 collection_id=collection_id,
                 state="uploaded",
-                object_path=f"glacier/archives/opaque-{collection_id}/archive.tar.age",
+                object_path=f"archive/archives/opaque-{collection_id}/archive.tar.age",
                 stored_bytes=package.archive_size,
                 sha256=package.archive_sha256,
                 manifest_object_path=manifest_object_path,
@@ -1416,7 +1414,7 @@ def test_failed_hot_promotion_keeps_staging_for_retry(tmp_path: Path) -> None:
         )
 
     archive_store = _CountingArchiveStore()
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1490,7 +1488,7 @@ def test_hot_promotion_uses_bounded_concurrency(tmp_path: Path) -> None:
             content=content,
         )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         _CountingArchiveStore(),
         hot_store,
@@ -1515,7 +1513,7 @@ def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Pa
 
     hot_store = _FakeHotStore()
     upload_store = _StreamingOnlyUploadStore()
-    config = _config(sqlite_path, glacier_upload_retry_delay=timedelta(seconds=0))
+    config = _config(sqlite_path, archive_upload_retry_delay=timedelta(seconds=0))
     service = SqlAlchemyCollectionService(config, hot_store, upload_store)
 
     content = b"hello world\n"
@@ -1543,7 +1541,7 @@ def test_packaged_archive_artifacts_are_reused_after_upload_failure(tmp_path: Pa
 
     archive_store = _FailOnceArchiveStore()
     proof_stamper = _CountingProofStamper()
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1586,7 +1584,7 @@ def test_packaged_archive_artifacts_reuse_survives_multipart_content_length(
 
     hot_store = _FakeHotStore()
     upload_store = _StreamingOnlyUploadStore()
-    config = _config(sqlite_path, glacier_upload_retry_delay=timedelta(seconds=0))
+    config = _config(sqlite_path, archive_upload_retry_delay=timedelta(seconds=0))
     service = SqlAlchemyCollectionService(config, hot_store, upload_store)
 
     content = b"hello restartable multipart archive\n" * 8
@@ -1638,7 +1636,7 @@ def test_packaged_archive_artifacts_reuse_survives_multipart_content_length(
         upload.collection_manifest_proof_bytes_b64 = base64.b64encode(package.proof_bytes).decode(
             "ascii"
         )
-        upload.archive_object_path = f"glacier/archives/{collection_id}/archive.tar.age"
+        upload.archive_object_path = f"archive/archives/{collection_id}/archive.tar.age"
         upload.archive_multipart_upload_id = "archive-upload-1"
         upload.archive_multipart_part_size = 64 * 1024 * 1024
         upload.archive_multipart_content_length = package.archive_size + 123
@@ -1649,7 +1647,7 @@ def test_packaged_archive_artifacts_reuse_survives_multipart_content_length(
 
     archive_store = _CountingArchiveStore()
     proof_stamper = _CountingProofStamper()
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1678,11 +1676,11 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: webhook_payloads.append(payload),
     )
     current = datetime(2026, 4, 20, 4, 0, tzinfo=UTC)
-    monkeypatch.setattr("riverhog_core.services.glacier_uploads.utcnow", lambda: current)
+    monkeypatch.setattr("riverhog_core.services.archive_uploads.utcnow", lambda: current)
     monkeypatch.setattr(
         "riverhog_core.services.collections._utc_now",
         lambda: current.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1693,7 +1691,7 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
     archive_store = _AlwaysFailingArchiveStore()
     config = _config(
         sqlite_path,
-        glacier_upload_retry_delay=timedelta(seconds=0),
+        archive_upload_retry_delay=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhook",
     )
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
@@ -1721,7 +1719,7 @@ def test_archive_failures_retry_indefinitely_with_throttled_operator_notificatio
         content=content,
     )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1773,7 +1771,7 @@ def test_archive_validation_failure_stops_without_retrying(
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: webhook_payloads.append(payload),
     )
 
@@ -1782,7 +1780,7 @@ def test_archive_validation_failure_stops_without_retrying(
     archive_store = _CountingArchiveStore()
     config = _config(
         sqlite_path,
-        glacier_upload_retry_delay=timedelta(seconds=0),
+        archive_upload_retry_delay=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhook",
     )
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
@@ -1812,7 +1810,7 @@ def test_archive_validation_failure_stops_without_retrying(
     for target_path in list(upload_store._content_by_target):
         upload_store._content_by_target[target_path] = b"hello world?"
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1851,7 +1849,7 @@ def test_startup_requeue_resumes_failed_archive_after_fix(
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: webhook_payloads.append(payload),
     )
 
@@ -1860,7 +1858,7 @@ def test_startup_requeue_resumes_failed_archive_after_fix(
     archive_store = _CountingArchiveStore()
     config = _config(
         sqlite_path,
-        glacier_upload_retry_delay=timedelta(seconds=0),
+        archive_upload_retry_delay=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhook",
     )
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
@@ -1890,7 +1888,7 @@ def test_startup_requeue_resumes_failed_archive_after_fix(
     for target_path in list(upload_store._content_by_target):
         upload_store._content_by_target[target_path] = b"hello world?"
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -1932,7 +1930,7 @@ def test_startup_requeue_renotifies_when_deterministic_archive_failure_remains(
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: webhook_payloads.append(payload),
     )
 
@@ -1941,7 +1939,7 @@ def test_startup_requeue_renotifies_when_deterministic_archive_failure_remains(
     archive_store = _CountingArchiveStore()
     config = _config(
         sqlite_path,
-        glacier_upload_retry_delay=timedelta(seconds=0),
+        archive_upload_retry_delay=timedelta(seconds=0),
         operator_webhook_url="http://example.invalid/webhook",
     )
     service = SqlAlchemyCollectionService(_config(sqlite_path), hot_store, upload_store)
@@ -1971,7 +1969,7 @@ def test_startup_requeue_renotifies_when_deterministic_archive_failure_remains(
     for target_path in list(upload_store._content_by_target):
         upload_store._content_by_target[target_path] = b"hello world?"
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -2001,7 +1999,7 @@ def test_successful_archive_emits_only_finalized_operator_webhook(
 
     webhook_payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: webhook_payloads.append(payload),
     )
 
@@ -2037,7 +2035,7 @@ def test_successful_archive_emits_only_finalized_operator_webhook(
         content=content,
     )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -2064,7 +2062,7 @@ def test_successful_archive_uses_upload_session_notify_targets(
 
     deliveries: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
-        "riverhog_core.services.glacier_uploads.post_webhook",
+        "riverhog_core.services.archive_uploads.post_webhook",
         lambda *, config, payload: deliveries.append((config.url, payload)),
     )
     monkeypatch.setattr(
@@ -2111,7 +2109,7 @@ def test_successful_archive_uses_upload_session_notify_targets(
     )
     service.complete_upload_session(collection_id)
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         archive_store,
         hot_store,
@@ -2164,7 +2162,7 @@ def test_finalized_collection_upload_is_idempotent_for_same_slug_and_manifest(
         content=content,
     )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         _FakeArchiveStore(),
         hot_store,
@@ -2280,7 +2278,7 @@ def test_matching_upload_with_different_explicit_timestamp_is_rejected(tmp_path:
         )
 
 
-def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
+def test_completed_archive_upload_refreshes_provisional_disc_plan(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
 
@@ -2314,7 +2312,7 @@ def test_completed_glacier_upload_refreshes_provisional_disc_plan(tmp_path: Path
         content=content,
     )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         _FakeArchiveStore(),
         hot_store,
@@ -2390,7 +2388,7 @@ def test_ready_disc_candidate_sends_operator_webhook(
         content=content,
     )
 
-    upload_service = SqlAlchemyGlacierUploadService(
+    upload_service = SqlAlchemyArchiveUploadService(
         config,
         _FakeArchiveStore(),
         hot_store,
@@ -2474,7 +2472,6 @@ def test_provisional_disc_plan_materialization_resumes_partial_candidate(
                 bytes=len(content),
                 sha256=sha256,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -2572,7 +2569,6 @@ def test_underfilled_tail_candidate_waits_without_materializing(tmp_path: Path) 
                 bytes=len(content),
                 sha256=sha256,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -2690,7 +2686,6 @@ def test_saturated_underfilled_candidate_still_waits_without_split_path(tmp_path
                 bytes=len(content),
                 sha256=sha256,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -2789,7 +2784,6 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=True,
-                    archived=False,
                 )
             )
         session.add(collection)
@@ -2818,7 +2812,7 @@ def test_planner_continues_after_partially_finalized_collection(tmp_path: Path) 
                 bytes=len(covered_content),
                 image_root=str(tmp_path / "finalized-image"),
                 target_bytes=10_000_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         session.add(
@@ -2908,7 +2902,6 @@ def test_planner_ignores_fully_finalized_collection(
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -2937,7 +2930,7 @@ def test_planner_ignores_fully_finalized_collection(
                 bytes=len(content),
                 image_root=str(tmp_path / "finalized-image"),
                 target_bytes=10_000_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         session.add(
@@ -3010,7 +3003,6 @@ def test_new_collection_upload_limit_uses_fast_committed_byte_check(
                 bytes=8,
                 sha256="0" * 64,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -3034,7 +3026,7 @@ def test_new_collection_upload_limit_uses_fast_committed_byte_check(
         )
 
 
-def test_unburned_collection_bytes_excludes_protected_files(tmp_path: Path) -> None:
+def test_unburned_collection_bytes_excludes_disc_redundant_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
 
@@ -3044,11 +3036,10 @@ def test_unburned_collection_bytes_excludes_protected_files(tmp_path: Path) -> N
         collection.files.append(
             CollectionFileRecord(
                 collection_id=collection.id,
-                path="protected.txt",
+                path="covered.txt",
                 bytes=8,
                 sha256="0" * 64,
                 hot=True,
-                archived=False,
             )
         )
         collection.files.append(
@@ -3058,7 +3049,6 @@ def test_unburned_collection_bytes_excludes_protected_files(tmp_path: Path) -> N
                 bytes=5,
                 sha256="1" * 64,
                 hot=True,
-                archived=False,
             )
         )
         session.add(collection)
@@ -3070,20 +3060,20 @@ def test_unburned_collection_bytes_excludes_protected_files(tmp_path: Path) -> N
                 bytes=8,
                 image_root="/tmp/disc",
                 target_bytes=8,
-                required_copy_count=1,
+                required_disc_count=1,
             )
         )
         session.add(
             FinalizedImageCoveredPathRecord(
                 image_id="20260103T000000Z",
                 collection_id=collection.id,
-                path="protected.txt",
+                path="covered.txt",
             )
         )
         session.add(
-            ImageCopyRecord(
+            ImageDiscRecord(
                 image_id="20260103T000000Z",
-                copy_id="copy-1",
+                disc_id="disc-1",
                 label_text="disc",
                 location=None,
                 created_at="2026-01-03T00:00:00Z",
@@ -3129,7 +3119,7 @@ def test_existing_collection_upload_can_resume_when_over_unburned_limit(tmp_path
     assert resumed["collection_id"] == initial_payload["collection_id"]
 
 
-def test_collection_summary_does_not_count_finalized_image_parts_as_glacier_recovery(
+def test_collection_disc_coverage_requires_a_registered_disc(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -3145,5 +3135,4 @@ def test_collection_summary_does_not_count_finalized_image_parts_as_glacier_reco
 
     summary = service.get("docs")
 
-    assert summary.recovery.verified_physical.state.value == "none"
-    assert summary.recovery.glacier.state.value == "none"
+    assert summary.disc_coverage.state.value == "none"

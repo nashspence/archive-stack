@@ -6,8 +6,8 @@
 - `queued_djdan`
 - `uploading`
 - `verifying`
-- `queued_cloud`
-- `cloud_fetching`
+- `queued_archive`
+- `restoring_archive`
 - `done`
 - `failed`
 
@@ -15,14 +15,14 @@
 
 ```text
 draft -> queued_djdan -> uploading -> verifying -> done
-draft -> queued_cloud -> cloud_fetching -> done
-queued_cloud -> draft
-cloud_fetching -> draft
+draft -> queued_archive -> restoring_archive -> done
+queued_archive -> draft
+restoring_archive -> draft
 done -> queued_djdan
 uploading -> queued_djdan
 uploading -> failed
 verifying -> failed
-cloud_fetching -> failed
+restoring_archive -> failed
 ```
 
 ## Meanings
@@ -47,14 +47,14 @@ One or more recovered files are being streamed directly from optical recovery in
 
 All required files have been uploaded and are being decrypted, verified, and materialized by the server.
 
-### queued_cloud
+### queued_archive
 
-The fetch is frozen and has been selected for cloud materialization, but the
-collection restore sessions have not started yet.
+The fetch is frozen and has been selected for archive materialization, but the
+fetch materialization archive restores have not started yet.
 
-### cloud_fetching
+### restoring_archive
 
-Riverhog is creating or resuming Glacier restore sessions, waiting for temporary
+Riverhog is creating or resuming archive restores, waiting for temporary
 restored data, verifying archive artifacts, and materializing the selected files
 back into hot storage.
 
@@ -69,7 +69,7 @@ The fetch cannot currently complete.
 
 Final verification failure for a `byte_complete` entry does not close the fetch. The recovery client deletes the affected
 entry upload resource, the entry returns to `pending`, and the fetch remains active so the operator can retry from another
-registered copy or from recovered media.
+registered disc or from recovered media.
 
 ## Upload-state expiry
 

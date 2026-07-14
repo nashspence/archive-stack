@@ -5,7 +5,7 @@ The runtime uses four cooperating surfaces.
 ## Catalog
 
 The catalog is the durable authoritative metadata layer. It tracks collections,
-logical files, file hashes, collection Glacier archive state, physical copy
+logical files, file hashes, collection archive state, physical disc
 coverage, fetches, upload state, and hot presence across service restarts.
 
 ## Upload staging
@@ -27,7 +27,7 @@ retrying the same normalized slug for an open incremental session resumes that
 session until it is completed, canceled, or expired.
 
 Collection ingest has two gates. The upload gate verifies every declared file.
-The archive gate builds the whole-collection Glacier archive package, uploads
+The archive gate builds the whole-collection archive package, uploads
 the archive, manifest, and OpenTimestamps proof, verifies the archive receipt,
 and only then admits the collection.
 
@@ -42,20 +42,20 @@ collections/{collection_id}/{path}
 Only promoted, verified files count as hot. Staged upload keys and other `.riverhog/`
 paths are not committed hot files.
 
-Promotion happens after collection Glacier archiving succeeds. A collection still
+Promotion happens after collection archive upload succeeds. A collection still
 in `uploading`, `archiving`, or `failed` upload state is not visible in hot
 storage, search, read-only browsing, or disc planning.
 
-## Collection Glacier archive
+## Collection archive
 
 Accepted collections have a deterministic whole-collection archive package under
-the Glacier archive prefix. The package uses a deterministic tar archive for
-the logical files in the configured Glacier storage class, plus sibling Standard
+the archive prefix. The package uses a deterministic tar archive for
+the logical files in the configured archive storage class, plus sibling Standard
 S3 collection manifest and OpenTimestamps proof objects under the same
 collection prefix.
 
-Glacier stores collection archives. Finalized images remain physical disc
-artifacts and do not define the cloud archive unit.
+The archive stores collection archives. Finalized images remain disc
+artifacts and do not define the archive unit.
 
 Finalization is gated by verified archive receipt. Riverhog persists that
 receipt, promotes staged bytes into the hot collection namespace with per-file
@@ -66,16 +66,16 @@ the hot-file promotion phase according to the last durable state.
 
 ## Hot Storage And Fetches
 
-New uploads enter planner jurisdiction after Glacier archival and verified
-promotion into hot storage. Until the required verified disc copies exist,
+New uploads enter planner jurisdiction after archiving and verified
+promotion into hot storage. Until the required verified discs exist,
 matching files are not evictable. Once files are compliant, `riverhog hot evict`
 can remove the selected hot bytes synchronously.
 
 Operators create named fetch manifests when they need hot bytes materialized
 again. A fetch can be queued to the prompt-based `djdan fetch` optical-media
-workflow, or started with cloud-fetch so Riverhog automatically restores the
+workflow, or started with fetch materialization so Riverhog automatically restores the
 selected collection archive data, verifies it, materializes the selected files,
-and cleans up temporary Glacier restore state.
+and cleans up temporary archive restore state.
 
 ## Read-only browsing
 
@@ -88,7 +88,7 @@ surface.
 Users do not delete or restore by mutating storage surfaces. Instead they:
 
 - create a named fetch and add target selectors to it
-- start that fetch for optical media or cloud-fetch materialization
+- start that fetch for optical media or fetch fetch materialization
 - evict compliant hot bytes explicitly when they no longer need fast access
 
 This keeps intent explicit and makes the system safer than inferring meaning
@@ -101,7 +101,7 @@ from storage mutations.
    show commands.
 3. If all selected bytes are already hot, the fetch manifest is immediately satisfied.
 4. If some bytes are archived but not hot, the operator starts the fetch for
-   `djdan fetch` or with `--cloud`.
+   `djdan fetch` or with `--archive`.
 5. The server stages the uploaded recovery bytes under `.riverhog/uploads/`, verifies
    and decrypts them, then promotes the recovered logical file into
    `collections/{collection_id}/{path}`.
@@ -111,6 +111,6 @@ from storage mutations.
 ## Evict flow
 
 1. The user asks `riverhog hot evict` to remove one or more selectors from hot storage.
-2. Riverhog refuses if any selected file lacks verified disc protection.
+2. Riverhog refuses if any selected file lacks verified disc redundancy.
 3. Riverhog deletes selected compliant hot files synchronously and reports what changed.
 4. Unrelated hot files are left alone.

@@ -33,8 +33,8 @@ The public Riverhog repository may contain:
 The public repository must not contain real personal devices, real hostnames, real rclone remotes,
 Home Assistant recipients, SMB paths, or deployment overlays for a specific machine.
 
-Munchy jobs may either use explicit `<profile-group>/<file>` paths or structured uploads with
-server-side profile routing. Profile-group names and routing rules are the stable boundary between
+Munchy jobs may either use explicit `<group>/<file>` paths or structured uploads with
+server-side routing. Group names and routing rules are the stable boundary between
 device-specific private configuration and generic public encode behavior.
 
 The `munchy` CLI is intended to be usable directly, not only through private wrappers. It exposes

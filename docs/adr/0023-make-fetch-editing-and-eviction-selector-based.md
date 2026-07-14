@@ -7,7 +7,7 @@ selectors.
 
 Draft fetches can add or remove selectors. Started fetches are frozen. Hot
 eviction accepts selectors too, but refuses any selected file that lacks the
-required verified disc protection.
+required verified disc redundancy.
 
 ## Reason
 

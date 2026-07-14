@@ -60,7 +60,7 @@ def selected_collection_files(
     session: Session,
     raw_target: str,
     *,
-    load_copies: bool = False,
+    load_discs: bool = False,
     missing_ok: bool = False,
 ) -> list[CollectionFileRecord]:
     clauses = _target_file_clauses(session, raw_target)
@@ -74,8 +74,8 @@ def selected_collection_files(
         .where(or_(*clauses))
         .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
     )
-    if load_copies:
-        stmt = stmt.options(selectinload(CollectionFileRecord.copies))
+    if load_discs:
+        stmt = stmt.options(selectinload(CollectionFileRecord.discs))
     selected = list(session.scalars(stmt).all())
     if not selected and not missing_ok:
         raise NotFound(f"target not found: {raw_target}")

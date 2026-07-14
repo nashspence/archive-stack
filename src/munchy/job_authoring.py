@@ -15,14 +15,14 @@ from munchy.device_profiles import apply_device_profile_to_munchy_config
 from munchy.local_files import FileHashCache, LocalFileCandidate, hash_local_file_candidates
 from munchy.local_routing import routing_plan_files
 from munchy.platform_files import is_platform_cruft_path
-from munchy.profile_routing import profile_routing_plan
 from munchy.profiles import EncodeProfile
 from munchy.review_sweep import (
-    default_encode_profile_for_archive_mode,
-    review_archive_mode_for_profile,
+    default_encode_profile_for_output_mode,
+    review_output_mode_for_profile,
     review_sweep_variants,
-    review_tasks_for_archive_mode,
+    review_tasks_for_output_mode,
 )
+from munchy.routing import routing_plan as build_routing_plan
 from munchy.runner_client import (
     DEFAULT_UPLOAD_CHUNK_MIB,
     DEFAULT_UPLOAD_WORKERS,
@@ -41,7 +41,7 @@ DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
 WORKFLOW_MODES = {"collection_archive", "review"}
 COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
-ARCHIVE_MODES = {"av1_nvenc", "audio", "preserve"}
+OUTPUT_MODES = {"video", "audio", "preserve"}
 RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS = {"preserve_for_resume", "cancel"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
@@ -82,10 +82,10 @@ def normalize_mode(value: str | None, *, default: str, allowed: set[str], label:
     return mode
 
 
-def default_tasks_for_archive_mode(archive_mode: str) -> list[str]:
-    if archive_mode == "preserve":
+def default_tasks_for_output_mode(output_mode: str) -> list[str]:
+    if output_mode == "preserve":
         return []
-    if archive_mode == "audio":
+    if output_mode == "audio":
         return list(DEFAULT_AUDIO_TASKS)
     return list(DEFAULT_TASKS)
 
@@ -206,19 +206,19 @@ def normalize_group_payload(
     profiles: Mapping[str, Any],
 ) -> dict[str, Any]:
     group = mapping(raw_group, label=f"group {name}")
-    archive_mode = normalize_mode(
-        str(group.get("archive_mode") or "av1_nvenc"),
-        default="av1_nvenc",
-        allowed=ARCHIVE_MODES,
-        label="archive_mode",
+    output_mode = normalize_mode(
+        str(group.get("output_mode") or "video"),
+        default="video",
+        allowed=OUTPUT_MODES,
+        label="output_mode",
     )
-    default_tasks = default_tasks_for_archive_mode(archive_mode)
+    default_tasks = default_tasks_for_output_mode(output_mode)
     raw_tasks = group.get("tasks")
     tasks = (
         list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
     )
     payload: dict[str, Any] = {
-        "archive_mode": archive_mode,
+        "output_mode": output_mode,
         "tasks": tasks,
     }
     profile_name = str(group.get("profile") or "").strip()
@@ -249,7 +249,7 @@ def normalize_group_payload(
 def default_group_payload(group_name: str) -> dict[str, dict[str, Any]]:
     return {
         group_name: {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": list(DEFAULT_TASKS),
         }
     }
@@ -259,11 +259,11 @@ def storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[st
     out: dict[str, dict[str, Any]] = {}
     for name, group in groups.items():
         payload: dict[str, Any] = {
-            "archive_mode": normalize_mode(
-                str(group.get("archive_mode") or "av1_nvenc"),
-                default="av1_nvenc",
-                allowed=ARCHIVE_MODES,
-                label="archive_mode",
+            "output_mode": normalize_mode(
+                str(group.get("output_mode") or "video"),
+                default="video",
+                allowed=OUTPUT_MODES,
+                label="output_mode",
             ),
             "tasks": [str(task) for task in _sequence(group.get("tasks"))],
         }
@@ -280,16 +280,16 @@ def review_group_payloads(
     out: dict[str, dict[str, Any]] = {}
     for name, group in groups.items():
         payload = deepcopy(dict(group))
-        archive_mode = normalize_mode(
-            str(payload.get("archive_mode") or "av1_nvenc"),
-            default="av1_nvenc",
-            allowed=ARCHIVE_MODES,
-            label=f"group {name} archive_mode",
+        output_mode = normalize_mode(
+            str(payload.get("output_mode") or "video"),
+            default="video",
+            allowed=OUTPUT_MODES,
+            label=f"group {name} output_mode",
         )
         profile = payload.get("encode_profile")
         if isinstance(profile, Mapping):
-            archive_mode = review_archive_mode_for_profile(profile)
-        if archive_mode == "preserve":
+            output_mode = review_output_mode_for_profile(profile)
+        if output_mode == "preserve":
             review_tasks: list[str] = []
         else:
             configured_review_tasks = [
@@ -297,8 +297,8 @@ def review_group_payloads(
                 for task in _sequence(payload.get("tasks"))
                 if str(task) in {"qcut_video", "audio_review"}
             ]
-            review_tasks = configured_review_tasks or review_tasks_for_archive_mode(archive_mode)
-        payload["archive_mode"] = archive_mode
+            review_tasks = configured_review_tasks or review_tasks_for_output_mode(output_mode)
+        payload["output_mode"] = output_mode
         payload["tasks"] = review_tasks
         out[str(name)] = payload
     return out
@@ -322,7 +322,7 @@ def effective_group(
 ) -> str | None:
     if structured_routing:
         if group:
-            raise MunchyJobAuthoringError("--group is only valid without profile routing")
+            raise MunchyJobAuthoringError("--group is only valid without routing")
         return None
     if group:
         return normalize_posix_path(group)
@@ -337,13 +337,13 @@ def group_base_encode_profile(group: Mapping[str, Any]) -> dict[str, Any]:
     profile = group.get("encode_profile")
     if isinstance(profile, Mapping):
         return deepcopy(dict(profile))
-    archive_mode = normalize_mode(
-        str(group.get("archive_mode") or "av1_nvenc"),
-        default="av1_nvenc",
-        allowed=ARCHIVE_MODES,
-        label="archive_mode",
+    output_mode = normalize_mode(
+        str(group.get("output_mode") or "video"),
+        default="video",
+        allowed=OUTPUT_MODES,
+        label="output_mode",
     )
-    return default_encode_profile_for_archive_mode(archive_mode)
+    return default_encode_profile_for_output_mode(output_mode)
 
 
 def render_job_template(
@@ -375,7 +375,7 @@ def render_job_template(
 def discover_local_candidates(
     source: Path,
     *,
-    target_prefix: str | None,
+    destination_prefix: str | None,
     group: str | None,
 ) -> list[LocalFileCandidate]:
     if source.is_file():
@@ -392,7 +392,7 @@ def discover_local_candidates(
     candidates: list[LocalFileCandidate] = []
     for path, rel in sources:
         stat = path.stat()
-        target_path = join_rel_path(group, target_prefix, rel)
+        target_path = join_rel_path(group, destination_prefix, rel)
         candidates.append(
             LocalFileCandidate(
                 source=path,
@@ -451,7 +451,7 @@ def build_runner_upload_request_from_files(
     collection: str | None = None,
     collection_timestamp: str | None = None,
     job_id: str | None = None,
-    upload_id: str | None = None,
+    input_upload_id: str | None = None,
     group: str | None = None,
     workflow_mode: str | None = None,
     collection_archive_destination: str | None = None,
@@ -463,9 +463,9 @@ def build_runner_upload_request_from_files(
     defaults = configured_job_defaults(normalized_config)
     profiles = configured_profiles(normalized_config)
     raw_groups = configured_groups(normalized_config)
-    profile_routing = defaults.get("profile_routing")
-    profile_routing_payload = profile_routing if isinstance(profile_routing, Mapping) else None
-    structured_routing = profile_routing_payload is not None
+    routing = defaults.get("routing")
+    routing_payload = routing if isinstance(routing, Mapping) else None
+    structured_routing = routing_payload is not None
     selected_group = effective_group(
         group=group,
         groups=raw_groups,
@@ -504,13 +504,13 @@ def build_runner_upload_request_from_files(
         label="collection_archive.destination",
     )
     raw_collection_archive["destination"] = destination
-    archive_mode = normalize_mode(
-        str(defaults.get("archive_mode") or "av1_nvenc"),
-        default="av1_nvenc",
-        allowed=ARCHIVE_MODES,
-        label="archive_mode",
+    output_mode = normalize_mode(
+        str(defaults.get("output_mode") or "video"),
+        default="video",
+        allowed=OUTPUT_MODES,
+        label="output_mode",
     )
-    default_tasks = default_tasks_for_archive_mode(archive_mode)
+    default_tasks = default_tasks_for_output_mode(output_mode)
     raw_tasks = defaults.get("tasks")
     tasks = (
         list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
@@ -521,11 +521,11 @@ def build_runner_upload_request_from_files(
         tasks = grouped or [task for task in tasks if task in {"qcut_video", "audio_review"}]
     generated_job_id = safe_id(f"{collection_slug or workflow}-{timestamp}")
     final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
-    final_upload_id = str(
-        upload_id or defaults.get("upload_id") or defaults.get("input_upload_id") or final_job_id
+    final_input_upload_id = str(
+        input_upload_id or defaults.get("input_upload_id") or final_job_id
     ).strip()
-    if not final_job_id or not final_upload_id:
-        raise MunchyJobAuthoringError("job id and upload id must not be blank")
+    if not final_job_id or not final_input_upload_id:
+        raise MunchyJobAuthoringError("job id and input upload id must not be blank")
 
     review = deepcopy(mapping(defaults.get("review"), label="review"))
     notify = deepcopy(mapping(defaults.get("notify"), label="notify"))
@@ -533,17 +533,17 @@ def build_runner_upload_request_from_files(
     storage_hint = {
         "workflow_mode": workflow,
         "collection_archive_destination": destination,
-        "archive_mode": archive_mode,
+        "output_mode": output_mode,
         "tasks": tasks,
         "structured_routing": structured_routing,
         "groups": storage_groups(groups),
     }
     job_payload: dict[str, Any] = {
         "job_id": final_job_id,
-        "input_upload_id": final_upload_id,
+        "input_upload_id": final_input_upload_id,
         "run_id": run_id,
         "workflow_mode": workflow,
-        "archive_mode": archive_mode,
+        "output_mode": output_mode,
         "tasks": tasks,
         "groups": groups,
         "notify": notify,
@@ -562,10 +562,10 @@ def build_runner_upload_request_from_files(
             allowed=RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS,
             label="riverhog_upload_session_on_failure",
         )
-    if profile_routing_payload is not None:
-        job_payload["profile_routing"] = deepcopy(dict(profile_routing_payload))
+    if routing_payload is not None:
+        job_payload["routing"] = deepcopy(dict(routing_payload))
     return RunnerUploadRequest(
-        upload_id=final_upload_id,
+        input_upload_id=final_input_upload_id,
         job_id=final_job_id,
         files=tuple(files),
         storage_hint=storage_hint,
@@ -583,8 +583,8 @@ def build_runner_upload_request(
     collection: str | None = None,
     collection_timestamp: str | None = None,
     job_id: str | None = None,
-    upload_id: str | None = None,
-    target_prefix: str | None = None,
+    input_upload_id: str | None = None,
+    destination_prefix: str | None = None,
     group: str | None = None,
     workflow_mode: str | None = None,
     collection_archive_destination: str | None = None,
@@ -600,8 +600,8 @@ def build_runner_upload_request(
     normalized_config = normalize_munchy_config(loaded_config)
     defaults = configured_job_defaults(normalized_config)
     raw_groups = configured_groups(normalized_config)
-    profile_routing = defaults.get("profile_routing")
-    structured_routing = isinstance(profile_routing, Mapping)
+    routing = defaults.get("routing")
+    structured_routing = isinstance(routing, Mapping)
     selected_group = effective_group(
         group=group,
         groups=raw_groups,
@@ -609,7 +609,7 @@ def build_runner_upload_request(
     )
     candidates = discover_local_candidates(
         source,
-        target_prefix=target_prefix,
+        destination_prefix=destination_prefix,
         group=selected_group,
     )
     files = hash_local_candidates(
@@ -623,7 +623,7 @@ def build_runner_upload_request(
         collection=collection,
         collection_timestamp=collection_timestamp,
         job_id=job_id,
-        upload_id=upload_id,
+        input_upload_id=input_upload_id,
         group=group,
         workflow_mode=workflow_mode,
         collection_archive_destination=collection_archive_destination,
@@ -633,10 +633,10 @@ def build_runner_upload_request(
     )
 
 
-def _configured_target_prefix(defaults: Mapping[str, Any], override: str | None) -> str | None:
+def _configured_destination_prefix(defaults: Mapping[str, Any], override: str | None) -> str | None:
     if override is not None:
         return override
-    raw_prefix = defaults.get("target_prefix") or defaults.get("upload_prefix")
+    raw_prefix = defaults.get("destination_prefix")
     return str(raw_prefix) if raw_prefix else None
 
 
@@ -645,7 +645,7 @@ def build_review_sweep_plan(
     source: Path,
     config_path: Path | None = None,
     config: Mapping[str, Any] | None = None,
-    target_prefix: str | None = None,
+    destination_prefix: str | None = None,
 ) -> dict[str, Any]:
     if config_path is not None and config is not None:
         raise MunchyJobAuthoringError("config_path and config are mutually exclusive")
@@ -664,8 +664,8 @@ def build_review_sweep_plan(
     sweep = mapping(review.get("sweep"), label="review.sweep")
     if not sweep:
         raise MunchyJobAuthoringError("review sweep plans require job.review.sweep")
-    profile_routing = defaults.get("profile_routing")
-    if not isinstance(profile_routing, Mapping):
+    routing = defaults.get("routing")
+    if not isinstance(routing, Mapping):
         raise MunchyJobAuthoringError("review sweep plans require job.routing")
 
     profiles = configured_profiles(normalized_config)
@@ -677,11 +677,11 @@ def build_review_sweep_plan(
         for name, raw_group in raw_groups.items()
     }
     review_groups = review_group_payloads(groups)
-    prefix = _configured_target_prefix(defaults, target_prefix)
-    candidates = discover_local_candidates(source, target_prefix=prefix, group=None)
-    routed_files = routing_plan_files(candidates, profile_routing=profile_routing)
-    routing_plan = profile_routing_plan(
-        profile_routing,
+    prefix = _configured_destination_prefix(defaults, destination_prefix)
+    candidates = discover_local_candidates(source, destination_prefix=prefix, group=None)
+    routed_files = routing_plan_files(candidates, routing=routing)
+    routing_plan = build_routing_plan(
+        routing,
         routed_files,
         group_names=set(groups),
     ).as_dict()
@@ -808,7 +808,7 @@ def build_review_sweep_plan(
         "schema_version": 1,
         "ok": not errors,
         "source": str(source),
-        "target_prefix": prefix,
+        "destination_prefix": prefix,
         "workflow_mode": "review",
         "job_id": job_id,
         "run_id": run_id,
@@ -911,7 +911,7 @@ def routing_report_text(plan: Mapping[str, Any]) -> str:
 
 
 __all__ = [
-    "ARCHIVE_MODES",
+    "OUTPUT_MODES",
     "COLLECTION_ARCHIVE_DESTINATIONS",
     "DEFAULT_AUDIO_TASKS",
     "DEFAULT_GROUP",
@@ -928,7 +928,7 @@ __all__ = [
     "configured_profiles",
     "default_group_payload",
     "default_hash_cache_path",
-    "default_tasks_for_archive_mode",
+    "default_tasks_for_output_mode",
     "discover_local_candidates",
     "effective_group",
     "grouped_tasks",

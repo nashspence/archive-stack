@@ -950,7 +950,7 @@ def test_wait_for_finalized_collection_waits_through_archiving(
                 "id": collection_id,
                 "files": 1,
                 "bytes": 3,
-                "glacier": {"state": "uploaded"},
+                "archive": {"state": "uploaded"},
             }
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
@@ -976,7 +976,7 @@ def test_wait_for_finalized_collection_waits_through_archiving(
 
     assert state == "finalized"
     assert payload["state"] == "finalized"
-    assert payload["collection"]["glacier"]["state"] == "uploaded"  # type: ignore[index]
+    assert payload["collection"]["archive"]["state"] == "uploaded"  # type: ignore[index]
 
 
 def test_wait_for_finalized_collection_supports_reattach_without_manifest(
@@ -988,7 +988,7 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
                 "id": collection_id,
                 "files": 7,
                 "bytes": 1234,
-                "glacier": {"state": "uploaded", "stored_bytes": 567},
+                "archive": {"state": "uploaded", "stored_bytes": 567},
             }
 
     monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
@@ -1025,7 +1025,7 @@ def test_wait_for_finalized_collection_retries_transient_poll_errors(
                 "id": collection_id,
                 "files": 1,
                 "bytes": 3,
-                "glacier": {"state": "uploaded"},
+                "archive": {"state": "uploaded"},
             }
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:

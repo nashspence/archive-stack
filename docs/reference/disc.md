@@ -171,7 +171,7 @@ For every represented collection:
 - both are encrypted like any other non-README disc object
 
 This lets a person or tool verify reconstructed files against the same collection-level manifest used
-for the Glacier archive object set.
+for the archive object set.
 
 ## `djdan` Expectations
 
@@ -184,10 +184,10 @@ Automated multipart recovery uses the fetch manifest as its recovery contract.
 - the sidecar says how to restore metadata and, for split files, how each object participates in the
   full plaintext
 - resumable recovery state for partially uploaded logical files is managed by the server-side fetch manifest
-- fetch copy hints name the exact payload object to read plus the raw encrypted recovery-byte digest and length expected
+- fetch disc hints name the exact payload object to read plus the raw encrypted recovery-byte digest and length expected
   from that object
-- recovery-byte lengths are captured when a copy is registered, and missing recovery-byte digests are lazily
-  backfilled from the finalized image root before a fetch manifest is returned; archived-only files do not need hot
+- recovery-byte lengths are captured when a disc is registered, and missing recovery-byte digests are lazily
+  backfilled from the finalized image root before a fetch manifest is returned; disc-covered files do not need hot
   plaintext in order to publish or complete a fetch manifest
 - `djdan` does not own decryption or final logical-file hash validation; the server does that behind the upload
   resource as needed
@@ -213,18 +213,18 @@ Expected multipart flow:
 
 `djdan burn` is the guided workflow for clearing the current finalized-image burn backlog.
 
-- the burn backlog includes ready provisional candidates plus finalized images whose required copy backlog is not yet
-  complete while at least one protected copy still exists or every generated copy is still pending local burn work
-- if a finalized image loses all protected copies, Riverhog opens an
-  `image_rebuild` recovery session and removes that image from the ordinary burn
-  backlog until rebuild proceeds through the recovery-session flow
-- historical `lost` or `damaged` copy records are not burned again in place; replacement work uses fresh generated
-  `copy_id` values in state `needed` or `burning`
+- the burn backlog includes ready provisional candidates plus finalized images whose required disc backlog is not yet
+  complete while at least one usable disc still exists or every generated disc is still pending local burn work
+- if a finalized image loses all usable discs, Riverhog opens an
+  `disc_rebuild` archive restore and removes that image from the ordinary burn
+  backlog until rebuild proceeds through the archive-restore flow
+- historical `lost` or `damaged` disc records are not burned again in place; replacement work uses fresh generated
+  `disc_id` values in state `needed` or `burning`
 - the session selects the fullest ready backlog item first
 - selected backlog items and blank-media prompts include the stored target media capacity, so a finalized image planned
   for older media settings still tells the operator which blank disc size is required
 - if that item is still provisional, `djdan burn` finalizes it before continuing
-- for copies that still need a physical burn, the session asks for blank media before ISO staging/download so an
+- for discs that still need a physical burn, the session asks for blank media before ISO staging/download so an
   already-inserted disc can start burning as soon as the download and staged-ISO verification complete
 - the staged ISO is verified before burn work continues; silent local verifier stages print periodic heartbeat messages
   because large images and images with many file entries can take several minutes to check
@@ -242,66 +242,66 @@ Expected multipart flow:
 - finalized ISO downloads are generated streams; interrupted downloads discard the partial `.part` file and must be
   restarted from the beginning unless Riverhog later gains a file-backed ISO cache
 - `djdan burn --simulate` uses native non-writing burn mode against the configured optical device for the next pending
-  copy (`hdiutil burn -testburn` on macOS, xorriso cdrecord-emulation `-dummy` elsewhere), then exits without
-  burned-media verification, label confirmation, copy registration, or local burn checkpoint changes
+  disc (`hdiutil burn -testburn` on macOS, xorriso cdrecord-emulation `-dummy` elsewhere), then exits without
+  burned-media verification, label confirmation, disc registration, or local burn checkpoint changes
 - macOS native `-testburn` support depends on the drive/media family; BD-R media may be burnable while still not
   exposing native test-burn support through DiscRecording
-- if the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads it again
-- one physical copy is burned and burned-media-verified at a time
+- if the staged ISO is missing or no longer matches its last verified digest, `djdan burn` downloads it again
+- one physical disc is burned and burned-media-verified at a time
 - burned-media verification failure is treated as a failed physical disc, not as a retryable verification result:
-  `djdan` tells the operator to discard or destroy that disc, clears the local checkpoint for that copy, asks for a
-  new blank disc, and burns the same generated copy id again
-- after burned-media verification, `djdan burn` asks Riverhog to send the best-effort `images.copy_label_needed`
-  operator notification, then prints the exact label text plus storage guidance before copy registration
-- Riverhog does not register the copy, associate that generated `copy_id` with that physical disc, or count the copy
+  `djdan` tells the operator to discard or destroy that disc, clears the local checkpoint for that disc, asks for a
+  new blank disc, and burns the same generated disc id again
+- after burned-media verification, `djdan burn` asks Riverhog to send the best-effort `images.disc_label_needed`
+  operator notification, then prints the exact label text plus storage guidance before disc registration
+- Riverhog does not register the disc, associate that generated `disc_id` with that physical disc, or count the disc
   toward coverage until the operator explicitly confirms that the disc is labeled
 - if the session stops after burning or burned-media verification but before label confirmation, a later run first asks
   whether that unlabeled disc is still available
 - if that unlabeled disc is still available, the session resumes from the earliest unfinished local checkpoint for that
-  copy, including burned-media verification when needed
-- if that unlabeled disc is no longer available, the local checkpoint is discarded and the copy is burned again as a
+  disc, including burned-media verification when needed
+- if that unlabeled disc is no longer available, the local checkpoint is discarded and the disc is burned again as a
   replacement
-- after label confirmation, `djdan burn` records the storage location, registers the generated copy id, and marks the
-  copy verified before moving on; copy registration includes the per-file recovery index, and `djdan` reports that
+- after label confirmation, `djdan burn` records the storage location, registers the generated disc id, and marks the
+  disc verified before moving on; disc registration includes the per-file recovery index, and `djdan` reports that
   this can take time for images with many small files
-- once an ordinary image has no pending burn copies or unfinished local verification checkpoints, `djdan burn` removes
+- once an ordinary image has no pending disc burns or unfinished local verification checkpoints, `djdan burn` removes
   that image's staged ISO and local burn checkpoint data
 - if no ordinary burn backlog remains but one or more images are waiting on
-  `image_rebuild` work, `djdan burn` reports those recovery sessions instead
+  `disc_rebuild` work, `djdan burn` reports those archive restores instead
   of treating them as ordinary replacement burns
 
-## Recovery Sessions
+## Disc Rebuilds
 
-- `djdan disc rebuild start COPY_ID --reason lost|damaged` marks a burned disc
+- `djdan disc rebuild start DISC_ID --reason lost|damaged` marks a burned disc
   lost or damaged and shows the rebuild work needed to restore coverage
-- `djdan disc rebuild list` lists active image-rebuild recovery sessions and
+- `djdan disc rebuild list` lists active disc rebuild archive restores and
   the finalized images attached to each one through the API's indexed,
-  server-paged active-session view; `--all` includes terminal history and
+  server-paged active-restore view; `--all` includes terminal history and
   `--state` selects one exact state
-- `djdan disc rebuild show SESSION` shows restore readiness, attached images,
+- `djdan disc rebuild show RESTORE_ID` shows restore readiness, attached images,
   and latest operator message
-- `djdan disc rebuild pause SESSION` pauses active restore work when the
+- `djdan disc rebuild pause RESTORE_ID` pauses active restore work when the
   operator is not ready to rebuild and burn replacement media
-- `djdan disc rebuild resume SESSION` resumes a paused rebuild session
-- while a session is still `restore_requested`, `djdan burn` exits cleanly and
-  reports the recovery session that is blocking burn backlog
-- once the session is `ready`, `djdan burn` stages and burns the replacement
+- `djdan disc rebuild resume RESTORE_ID` resumes a paused archive restore
+- while a restore is still `requested`, `djdan burn` exits cleanly and
+  reports the archive restore that is blocking burn backlog
+- once the restore is `ready`, `djdan burn` stages and burns the replacement
   media automatically
-- recovery-session readiness is driven by archive-store restore status, not only by the operator-facing latency
+- archive-restore readiness is driven by archive-store restore status, not only by the operator-facing latency
   estimate
 - AWS S3 Glacier Deep Archive Bulk recovery should be expected to wait roughly
   48 hours; Riverhog polls S3 restore state and uses the configured ready TTL as
   the temporary-copy window once S3 reports the archive object restored
-- for a ready session, `djdan burn` stages every still-needed rebuilt image ISO
-  in that session before burn work starts so a later retry can resume from local
+- for a ready restore, `djdan burn` stages every still-needed rebuilt image ISO
+  in that restore before burn work starts so a later retry can resume from local
   artifacts
-- ready sessions stage ISO bytes rebuilt from restored collection archives and
+- ready restores stage ISO bytes rebuilt from restored collection archives and
   persisted image coverage metadata
 - if the restore window expires after local staging succeeded,
   `djdan burn` can still resume from the staged ISO artifacts already on disk
 - recovery burns reuse the same local checkpoint behavior as `djdan burn`, including resume from unfinished
   burned-media verification or label confirmation
-- when the recovery session finishes, Riverhog marks the session completed,
+- when the archive restore finishes, Riverhog marks the restore completed,
   records archive restore cleanup or lifecycle handoff for the collection
   archives, and deletes the staged ISO artifacts for the rebuilt images
   immediately

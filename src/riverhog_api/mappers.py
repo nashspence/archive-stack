@@ -1,33 +1,32 @@
 from __future__ import annotations
 
 from riverhog_core.domain.models import (
+    ArchiveCollectionContribution,
+    ArchiveRestoreCollection,
+    ArchiveRestoreImage,
+    ArchiveRestoreListPage,
+    ArchiveRestoreNotificationStatus,
+    ArchiveRestoreProgress,
+    ArchiveRestoreSummary,
+    ArchiveStatus,
+    ArchiveUsageCollection,
+    ArchiveUsageImage,
+    ArchiveUsageReport,
+    ArchiveUsageSnapshot,
+    ArchiveUsageTotals,
     CollectionCoverageImage,
     CollectionListPage,
     CollectionManifestStatus,
-    CollectionRecoverySummary,
     CollectionSummary,
-    CopyHistoryEntry,
-    CopySummary,
+    Coverage,
+    DiscHistoryEntry,
+    DiscSummary,
     FetchListPage,
     FetchSummary,
-    GlacierArchiveStatus,
-    GlacierCollectionContribution,
-    GlacierUsageCollection,
-    GlacierUsageImage,
-    GlacierUsageReport,
-    GlacierUsageSnapshot,
-    GlacierUsageTotals,
-    RecoveryCoverage,
-    RecoveryNotificationStatus,
-    RecoverySessionCollection,
-    RecoverySessionImage,
-    RecoverySessionListPage,
-    RecoverySessionProgress,
-    RecoverySessionSummary,
 )
 
 
-def map_glacier(summary: GlacierArchiveStatus) -> dict[str, object]:
+def map_archive(summary: ArchiveStatus) -> dict[str, object]:
     return {
         "state": summary.state.value,
         "object_path": summary.object_path,
@@ -53,7 +52,7 @@ def map_collection_manifest(
     }
 
 
-def map_glacier_usage_totals(summary: GlacierUsageTotals) -> dict[str, object]:
+def map_archive_usage_totals(summary: ArchiveUsageTotals) -> dict[str, object]:
     return {
         "collections": summary.collections,
         "uploaded_collections": summary.uploaded_collections,
@@ -61,7 +60,7 @@ def map_glacier_usage_totals(summary: GlacierUsageTotals) -> dict[str, object]:
     }
 
 
-def map_glacier_usage_image(summary: GlacierUsageImage) -> dict[str, object]:
+def map_archive_usage_image(summary: ArchiveUsageImage) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "filename": summary.filename,
@@ -69,8 +68,8 @@ def map_glacier_usage_image(summary: GlacierUsageImage) -> dict[str, object]:
     }
 
 
-def map_glacier_collection_contribution(
-    summary: GlacierCollectionContribution,
+def map_archive_collection_contribution(
+    summary: ArchiveCollectionContribution,
 ) -> dict[str, object]:
     return {
         "image_id": str(summary.image_id),
@@ -79,20 +78,20 @@ def map_glacier_collection_contribution(
     }
 
 
-def map_glacier_usage_collection(summary: GlacierUsageCollection) -> dict[str, object]:
+def map_archive_usage_collection(summary: ArchiveUsageCollection) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "bytes": summary.bytes,
-        "glacier": map_glacier(summary.glacier),
+        "archive": map_archive(summary.archive),
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
         "measured_storage_bytes": summary.measured_storage_bytes,
-        "images": [map_glacier_collection_contribution(image) for image in summary.images],
+        "images": [map_archive_collection_contribution(image) for image in summary.images],
     }
 
 
-def map_glacier_usage_snapshot(summary: GlacierUsageSnapshot) -> dict[str, object]:
+def map_archive_usage_snapshot(summary: ArchiveUsageSnapshot) -> dict[str, object]:
     return {
         "captured_at": summary.captured_at,
         "uploaded_collections": summary.uploaded_collections,
@@ -100,14 +99,14 @@ def map_glacier_usage_snapshot(summary: GlacierUsageSnapshot) -> dict[str, objec
     }
 
 
-def map_glacier_usage_report(summary: GlacierUsageReport) -> dict[str, object]:
+def map_archive_usage_report(summary: ArchiveUsageReport) -> dict[str, object]:
     return {
         "scope": summary.scope,
         "measured_at": summary.measured_at,
-        "totals": map_glacier_usage_totals(summary.totals),
-        "images": [map_glacier_usage_image(image) for image in summary.images],
-        "collections": [map_glacier_usage_collection(item) for item in summary.collections],
-        "history": [map_glacier_usage_snapshot(item) for item in summary.history],
+        "totals": map_archive_usage_totals(summary.totals),
+        "images": [map_archive_usage_image(image) for image in summary.images],
+        "collections": [map_archive_usage_collection(item) for item in summary.collections],
+        "history": [map_archive_usage_snapshot(item) for item in summary.history],
     }
 
 
@@ -121,15 +120,12 @@ def map_collection(
         "files": summary.files,
         "bytes": summary.bytes,
         "hot_bytes": summary.hot_bytes,
-        "archived_bytes": summary.archived_bytes,
-        "pending_bytes": summary.pending_bytes,
-        "glacier": map_glacier(summary.glacier),
+        "archive": map_archive(summary.archive),
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
-        "disc_coverage": map_collection_disc_coverage(summary.recovery.verified_physical),
-        "protection_state": map_collection_protection_state(summary),
-        "protected_bytes": summary.protected_bytes,
+        "disc_coverage": map_coverage(summary.disc_coverage),
+        "disc_redundancy": map_coverage(summary.disc_redundancy),
         "image_coverage": [
             map_collection_coverage_image(image, path_limit=coverage_path_limit)
             for image in summary.image_coverage
@@ -143,15 +139,12 @@ def map_collection_list_item(summary: CollectionSummary) -> dict[str, object]:
         "files": summary.files,
         "bytes": summary.bytes,
         "hot_bytes": summary.hot_bytes,
-        "archived_bytes": summary.archived_bytes,
-        "pending_bytes": summary.pending_bytes,
-        "glacier": map_glacier(summary.glacier),
+        "archive": map_archive(summary.archive),
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "archive_format": summary.archive_format,
         "compression": summary.compression,
-        "disc_coverage": map_collection_disc_coverage(summary.recovery.verified_physical),
-        "protection_state": map_collection_protection_state(summary),
-        "protected_bytes": summary.protected_bytes,
+        "disc_coverage": map_coverage(summary.disc_coverage),
+        "disc_redundancy": map_coverage(summary.disc_redundancy),
     }
 
 
@@ -165,39 +158,16 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
     }
 
 
-def map_recovery_coverage(summary: RecoveryCoverage) -> dict[str, object]:
+def map_coverage(summary: Coverage) -> dict[str, object]:
     return {
         "state": summary.state.value,
         "bytes": summary.bytes,
     }
 
 
-def map_collection_recovery(summary: CollectionRecoverySummary) -> dict[str, object]:
-    return {
-        "verified_physical": map_recovery_coverage(summary.verified_physical),
-        "glacier": map_recovery_coverage(summary.glacier),
-        "available": list(summary.available),
-    }
-
-
-def map_collection_disc_coverage(summary: RecoveryCoverage) -> dict[str, object]:
-    return {
-        "state": summary.state.value,
-        "covered_bytes": summary.bytes,
-        "verified_physical_bytes": summary.bytes,
-    }
-
-
-def map_collection_protection_state(summary: CollectionSummary) -> str:
-    state = summary.protection_state.value
-    if state == "protected":
-        return "fully_protected"
-    if state == "partially_protected":
-        return "under_protected"
-    return "cloud_only"
-
-
-def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, object]:
+def map_archive_restore_notification(
+    summary: ArchiveRestoreNotificationStatus,
+) -> dict[str, object]:
     return {
         "webhook_configured": summary.webhook_configured,
         "reminder_count": summary.reminder_count,
@@ -209,7 +179,7 @@ def map_recovery_notification(summary: RecoveryNotificationStatus) -> dict[str, 
     }
 
 
-def map_recovery_session_progress(summary: RecoverySessionProgress) -> dict[str, object]:
+def map_archive_restore_progress(summary: ArchiveRestoreProgress) -> dict[str, object]:
     return {
         "archive_verification": summary.archive_verification,
         "extraction": summary.extraction,
@@ -217,7 +187,7 @@ def map_recovery_session_progress(summary: RecoverySessionProgress) -> dict[str,
     }
 
 
-def map_recovery_session_image(summary: RecoverySessionImage) -> dict[str, object]:
+def map_archive_restore_image(summary: ArchiveRestoreImage) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "filename": summary.filename,
@@ -226,43 +196,41 @@ def map_recovery_session_image(summary: RecoverySessionImage) -> dict[str, objec
     }
 
 
-def map_recovery_session_collection(summary: RecoverySessionCollection) -> dict[str, object]:
+def map_archive_restore_collection(summary: ArchiveRestoreCollection) -> dict[str, object]:
     return {
         "id": str(summary.id),
-        "glacier": map_glacier(summary.glacier),
+        "archive": map_archive(summary.archive),
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
         "stored_bytes": summary.stored_bytes,
     }
 
 
-def map_recovery_session(summary: RecoverySessionSummary) -> dict[str, object]:
+def map_archive_restore(summary: ArchiveRestoreSummary) -> dict[str, object]:
     return {
         "id": summary.id,
         "type": summary.type,
         "state": summary.state.value,
         "created_at": summary.created_at,
-        "restore_requested_at": summary.restore_requested_at,
-        "restore_ready_at": summary.restore_ready_at,
-        "restore_expires_at": summary.restore_expires_at,
+        "requested_at": summary.requested_at,
+        "ready_at": summary.ready_at,
+        "expires_at": summary.expires_at,
         "completed_at": summary.completed_at,
         "canceled_at": summary.canceled_at,
         "paused_at": summary.paused_at,
         "paused_from_state": summary.paused_from_state,
-        "restore_paths": None
-        if summary.restore_paths is None
-        else [str(path) for path in summary.restore_paths],
+        "paths": None if summary.paths is None else [str(path) for path in summary.paths],
         "latest_message": summary.latest_message,
         "warnings": list(summary.warnings),
-        "notification": map_recovery_notification(summary.notification),
-        "progress": map_recovery_session_progress(summary.progress),
+        "notification": map_archive_restore_notification(summary.notification),
+        "progress": map_archive_restore_progress(summary.progress),
         "collections": [
-            map_recovery_session_collection(collection) for collection in summary.collections
+            map_archive_restore_collection(collection) for collection in summary.collections
         ],
-        "images": [map_recovery_session_image(image) for image in summary.images],
+        "images": [map_archive_restore_image(image) for image in summary.images],
     }
 
 
-def map_recovery_session_list(summary: RecoverySessionListPage) -> dict[str, object]:
+def map_archive_restore_list(summary: ArchiveRestoreListPage) -> dict[str, object]:
     return {
         "page": summary.page,
         "per_page": summary.per_page,
@@ -275,11 +243,11 @@ def map_recovery_session_list(summary: RecoverySessionListPage) -> dict[str, obj
         "state": summary.state,
         "collection": summary.collection,
         "image": summary.image,
-        "sessions": [map_recovery_session(session) for session in summary.sessions],
+        "restores": [map_archive_restore(restore) for restore in summary.restores],
     }
 
 
-def map_copy_history(entry: CopyHistoryEntry) -> dict[str, object]:
+def map_disc_history(entry: DiscHistoryEntry) -> dict[str, object]:
     return {
         "at": entry.at,
         "event": entry.event,
@@ -289,16 +257,16 @@ def map_copy_history(entry: CopyHistoryEntry) -> dict[str, object]:
     }
 
 
-def map_copy(summary: CopySummary) -> dict[str, object]:
+def map_disc(summary: DiscSummary) -> dict[str, object]:
     return {
-        "id": str(summary.id),
-        "volume_id": summary.volume_id,
+        "disc_id": str(summary.disc_id),
+        "image_id": summary.image_id,
         "label_text": summary.label_text,
         "location": summary.location,
         "created_at": summary.created_at,
         "state": summary.state.value,
         "verification_state": summary.verification_state.value,
-        "history": [map_copy_history(entry) for entry in summary.history],
+        "history": [map_disc_history(entry) for entry in summary.history],
     }
 
 
@@ -318,14 +286,14 @@ def map_collection_coverage_image(
     return {
         "id": str(summary.id),
         "filename": summary.filename,
-        "physical_protection_state": summary.protection_state.value,
-        "physical_copies_required": summary.physical_copies_required,
-        "physical_copies_registered": summary.physical_copies_registered,
-        "physical_copies_verified": summary.physical_copies_verified,
-        "physical_copies_missing": summary.physical_copies_missing,
+        "disc_redundancy_state": summary.disc_redundancy_state.value,
+        "discs_required": summary.discs_required,
+        "discs_registered": summary.discs_registered,
+        "discs_verified": summary.discs_verified,
+        "discs_missing": summary.discs_missing,
         "covered_paths": covered_paths,
         "covered_paths_total": covered_paths_total,
-        "copies": [map_copy(copy) for copy in summary.copies],
+        "discs": [map_disc(disc) for disc in summary.discs],
     }
 
 
@@ -345,9 +313,13 @@ def map_fetch(summary: FetchSummary) -> dict[str, object]:
         "uploaded_bytes": summary.uploaded_bytes,
         "missing_bytes": summary.missing_bytes,
         "upload_state_expires_at": summary.upload_state_expires_at,
-        "copies": [
-            {"id": str(c.id), "volume_id": c.volume_id, "location": c.location}
-            for c in summary.copies
+        "discs": [
+            {
+                "disc_id": str(disc.disc_id),
+                "image_id": disc.image_id,
+                "location": disc.location,
+            }
+            for disc in summary.discs
         ],
     }
 

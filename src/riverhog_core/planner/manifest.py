@@ -180,7 +180,7 @@ def manifest_collection_budget(collection_id: str, files: list[PlannerFileMeta])
 
 def recovery_readme_bytes(container_name: str) -> bytes:
     lines = [
-        f"Archive image: {container_name}",
+        f"Image: {container_name}",
         "",
         "This README.md is intentionally plaintext.",
         "Every other file on this disc is expected to be encrypted with age-plugin-batchpass.",

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog configures runtime storage, upload, Glacier, recovery, WebDAV, and database behavior through environment variables.
+Riverhog configures runtime storage, upload, archiving, recovery, WebDAV, and database behavior through environment variables.
 
 ## Reason
 

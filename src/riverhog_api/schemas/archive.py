@@ -5,7 +5,7 @@ from typing import Literal
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class GlacierArchiveOut(RiverhogModel):
+class ArchiveOut(RiverhogModel):
     state: Literal["pending", "uploading", "uploaded", "retrying", "failed"]
     object_path: str | None
     stored_bytes: int | None

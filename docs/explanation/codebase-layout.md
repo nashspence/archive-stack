@@ -17,13 +17,13 @@ src/
       collections.py
       search.py
       planning.py
-      copies.py
+      discs.py
       fetches.py
       contracts.py
     ports/
       catalog.py
       clock.py
-      copy_store.py
+      disc_store.py
       crypto.py
       hot_store.py
       ids.py

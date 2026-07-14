@@ -9,7 +9,7 @@ All JSON endpoints are under `/v1`. Requests and responses use JSON unless other
 Resumable upload URLs returned by the JSON API are Riverhog-managed tus-compatible resources.
 
 Unless this contract explicitly says otherwise, authoritative resources created through the API remain addressable across
-service restarts, including collections, finalized images, registered copies, active fetch manifests, and unexpired upload
+service restarts, including collections, finalized images, registered discs, active fetch manifests, and unexpired upload
 progress.
 
 ### Collections
@@ -57,7 +57,7 @@ Required behavior:
   upload or return the already-finalized collection
 - persists enough upload-session state to survive service restart and repeated CLI runs
 - keeps the collection invisible until every required file has uploaded,
-  verified successfully, archived to Glacier, and verified by object receipt
+  verified successfully, been archived, and been verified by object receipt
 - persists the completed archive, collection manifest, and OTS proof receipts
   before hot-file promotion, so restart retries do not re-upload completed
   archive-store objects
@@ -138,7 +138,7 @@ Required behavior:
 - completion requires at least one registered file
 - completion requires every registered file to have uploaded and verified
 - once accepted, the session transitions to `archiving` and uses the same
-  Glacier archive finalization path as determinate uploads
+  archive finalization path as determinate uploads
 - repeated completion after archival handoff is idempotent while the upload
   session remains visible
 - a finalized collection response is returned if finalization has already
@@ -201,11 +201,11 @@ Supported query parameters:
 - `q` — case-insensitive substring search over collection ids and full logical file paths
 - `page` — 1-based page number, default `1`
 - `per_page` — page size, default `25`, max `100`
-- `sort` — one of `target`, `collection`, `path`, `bytes`, `hot`, or `archived`
+- `sort` — one of `target`, `collection`, `path`, `bytes`, `hot`, or `disc_coverage`
 - `order` — `asc` or `desc`
 - `collection` — exact collection id filter
 - `hot` — optional boolean hot-storage filter
-- `archived` — optional boolean deep-archive filter
+- `disc_coverage` — optional boolean disc-coverage filter
 
 Required behavior:
 
@@ -296,20 +296,20 @@ Supported query parameters:
 - `page` — 1-based page number, default `1`
 - `per_page` — page size, default `25`, max `100`
 - `q` — case-insensitive substring filter over collection ids
-- `protection_state` — exact filter over `under_protected`, `cloud_only`,
-  `physical_only`, or `fully_protected`
+- `disc_redundancy_state` — exact filter over `partial`, `none`,
+  `partial`, or `full`
 
 Required behavior:
 
 - the response includes pagination metadata and a `collections` array
 - returned collection summaries are compact list items; use
   `GET /v1/collections/{collection_id}` for bounded per-image coverage previews
-  and copy detail
-- collection summaries are returned only for collections whose Glacier archive
+  and disc detail
+- collection summaries are returned only for collections whose archive
   package has uploaded and verified
-- filtering by `protection_state=fully_protected` can be used to answer which
-  collections have both verified Glacier and full physical coverage
-- collection summaries include direct collection Glacier state, archive
+- filtering by `disc_redundancy=full` returns collections with full disc
+  redundancy
+- collection summaries include direct collection archive state, archive
   manifest/OTS proof state, and physical disc coverage
 
 #### `GET /v1/collections/{collection_id}`
@@ -320,15 +320,16 @@ Required behavior:
 
 - collection ids may span multiple path segments, for example `GET /v1/collections/photos/2024`
 - API and CLI collection lookup treat slash-bearing ids as first-class
-- collection summaries expose `glacier`, `collection_manifest`, `archive_format`,
-  `compression`, `disc_coverage`, `protection_state`, `protected_bytes`, and
-  per-image physical coverage details
-- `glacier` is direct collection archive state, not a value derived from image
+- collection summaries expose `archive`, `collection_manifest`, `archive_format`,
+  `compression`, `disc_coverage`, `disc_redundancy`, and per-image disc coverage
+  details
+- `disc_coverage` and `disc_redundancy` each contain `state` and `bytes`
+- `archive` is direct collection archive state, not a value derived from image
   coverage
 - `collection_manifest` exposes manifest object path, manifest SHA-256, OTS proof
   object path, and OTS proof state
-- per-image coverage details expose `covered_paths`, `physical_copies_registered`,
-  `physical_copies_verified`, copy labels and locations
+- per-image coverage details expose `covered_paths`, `discs_registered`,
+  `discs_verified`, disc labels and locations
 - `coverage_path_limit` controls the returned `covered_paths` preview per
   image and defaults to a bounded operator view; `covered_paths_total` reports
   the total path count before truncation
@@ -351,7 +352,7 @@ Required behavior:
 - the response includes pagination metadata, the canonical `target`, and a `files` array
 - returned files use the same projected-path syntax accepted by fetch and hot-eviction commands
 - file results include current hot availability
-- file results include available copies, if any
+- file results include available discs, if any
 - missing or non-matching targets return an empty list rather than `not_found`
 - invalid target syntax is rejected with `invalid_target`
 
@@ -363,7 +364,7 @@ Required behavior:
 
 - the path target must select exactly one logical file, not a directory or broader selector
 - content download succeeds only when the selected file is hot
-- archived-only files return `not_found` and continue to use the fetch/upload recovery flow
+- disc-covered files return `not_found` and continue to use the fetch/upload recovery flow
 - the response returns the file bytes rather than JSON
 
 ### Planning
@@ -386,7 +387,7 @@ Supported query parameters:
 Required behavior:
 
 - every returned plan entry is a provisional candidate
-- every returned plan entry represents only collections whose Glacier archive
+- every returned plan entry represents only collections whose archive
   package has uploaded and verified
 - a provisional candidate may be re-allocated by the planner
 - finalized images are not returned by `GET /v1/plan`
@@ -416,7 +417,7 @@ Required behavior:
   for even if current planner settings later change
 - plan candidate objects expose `collection_ids`
 - plan candidate objects do not expose finalized-image fields such as finalized `id`, `filename`, `finalized_at`, or
-  physical-copy protection metadata
+  disc redundancy metadata
 - plan-specific fields such as `ready`, `target_bytes`, `min_fill_bytes`, and `unplanned_bytes` remain part of the
   response alongside the paged candidate listing
 
@@ -430,11 +431,11 @@ Supported query parameters:
 
 - `page` — 1-based page number, default `1`
 - `per_page` — page size, default `25`
-- `sort` — one of `finalized_at`, `bytes`, or `physical_copies_registered`
+- `sort` — one of `finalized_at`, `bytes`, or `discs_registered`
 - `order` — `asc` or `desc`
 - `q` — case-insensitive substring filter over finalized image id, ISO filename, and contained collection ids
 - `collection` — exact collection-id filter over contained collection ids
-- `has_copies` — filters finalized images by whether at least one burned copy has been registered
+- `has_discs` — filters finalized images by whether at least one burned disc has been registered
 
 Required behavior:
 
@@ -443,10 +444,10 @@ Required behavior:
 - default ordering is latest finalized image first using `sort=finalized_at&order=desc`
 - the response includes pagination metadata and finalized-image summaries
 - finalized-image summaries expose `filename`, `finalized_at`, `target_bytes`, `collection_ids`,
-  `physical_protection_state`, `physical_copies_required`, `physical_copies_registered`, `physical_copies_verified`,
-  and `physical_copies_missing`
+  `disc_redundancy_state`, `discs_required`, `discs_registered`, `discs_verified`,
+  and `discs_missing`
 - finalized-image summaries always report `iso_ready = true`
-- finalized-image summaries report physical-copy state
+- finalized-image summaries report physical-disc state
 
 #### `GET /v1/images/{image_id}`
 
@@ -461,20 +462,20 @@ Required behavior:
 - finalized image summaries always report `iso_ready = true`
 - provisional plan candidates are not addressable through `GET /v1/images/{image_id}`
 
-#### `GET /v1/images/{image_id}/rebuild-session`
+#### `GET /v1/images/{image_id}/disc-rebuild`
 
-Returns the latest image-rebuild recovery session for one finalized image.
+Returns the latest image-rebuild archive restore for one finalized image.
 
 Required behavior:
 
-- returns the latest durable `image_rebuild` recovery session for that finalized
-  image, including expired or completed sessions
-- returns `not_found` when no recovery session has been created for that image
+- returns the latest durable `disc_rebuild` archive restore for that finalized
+  image, including expired or completed restores
+- returns `not_found` when no archive restore has been created for that image
 
-Image rebuild sessions are not manually started. Riverhog creates them when copy
-state changes leave a finalized image with no protected copies and the required
-collection Glacier archives are uploaded. The recovery processor requests and
-polls Glacier restore work automatically.
+Disc rebuild archive restores are not manually started. Riverhog creates them when disc
+state changes leave a finalized image with no usable discs and the required
+collection archives are uploaded. The recovery processor requests and
+polls archive restore work automatically.
 
 #### `POST /v1/fetches/{fetch_id}/cancel`
 
@@ -483,91 +484,91 @@ Cancels an active hot-storage fetch.
 Required behavior:
 
 - cancels a fetch by fetch id, regardless of whether it was queued for `djdan`
-  or cloud materialization
+  or archive materialization
 - for `djdan` fetches, cancels any in-flight resumable upload resources,
   discards staged recovery bytes, deletes existing fetch entries, clears queued
   notification state, and returns the fetch to `draft`
-- for cloud fetches, cancels active collection-native recovery sessions that
+- for archive fetches, cancels active collection-native archive restores that
   intersect the fetch and returns the fetch to `draft` when possible
 - returns the same fetch status payload as `GET /v1/fetches/{fetch_id}/status`
 
-#### `GET /v1/recovery-sessions`
+#### `GET /v1/archive-restores`
 
-Returns a paged inventory of Glacier-backed cloud-fetch and image rebuild
-sessions.
+Returns a paged inventory of archive-backed fetch materialization and disc rebuild
+restores.
 
 Supported query parameters:
 
 - `page`, `per_page`
-- `sort`: `created_at`, `id`, `type`, `state`, `restore_ready_at`, or
-  `restore_expires_at`
+- `sort`: `created_at`, `id`, `type`, `state`, `ready_at`, or
+  `expires_at`
 - `order`: `asc` or `desc`
 - `terminal`: `active`, `terminal`, or `all`; defaults to `all`
-- `type`: `collection_restore` or `image_rebuild`
-- `state`: `restore_requested`, `ready`, `paused`, `expired`, `completed`,
+- `type`: `fetch_materialization` or `disc_rebuild`
+- `state`: `requested`, `ready`, `paused`, `expired`, `completed`,
   `failed`, or `canceled`
-- `collection`: restricts results to sessions attached to one collection id
-- `image`: restricts results to sessions attached to one finalized image id
+- `collection`: restricts results to restores attached to one collection id
+- `image`: restricts results to restores attached to one finalized image id
 
 Required behavior:
 
 - list views are bounded database lookups and do not scan archive objects or hot
   storage
-- `terminal=active` selects `restore_requested`, `ready`, and `paused` in one
+- `terminal=active` selects `requested`, `ready`, and `paused` in one
   indexed, paged database query; `terminal=terminal` selects the remaining
   completed, expired, failed, or canceled history
 - exact `state` filters combine with `terminal`; clients selecting one exact
   state normally leave `terminal=all`
-- cloud-fetch operator views filter with `type=collection_restore`
-- image rebuild operator views filter with `type=image_rebuild`
+- fetch materialization operator views filter with `type=fetch_materialization`
+- disc rebuild operator views filter with `type=disc_rebuild`
 
-#### `GET /v1/recovery-sessions/{session_id}`
+#### `GET /v1/archive-restores/{restore_id}`
 
-Returns one Glacier-backed cloud-fetch or image rebuild session by durable
-session id.
+Returns one archive-backed fetch materialization or disc rebuild archive restore
+by durable archive restore id.
 
 Required behavior:
 
-- recovery sessions remain addressable across service restart
+- archive restores remain addressable across service restart
 - the response includes recovery `type`, operator warnings,
   notification state, covered collections, and any finalized images involved in
-  an image rebuild
-- cloud-fetch recovery responses include `restore_paths`; `null` means the
+  a disc rebuild
+- fetch materialization responses include `paths`; `null` means the
   whole collection is in scope
 - the response includes `progress.archive_verification`, `progress.extraction`,
   and `progress.materialization`, each one of `pending`, `in_progress`,
   `completed`, or `failed`
 
-#### `POST /v1/recovery-sessions/{session_id}/complete`
+#### `POST /v1/archive-restores/{restore_id}/complete`
 
-Completes one ready recovery session.
+Completes one ready archive restore.
 
 Required behavior:
 
 - completion is only valid from `ready` or `expired`
-- completion transitions the session to `completed`
+- completion transitions the archive restore to `completed`
 - completion records cleanup or lifecycle handoff for restored Standard-storage data instead of waiting for Riverhog's
-  session expiry
-- cloud-fetch recovery sessions complete automatically after requested files are
+  archive restore expiry
+- fetch materialization archive restores complete automatically after requested files are
   materialized; `djdan burn` uses this endpoint after rebuilding replacement
-  image copies from a ready image rebuild session
+  image discs from a ready disc rebuild archive restore
 
-#### `GET /v1/recovery-sessions/{session_id}/images/{image_id}/iso`
+#### `GET /v1/archive-restores/{restore_id}/images/{image_id}/iso`
 
-Downloads one rebuilt ISO from a ready `image_rebuild` recovery session.
+Downloads one rebuilt ISO from a ready `disc_rebuild` archive restore.
 
 Required behavior:
 
-- succeeds only when the recovery session is `ready`
-- the image must belong to that recovery session
+- succeeds only when the archive restore is `ready`
+- the image must belong to that archive restore
 - the response streams bytes from the rebuilt image artifact produced from
   restored collection archives and persisted coverage metadata
 - `djdan burn` uses this endpoint for replacement burns from active image
-  rebuild sessions instead of `GET /v1/images/{image_id}/iso`
+  disc rebuild archive restores instead of `GET /v1/images/{image_id}/iso`
 
-#### `GET /v1/glacier`
+#### `GET /v1/archive`
 
-Returns Glacier usage totals, direct per-collection archive state, collection
+Returns archive usage totals, direct per-collection archive state, collection
 manifest/OTS proof state, image-to-collection contribution metadata, and
 overall usage snapshots.
 
@@ -584,8 +585,8 @@ Required behavior:
   `totals.uploaded_collections` counts those uploaded and verified
 - each returned collection exposes direct archive-store state, measured
   uploaded bytes, manifest state, and OTS proof state
-- returned image entries, when present, explain physical coverage of collections
-- unfiltered `GET /v1/glacier` returns overall usage snapshots that reflect changes in total uploaded Glacier usage over
+- returned image entries, when present, explain disc coverage of collections
+- unfiltered `GET /v1/archive` returns overall usage snapshots that reflect changes in total uploaded archive usage over
   time
 
 #### `POST /v1/plan/candidates/{candidate_id}/finalize`
@@ -602,8 +603,8 @@ Required behavior:
 - finalized candidates are not returned by `GET /v1/plan`
 - repeated finalization of the same `candidate_id` is idempotent and returns the same finalized summary
 - the finalized image record remains addressable after service restart
-- finalization creates a physical image artifact and generated copy slots only
-- finalized-image summaries report physical-copy protection state
+- finalization creates a finalized image artifact and generated disc slots only
+- finalized-image summaries report disc redundancy state
 
 #### `GET /v1/images/{image_id}/iso`
 
@@ -618,64 +619,64 @@ Required behavior:
   finalized-image `bytes` field as an estimate for operator progress only
 - finalized-image ISO responses include `X-Accel-Buffering: no` so nginx-compatible proxies can forward headers and
   streaming bytes without waiting for the rebuilt body to accumulate
-- this endpoint is not used for recovery-session burns
+- this endpoint is not used for archive-restore burns
 
-#### `POST /v1/images/{image_id}/copies`
+#### `POST /v1/images/{image_id}/discs`
 
 Registers a physical burned disc for an image.
 
 Required behavior:
 
-- copy registration is only valid for an already finalized image
+- disc registration is only valid for an already finalized image
 - the path `image_id` is the finalized image id
-- the physical copy identity is `(volume_id, copy_id)`
-- finalized images create exactly two generated copy ids by default, such as `{image_id}-1` and `{image_id}-2`
-- if no `copy_id` is supplied, registration claims the next generated copy slot still in state `needed` or `burning`
-- duplicate registration of the same generated `copy_id` is rejected with `conflict`
-- the generated `copy_id` is also the exact disc label text Riverhog expects the operator to write
-- `location` is mutable operational metadata and is never part of copy identity
+- the physical disc identity is `disc_id`
+- finalized images create exactly two generated disc ids by default, such as `{image_id}-1` and `{image_id}-2`
+- if no `disc_id` is supplied, registration claims the next generated disc slot still in state `needed` or `burning`
+- duplicate registration of the same generated `disc_id` is rejected with `conflict`
+- the generated `disc_id` is also the exact disc label text Riverhog expects the operator to write
+- `location` is mutable operational metadata and is never part of disc identity
 - successful registration persists across service restart
 - successful registration also records the per-file recovery index for every
   file or file part physically present on that image, so the response means the
-  copy is usable for later fetch planning
+  disc is usable for later fetch planning
 
-#### `GET /v1/images/{image_id}/copies`
+#### `GET /v1/images/{image_id}/discs`
 
-Lists the generated copy slots for one finalized image.
+Lists the generated disc slots for one finalized image.
 
 Required behavior:
 
-- finalizing an image creates exactly two required copy slots by default
-- if a confirmed copy is later reported `lost` or `damaged`, Riverhog preserves that historical record and may create a
-  fresh generated replacement slot with a new `copy_id`
-- each copy summary exposes generated identity, exact label text, current location, lifecycle state, verification state,
+- finalizing an image creates exactly two required disc slots by default
+- if a confirmed disc is later reported `lost` or `damaged`, Riverhog preserves that historical record and may create a
+  fresh generated replacement slot with a new `disc_id`
+- each disc summary exposes generated identity, exact label text, current location, lifecycle state, verification state,
   and history
 
-#### `PATCH /v1/images/{image_id}/copies/{copy_id}`
+#### `PATCH /v1/images/{image_id}/discs/{disc_id}`
 
-Updates one generated copy record.
+Updates one generated disc record.
 
 Required behavior:
 
-- location updates never mutate copy identity
-- copy lifecycle state and verification state persist across service restart
-- every location or state change is appended to copy history
-- location or protection changes synchronously reconcile affected per-file
+- location updates never mutate disc identity
+- disc lifecycle state and verification state persist across service restart
+- every location or state change is appended to disc history
+- location or lifecycle changes synchronously reconcile affected per-file
   recovery-index rows
-- reporting one confirmed copy `lost` or `damaged` never reuses that same `copy_id` for replacement burn work
-- when another protected copy still exists, replacement burn work is represented as a new generated `copy_id`
+- reporting one confirmed disc `lost` or `damaged` never reuses that same `disc_id` for replacement burn work
+- when another disc still counts toward redundancy, replacement burn work is represented as a new generated `disc_id`
 
-#### `POST /v1/images/{image_id}/copies/{copy_id}/label-needed`
+#### `POST /v1/images/{image_id}/discs/{disc_id}/label-needed`
 
-Sends the best-effort operator notification that `copy_id` has been burned and
+Sends the best-effort operator notification that `disc_id` has been burned and
 verified and now needs its physical label applied.
 
 Required behavior:
 
 - this endpoint is used by `djdan burn` after burned-media verification and before label confirmation
-- it does not register the copy, assign a storage location, or count the copy toward physical protection
-- it returns the current generated copy summary
-- if `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits `images.copy_label_needed`
+- it does not register the disc, assign a storage location, or count the disc toward redundancy
+- it returns the current generated disc summary
+- if `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits `images.disc_label_needed`
 - webhook delivery failures are logged and do not block the burn workflow
 
 ### Hot Eviction
@@ -687,8 +688,8 @@ Removes selected compliant files from committed hot storage.
 Required behavior:
 
 - the `targets` field carries one or more canonical selectors over the projected hot namespace
-- every selected file must already have the required verified disc protection
-- under-protected selections fail with `conflict` and do not evict partial data
+- every selected file must already satisfy the required disc redundancy
+- selections without the required disc redundancy fail with `conflict` and do not evict partial data
 - a selector that matches no files fails with `not_found`
 - eviction is synchronous and returns selected file/byte counts plus evicted file/byte counts
 - eviction does not create, start, or cancel a fetch
@@ -703,7 +704,7 @@ Required behavior:
 
 - responses include `page`, `per_page`, `total`, and `pages`
 - every fetch includes id, name, targets, state, file count, byte count, missing hot-storage bytes, upload progress, and
-  copy hints when useful for the current state
+  disc hints when useful for the current state
 - list/show output is served from fetch-keyed summary projection data and must not scan unbounded collection-file rows
   for routine operator views
 
@@ -730,7 +731,7 @@ Removes target selectors from a draft fetch.
 Required behavior for target editing:
 
 - only `draft` fetches are editable
-- editing fails once a fetch is queued to djdan, uploading, verifying, queued to cloud, cloud-fetching, done, or failed
+- editing fails once a fetch is queued to Djdan, uploading, verifying, queued to the archive, restoring from the archive, done, or failed
 - editing is a frequent operator path and should use set-based catalog work with bounded response time
 
 #### `POST /v1/fetches/{fetch_id}/start`
@@ -739,8 +740,8 @@ Freezes a draft fetch and chooses its fulfillment path.
 
 Required behavior:
 
-- `cloud=false` queues the fetch for the prompt-based `djdan fetch` workflow and moves it to `queued_djdan`
-- `cloud=true` starts cloud-fetch materialization and moves it through `queued_cloud`/`cloud_fetching`
+- `archive=false` queues the fetch for the prompt-based `djdan fetch` workflow and moves it to `queued_djdan`
+- `archive=true` starts fetch materialization and moves it through `queued_archive`/`restoring_archive`
 - a fetch with no targets cannot start
 - starting an already-started fetch fails with `invalid_state`
 - if a fetch is queued to djdan and `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits
@@ -758,9 +759,9 @@ Returns a bounded operator preflight/status view for one named fetch.
 - includes the same summary fields as `GET /v1/fetches/{fetch_id}`
 - includes derived hot/archive/disc coverage counts from the fetch file projection
 - includes per-target summaries, a bounded selected-file preview, and the recommended next operator action
-- includes a bounded `cloud_fetch` recovery-session list for cloud materialization progress and cancellation audit
+- includes a bounded `archive_restores` archive-restore list for archive materialization progress and cancellation audit
 - includes a bounded list of pending, partial, or byte-complete entry statuses
-- does not include recovery copy hints, part metadata, or recovery-byte digests
+- does not include recovery disc hints, part metadata, or recovery-byte digests
 - does not backfill finalized-image recovery metadata
 - intended for human `riverhog hot fetch show` output
 - routine status reads must be fetch-keyed projection lookups, not selector scans over unbounded collection files
@@ -768,12 +769,12 @@ Returns a bounded operator preflight/status view for one named fetch.
 #### `GET /v1/fetches/{fetch_id}/files`
 
 Returns the selected logical files for one named fetch. Supports `page`,
-`per_page`, `q`, `sort`, `order`, `hot`, `archived`, and `disc_coverage`.
+`per_page`, `q`, `sort`, `order`, `hot`, and `disc_coverage`.
 
 Required behavior:
 
 - responses include `page`, `per_page`, `total`, `pages`, `sort`, `order`, and `files`
-- each file includes target, collection id, path, bytes, hot availability, archive coverage, and registered disc coverage
+- each file includes target, collection id, path, bytes, hot availability, and disc coverage
 - list reads are served from the fetch-keyed file projection so operator paging, sorting, and filtering stay responsive
 - intended for human and JSON `riverhog hot fetch files FETCH_ID` output
 
@@ -788,9 +789,9 @@ Returns a stable manifest for the named fetch.
 - every manifest entry includes logical plaintext `bytes` / `sha256` plus `recovery_bytes` for the ordered upload
   stream
 - every part hint includes logical plaintext `bytes`, logical plaintext `sha256`, `recovery_bytes`, and at least one
-  candidate recovery copy
-- every candidate recovery copy includes `disc_path`, `recovery_bytes`, and `recovery_sha256`
-- Riverhog captures candidate recovery-byte lengths with the registered physical copy, and lazily backfills missing
+  candidate recovery disc
+- every candidate recovery disc includes `disc_path`, `recovery_bytes`, and `recovery_sha256`
+- Riverhog captures candidate recovery-byte lengths with the registered physical disc, and lazily backfills missing
   recovery-byte digests from the finalized image root before returning a fetch manifest; fetch publication and
   completion must not require the logical file to already be present in hot storage
 - `djdan` uploads the raw encrypted bytes stored at `disc_path`, not reconstructed logical plaintext
@@ -857,7 +858,7 @@ Marks the fetch manifest satisfied once all required entries have been uploaded,
 manifest remains readable after completion.
 
 If verification fails, the fetch remains active and incomplete. Clients should delete the affected `byte_complete` entry
-upload resource before retrying from another registered copy or from recovered media.
+upload resource before retrying from another registered disc or from recovered media.
 
 ## Error model
 
@@ -881,9 +882,9 @@ Suggested error codes:
 
 The `riverhog` CLI is collection-first and should provide:
 
-- `riverhog collection list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--protection STATE]`
+- `riverhog collection list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--disc-redundancy STATE]`
 - `riverhog collection show COLLECTION`
-- `riverhog find [QUERY] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--collection ID] [--hot|--not-hot] [--archived|--not-archived]`
+- `riverhog find [QUERY] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--collection ID] [--hot|--not-hot] [--disc|--no-disc]`
 - `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged] [--dry-run]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
@@ -893,8 +894,8 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog hot fetch add FETCH_ID TARGET...`
 - `riverhog hot fetch remove FETCH_ID TARGET...`
 - `riverhog hot fetch show FETCH_ID`
-- `riverhog hot fetch files FETCH_ID [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--hot|--not-hot] [--archived|--not-archived] [--disc|--no-disc]`
-- `riverhog hot fetch start FETCH_ID [--cloud] [--dry-run]`
+- `riverhog hot fetch files FETCH_ID [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--hot|--not-hot] [--disc|--no-disc]`
+- `riverhog hot fetch start FETCH_ID [--archive] [--dry-run]`
 - `riverhog hot fetch cancel FETCH_ID`
 
 `riverhog collection upload` streams files in bounded tus-compatible chunks. The default
@@ -952,14 +953,14 @@ or `finalized` to change the default.
 
 Use `riverhog hot evict --dry-run` to preview the selected hot files and bytes
 without deleting them. Use `riverhog hot fetch start --dry-run` to validate a
-draft fetch and preview the queued local or cloud recovery action without
-changing fetch state or creating recovery sessions.
+draft fetch and preview the queued local or archive restore action without
+changing fetch state or creating archive restores.
 
-Glacier recovery notifications are deliberately explicit because bulk restores
-are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
-Glacier restore, `glacier_recovery.ready` confirms the temporary restored
-archive data is available, optional `glacier_recovery.ready.reminder` events
-repeat while action is still outstanding, and `glacier_recovery.completed`
+Archive restore notifications are deliberately explicit because bulk restores
+are rare and slow. `archive_restore.started` confirms Riverhog has requested an
+archive restore, `archive_restore.ready` confirms the temporary restored
+archive data is available, optional `archive_restore.ready.reminder` events
+repeat while action is still outstanding, and `archive_restore.completed`
 confirms Riverhog has finished verification/materialization and cleanup. The
 complete machine-readable operator webhook contract lives at
 [`contracts/webhooks/operator-notifications.v1.json`](../../contracts/webhooks/operator-notifications.v1.json).
@@ -969,12 +970,12 @@ phone text directly.
 
 `riverhog find` should provide a concise, paged human-readable listing of
 logical files across the projected namespace. It supports substring search plus
-collection, hot-storage, and deep-archive filters; JSON output mirrors the
+collection, hot-storage, and disc-coverage filters; JSON output mirrors the
 `GET /v1/files` response payload.
 
 `riverhog collection show COLLECTION` should provide a concise human-readable recovery and coverage view for one collection, including:
 
-- an explicit summary of whether the collection is currently recoverable from verified physical copies, Glacier, both,
+- an explicit summary of whether the collection is currently recoverable from verified discs, the archive, both,
   or neither
 - finalized images currently covering the collection
 - a bounded preview of projected paths carried by each image, plus total path
@@ -986,7 +987,7 @@ collection, hot-storage, and deep-archive filters; JSON output mirrors the
 
 - the fetch purpose, selectors, state, coverage counts, and next recommended action
 - per-target selected-file summaries
-- active or completed cloud-fetch recovery sessions when present
+- active or completed fetch materialization archive restores when present
 - a bounded preview of selected files
 - files still pending upload
 - files currently partial and still resumable
@@ -1008,9 +1009,9 @@ The `djdan` CLI is an optical-media client for a machine with an optical drive a
 - `djdan image show IMAGE_ID`
 - `djdan image download IMAGE_ID [-o FILE]`
 - `djdan disc list [IMAGE_ID] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT]`
-- `djdan disc show COPY_ID`
-- `djdan disc location COPY_ID --to LOCATION`
-- `djdan disc rebuild start COPY_ID --reason lost|damaged`
+- `djdan disc show DISC_ID`
+- `djdan disc location DISC_ID --to LOCATION`
+- `djdan disc rebuild start DISC_ID --reason lost|damaged`
 - `djdan disc rebuild list|show|pause|resume`
 
 For finalized-image and disc commands:
@@ -1020,10 +1021,10 @@ For finalized-image and disc commands:
 - finalized image ids use compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - `djdan image list --json` mirrors the `GET /v1/images` response payload
 - `djdan image plan --json` mirrors the `GET /v1/plan` response payload
-- `djdan disc list IMAGE_ID --json` mirrors the `GET /v1/images/{image_id}/copies` response payload
+- `djdan disc list IMAGE_ID --json` mirrors the `GET /v1/images/{image_id}/discs` response payload
 - standalone manual candidate finalization is intentionally not exposed; `djdan burn` selects and
   finalizes ready candidates as part of the guided burn workflow
-- standalone manual disc registration is intentionally not exposed; `djdan burn` registers verified physical copies as
+- standalone manual disc registration is intentionally not exposed; `djdan burn` registers verified physical discs as
   part of the guided burn workflow
 - non-JSON `djdan image plan` output stays concise and line-oriented while surfacing candidate id, fill, readiness, and
   contained collections
@@ -1041,9 +1042,9 @@ Required behavior:
   collections remain unambiguous even when relative paths repeat
 - the upload resource receives raw encrypted recovery bytes exactly as stored in the hinted payload object(s)
 - `djdan` treats the upload resource as opaque and does not own decryption or final logical-file hash validation
-- `djdan fetch` is an intentionally prompt-based multidisc flow: it names the exact required copy before reading from a
+- `djdan fetch` is an intentionally prompt-based multidisc flow: it names the exact required disc before reading from a
   new disc, avoids repeating the prompt while consecutive manifest work stays on the same disc, and prompts again when a
-  later part or manifest entry needs a different copy
+  later part or manifest entry needs a different disc
 - resumable offsets remain valid only for the exact recovery-byte stream accepted so far for the current span
 - any temporary buffering used during recovery is an internal implementation detail
 - progress output is precise and continuous, including current transfer rate, percent complete for the current file, and
@@ -1054,14 +1055,14 @@ Required behavior:
 - creating a fetch requires a human-readable name
 - draft fetches can be edited by adding or removing selectors
 - started fetches are frozen until they complete, fail, or fetch cancellation returns them to draft
-- starting a fetch without `--cloud` queues it for `djdan fetch`
+- starting a fetch without `--archive` queues it for `djdan fetch`
 - `djdan fetch` with no id clears all queued djdan fetches in one guided session
-- starting a fetch with `--cloud` creates or resumes cloud materialization for the selected files
+- starting a fetch with `--archive` creates or resumes archive materialization for the selected files
 - evicting hot files is allowed only after every selected file is fully compliant
 - eviction removes only the selected hot files and never creates recovery intent
 - a file restored by a completed fetch is hot
 - hot file content is directly downloadable when the target selects exactly one file
-- archived-only file content is recoverable through fetch/upload, not through hot-content download
+- disc-covered file content is recoverable through fetch/upload, not through hot-content download
 - upload-state expiry for a manifest discards incomplete partial uploads and returns that manifest to `queued_djdan`
 - `INCOMPLETE_UPLOAD_TTL` defaults to `24h`
 - fetch upload progress is tracked per logical file, not per disc fragment
@@ -1069,13 +1070,13 @@ Required behavior:
 - explicit finalization is the only path that creates a finalized image id
 - finalized candidates are not returned by `GET /v1/plan`
 - ISO download requires an already finalized image and uses the same represented bytes on every later download
-- registering a copy cannot reduce archived coverage
-- a physical copy is identified by `(volume_id, copy_id)`, never by `location`
-- generated `copy_id` values are stable and never mutated by location or state updates
+- registering a disc cannot reduce disc coverage
+- a physical disc is identified by `disc_id`, never by `location`
+- generated `disc_id` values are stable and never mutated by location or state updates
 - no collection id is an ancestor or descendant of another collection id
 - collection ingest starts from a slug-only upload creation request, then uses
   the returned server-minted collection id for resumable file uploads
 - collection ingest finalizes only after every required file verifies and the
-  collection Glacier archive package uploads and verifies
+  collection archive package uploads and verifies
 - the same canonical selector string means the same projected file set everywhere in API and CLI
-- file availability shown by search, file introspection, fetches, and CLI status uses the same hot/archived meaning
+- file availability shown by search, file introspection, fetches, and CLI status uses the same `hot` and `disc_coverage` meanings

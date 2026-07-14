@@ -35,12 +35,12 @@ def test_runtime_config_rejects_recovery_ready_ttl_shorter_than_retry_window(
 ) -> None:
     with pytest.raises(
         ValueError,
-        match="RIVERHOG_GLACIER_RECOVERY_READY_TTL must be at least",
+        match="RIVERHOG_ARCHIVE_RESTORE_READY_TTL must be at least",
     ):
         _base_runtime_config(
             tmp_path,
             operator_webhook_url="http://example.invalid/webhooks/operator",
-            glacier_recovery_ready_ttl=timedelta(seconds=10),
+            archive_restore_ready_ttl=timedelta(seconds=10),
             operator_webhook_timeout=timedelta(seconds=10),
             operator_webhook_retry_delay=timedelta(seconds=1),
         )
@@ -52,7 +52,7 @@ def test_runtime_config_allows_recovery_ready_ttl_matching_timeout_plus_retry(
     config = _base_runtime_config(
         tmp_path,
         operator_webhook_url="http://example.invalid/webhooks/operator",
-        glacier_recovery_ready_ttl=timedelta(seconds=6),
+        archive_restore_ready_ttl=timedelta(seconds=6),
         operator_webhook_retry_delay=timedelta(seconds=1),
     )
 
@@ -64,7 +64,7 @@ def test_runtime_config_does_not_enforce_recovery_timing_without_webhook_url(
 ) -> None:
     config = _base_runtime_config(
         tmp_path,
-        glacier_recovery_ready_ttl=timedelta(seconds=4),
+        archive_restore_ready_ttl=timedelta(seconds=4),
         operator_webhook_retry_delay=timedelta(seconds=1),
     )
 
@@ -84,39 +84,39 @@ def test_load_runtime_config_accepts_explicit_test_recovery_passphrase(
     assert config.database_url == DEFAULT_DATABASE_URL
 
 
-def test_load_runtime_config_parses_glacier_archive_encryption(
+def test_load_runtime_config_parses_archive_encryption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age-scrypt")
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", "archive-secret")
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_WORK_FACTOR", "12")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ENCRYPTION", "age-scrypt")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_WORK_FACTOR", "12")
 
     config = load_runtime_config()
 
-    assert config.glacier_archive_encryption == "age_scrypt"
-    assert config.glacier_archive_require_explicit_passphrase is True
-    assert config.glacier_archive_passphrase == "archive-secret"
-    assert config.glacier_archive_work_factor == 12
+    assert config.archive_encryption == "age_scrypt"
+    assert config.archive_require_explicit_passphrase is True
+    assert config.archive_passphrase == "archive-secret"
+    assert config.archive_work_factor == 12
 
 
-def test_load_runtime_config_rejects_disabled_glacier_archive_encryption(
+def test_load_runtime_config_rejects_disabled_archive_encryption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "none")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ENCRYPTION", "none")
 
-    with pytest.raises(ValueError, match="RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION"):
+    with pytest.raises(ValueError, match="RIVERHOG_ARCHIVE_ENCRYPTION"):
         load_runtime_config()
 
 
 def test_load_runtime_config_rejects_required_missing_archive_passphrase_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_ENCRYPTION", "age_scrypt")
-    monkeypatch.setenv("RIVERHOG_GLACIER_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.delenv("RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE", raising=False)
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ENCRYPTION", "age_scrypt")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
+    monkeypatch.delenv("RIVERHOG_ARCHIVE_PASSPHRASE", raising=False)
 
-    with pytest.raises(ValueError, match="RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE"):
+    with pytest.raises(ValueError, match="RIVERHOG_ARCHIVE_PASSPHRASE"):
         load_runtime_config()
 
 
@@ -183,8 +183,8 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     monkeypatch.setenv("RIVERHOG_UNBURNED_COLLECTION_BYTES_LIMIT", "500GB")
     monkeypatch.setenv("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS", "45.5")
     monkeypatch.setenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", "40")
-    monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_PART_BYTES", "128MiB")
-    monkeypatch.setenv("RIVERHOG_GLACIER_MULTIPART_CONCURRENCY", "8")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "128MiB")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY", "8")
     monkeypatch.setenv("RIVERHOG_HOT_PROMOTION_CONCURRENCY", "6")
     monkeypatch.setenv("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES", "32MiB")
     monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "http://example.invalid/webhook/riverhog")
@@ -213,8 +213,8 @@ def test_load_runtime_config_parses_planner_runtime_settings(
     assert config.unburned_collection_bytes_limit == 500_000_000_000
     assert config.tusd_append_timeout_seconds == 45.5
     assert config.s3_max_pool_connections == 40
-    assert config.glacier_multipart_part_bytes == 128 * 1024**2
-    assert config.glacier_multipart_concurrency == 8
+    assert config.archive_multipart_part_bytes == 128 * 1024**2
+    assert config.archive_multipart_concurrency == 8
     assert config.hot_promotion_concurrency == 6
     assert config.hot_single_put_max_bytes == 32 * 1024**2
     assert config.log_level == "DEBUG"

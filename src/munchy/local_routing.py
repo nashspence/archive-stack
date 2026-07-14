@@ -7,15 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from munchy.local_files import LocalFileCandidate
-from munchy.profile_routing import (
-    ProfileRoutingFile,
+from munchy.routing import (
+    RoutingFile,
     apply_sidecar_rules,
     exiftool_routing_facts,
-    profile_routing_exiftool_tags,
-    profile_routing_file_requires_exiftool,
-    profile_routing_file_requires_probe,
     routing_exiftool_summary,
+    routing_exiftool_tags,
     routing_file_facts,
+    routing_file_requires_exiftool,
+    routing_file_requires_probe,
     routing_probe_summary,
     sidecar_exiftool_fact_requests,
 )
@@ -76,11 +76,11 @@ def exiftool_for_routing(path: Path, *, tags: Sequence[str]) -> dict[str, Any]:
 def routing_plan_files(
     candidates: Sequence[LocalFileCandidate],
     *,
-    profile_routing: Mapping[str, Any],
-) -> list[ProfileRoutingFile]:
-    exiftool_tags = profile_routing_exiftool_tags(profile_routing)
+    routing: Mapping[str, Any],
+) -> list[RoutingFile]:
+    exiftool_tags = routing_exiftool_tags(routing)
     path_facts_by_path = {item.rel_path: routing_file_facts(item.rel_path) for item in candidates}
-    sidecar_fact_requests = sidecar_exiftool_fact_requests(profile_routing, path_facts_by_path)
+    sidecar_fact_requests = sidecar_exiftool_fact_requests(routing, path_facts_by_path)
     sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
     sidecar_facts_errors_by_path: dict[str, str] = {}
     for item in candidates:
@@ -97,20 +97,20 @@ def routing_plan_files(
         except Exception as exc:
             sidecar_facts_errors_by_path[item.rel_path] = str(exc)[:1000]
     base_facts_by_path = apply_sidecar_rules(
-        profile_routing,
+        routing,
         path_facts_by_path,
         sidecar_facts_by_path=sidecar_facts_by_path,
         sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
         require_configured_facts=False,
     )
-    files: list[ProfileRoutingFile] = []
+    files: list[RoutingFile] = []
     for item in candidates:
         base_facts = base_facts_by_path.get(item.rel_path) or path_facts_by_path[item.rel_path]
         is_sidecar_evidence = base_facts.get("sidecar.role") == "evidence"
         probe_summary: dict[str, Any] | None = None
         probe_error: str | None = None
-        if not is_sidecar_evidence and profile_routing_file_requires_probe(
-            profile_routing,
+        if not is_sidecar_evidence and routing_file_requires_probe(
+            routing,
             routing_file_facts(item.rel_path, routing_facts=base_facts),
         ):
             try:
@@ -124,8 +124,8 @@ def routing_plan_files(
             probe_summary=probe_summary,
             routing_facts=base_facts,
         )
-        if not is_sidecar_evidence and profile_routing_file_requires_exiftool(
-            profile_routing,
+        if not is_sidecar_evidence and routing_file_requires_exiftool(
+            routing,
             probe_facts,
         ):
             try:
@@ -135,7 +135,7 @@ def routing_plan_files(
             except Exception as exc:
                 facts_error = str(exc)[:1000]
         files.append(
-            ProfileRoutingFile(
+            RoutingFile(
                 path=item.rel_path,
                 bytes=item.bytes,
                 probe_summary=probe_summary,

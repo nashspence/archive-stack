@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
-RouteAction = Literal["upload", "leave", "evidence"]
+RoutingAction = Literal["upload", "leave", "evidence"]
 
 PROBE_FACT_PREFIXES = ("ffprobe.", "video.", "audio.")
 EXIFTOOL_FACT_PREFIXES = ("exif.", "exiftool.")
@@ -58,12 +58,12 @@ ROUTING_EXIFTOOL_TAGS = (
 
 
 @dataclass(frozen=True)
-class ProfileRouteMatch:
+class RoutingMatch:
     route_id: str
     group: str
     route: Mapping[str, Any]
     index: int
-    action: RouteAction = "upload"
+    action: RoutingAction = "upload"
     into: str | None = None
     collection_rel_path: str | None = None
     pair_kind: str | None = None
@@ -77,7 +77,7 @@ class ProfileRouteMatch:
 
 
 @dataclass(frozen=True)
-class ProfileRoutingFile:
+class RoutingFile:
     path: str
     bytes: int = 0
     sha256: str | None = None
@@ -90,7 +90,7 @@ class ProfileRoutingFile:
 
 
 @dataclass(frozen=True)
-class ProfileRoutingPlan:
+class RoutingPlan:
     ok: bool
     files_total: int
     matched_files: int
@@ -119,14 +119,14 @@ class SidecarExifToolFactRequest:
     fact_extractors: tuple[Mapping[str, Any], ...] = ()
 
 
-def match_profile_route(
-    profile_routing: Mapping[str, Any],
+def match_route(
+    routing: Mapping[str, Any],
     rel_path: str,
     *,
     probe_summary_loader: Callable[[], Mapping[str, Any]] | None = None,
     routing_facts_loader: Callable[[], Mapping[str, Any]] | None = None,
     routing_facts: Mapping[str, Any] | None = None,
-) -> ProfileRouteMatch | None:
+) -> RoutingMatch | None:
     facts = routing_file_facts(rel_path, routing_facts=routing_facts)
     facts_loaded = routing_facts is not None
     probe_loaded = bool(
@@ -153,34 +153,34 @@ def match_profile_route(
             facts_loaded = True
         return facts
 
-    for index, route in enumerate(profile_routes(profile_routing)):
+    for index, route in enumerate(routing_rules(routing)):
         route_facts: Mapping[str, Any] = facts
         if route_requires_probe(
             route,
-            profile_routing=profile_routing,
+            routing=routing,
         ) and route_may_match_after_collecting_fact_prefixes(
             route,
             route_facts,
             ROUTING_TOOL_FACT_PREFIXES,
-            profile_routing=profile_routing,
+            routing=routing,
         ):
             route_facts = ensure_probe_facts()
         if route_requires_exiftool(
             route,
-            profile_routing=profile_routing,
+            routing=routing,
         ) and route_may_match_after_collecting_fact_prefixes(
             route,
             route_facts,
             EXIFTOOL_FACT_PREFIXES,
-            profile_routing=profile_routing,
+            routing=routing,
         ):
             route_facts = ensure_full_facts()
-        if not route_matches(route, route_facts, profile_routing=profile_routing):
+        if not route_matches(route, route_facts, routing=routing):
             continue
         action = route_action(route)
         into = optional_normalized_dir(route.get("into"))
         collection_rel_path = route_collection_rel_path(route, rel_path)
-        return ProfileRouteMatch(
+        return RoutingMatch(
             route_id=str(route.get("id") or f"route-{index + 1}"),
             group=str(route.get("group") or ""),
             route=route,
@@ -197,19 +197,17 @@ def match_profile_route(
     return None
 
 
-def profile_routing_plan(
-    profile_routing: Mapping[str, Any],
-    files: Sequence[ProfileRoutingFile],
+def routing_plan(
+    routing: Mapping[str, Any],
+    files: Sequence[RoutingFile],
     *,
     group_names: set[str] | None = None,
-) -> ProfileRoutingPlan:
+) -> RoutingPlan:
     sidecar_facts_by_path = {
         item.path: item.sidecar_facts for item in files if item.sidecar_facts is not None
     }
     sidecar_facts_errors_by_path = {
-        item.path: item.sidecar_facts_error
-        for item in files
-        if item.sidecar_facts_error
+        item.path: item.sidecar_facts_error for item in files if item.sidecar_facts_error
     }
     facts_by_path = {
         item.path: routing_file_facts(
@@ -220,20 +218,20 @@ def profile_routing_plan(
         for item in files
     }
     facts_by_path = apply_sidecar_rules(
-        profile_routing,
+        routing,
         facts_by_path,
         sidecar_facts_by_path=sidecar_facts_by_path,
         sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
         require_configured_facts=True,
     )
-    facts_by_path = apply_pairing_rules(profile_routing, facts_by_path)
+    facts_by_path = apply_pairing_rules(routing, facts_by_path)
 
     matches: list[dict[str, Any]] = []
     left: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
     primary_matches: dict[str, dict[str, Any]] = {}
     primary_left: dict[str, dict[str, Any]] = {}
-    evidence_items: list[ProfileRoutingFile] = []
+    evidence_items: list[RoutingFile] = []
     for item in files:
         facts = facts_by_path[item.path]
         if optional_fact(facts, "sidecar.role") == "evidence":
@@ -244,19 +242,19 @@ def profile_routing_plan(
             unmatched_item = {
                 "path": item.path,
                 "bytes": item.bytes,
-                "reason": unmatched_reason(item, profile_routing, facts=facts),
+                "reason": unmatched_reason(item, routing, facts=facts),
                 "probe_error": item.probe_error,
                 "facts_error": item.facts_error,
                 "sidecar_facts_error": sidecar_facts_error,
             }
             unmatched.append(unmatched_item)
             continue
-        match = match_profile_route(profile_routing, item.path, routing_facts=facts)
+        match = match_route(routing, item.path, routing_facts=facts)
         if match is None:
             unmatched_item = {
                 "path": item.path,
                 "bytes": item.bytes,
-                "reason": unmatched_reason(item, profile_routing, facts=facts),
+                "reason": unmatched_reason(item, routing, facts=facts),
                 "probe_error": item.probe_error,
                 "facts_error": item.facts_error,
             }
@@ -278,7 +276,7 @@ def profile_routing_plan(
             "matched_facts": matched_fact_values(
                 match.route,
                 match.facts,
-                profile_routing=profile_routing,
+                routing=routing,
             ),
         }
         if match.action == "leave":
@@ -357,7 +355,7 @@ def profile_routing_plan(
                 "collection_rel_path": item.path,
             }
         )
-    return ProfileRoutingPlan(
+    return RoutingPlan(
         ok=not unmatched,
         files_total=len(files),
         matched_files=len(matches),
@@ -370,100 +368,100 @@ def profile_routing_plan(
 
 
 def unmatched_reason(
-    item: ProfileRoutingFile,
-    profile_routing: Mapping[str, Any],
+    item: RoutingFile,
+    routing: Mapping[str, Any],
     *,
     facts: Mapping[str, Any] | None = None,
 ) -> str:
     if facts and optional_fact(facts, "sidecar_facts_error"):
         return "sidecar_facts_failed"
-    if item.facts_error and profile_routing_requires_exiftool(profile_routing):
+    if item.facts_error and routing_requires_exiftool(routing):
         return "facts_failed"
-    if item.probe_error and profile_routing_requires_probe(profile_routing):
+    if item.probe_error and routing_requires_probe(routing):
         return "probe_failed"
     return "no_matching_route"
 
 
-def profile_routes(profile_routing: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    routes = profile_routing.get("routes")
+def routing_rules(routing: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    routes = routing.get("routes")
     if not isinstance(routes, list):
         return []
     return [route for route in routes if isinstance(route, Mapping)]
 
 
-def profile_sidecar_rules(profile_routing: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    rules = profile_routing.get("sidecars")
+def sidecar_rules(routing: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rules = routing.get("sidecars")
     if not isinstance(rules, list):
         return []
     return [rule for rule in rules if isinstance(rule, Mapping)]
 
 
-def profile_routing_requires_probe(profile_routing: Mapping[str, Any]) -> bool:
-    return routing_uses_fact_prefix(profile_routing, PROBE_FACT_PREFIXES)
+def routing_requires_probe(routing: Mapping[str, Any]) -> bool:
+    return routing_uses_fact_prefix(routing, PROBE_FACT_PREFIXES)
 
 
-def profile_routing_requires_exiftool(profile_routing: Mapping[str, Any]) -> bool:
-    return routing_uses_fact_prefix(profile_routing, EXIFTOOL_FACT_PREFIXES)
+def routing_requires_exiftool(routing: Mapping[str, Any]) -> bool:
+    return routing_uses_fact_prefix(routing, EXIFTOOL_FACT_PREFIXES)
 
 
-def profile_routing_file_requires_probe(
-    profile_routing: Mapping[str, Any],
+def routing_file_requires_probe(
+    routing: Mapping[str, Any],
     facts: Mapping[str, Any],
 ) -> bool:
-    return profile_routing_file_requires_fact_prefix(
-        profile_routing,
+    return routing_file_requires_fact_prefix(
+        routing,
         facts,
         PROBE_FACT_PREFIXES,
     )
 
 
-def profile_routing_file_requires_exiftool(
-    profile_routing: Mapping[str, Any],
+def routing_file_requires_exiftool(
+    routing: Mapping[str, Any],
     facts: Mapping[str, Any],
 ) -> bool:
-    return profile_routing_file_requires_fact_prefix(
-        profile_routing,
+    return routing_file_requires_fact_prefix(
+        routing,
         facts,
         EXIFTOOL_FACT_PREFIXES,
     )
 
 
-def profile_routing_file_requires_fact_prefix(
-    profile_routing: Mapping[str, Any],
+def routing_file_requires_fact_prefix(
+    routing: Mapping[str, Any],
     facts: Mapping[str, Any],
     prefixes: tuple[str, ...],
 ) -> bool:
     ignored_prefixes = fact_prefixes_ignored_while_collecting(prefixes)
     if pairing_rules_require_fact_prefix_for_file(
-        profile_routing,
+        routing,
         facts,
         prefixes,
         ignored_prefixes=ignored_prefixes,
     ):
         return True
-    for route in profile_routes(profile_routing):
+    for route in routing_rules(routing):
         if not route_may_match_after_collecting_fact_prefixes(
             route,
             facts,
             ignored_prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
         ):
             continue
-        if route_uses_fact_prefix(route, prefixes, profile_routing=profile_routing):
+        if route_uses_fact_prefix(route, prefixes, routing=routing):
             return True
-        if route_matches(route, facts, profile_routing=profile_routing):
+        if route_matches(route, facts, routing=routing):
             return False
     return False
 
 
 def pairing_rules_require_fact_prefix_for_file(
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     facts: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
     ignored_prefixes: tuple[str, ...],
 ) -> bool:
-    pairings = profile_routing.get("pairings")
+    pairings = routing.get("pairings")
     if not isinstance(pairings, list):
         return False
     for rule in pairings:
@@ -474,23 +472,23 @@ def pairing_rules_require_fact_prefix_for_file(
         if predicate_uses_fact_prefix(
             still,
             prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
         ) and predicate_may_match_after_collecting_fact_prefixes(
             still,
             facts,
             ignored_prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
         ):
             return True
         if predicate_uses_fact_prefix(
             movie,
             prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
         ) and predicate_may_match_after_collecting_fact_prefixes(
             movie,
             facts,
             ignored_prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
         ):
             return True
         key = str(rule.get("key") or "exif.content_identifier").strip()
@@ -499,13 +497,13 @@ def pairing_rules_require_fact_prefix_for_file(
                 still,
                 facts,
                 ignored_prefixes,
-                profile_routing=profile_routing,
+                routing=routing,
             )
             or predicate_may_match_after_collecting_fact_prefixes(
                 movie,
                 facts,
                 ignored_prefixes,
-                profile_routing=profile_routing,
+                routing=routing,
             )
         ):
             return True
@@ -520,12 +518,12 @@ def fact_prefixes_ignored_while_collecting(
     return prefixes
 
 
-def profile_routing_exiftool_tags(
-    profile_routing: Mapping[str, Any] | None = None,
+def routing_exiftool_tags(
+    routing: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Return compact ExifTool tags needed to build route facts for this profile."""
 
-    configured = mapping(profile_routing).get("extra_exiftool_tags")
+    configured = mapping(routing).get("extra_exiftool_tags")
     tags: list[str] = list(ROUTING_EXIFTOOL_TAGS)
     seen = {tag.casefold() for tag in tags}
     for item in sequence(configured):
@@ -594,14 +592,14 @@ def sidecar_rule_requests_facts(rule: Mapping[str, Any]) -> bool:
 
 
 def sidecar_exiftool_fact_requests(
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     facts_by_path: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, SidecarExifToolFactRequest]:
     if not facts_by_path:
         return {}
     out: dict[str, SidecarExifToolFactRequest] = {}
     lower_paths = {path.casefold(): path for path in facts_by_path}
-    for rule in profile_sidecar_rules(profile_routing):
+    for rule in sidecar_rules(routing):
         tags = sidecar_rule_exiftool_tags(rule)
         if not tags:
             continue
@@ -619,7 +617,7 @@ def sidecar_exiftool_fact_requests(
             if primary_when and not predicate_matches(
                 primary_when,
                 primary_facts,
-                profile_routing=profile_routing,
+                routing=routing,
             ):
                 continue
             for template in templates:
@@ -635,15 +633,13 @@ def sidecar_exiftool_fact_requests(
                 if sidecar_when and not predicate_matches(
                     sidecar_when,
                     sidecar_facts,
-                    profile_routing=profile_routing,
+                    routing=routing,
                 ):
                     continue
                 existing = out.get(sidecar_path, SidecarExifToolFactRequest())
                 out[sidecar_path] = SidecarExifToolFactRequest(
                     tags=dedupe_sequence((*existing.tags, *tags)),
-                    fact_extractors=dedupe_mappings(
-                        (*existing.fact_extractors, *fact_extractors)
-                    ),
+                    fact_extractors=dedupe_mappings((*existing.fact_extractors, *fact_extractors)),
                 )
                 break
     return out
@@ -735,24 +731,24 @@ def name_value_field_key(value: object) -> str:
 def route_requires_probe(
     route: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any] | None = None,
+    routing: Mapping[str, Any] | None = None,
 ) -> bool:
     return predicate_uses_fact_prefix(
         mapping(route.get("when")),
         PROBE_FACT_PREFIXES,
-        profile_routing=profile_routing,
+        routing=routing,
     )
 
 
 def route_requires_exiftool(
     route: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any] | None = None,
+    routing: Mapping[str, Any] | None = None,
 ) -> bool:
     return predicate_uses_fact_prefix(
         mapping(route.get("when")),
         EXIFTOOL_FACT_PREFIXES,
-        profile_routing=profile_routing,
+        routing=routing,
     )
 
 
@@ -760,12 +756,12 @@ def route_uses_fact_prefix(
     route: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
-    profile_routing: Mapping[str, Any] | None = None,
+    routing: Mapping[str, Any] | None = None,
 ) -> bool:
     return predicate_uses_fact_prefix(
         mapping(route.get("when")),
         prefixes,
-        profile_routing=profile_routing,
+        routing=routing,
     )
 
 
@@ -774,7 +770,7 @@ def route_may_match_after_collecting_fact_prefixes(
     facts: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> bool:
     if set(route) - ROUTE_KEYS:
         return False
@@ -785,7 +781,7 @@ def route_may_match_after_collecting_fact_prefixes(
         when,
         facts,
         prefixes,
-        profile_routing=profile_routing,
+        routing=routing,
     )
 
 
@@ -833,7 +829,7 @@ def exiftool_routing_facts(
 
 
 def apply_sidecar_rules(
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     facts_by_path: Mapping[str, Mapping[str, Any]],
     *,
     sidecar_facts_by_path: Mapping[str, Mapping[str, Any] | None] | None = None,
@@ -846,7 +842,7 @@ def apply_sidecar_rules(
     sidecar_facts_payloads = mapping(sidecar_facts_by_path)
     sidecar_facts_errors = mapping(sidecar_facts_errors_by_path)
     lower_paths = {path.casefold(): path for path in out}
-    for rule in profile_sidecar_rules(profile_routing):
+    for rule in sidecar_rules(routing):
         rule_id = str(rule.get("id") or "").strip()
         if not rule_id:
             continue
@@ -861,7 +857,7 @@ def apply_sidecar_rules(
             if primary_when and not predicate_matches(
                 primary_when,
                 primary_facts,
-                profile_routing=profile_routing,
+                routing=routing,
             ):
                 continue
             matched_sidecar = False
@@ -880,7 +876,7 @@ def apply_sidecar_rules(
                 if sidecar_when and not predicate_matches(
                     sidecar_when,
                     sidecar_facts,
-                    profile_routing=profile_routing,
+                    routing=routing,
                 ):
                     continue
                 matched_sidecar = True
@@ -1165,9 +1161,7 @@ def add_routing_exiftool_summary_tag(
             existing.append(normalized)
         return
     tags[tag_key] = (
-        [existing, *normalized]
-        if isinstance(normalized, list)
-        else [existing, normalized]
+        [existing, *normalized] if isinstance(normalized, list) else [existing, normalized]
     )
 
 
@@ -1367,11 +1361,11 @@ EXIFTOOL_FACT_KEYS = {
 
 
 def apply_pairing_rules(
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     facts_by_path: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     out = {path: dict(facts) for path, facts in facts_by_path.items()}
-    rules = profile_routing.get("pairings")
+    rules = routing.get("pairings")
     if not isinstance(rules, list):
         return out
     for rule in rules:
@@ -1386,14 +1380,12 @@ def apply_pairing_rules(
         stills = [
             path
             for path, facts in out.items()
-            if predicate_matches(still_when, facts, profile_routing=profile_routing)
-            and optional_fact(facts, key)
+            if predicate_matches(still_when, facts, routing=routing) and optional_fact(facts, key)
         ]
         movies = [
             path
             for path, facts in out.items()
-            if predicate_matches(movie_when, facts, profile_routing=profile_routing)
-            and optional_fact(facts, key)
+            if predicate_matches(movie_when, facts, routing=routing) and optional_fact(facts, key)
         ]
         for still_path in stills:
             still_facts = out[still_path]
@@ -1445,25 +1437,25 @@ def route_matches(
     route: Mapping[str, Any],
     facts: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> bool:
     if set(route) - ROUTE_KEYS:
         return False
     when = route.get("when")
     if not isinstance(when, Mapping):
         return True
-    return predicate_matches(when, facts, profile_routing=profile_routing)
+    return predicate_matches(when, facts, routing=routing)
 
 
 def matched_fact_values(
     route: Mapping[str, Any],
     facts: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         name: fact_value(facts, name)
-        for name in route_fact_names(route, profile_routing=profile_routing)
+        for name in route_fact_names(route, routing=routing)
         if fact_value(facts, name) not in (None, "")
     }
 
@@ -1471,12 +1463,12 @@ def matched_fact_values(
 def route_fact_names(
     route: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> list[str]:
     return sorted(
         predicate_fact_names(
             mapping(route.get("when")),
-            profile_routing=profile_routing,
+            routing=routing,
             seen_gates=set(),
         )
     )
@@ -1485,7 +1477,7 @@ def route_fact_names(
 def predicate_fact_names(
     predicate: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     seen_gates: set[str],
 ) -> set[str]:
     if not predicate:
@@ -1506,7 +1498,7 @@ def predicate_fact_names(
                     names.update(
                         predicate_fact_names(
                             item,
-                            profile_routing=profile_routing,
+                            routing=routing,
                             seen_gates=seen_gates,
                         )
                     )
@@ -1515,7 +1507,7 @@ def predicate_fact_names(
         names.update(
             predicate_fact_names(
                 not_item,
-                profile_routing=profile_routing,
+                routing=routing,
                 seen_gates=seen_gates,
             )
         )
@@ -1524,13 +1516,13 @@ def predicate_fact_names(
             text = str(gate_name).strip()
             if not text or text in seen_gates:
                 continue
-            gate = mapping(mapping(profile_routing.get("gates")).get(text))
+            gate = mapping(mapping(routing.get("gates")).get(text))
             if not gate:
                 continue
             names.update(
                 predicate_fact_names(
                     gate,
-                    profile_routing=profile_routing,
+                    routing=routing,
                     seen_gates={*seen_gates, text},
                 )
             )
@@ -1541,7 +1533,7 @@ def predicate_matches(
     predicate: Mapping[str, Any],
     facts: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> bool:
     if not predicate:
         return True
@@ -1549,15 +1541,13 @@ def predicate_matches(
         return False
     all_items = predicate.get("all")
     if isinstance(all_items, list) and not all(
-        isinstance(item, Mapping)
-        and predicate_matches(item, facts, profile_routing=profile_routing)
+        isinstance(item, Mapping) and predicate_matches(item, facts, routing=routing)
         for item in all_items
     ):
         return False
     any_items = predicate.get("any")
     if isinstance(any_items, list) and not any(
-        isinstance(item, Mapping)
-        and predicate_matches(item, facts, profile_routing=profile_routing)
+        isinstance(item, Mapping) and predicate_matches(item, facts, routing=routing)
         for item in any_items
     ):
         return False
@@ -1565,13 +1555,13 @@ def predicate_matches(
     if isinstance(not_item, Mapping) and predicate_matches(
         not_item,
         facts,
-        profile_routing=profile_routing,
+        routing=routing,
     ):
         return False
-    if not gates_match(predicate.get("gate"), facts, profile_routing=profile_routing):
+    if not gates_match(predicate.get("gate"), facts, routing=routing):
         return False
     not_gate = predicate.get("not_gate")
-    if not_gate is not None and gates_match(not_gate, facts, profile_routing=profile_routing):
+    if not_gate is not None and gates_match(not_gate, facts, routing=routing):
         return False
     path_predicate = predicate.get("path")
     if isinstance(path_predicate, Mapping) and not path_predicate_matches(path_predicate, facts):
@@ -1595,7 +1585,7 @@ def predicate_may_match_after_collecting_fact_prefixes(
     facts: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     seen_gates: set[str] | None = None,
 ) -> bool:
     if not predicate:
@@ -1609,7 +1599,7 @@ def predicate_may_match_after_collecting_fact_prefixes(
             item,
             facts,
             prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
             seen_gates=seen_gates,
         )
         for item in all_items
@@ -1622,7 +1612,7 @@ def predicate_may_match_after_collecting_fact_prefixes(
             item,
             facts,
             prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
             seen_gates=seen_gates,
         )
         for item in any_items
@@ -1632,19 +1622,19 @@ def predicate_may_match_after_collecting_fact_prefixes(
     if isinstance(not_item, Mapping) and predicate_matches(
         not_item,
         facts,
-        profile_routing=profile_routing,
+        routing=routing,
     ):
         return False
     if not gates_may_match_after_collecting_fact_prefixes(
         predicate.get("gate"),
         facts,
         prefixes,
-        profile_routing=profile_routing,
+        routing=routing,
         seen_gates=seen_gates,
     ):
         return False
     not_gate = predicate.get("not_gate")
-    if not_gate is not None and gates_match(not_gate, facts, profile_routing=profile_routing):
+    if not_gate is not None and gates_match(not_gate, facts, routing=routing):
         return False
     path_predicate = predicate.get("path")
     if isinstance(path_predicate, Mapping) and not path_predicate_matches(path_predicate, facts):
@@ -1682,9 +1672,13 @@ def path_predicate_matches(predicate: Mapping[str, Any], facts: Mapping[str, Any
     if isinstance(glob, str) and glob and not fnmatch.fnmatchcase(rel_path, glob):
         return False
     filename_glob = predicate.get("filename_glob")
-    if isinstance(filename_glob, str) and filename_glob and not fnmatch.fnmatchcase(
-        basename,
-        filename_glob,
+    if (
+        isinstance(filename_glob, str)
+        and filename_glob
+        and not fnmatch.fnmatchcase(
+            basename,
+            filename_glob,
+        )
     ):
         return False
     suffix = predicate.get("suffix")
@@ -1766,9 +1760,10 @@ def single_fact_predicate_matches(predicate: Mapping[str, Any], facts: Mapping[s
         return False
     if "in" in predicate and not value_in(actual, sequence(predicate.get("in"))):
         return False
-    if "contains" in predicate and str(predicate.get("contains")).lower() not in str(
-        actual or ""
-    ).lower():
+    if (
+        "contains" in predicate
+        and str(predicate.get("contains")).lower() not in str(actual or "").lower()
+    ):
         return False
     if "regex" in predicate and not re.search(str(predicate.get("regex")), str(actual or "")):
         return False
@@ -1790,9 +1785,9 @@ def gates_match(
     gate_value: object,
     facts: Mapping[str, Any],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
 ) -> bool:
-    gates = profile_routing.get("gates")
+    gates = routing.get("gates")
     if not isinstance(gates, Mapping):
         return gate_value in (None, "", [], ())
     gate_names = [str(item) for item in sequence(gate_value) if str(item).strip()]
@@ -1802,7 +1797,7 @@ def gates_match(
         gate = gates.get(name)
         if not isinstance(gate, Mapping):
             return False
-        if not predicate_matches(gate, facts, profile_routing=profile_routing):
+        if not predicate_matches(gate, facts, routing=routing):
             return False
     return True
 
@@ -1812,10 +1807,10 @@ def gates_may_match_after_collecting_fact_prefixes(
     facts: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     seen_gates: set[str] | None = None,
 ) -> bool:
-    gates = profile_routing.get("gates")
+    gates = routing.get("gates")
     if not isinstance(gates, Mapping):
         return gate_value in (None, "", [], ())
     gate_names = [str(item) for item in sequence(gate_value) if str(item).strip()]
@@ -1832,14 +1827,14 @@ def gates_may_match_after_collecting_fact_prefixes(
             gate,
             facts,
             prefixes,
-            profile_routing=profile_routing,
+            routing=routing,
             seen_gates={*seen, name},
         ):
             return False
     return True
 
 
-def route_action(route: Mapping[str, Any]) -> RouteAction:
+def route_action(route: Mapping[str, Any]) -> RoutingAction:
     action = str(route.get("action") or "upload").strip().lower()
     return "leave" if action == "leave" else "upload"
 
@@ -1871,13 +1866,13 @@ def normalize_posix_path(value: str) -> str:
 
 
 def routing_uses_fact_prefix(
-    profile_routing: Mapping[str, Any],
+    routing: Mapping[str, Any],
     prefixes: tuple[str, ...],
 ) -> bool:
-    for gate in mapping(profile_routing.get("gates")).values():
+    for gate in mapping(routing.get("gates")).values():
         if isinstance(gate, Mapping) and predicate_uses_fact_prefix(gate, prefixes):
             return True
-    pairings = profile_routing.get("pairings")
+    pairings = routing.get("pairings")
     if isinstance(pairings, list):
         for rule in pairings:
             if not isinstance(rule, Mapping):
@@ -1891,7 +1886,7 @@ def routing_uses_fact_prefix(
                 return True
     return any(
         predicate_uses_fact_prefix(mapping(route.get("when")), prefixes)
-        for route in profile_routes(profile_routing)
+        for route in routing_rules(routing)
     )
 
 
@@ -1899,7 +1894,7 @@ def predicate_uses_fact_prefix(
     predicate: Mapping[str, Any],
     prefixes: tuple[str, ...],
     *,
-    profile_routing: Mapping[str, Any] | None = None,
+    routing: Mapping[str, Any] | None = None,
     seen_gates: set[str] | None = None,
 ) -> bool:
     if not predicate:
@@ -1915,7 +1910,7 @@ def predicate_uses_fact_prefix(
             and predicate_uses_fact_prefix(
                 item,
                 prefixes,
-                profile_routing=profile_routing,
+                routing=routing,
                 seen_gates=seen,
             )
             for item in items
@@ -1925,13 +1920,13 @@ def predicate_uses_fact_prefix(
     if isinstance(not_item, Mapping) and predicate_uses_fact_prefix(
         not_item,
         prefixes,
-        profile_routing=profile_routing,
+        routing=routing,
         seen_gates=seen,
     ):
         return True
-    if profile_routing is None:
+    if routing is None:
         return False
-    gates = mapping(profile_routing.get("gates"))
+    gates = mapping(routing.get("gates"))
     for key in ("gate", "not_gate"):
         for gate_name in sequence(predicate.get(key)):
             text = str(gate_name).strip()
@@ -1941,7 +1936,7 @@ def predicate_uses_fact_prefix(
             if isinstance(gate, Mapping) and predicate_uses_fact_prefix(
                 gate,
                 prefixes,
-                profile_routing=profile_routing,
+                routing=routing,
                 seen_gates={*seen, text},
             ):
                 return True

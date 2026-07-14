@@ -64,7 +64,6 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=21,
                     sha256="b" * 64,
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -72,7 +71,6 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=13,
                     sha256="a" * 64,
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -80,7 +78,6 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=21,
                     sha256="c" * 64,
                     hot=False,
-                    archived=True,
                 ),
             ]
         )

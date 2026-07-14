@@ -39,25 +39,25 @@ def test_acceptance_system_can_serve_real_iso_streams_from_fake_backed_state(
         assert response.headers["x-accel-buffering"] == "no"
 
         system.mark_collection_archive_uploaded("docs")
-        for copy_id, state in ((f"{image_id}-1", "lost"), (f"{image_id}-2", "damaged")):
+        for disc_id, state in ((f"{image_id}-1", "lost"), (f"{image_id}-2", "damaged")):
             response = system.request(
                 "POST",
-                f"/v1/images/{image_id}/copies",
-                json_body={"copy_id": copy_id, "location": f"fixture shelf {copy_id}"},
+                f"/v1/images/{image_id}/discs",
+                json_body={"disc_id": disc_id, "location": f"fixture shelf {disc_id}"},
             )
             assert response.status_code == 200, response.text
             response = system.request(
                 "PATCH",
-                f"/v1/images/{image_id}/copies/{copy_id}",
+                f"/v1/images/{image_id}/discs/{disc_id}",
                 json_body={"state": state},
             )
             assert response.status_code == 200, response.text
-        session = system.recovery_sessions.get_for_image(image_id)
-        system.wait_for_recovery_session_state(str(session.id), "ready")
+        restore = system.archive_restores.get_for_image(image_id)
+        system.wait_for_archive_restore_state(str(restore.id), "ready")
 
         response = system.request(
             "GET",
-            f"/v1/recovery-sessions/{session.id}/images/{image_id}/iso",
+            f"/v1/archive-restores/{restore.id}/images/{image_id}/iso",
         )
         assert response.status_code == 200, response.text
         assert response.content == b"real-iso"

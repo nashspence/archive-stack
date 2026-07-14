@@ -8,25 +8,25 @@ import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveRestoreImageRecord,
+    ArchiveRestoreRecord,
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageCollectionArtifactRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    GlacierRecoverySessionImageRecord,
-    GlacierRecoverySessionRecord,
 )
-from riverhog_core.domain.enums import CopyState, VerificationState
+from riverhog_core.domain.enums import DiscState, VerificationState
 from riverhog_core.domain.errors import InvalidState
 from riverhog_core.finalized_image_coverage import (
     read_finalized_image_collection_artifacts,
     read_finalized_image_coverage_parts,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.copies import SqlAlchemyCopyService
+from riverhog_core.services.discs import SqlAlchemyDiscService
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import DOCS_FILES, IMAGE_ONE_FILES, write_tree
 from tests.unit.db_helpers import sqlite_url
@@ -89,14 +89,13 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
                     bytes=len(content),
                     sha256="a" * 64,
                     hot=True,
-                    archived=False,
                 )
             )
         session.add(
             CollectionArchiveRecord(
                 collection_id="docs",
                 state="uploaded",
-                object_path="glacier/archives/opaque-docs/archive.tar.age",
+                object_path="archive/archives/opaque-docs/archive.tar.age",
                 stored_bytes=123,
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
@@ -111,7 +110,7 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
                 bytes=sum(len(content) for content in DOCS_FILES.values()),
                 image_root=str(image_root),
                 target_bytes=10_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for relative_path in (
@@ -148,40 +147,40 @@ def _seed_finalized_image(sqlite_path: Path, image_root: Path) -> None:
             )
 
 
-def test_marking_one_confirmed_copy_lost_creates_a_fresh_replacement_slot(tmp_path: Path) -> None:
+def test_marking_one_confirmed_disc_lost_creates_a_fresh_replacement_slot(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
 
     initial = service.list_for_image("20260420T040001Z")
-    assert [str(copy.id) for copy in initial] == ["20260420T040001Z-1", "20260420T040001Z-2"]
+    assert [str(disc.disc_id) for disc in initial] == ["20260420T040001Z-1", "20260420T040001Z-2"]
 
-    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
 
     updated = service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
 
-    assert updated.state == CopyState.LOST
+    assert updated.state == DiscState.LOST
     assert [entry.event for entry in updated.history] == ["created", "registered", "state_updated"]
 
-    copies = service.list_for_image("20260420T040001Z")
-    assert [str(copy.id) for copy in copies] == [
+    discs = service.list_for_image("20260420T040001Z")
+    assert [str(disc.disc_id) for disc in discs] == [
         "20260420T040001Z-1",
         "20260420T040001Z-2",
         "20260420T040001Z-3",
     ]
-    assert [copy.state for copy in copies] == [
-        CopyState.LOST,
-        CopyState.REGISTERED,
-        CopyState.NEEDED,
+    assert [disc.state for disc in discs] == [
+        DiscState.LOST,
+        DiscState.REGISTERED,
+        DiscState.NEEDED,
     ]
 
 
-def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_image(
+def test_archive_restore_seeds_and_tops_up_replacement_slots_for_none_image(
     tmp_path: Path,
 ) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
@@ -190,44 +189,44 @@ def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_im
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
-    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
-    service.register("20260420T040001Z", "Shelf B1", copy_id="20260420T040001Z-2")
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
+    service.register("20260420T040001Z", "Shelf B1", disc_id="20260420T040001Z-2")
     service.update("20260420T040001Z", "20260420T040001Z-1", state="lost")
     service.update("20260420T040001Z", "20260420T040001Z-2", state="damaged")
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        record = session.get(GlacierRecoverySessionRecord, "rs-20260420T040001Z-rebuild-1")
+        record = session.get(ArchiveRestoreRecord, "ar-20260420T040001Z-rebuild-1")
         assert record is not None
         record.state = "ready"
-        record.restore_requested_at = "2026-04-20T04:00:01Z"
-        record.restore_ready_at = "2026-04-20T04:00:03Z"
-        record.restore_expires_at = "2026-04-20T04:10:03Z"
+        record.requested_at = "2026-04-20T04:00:01Z"
+        record.ready_at = "2026-04-20T04:00:03Z"
+        record.expires_at = "2026-04-20T04:10:03Z"
         assert (
             session.get(
-                GlacierRecoverySessionImageRecord,
+                ArchiveRestoreImageRecord,
                 {
-                    "session_id": "rs-20260420T040001Z-rebuild-1",
+                    "restore_id": "ar-20260420T040001Z-rebuild-1",
                     "image_id": "20260420T040001Z",
                 },
             )
             is not None
         )
 
-    copies = service.list_for_image("20260420T040001Z")
-    assert [str(copy.id) for copy in copies] == [
+    discs = service.list_for_image("20260420T040001Z")
+    assert [str(disc.disc_id) for disc in discs] == [
         "20260420T040001Z-1",
         "20260420T040001Z-2",
         "20260420T040001Z-3",
     ]
-    assert [copy.state for copy in copies] == [
-        CopyState.LOST,
-        CopyState.DAMAGED,
-        CopyState.NEEDED,
+    assert [disc.state for disc in discs] == [
+        DiscState.LOST,
+        DiscState.DAMAGED,
+        DiscState.NEEDED,
     ]
 
-    service.register("20260420T040001Z", "Shelf C1", copy_id="20260420T040001Z-3")
+    service.register("20260420T040001Z", "Shelf C1", disc_id="20260420T040001Z-3")
     service.update(
         "20260420T040001Z",
         "20260420T040001Z-3",
@@ -236,13 +235,13 @@ def test_recovery_session_seeds_and_tops_up_replacement_slots_for_unprotected_im
     )
 
     topped_up = service.list_for_image("20260420T040001Z")
-    assert [str(copy.id) for copy in topped_up] == [
+    assert [str(disc.disc_id) for disc in topped_up] == [
         "20260420T040001Z-1",
         "20260420T040001Z-2",
         "20260420T040001Z-3",
         "20260420T040001Z-4",
     ]
-    assert topped_up[-1].state == CopyState.NEEDED
+    assert topped_up[-1].state == DiscState.NEEDED
 
 
 def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_path: Path) -> None:
@@ -253,12 +252,12 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     _seed_finalized_image(sqlite_path, image_root)
     (image_root / "DISC.yml.age").unlink()
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
-    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+        rows = session.query(FileDiscRecord).order_by(FileDiscRecord.disc_path).all()
 
     assert [(row.path, row.disc_path) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age"),
@@ -270,15 +269,15 @@ def test_register_uses_db_artifact_mapping_after_disc_manifest_is_removed(tmp_pa
     ]
 
 
-def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: Path) -> None:
+def test_verified_update_after_registration_does_not_resync_disc_rows(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     image_root = tmp_path / "image-root"
     initialize_db(sqlite_url(sqlite_path))
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
-    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
     (image_root / "files/000001.age").unlink()
 
     updated = service.update(
@@ -288,11 +287,11 @@ def test_verified_update_after_registration_does_not_resync_copy_rows(tmp_path: 
         verification_state="verified",
     )
 
-    assert updated.state == CopyState.VERIFIED
+    assert updated.state == DiscState.VERIFIED
     assert updated.verification_state == VerificationState.VERIFIED
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+        rows = session.query(FileDiscRecord).order_by(FileDiscRecord.disc_path).all()
 
     assert [(row.path, row.disc_path) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age"),
@@ -307,13 +306,13 @@ def test_register_synchronously_writes_recovery_index(tmp_path: Path) -> None:
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
-    summary = service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
+    summary = service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
 
-    assert summary.state == CopyState.REGISTERED
+    assert summary.state == DiscState.REGISTERED
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+        rows = session.query(FileDiscRecord).order_by(FileDiscRecord.disc_path).all()
 
     assert [(row.path, row.disc_path, row.location) for row in rows] == [
         ("tax/2022/invoice-123.pdf", "files/000001.age", "Shelf A1"),
@@ -328,8 +327,8 @@ def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> No
     write_tree(image_root, IMAGE_ONE_FILES)
     _seed_finalized_image(sqlite_path, image_root)
 
-    service = SqlAlchemyCopyService(_config(sqlite_path), _FakeHotStore())
-    service.register("20260420T040001Z", "Shelf A1", copy_id="20260420T040001Z-1")
+    service = SqlAlchemyDiscService(_config(sqlite_path), _FakeHotStore())
+    service.register("20260420T040001Z", "Shelf A1", disc_id="20260420T040001Z-1")
 
     missing_payload = image_root / "files/000002.age"
     original_payload = missing_payload.read_bytes()
@@ -340,7 +339,7 @@ def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> No
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+        rows = session.query(FileDiscRecord).order_by(FileDiscRecord.disc_path).all()
     assert [(row.disc_path, row.location) for row in rows] == [
         ("files/000001.age", "Shelf A1"),
         ("files/000002.age", "Shelf A1"),
@@ -349,7 +348,7 @@ def test_recovery_index_sync_rolls_back_and_can_be_retried(tmp_path: Path) -> No
     missing_payload.write_bytes(original_payload)
     service.update("20260420T040001Z", "20260420T040001Z-1", location="Shelf B1")
     with session_scope(session_factory) as session:
-        rows = session.query(FileCopyRecord).order_by(FileCopyRecord.disc_path).all()
+        rows = session.query(FileDiscRecord).order_by(FileDiscRecord.disc_path).all()
     assert [(row.disc_path, row.location) for row in rows] == [
         ("files/000001.age", "Shelf B1"),
         ("files/000002.age", "Shelf B1"),
@@ -375,18 +374,18 @@ def test_notify_label_needed_sends_best_effort_operator_webhook(
     def fake_post_webhook(*, config, payload):
         sent.append(payload)
 
-    monkeypatch.setattr("riverhog_core.services.copies.post_webhook", fake_post_webhook)
+    monkeypatch.setattr("riverhog_core.services.discs.post_webhook", fake_post_webhook)
 
-    service = SqlAlchemyCopyService(config, _FakeHotStore())
-    copy = service.notify_label_needed("20260420T040001Z", "20260420T040001Z-1")
+    service = SqlAlchemyDiscService(config, _FakeHotStore())
+    disc = service.notify_label_needed("20260420T040001Z", "20260420T040001Z-1")
 
-    assert copy.id == "20260420T040001Z-1"
+    assert disc.disc_id == "20260420T040001Z-1"
     assert sent == [
         {
-            "event": "images.copy_label_needed",
-            "type": "copy_lifecycle",
+            "event": "images.disc_label_needed",
+            "type": "disc_lifecycle",
             "image_id": "20260420T040001Z",
-            "copy_id": "20260420T040001Z-1",
+            "disc_id": "20260420T040001Z-1",
             "label_text": "20260420T040001Z-1",
             "delivered_at": sent[0]["delivered_at"],
             "operator_urgency": "time_sensitive",

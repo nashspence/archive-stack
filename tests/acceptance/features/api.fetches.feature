@@ -9,7 +9,7 @@ Feature: Fetches API
     Scenario: Create a draft fetch
       When the client creates fetch "Tax audit" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
-      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "copies", and "upload_state_expires_at"
+      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "discs", and "upload_state_expires_at"
       And fetch state is "draft"
       And the response contains target "docs/tax/2022/invoice-123.pdf"
 
@@ -35,7 +35,7 @@ Feature: Fetches API
     Scenario: Read a fetch summary
       When the client gets "/v1/fetches/fx-1"
       Then the response status is 200
-      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "copies", and "upload_state_expires_at"
+      And the response contains "id", "name", "targets", "state", "files", "bytes", "entries_total", "entries_pending", "entries_partial", "entries_byte_complete", "entries_uploaded", "uploaded_bytes", "missing_bytes", "discs", and "upload_state_expires_at"
 
     Scenario: List fetches after restart
       When the API process restarts
@@ -78,14 +78,14 @@ Feature: Fetches API
 
   Rule: Split fetch manifests expose part-level recovery hints
     Background:
-      Given split archived fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
+      Given split disc-covered fetch "fx-1" exists for target "docs/tax/2022/invoice-123.pdf"
 
     Scenario: Read a split manifest
       When the client gets "/v1/fetches/fx-1/manifest"
       Then the response status is 200
       And fetch manifest entry "e1" lists split parts 0 and 1
-      And fetch manifest entry "e1" part 0 is recoverable from copy "20260420T040003Z-1"
-      And fetch manifest entry "e1" part 1 is recoverable from copy "20260420T040004Z-1"
+      And fetch manifest entry "e1" part 0 is recoverable from disc "20260420T040003Z-1"
+      And fetch manifest entry "e1" part 1 is recoverable from disc "20260420T040004Z-1"
       And fetch manifest entry "e1" part hashes and recovery-byte hashes match the published split fixture
 
   Rule: Fetch upload and completion are resumable and hash-verified

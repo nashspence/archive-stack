@@ -2,7 +2,7 @@
 
 ## Decision
 
-Riverhog uses one canonical projected-path selector syntax across search, files, fetch, cloud-fetch, and hot-eviction
+Riverhog uses one canonical projected-path selector syntax across search, files, fetch, fetch materialization, and hot-eviction
 workflows.
 
 ## Reason

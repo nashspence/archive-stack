@@ -9,19 +9,19 @@ from riverhog_core.webhooks import (
     ReadyImage,
     WebhookConfig,
     _canonical_notification_from_contract,
+    build_archive_restore_canceled_payload,
+    build_archive_restore_completed_payload,
+    build_archive_restore_failed_payload,
+    build_archive_restore_paused_reminder_payload,
+    build_archive_restore_ready_payload,
+    build_archive_restore_retrying_payload,
+    build_archive_restore_started_payload,
     build_collection_lifecycle_payload,
-    build_copy_label_needed_payload,
+    build_disc_label_needed_payload,
     build_fetch_queued_payload,
     build_images_ready_payload,
     build_jeb_event_payload,
     build_munchy_job_payload,
-    build_recovery_canceled_payload,
-    build_recovery_completed_payload,
-    build_recovery_failed_payload,
-    build_recovery_paused_reminder_payload,
-    build_recovery_ready_payload,
-    build_recovery_retrying_payload,
-    build_recovery_started_payload,
 )
 
 _CONTRACT_PATH = (
@@ -87,17 +87,17 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         "collections.planner_failed",
         "images.ready",
         "images.ready.reminder",
-        "images.copy_label_needed",
+        "images.disc_label_needed",
         "fetches.queued_djdan",
         "fetches.queued_djdan.reminder",
-        "glacier_recovery.started",
-        "glacier_recovery.ready",
-        "glacier_recovery.ready.reminder",
-        "glacier_recovery.completed",
-        "glacier_recovery.retrying",
-        "glacier_recovery.failed",
-        "glacier_recovery.canceled",
-        "glacier_recovery.paused.reminder",
+        "archive_restore.started",
+        "archive_restore.ready",
+        "archive_restore.ready.reminder",
+        "archive_restore.completed",
+        "archive_restore.retrying",
+        "archive_restore.failed",
+        "archive_restore.canceled",
+        "archive_restore.paused.reminder",
     }
     for event in events.values():
         templates = event.get("canonical_notification_by_type") or {
@@ -124,13 +124,13 @@ def test_operator_webhook_contract_covers_current_events() -> None:
         == "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
     )
     assert (
-        events["glacier_recovery.paused.reminder"]["delivery"]["reminder_time_env"]
+        events["archive_restore.paused.reminder"]["delivery"]["reminder_time_env"]
         == "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME"
     )
     assert events["fetches.queued_djdan"]["delivery"]["mode"] == "durable"
-    assert events["glacier_recovery.started"]["operator_urgency"] == "time_sensitive"
-    assert events["glacier_recovery.failed"]["operator_urgency"] == "time_sensitive"
-    assert events["glacier_recovery.paused.reminder"]["delivery"]["reminder"] is True
+    assert events["archive_restore.started"]["operator_urgency"] == "time_sensitive"
+    assert events["archive_restore.failed"]["operator_urgency"] == "time_sensitive"
+    assert events["archive_restore.paused.reminder"]["delivery"]["reminder"] is True
 
 
 def test_operator_webhook_contract_rendered_notifications_fit_push_limits() -> None:
@@ -146,9 +146,7 @@ def test_operator_webhook_contract_rendered_notifications_fit_push_limits() -> N
             notification = _canonical_notification_from_contract(
                 event=event["event"],
                 notification_type=notification_type,
-                subject=(
-                    "very-long-subject-name-that-should-never-overflow-phone-push-title"
-                ),
+                subject=("very-long-subject-name-that-should-never-overflow-phone-push-title"),
                 values=values,
             )
 
@@ -188,10 +186,10 @@ def test_build_images_ready_payload_supports_multiple_images() -> None:
 
 
 def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
-    payload = build_recovery_ready_payload(
+    payload = build_archive_restore_ready_payload(
         config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
-        session_id="rs-20260420T040001Z-1",
-        restore_expires_at="2026-04-20T06:00:00Z",
+        restore_id="ar-20260420T040001Z-1",
+        expires_at="2026-04-20T06:00:00Z",
         images=[
             {
                 "image_id": "20260420T040001Z",
@@ -203,18 +201,18 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         reminder=False,
     )
     assert payload == {
-        "event": "glacier_recovery.ready",
-        "type": "image_rebuild",
-        "session_id": "rs-20260420T040001Z-1",
-        "session_url": "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-1",
+        "event": "archive_restore.ready",
+        "type": "disc_rebuild",
+        "restore_id": "ar-20260420T040001Z-1",
+        "restore_url": "https://api.test/v1/archive-restores/ar-20260420T040001Z-1",
         "delivered_at": "2026-04-20T05:00:00Z",
-        "restore_expires_at": "2026-04-20T06:00:00Z",
+        "expires_at": "2026-04-20T06:00:00Z",
         "reminder_count": 0,
         "reminder_interval_seconds": 3600.0,
         "operator_urgency": "time_sensitive",
         "operator_action": "Rebuild and burn replacement media before the restore expires",
         "operator_message": (
-            "Glacier recovery data is ready for replacement media. Complete the "
+            "Archive restore data is ready for replacement media. Complete the "
             "rebuild and burn workflow before the temporary restore window expires."
         ),
         "images": [
@@ -227,39 +225,39 @@ def test_build_recovery_ready_payload_includes_session_and_image_urls() -> None:
         "collections": [],
         "notification": {
             "title": "👨🏻‍🎤 20260420T040001Z.iso",
-            "body": ("Glacier data is cued up! Run `djdan burn` before the restore window closes."),
+            "body": ("Archived data is ready! Run `djdan burn` before the restore window closes."),
         },
     }
 
 
-def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> None:
+def test_build_recovery_lifecycle_payloads_are_explicit_about_archive_work() -> None:
     config = WebhookConfig(url="https://example.test/hook", base_url="https://api.test")
-    started = build_recovery_started_payload(
+    started = build_archive_restore_started_payload(
         config=config,
-        session_id="rs-docs-restore-1",
-        recovery_type="collection_restore",
+        restore_id="ar-docs-restore-1",
+        restore_type="fetch_materialization",
         retrieval_tier="bulk",
         estimated_ready_at="2026-04-22T05:00:00Z",
         images=[],
         collections=[{"collection_id": "docs"}],
         delivered_at=datetime(2026, 4, 20, 5, 0, tzinfo=UTC),
     )
-    completed = build_recovery_completed_payload(
+    completed = build_archive_restore_completed_payload(
         config=config,
-        session_id="rs-docs-restore-1",
-        recovery_type="collection_restore",
+        restore_id="ar-docs-restore-1",
+        restore_type="fetch_materialization",
         images=[],
         collections=[{"collection_id": "docs"}],
         delivered_at=datetime(2026, 4, 22, 5, 0, tzinfo=UTC),
     )
 
-    assert started["event"] == "glacier_recovery.started"
+    assert started["event"] == "archive_restore.started"
     assert started["operator_urgency"] == "time_sensitive"
     assert "long time" in str(started["operator_message"])
     assert started["notification"] == {
         "title": "🐷 docs",
         "body": (
-            "Oink, Glacier recovery is underway. This may take a long while; the archived "
+            "Oink, an archive restore is underway. This may take a long while; the archived "
             "data is safe."
         ),
     }
@@ -269,11 +267,13 @@ def test_build_recovery_lifecycle_payloads_are_explicit_about_glacier_work() -> 
             "collection_url": "https://api.test/v1/collections/docs",
         }
     ]
-    assert completed["event"] == "glacier_recovery.completed"
+    assert completed["event"] == "archive_restore.completed"
     assert completed["operator_action"] == "No operator action required"
     assert completed["notification"] == {
         "title": "🐷 docs",
-        "body": "Oink, cloud-fetch recovery is done, and the missing fetch files are hot again.",
+        "body": (
+            "Oink, fetch materialization is complete, and the missing fetch files are hot again."
+        ),
     }
 
 
@@ -283,10 +283,10 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
     collections = [{"collection_id": "docs"}]
     delivered_at = datetime(2026, 4, 20, 5, 0, tzinfo=UTC)
 
-    retrying = build_recovery_retrying_payload(
+    retrying = build_archive_restore_retrying_payload(
         config=config,
-        session_id="rs-20260420T040001Z-rebuild-1",
-        recovery_type="image_rebuild",
+        restore_id="ar-20260420T040001Z-rebuild-1",
+        restore_type="disc_rebuild",
         images=images,
         collections=collections,
         delivered_at=delivered_at,
@@ -296,10 +296,10 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
         retry_delay_seconds=300.0,
         error="S3 restore request timed out",
     )
-    failed = build_recovery_failed_payload(
+    failed = build_archive_restore_failed_payload(
         config=config,
-        session_id="rs-docs-restore-1",
-        recovery_type="collection_restore",
+        restore_id="ar-docs-restore-1",
+        restore_type="fetch_materialization",
         images=[],
         collections=collections,
         delivered_at=delivered_at,
@@ -307,17 +307,17 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
         failed_at="2026-04-20T05:00:00Z",
         error="collection archive member sha256 mismatch",
     )
-    canceled = build_recovery_canceled_payload(
+    canceled = build_archive_restore_canceled_payload(
         config=config,
-        session_id="rs-docs-restore-1",
-        recovery_type="collection_restore",
+        restore_id="ar-docs-restore-1",
+        restore_type="fetch_materialization",
         images=[],
         collections=collections,
         delivered_at=delivered_at,
     )
-    paused = build_recovery_paused_reminder_payload(
+    paused = build_archive_restore_paused_reminder_payload(
         config=config,
-        session_id="rs-20260420T040001Z-rebuild-1",
+        restore_id="ar-20260420T040001Z-rebuild-1",
         images=images,
         collections=collections,
         delivered_at=delivered_at,
@@ -325,21 +325,21 @@ def test_build_recovery_retry_failure_cancel_and_pause_payloads() -> None:
         reminder_interval_seconds=86400.0,
     )
 
-    assert retrying["event"] == "glacier_recovery.retrying"
+    assert retrying["event"] == "archive_restore.retrying"
     assert retrying["operator_action"] == (
         "wait unless failures persist beyond normal connectivity trouble"
     )
     assert "Next retry: 2026-04-20T05:05:00Z" in retrying["notification"]["body"]
-    assert failed["event"] == "glacier_recovery.failed"
+    assert failed["event"] == "archive_restore.failed"
     assert failed["operator_urgency"] == "time_sensitive"
     assert "will not retry" in failed["notification"]["body"]
-    assert canceled["event"] == "glacier_recovery.canceled"
+    assert canceled["event"] == "archive_restore.canceled"
     assert canceled["operator_urgency"] == "passive"
-    assert paused["event"] == "glacier_recovery.paused.reminder"
+    assert paused["event"] == "archive_restore.paused.reminder"
     assert paused["reminder_count"] == 4
     assert paused["reminder_interval_seconds"] == 86400.0
     assert paused["operator_action"] == (
-        "Run `djdan disc rebuild resume rs-20260420T040001Z-rebuild-1` when ready"
+        "Run `djdan disc rebuild resume ar-20260420T040001Z-rebuild-1` when ready"
     )
 
 
@@ -350,10 +350,10 @@ def test_build_fetch_queued_payload_names_operator_action() -> None:
         name="Recover invoice",
         files=1,
         bytes=1234,
-        copies=[
+        discs=[
             {
-                "copy_id": "20260530T000000Z-1",
-                "volume_id": "20260530T000000Z",
+                "disc_id": "20260530T000000Z-1",
+                "image_id": "20260530T000000Z",
                 "location": "red binder",
             }
         ],
@@ -395,7 +395,7 @@ def test_build_collection_lifecycle_payload_includes_links_and_details() -> None
     assert payload["files_total"] == 572
     assert payload["notification"] == {
         "title": "🐷 home-videos",
-        "body": "Oink oink, this upload is safely staged; Glacier archiving is underway.",
+        "body": "Oink oink, this upload is safely staged; archiving is underway.",
     }
 
 
@@ -444,7 +444,7 @@ def test_build_archive_failed_payload_is_critical_and_nonretrying() -> None:
     assert payload["notification"] == {
         "title": "🐷 gopro-10-5-2023-to-5-12-2024",
         "body": (
-            "Oink! Archive finalizing stopped: collection archive member sha256 "
+            "Oink! Archiving stopped: collection archive member sha256 "
             "mismatch: 20240512T093848Z.MP4. Please inspect Riverhog; I will not retry this."
         ),
     }
@@ -520,9 +520,9 @@ def test_build_munchy_upload_waiting_reminder_payload() -> None:
 def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
     payload = build_jeb_event_payload(
         event="jeb.issue",
-        batch={
+        context={
             "id": "20260615T120000Z__camera__abc123",
-            "source_id": "camera",
+            "account_id": "camera",
             "target_name": "munchy",
             "target_type": "munchy",
             "collection_slug": "camera-archive",
@@ -537,7 +537,7 @@ def test_build_jeb_issue_payload_uses_robot_actor_and_concise_error() -> None:
     )
 
     assert payload["event"] == "jeb.issue"
-    assert payload["type"] == "jeb_batch"
+    assert payload["type"] == "jeb_issue"
     assert payload["source"] == "jeb"
     assert payload["actor"] == "jeb"
     assert payload["operator_urgency"] == "time_sensitive"
@@ -563,9 +563,9 @@ def test_build_jeb_target_failure_payload_keeps_push_body_concise() -> None:
 
     payload = build_jeb_event_payload(
         event="jeb.issue",
-        batch={
+        context={
             "id": "20260630T002208Z__weekly-device-artifacts__540b5f0797db",
-            "source_id": "closet-camera",
+            "account_id": "closet-camera",
             "target_name": "munchy",
             "target_type": "munchy",
             "collection_slug": "weekly-device-artifacts",
@@ -588,38 +588,33 @@ def test_build_jeb_target_failure_payload_keeps_push_body_concise() -> None:
     assert len(str(payload["notification"]["body"])) <= 120
 
 
-def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable() -> None:
+def test_build_jeb_routing_issue_payload_is_device_titled_and_actionable() -> None:
     payload = build_jeb_event_payload(
         event="jeb.issue",
-        batch={
+        context={
             "id": "routing-preflight__nash-iphone-se2",
-            "source_id": "nash-iphone-se2",
+            "account_id": "nash-iphone-se2",
             "target_name": "munchy",
             "target_type": "munchy",
             "collection_slug": "weekly-device-artifacts",
             "collection_timestamp": "20260624T000000Z",
             "state": "failed",
         },
-        message=(
-            "Munchy routing preflight failed: 2/64 files unmatched. "
-            "Next: run archive-now."
-        ),
+        message=("Munchy routing preflight failed: 2/64 files unmatched. Next: run archive-now."),
         severity="critical",
         delivered_at=datetime(2026, 6, 24, 12, 0, tzinfo=UTC),
         recipient="operator",
         details={
-            "component": "profile_routing",
+            "component": "routing",
             "error": (
-                "Munchy routing preflight failed: 2/64 files unmatched. "
-                "Next: run archive-now."
+                "Munchy routing preflight failed: 2/64 files unmatched. Next: run archive-now."
             ),
         },
     )
 
     assert payload["operator_urgency"] == "time_sensitive"
     assert (
-        payload["operator_action"]
-        == "fix Munchy profile routing, then run Jeb archive-now for the source"
+        payload["operator_action"] == "fix Munchy routing, then run Jeb archive-now for the account"
     )
     assert payload["severity"] == "critical"
     assert payload["notification"] == {
@@ -631,9 +626,9 @@ def test_build_jeb_profile_routing_issue_payload_is_device_titled_and_actionable
 def test_build_jeb_munchy_preflight_issue_payload_is_api_actionable() -> None:
     payload = build_jeb_event_payload(
         event="jeb.issue",
-        batch={
+        context={
             "id": "routing-preflight__nash-iphone-se2",
-            "source_id": "nash-iphone-se2",
+            "account_id": "nash-iphone-se2",
             "target_name": "munchy",
             "target_type": "munchy",
             "collection_slug": "weekly-device-artifacts",
@@ -659,7 +654,7 @@ def test_build_jeb_munchy_preflight_issue_payload_is_api_actionable() -> None:
     assert payload["operator_urgency"] == "time_sensitive"
     assert (
         payload["operator_action"]
-        == "repair Munchy routing preflight, then run Jeb archive-now for the source"
+        == "repair Munchy routing preflight, then run Jeb archive-now for the account"
     )
     assert payload["notification"] == {
         "title": "🤖 nash-iphone-se2",
@@ -670,20 +665,20 @@ def test_build_jeb_munchy_preflight_issue_payload_is_api_actionable() -> None:
     }
 
 
-def test_build_copy_label_needed_payload_includes_label_and_image_url() -> None:
-    payload = build_copy_label_needed_payload(
+def test_build_disc_label_needed_payload_includes_label_and_image_url() -> None:
+    payload = build_disc_label_needed_payload(
         config=WebhookConfig(url="https://example.test/hook", base_url="https://api.test"),
         image_id="20260526T204059Z",
-        copy_id="20260526T204059Z-1",
+        disc_id="20260526T204059Z-1",
         label_text="20260526T204059Z-1",
         delivered_at=datetime(2026, 5, 26, 21, 15, tzinfo=UTC),
     )
 
     assert payload == {
-        "event": "images.copy_label_needed",
-        "type": "copy_lifecycle",
+        "event": "images.disc_label_needed",
+        "type": "disc_lifecycle",
         "image_id": "20260526T204059Z",
-        "copy_id": "20260526T204059Z-1",
+        "disc_id": "20260526T204059Z-1",
         "label_text": "20260526T204059Z-1",
         "delivered_at": "2026-05-26T21:15:00Z",
         "operator_urgency": "time_sensitive",

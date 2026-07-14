@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field
-
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -18,11 +16,11 @@ class FinalizedImageSummaryResponse(RiverhogModel):
     collections: int
     collection_ids: list[str]
     iso_ready: Literal[True] = True
-    physical_protection_state: Literal["unprotected", "partially_protected", "protected"]
-    physical_copies_required: int
-    physical_copies_registered: int
-    physical_copies_verified: int
-    physical_copies_missing: int
+    disc_redundancy_state: Literal["none", "partial", "full"]
+    discs_required: int
+    discs_registered: int
+    discs_verified: int
+    discs_missing: int
 
 
 class ListImagesResponse(RiverhogModel):
@@ -30,17 +28,17 @@ class ListImagesResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: Literal["finalized_at", "bytes", "physical_copies_registered"]
+    sort: Literal["finalized_at", "bytes", "discs_registered"]
     order: Literal["asc", "desc"]
     images: list[FinalizedImageSummaryResponse]
 
 
-class RegisterCopyRequest(RiverhogModel):
-    copy_id: str | None = Field(default=None, validation_alias=AliasChoices("copy_id", "id"))
+class RegisterDiscRequest(RiverhogModel):
+    disc_id: str | None = None
     location: str
 
 
-class UpdateCopyRequest(RiverhogModel):
+class UpdateDiscRequest(RiverhogModel):
     location: str | None = None
     state: (
         Literal["needed", "burning", "verified", "registered", "lost", "damaged", "retired"] | None
@@ -48,7 +46,7 @@ class UpdateCopyRequest(RiverhogModel):
     verification_state: Literal["pending", "verified", "failed"] | None = None
 
 
-class CopyHistoryOut(RiverhogModel):
+class DiscHistoryOut(RiverhogModel):
     at: str
     event: str
     state: Literal["needed", "burning", "verified", "registered", "lost", "damaged", "retired"]
@@ -56,28 +54,24 @@ class CopyHistoryOut(RiverhogModel):
     location: str | None
 
 
-class CopyOut(RiverhogModel):
-    id: str
-    volume_id: str
+class DiscOut(RiverhogModel):
+    disc_id: str
+    image_id: str
     label_text: str
     location: str | None
     created_at: str
     state: Literal["needed", "burning", "verified", "registered", "lost", "damaged", "retired"]
     verification_state: Literal["pending", "verified", "failed"]
-    history: list[CopyHistoryOut]
-
-
-class DiscOut(CopyOut):
-    image_id: str
+    history: list[DiscHistoryOut]
     filename: str | None = None
 
 
-class RegisterCopyResponse(RiverhogModel):
-    copy_: CopyOut = Field(alias="copy")
+class RegisterDiscResponse(RiverhogModel):
+    disc: DiscOut
 
 
-class ListCopiesResponse(RiverhogModel):
-    copies: list[CopyOut]
+class ImageDiscsResponse(RiverhogModel):
+    discs: list[DiscOut]
 
 
 class ListDiscsResponse(RiverhogModel):
@@ -85,7 +79,7 @@ class ListDiscsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: Literal["id", "image_id", "state", "verification_state", "location"]
+    sort: Literal["disc_id", "image_id", "state", "verification_state", "location"]
     order: Literal["asc", "desc"]
     query: str | None
     image_id: str | None = None

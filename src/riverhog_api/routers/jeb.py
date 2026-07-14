@@ -80,8 +80,8 @@ def get_jeb_status(include_backlog: bool = Query(True)) -> dict[str, Any]:
     )
 
 
-@router.get("/jeb/batches")
-def list_jeb_batches(
+@router.get("/jeb/attempts")
+def list_jeb_attempts(
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=500)] = 25,
     sort: str = Query("updated_at"),
@@ -89,7 +89,7 @@ def list_jeb_batches(
     terminal: Literal["active", "terminal", "all"] = Query("active"),
     state: str | None = Query(None),
     account: str | None = Query(None),
-    collection: str | None = Query(None),
+    collection_slug: str | None = Query(None),
     target: str | None = Query(None),
     q: str | None = Query(None),
 ) -> dict[str, Any]:
@@ -103,13 +103,13 @@ def list_jeb_batches(
     for key, value in {
         "state": state,
         "account": account,
-        "collection": collection,
+        "collection_slug": collection_slug,
         "target": target,
         "q": q,
     }.items():
         if value is not None:
             params[key] = value
-    return _request_jeb_service("GET", "/v1/jeb/batches", params=params)
+    return _request_jeb_service("GET", "/v1/jeb/attempts", params=params)
 
 
 @router.get("/jeb/config/check")

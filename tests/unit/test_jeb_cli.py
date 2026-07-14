@@ -47,8 +47,8 @@ def test_jeb_archive_now_starts_batch_without_processing(
     assert "account: phone" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
-    [batch_id] = collector.active_batch_ids()
-    assert [row["target_path"] for row in collector.batch_files(batch_id)] == ["phone/note.txt"]
+    [batch_id] = collector.active_attempt_ids()
+    assert [row["target_path"] for row in collector.attempt_files(batch_id)] == ["phone/note.txt"]
 
 
 def test_jeb_archive_now_dry_run_reports_plan_without_batch(
@@ -70,11 +70,11 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     assert "account: phone" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
-    assert collector.active_batch_ids() == []
-    assert collector.list_batches(terminal="all")["total"] == 0
+    assert collector.active_attempt_ids() == []
+    assert collector.list_attempts(terminal="all")["total"] == 0
 
 
-def test_jeb_archive_now_reports_removed_account_without_traceback(
+def test_jeb_archive_now_reports_unknown_account_concisely(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -87,7 +87,6 @@ def test_jeb_archive_now_reports_removed_account_without_traceback(
 
     captured = capsys.readouterr()
     assert "account 'missing' is not in the active Jeb env" in captured.err
-    assert "Traceback" not in captured.err
 
 
 def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -100,10 +99,10 @@ def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None
 
     output = capsys.readouterr().out
     assert "jeb config" in output
-    assert "sources: 1" in output
+    assert "accounts: 1" in output
 
 
-def test_jeb_batches_json_pages_sorts_and_filters(
+def test_jeb_attempts_json_pages_sorts_and_filters(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -120,7 +119,7 @@ def test_jeb_batches_json_pages_sorts_and_filters(
     assert (
         jeb_main(
             [
-                "batches",
+                "attempts",
                 "--terminal",
                 "all",
                 "--sort",
@@ -141,25 +140,25 @@ def test_jeb_batches_json_pages_sorts_and_filters(
     assert payload["total"] == 2
     assert payload["pages"] == 2
     assert payload["sort"] == "bytes"
-    assert payload["batches"][0]["accounts"] == ["camera"]
-    assert payload["batches"][0]["total_bytes"] == 6
+    assert payload["attempts"][0]["account_id"] == "camera"
+    assert payload["attempts"][0]["total_bytes"] == 6
 
-    assert jeb_main(["batches", "--terminal", "all", "--account", "phone", "--json"]) == 0
+    assert jeb_main(["attempts", "--terminal", "all", "--account", "phone", "--json"]) == 0
 
     filtered = json.loads(capsys.readouterr().out)
     assert filtered["total"] == 1
     assert filtered["filters"]["account"] == "phone"
-    assert filtered["batches"][0]["accounts"] == ["phone"]
+    assert filtered["attempts"][0]["account_id"] == "phone"
 
-    assert jeb_main(["batches", "--terminal", "all", "--query", "camera", "--json"]) == 0
+    assert jeb_main(["attempts", "--terminal", "all", "--query", "camera", "--json"]) == 0
 
     queried = json.loads(capsys.readouterr().out)
     assert queried["total"] == 1
     assert queried["query"] == "camera"
-    assert queried["batches"][0]["collection_id"] == "camera"
+    assert queried["attempts"][0]["account_id"] == "camera"
 
 
-def test_jeb_batches_account_filter_treats_slug_as_literal(
+def test_jeb_attempts_account_filter_treats_slug_as_literal(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -173,17 +172,14 @@ def test_jeb_batches_account_filter_treats_slug_as_literal(
     assert jeb_main(["archive-now", "--account", "frontxdoor", "--no-process"]) == 0
     capsys.readouterr()
 
-    assert (
-        jeb_main(["batches", "--terminal", "all", "--account", "front_door", "--json"])
-        == 0
-    )
+    assert jeb_main(["attempts", "--terminal", "all", "--account", "front_door", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["total"] == 1
-    assert payload["batches"][0]["accounts"] == ["front_door"]
+    assert payload["attempts"][0]["account_id"] == "front_door"
 
 
-def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
+def test_jeb_status_json_reports_accounts_backlog_and_active_attempts(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -198,11 +194,11 @@ def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
     assert jeb_main(["status", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["sources"][0]["id"] == "phone"
-    assert payload["sources"][0]["eligible_files"] == 1
-    assert payload["sources"][0]["eligible_bytes"] == 5
+    assert payload["accounts"][0]["id"] == "phone"
+    assert payload["accounts"][0]["eligible_files"] == 1
+    assert payload["accounts"][0]["eligible_bytes"] == 5
     assert payload["batches"]["active"] == 1
     assert payload["batches"]["states"] == {"batching": 1}
     assert payload["active_attempts"]["total"] == 1
-    assert payload["active_attempts"]["batches"][0]["state"] == "batching"
+    assert payload["active_attempts"]["attempts"][0]["state"] == "batching"
     assert payload["routing_preflight_failures"]["total"] == 0

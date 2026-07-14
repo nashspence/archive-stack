@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -13,19 +13,15 @@ class Base(DeclarativeBase):
     pass
 
 
-SCHEMA_BASELINE_VERSION = 7
-SCHEMA_LATEST_VERSION = 7
 _COLLECTION_OPERATOR_SUMMARY_COLUMNS = (
     "collection_id",
     "files",
     "bytes",
     "hot_bytes",
-    "archived_bytes",
-    "pending_bytes",
-    "protected_bytes",
-    "physical_bytes",
+    "disc_redundancy_bytes",
+    "disc_coverage_bytes",
     "has_registered_image",
-    "protection_state",
+    "disc_redundancy_state",
     "has_archive",
     "archive_state",
     "archive_object_path",
@@ -80,8 +76,7 @@ _FETCH_OPERATOR_FILE_COLUMNS = (
     "path",
     "bytes",
     "hot",
-    "archived",
-    "registered_disc_coverage",
+    "disc_coverage",
     "updated_at",
 )
 _IMAGE_OPERATOR_SUMMARY_COLUMNS = (
@@ -93,16 +88,16 @@ _IMAGE_OPERATOR_SUMMARY_COLUMNS = (
     "files",
     "collections",
     "collection_ids_text",
-    "physical_protection_state",
-    "physical_copies_required",
-    "physical_copies_registered",
-    "physical_copies_verified",
-    "physical_copies_missing",
+    "disc_redundancy_state",
+    "discs_required",
+    "discs_registered",
+    "discs_verified",
+    "discs_missing",
     "updated_at",
 )
 _DISC_OPERATOR_SUMMARY_COLUMNS = (
     "image_id",
-    "copy_id",
+    "disc_id",
     "label_text",
     "location",
     "created_at",
@@ -146,48 +141,6 @@ def _database_url_backend(database_url: str) -> str:
     return make_url(database_url).get_backend_name()
 
 
-def _check_database_is_baseline_compatible(engine: Engine) -> None:
-    table_names = set(inspect(engine).get_table_names())
-    if not table_names:
-        return
-    if "schema_migrations" not in table_names:
-        raise RuntimeError(
-            "unsupported unversioned catalog schema detected; reset the Riverhog "
-            "database before starting this greenfield build"
-        )
-    with engine.begin() as conn:
-        applied_versions = _applied_schema_versions(conn)
-    if applied_versions != {SCHEMA_BASELINE_VERSION}:
-        raise RuntimeError(
-            "unsupported pre-baseline catalog schema detected; reset or normalize the "
-            "Riverhog database before starting this greenfield build"
-        )
-
-
-def _ensure_schema_baseline_marker(engine: Engine) -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")
-        )
-        applied_versions = _applied_schema_versions(conn)
-        if applied_versions and applied_versions != {SCHEMA_BASELINE_VERSION}:
-            raise RuntimeError(
-                "unsupported pre-baseline catalog schema detected; reset or normalize the "
-                "Riverhog database before starting this greenfield build"
-            )
-        if SCHEMA_BASELINE_VERSION not in applied_versions:
-            conn.execute(
-                text("INSERT INTO schema_migrations (version) VALUES (:v)"),
-                {"v": SCHEMA_BASELINE_VERSION},
-            )
-
-
-def _applied_schema_versions(conn: Connection) -> set[int]:
-    return {
-        row[0] for row in conn.execute(text("SELECT version FROM schema_migrations")).fetchall()
-    }
-
-
 def _ensure_schema_indexes(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -198,8 +151,8 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_collection_operator_summaries_protection "
-                "ON collection_operator_summaries (protection_state, collection_id)"
+                "CREATE INDEX IF NOT EXISTS ix_collection_operator_summaries_redundancy "
+                "ON collection_operator_summaries (disc_redundancy_state, collection_id)"
             )
         )
         conn.execute(
@@ -246,14 +199,8 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_archived "
-                "ON fetch_operator_files (fetch_id, archived, collection_id, path)"
-            )
-        )
-        conn.execute(
-            text(
                 "CREATE INDEX IF NOT EXISTS ix_fetch_operator_files_disc "
-                "ON fetch_operator_files (fetch_id, registered_disc_coverage, collection_id, path)"
+                "ON fetch_operator_files (fetch_id, disc_coverage, collection_id, path)"
             )
         )
         conn.execute(
@@ -270,32 +217,32 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_image_operator_summaries_copies "
-                "ON image_operator_summaries (physical_copies_registered, image_id)"
+                "CREATE INDEX IF NOT EXISTS ix_image_operator_summaries_discs "
+                "ON image_operator_summaries (discs_registered, image_id)"
             )
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_copy_id "
-                "ON disc_operator_summaries (copy_id)"
+                "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_disc_id "
+                "ON disc_operator_summaries (disc_id)"
             )
         )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_state "
-                "ON disc_operator_summaries (state, copy_id)"
+                "ON disc_operator_summaries (state, disc_id)"
             )
         )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_verification "
-                "ON disc_operator_summaries (verification_state, copy_id)"
+                "ON disc_operator_summaries (verification_state, disc_id)"
             )
         )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_disc_operator_summaries_location "
-                "ON disc_operator_summaries (location, copy_id)"
+                "ON disc_operator_summaries (location, disc_id)"
             )
         )
         conn.execute(
@@ -306,67 +253,16 @@ def _ensure_schema_indexes(engine: Engine) -> None:
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_glacier_recovery_sessions_state_created "
-                "ON glacier_recovery_sessions (state, created_at, session_id)"
+                "CREATE INDEX IF NOT EXISTS ix_archive_restores_state_created "
+                "ON archive_restores (state, created_at, restore_id)"
             )
         )
         conn.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_glacier_recovery_sessions_type_state_created "
-                "ON glacier_recovery_sessions (type, state, created_at, session_id)"
+                "CREATE INDEX IF NOT EXISTS ix_archive_restores_type_state_created "
+                "ON archive_restores (type, state, created_at, restore_id)"
             )
         )
-
-
-def _ensure_schema_columns(engine: Engine) -> None:
-    inspector = inspect(engine)
-    table_names = set(inspector.get_table_names())
-    if "collections" in table_names:
-        collection_columns = {column["name"] for column in inspector.get_columns("collections")}
-        if "notify_json" not in collection_columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE collections ADD COLUMN notify_json TEXT"))
-    if "collection_uploads" in table_names:
-        upload_columns = {column["name"] for column in inspector.get_columns("collection_uploads")}
-        if "notify_json" not in upload_columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE collection_uploads ADD COLUMN notify_json TEXT"))
-    if "glacier_recovery_sessions" not in table_names:
-        return
-    recovery_columns = {
-        column["name"] for column in inspector.get_columns("glacier_recovery_sessions")
-    }
-    if "restore_paths_json" not in recovery_columns:
-        with engine.begin() as conn:
-            conn.execute(
-                text("ALTER TABLE glacier_recovery_sessions ADD COLUMN restore_paths_json TEXT")
-            )
-    recovery_column_sql = {
-        "canceled_at": "TEXT",
-        "paused_at": "TEXT",
-        "paused_from_state": "TEXT",
-        "failure_count": "INTEGER DEFAULT 0",
-        "last_failure_at": "TEXT",
-        "last_failure": "TEXT",
-        "last_failure_notification_at": "TEXT",
-        "canceled_notification_sent_at": "TEXT",
-        "canceled_notification_next_attempt_at": "TEXT",
-        "canceled_notification_failure": "TEXT",
-    }
-    missing_recovery_columns = [
-        (name, column_sql)
-        for name, column_sql in recovery_column_sql.items()
-        if name not in recovery_columns
-    ]
-    if missing_recovery_columns:
-        with engine.begin() as conn:
-            for name, column_sql in missing_recovery_columns:
-                conn.execute(
-                    text(f"ALTER TABLE glacier_recovery_sessions ADD COLUMN {name} {column_sql}")
-                )
-    if "approved_at" in recovery_columns:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE glacier_recovery_sessions DROP COLUMN approved_at"))
 
 
 def _collection_operator_summary_select_sql(affected_collections_sql: str) -> str:
@@ -386,8 +282,7 @@ FROM (
             collection_id,
             COUNT(path) AS files,
             COALESCE(SUM(bytes), 0) AS bytes,
-            COALESCE(SUM(CASE WHEN hot IS TRUE THEN bytes ELSE 0 END), 0) AS hot_bytes,
-            COALESCE(SUM(CASE WHEN archived IS TRUE THEN bytes ELSE 0 END), 0) AS archived_bytes
+            COALESCE(SUM(CASE WHEN hot IS TRUE THEN bytes ELSE 0 END), 0) AS hot_bytes
         FROM collection_files
         WHERE collection_id IN (SELECT collection_id FROM distinct_collections)
         GROUP BY collection_id
@@ -413,7 +308,7 @@ FROM (
                 ),
                 0
             ) AS registered_count
-        FROM image_copies
+        FROM image_discs
         WHERE image_id IN (SELECT image_id FROM affected_images)
         GROUP BY image_id
     ),
@@ -423,14 +318,14 @@ FROM (
             CASE
                 WHEN COALESCE(registered_counts.registered_count, 0) >=
                     CASE
-                        WHEN finalized_images.required_copy_count IS NULL
-                            OR finalized_images.required_copy_count <= 0
+                        WHEN finalized_images.required_disc_count IS NULL
+                            OR finalized_images.required_disc_count <= 0
                         THEN 2
-                        ELSE finalized_images.required_copy_count
+                        ELSE finalized_images.required_disc_count
                     END
                 THEN 1
                 ELSE 0
-            END AS is_protected,
+            END AS is_redundant,
             CASE
                 WHEN COALESCE(registered_counts.registered_count, 0) > 0 THEN 1
                 ELSE 0
@@ -441,11 +336,11 @@ FROM (
         LEFT JOIN registered_counts
             ON registered_counts.image_id = finalized_images.image_id
     ),
-    path_protection AS (
+    path_redundancy AS (
         SELECT
             finalized_image_covered_paths.collection_id,
             finalized_image_covered_paths.path,
-            MIN(image_states.is_protected) AS all_protected,
+            MIN(image_states.is_redundant) AS all_redundant,
             MAX(image_states.has_registered) AS has_registered
         FROM finalized_image_covered_paths
         JOIN image_states
@@ -457,23 +352,23 @@ FROM (
             finalized_image_covered_paths.collection_id,
             finalized_image_covered_paths.path
     ),
-    protection_stats AS (
+    redundancy_stats AS (
         SELECT
             collection_files.collection_id,
             COALESCE(
                 SUM(
                     CASE
-                        WHEN path_protection.all_protected = 1 THEN collection_files.bytes
+                        WHEN path_redundancy.all_redundant = 1 THEN collection_files.bytes
                         ELSE 0
                     END
                 ),
                 0
-            ) AS protected_bytes,
-            COALESCE(MAX(path_protection.has_registered), 0) AS has_registered_image
+            ) AS disc_redundancy_bytes,
+            COALESCE(MAX(path_redundancy.has_registered), 0) AS has_registered_image
         FROM collection_files
-        LEFT JOIN path_protection
-            ON path_protection.collection_id = collection_files.collection_id
-            AND path_protection.path = collection_files.path
+        LEFT JOIN path_redundancy
+            ON path_redundancy.collection_id = collection_files.collection_id
+            AND path_redundancy.path = collection_files.path
         WHERE collection_files.collection_id IN (SELECT collection_id FROM distinct_collections)
         GROUP BY collection_files.collection_id
     ),
@@ -503,7 +398,7 @@ FROM (
             finalized_image_coverage_parts.collection_id,
             finalized_image_coverage_parts.path
     ),
-    physical_stats AS (
+    disc_coverage_stats AS (
         SELECT
             collection_files.collection_id,
             COALESCE(
@@ -540,7 +435,7 @@ FROM (
                     END
                 ),
                 0
-            ) AS physical_bytes
+            ) AS disc_coverage_bytes
         FROM collection_files
         LEFT JOIN path_part_stats
             ON path_part_stats.collection_id = collection_files.collection_id
@@ -553,21 +448,19 @@ FROM (
         COALESCE(file_stats.files, 0) AS files,
         COALESCE(file_stats.bytes, 0) AS bytes,
         COALESCE(file_stats.hot_bytes, 0) AS hot_bytes,
-        COALESCE(file_stats.archived_bytes, 0) AS archived_bytes,
-        COALESCE(file_stats.bytes, 0) - COALESCE(file_stats.archived_bytes, 0) AS pending_bytes,
-        COALESCE(protection_stats.protected_bytes, 0) AS protected_bytes,
-        COALESCE(physical_stats.physical_bytes, 0) AS physical_bytes,
-        COALESCE(protection_stats.has_registered_image, 0) AS has_registered_image,
+        COALESCE(redundancy_stats.disc_redundancy_bytes, 0) AS disc_redundancy_bytes,
+        COALESCE(disc_coverage_stats.disc_coverage_bytes, 0) AS disc_coverage_bytes,
+        COALESCE(redundancy_stats.has_registered_image, 0) AS has_registered_image,
         CASE
             WHEN COALESCE(file_stats.bytes, 0) > 0
-                AND COALESCE(protection_stats.protected_bytes, 0) >= COALESCE(file_stats.bytes, 0)
-            THEN 'protected'
-            WHEN COALESCE(protection_stats.protected_bytes, 0) > 0
-                OR COALESCE(file_stats.archived_bytes, 0) > 0
-                OR COALESCE(protection_stats.has_registered_image, 0) = 1
-            THEN 'partially_protected'
-            ELSE 'unprotected'
-        END AS protection_state,
+                AND COALESCE(redundancy_stats.disc_redundancy_bytes, 0)
+                    >= COALESCE(file_stats.bytes, 0)
+            THEN 'full'
+            WHEN COALESCE(redundancy_stats.disc_redundancy_bytes, 0) > 0
+                OR COALESCE(redundancy_stats.has_registered_image, 0) = 1
+            THEN 'partial'
+            ELSE 'none'
+        END AS disc_redundancy_state,
         CASE
             WHEN collection_archives.collection_id IS NULL THEN 0
             ELSE 1
@@ -592,10 +485,10 @@ FROM (
         ON distinct_collections.collection_id = collections.id
     LEFT JOIN file_stats
         ON file_stats.collection_id = collections.id
-    LEFT JOIN protection_stats
-        ON protection_stats.collection_id = collections.id
-    LEFT JOIN physical_stats
-        ON physical_stats.collection_id = collections.id
+    LEFT JOIN redundancy_stats
+        ON redundancy_stats.collection_id = collections.id
+    LEFT JOIN disc_coverage_stats
+        ON disc_coverage_stats.collection_id = collections.id
     LEFT JOIN collection_archives
         ON collection_archives.collection_id = collections.id
 ) AS collection_operator_summary_refresh
@@ -726,8 +619,8 @@ def _install_sqlite_collection_operator_projection(conn: Connection) -> None:
                 "WHERE image_id = OLD.image_id OR image_id = NEW.image_id"
             ),
         ),
-        "riverhog_cos_image_copies_insert": (
-            "image_copies",
+        "riverhog_cos_image_discs_insert": (
+            "image_discs",
             _sqlite_collection_operator_refresh(
                 "SELECT collection_id FROM finalized_image_covered_paths "
                 "WHERE image_id = NEW.image_id "
@@ -736,8 +629,8 @@ def _install_sqlite_collection_operator_projection(conn: Connection) -> None:
                 "WHERE image_id = NEW.image_id"
             ),
         ),
-        "riverhog_cos_image_copies_update": (
-            "image_copies",
+        "riverhog_cos_image_discs_update": (
+            "image_discs",
             _sqlite_collection_operator_refresh(
                 "SELECT collection_id FROM finalized_image_covered_paths "
                 "WHERE image_id = OLD.image_id OR image_id = NEW.image_id "
@@ -746,8 +639,8 @@ def _install_sqlite_collection_operator_projection(conn: Connection) -> None:
                 "WHERE image_id = OLD.image_id OR image_id = NEW.image_id"
             ),
         ),
-        "riverhog_cos_image_copies_delete": (
-            "image_copies",
+        "riverhog_cos_image_discs_delete": (
+            "image_discs",
             _sqlite_collection_operator_refresh(
                 "SELECT collection_id FROM finalized_image_covered_paths "
                 "WHERE image_id = OLD.image_id "
@@ -1089,22 +982,22 @@ $riverhog$;
             "riverhog_cos_from_old_image_ids",
         ),
         (
-            "riverhog_cos_image_copies_insert",
-            "image_copies",
+            "riverhog_cos_image_discs_insert",
+            "image_discs",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
             "riverhog_cos_from_new_image_ids",
         ),
         (
-            "riverhog_cos_image_copies_update",
-            "image_copies",
+            "riverhog_cos_image_discs_update",
+            "image_discs",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
             "riverhog_cos_from_changed_image_ids",
         ),
         (
-            "riverhog_cos_image_copies_delete",
-            "image_copies",
+            "riverhog_cos_image_discs_delete",
+            "image_discs",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
             "riverhog_cos_from_old_image_ids",
@@ -1410,9 +1303,9 @@ FROM (
         SELECT
             image_rows.image_id,
             CASE
-                WHEN image_rows.required_copy_count > 0 THEN image_rows.required_copy_count
+                WHEN image_rows.required_disc_count > 0 THEN image_rows.required_disc_count
                 ELSE 2
-            END AS required_copy_count
+            END AS required_disc_count
         FROM image_rows
     ),
     image_collections AS (
@@ -1446,36 +1339,36 @@ FROM (
         FROM image_collections
         GROUP BY image_collections.image_id
     ),
-    copy_stats AS (
+    disc_stats AS (
         SELECT
-            image_copies.image_id,
+            image_discs.image_id,
             COALESCE(
                 SUM(
                     CASE
-                        WHEN COALESCE(image_copies.state, 'registered')
+                        WHEN COALESCE(image_discs.state, 'registered')
                             IN ('registered', 'verified')
                         THEN 1
                         ELSE 0
                     END
                 ),
                 0
-            ) AS physical_copies_registered,
+            ) AS discs_registered,
             COALESCE(
                 SUM(
                     CASE
-                        WHEN COALESCE(image_copies.state, 'registered')
+                        WHEN COALESCE(image_discs.state, 'registered')
                             IN ('registered', 'verified')
-                            AND COALESCE(image_copies.verification_state, 'pending') = 'verified'
+                            AND COALESCE(image_discs.verification_state, 'pending') = 'verified'
                         THEN 1
                         ELSE 0
                     END
                 ),
                 0
-            ) AS physical_copies_verified
-        FROM image_copies
+            ) AS discs_verified
+        FROM image_discs
         JOIN distinct_images
-            ON distinct_images.image_id = image_copies.image_id
-        GROUP BY image_copies.image_id
+            ON distinct_images.image_id = image_discs.image_id
+        GROUP BY image_discs.image_id
     )
     SELECT
         image_rows.image_id,
@@ -1498,23 +1391,23 @@ FROM (
         COALESCE(collection_stats.collections, 0) AS collections,
         COALESCE(collection_stats.collection_ids_text, '') AS collection_ids_text,
         CASE
-            WHEN COALESCE(copy_stats.physical_copies_registered, 0)
-                >= image_required.required_copy_count
-            THEN 'protected'
-            WHEN COALESCE(copy_stats.physical_copies_registered, 0) > 0
-            THEN 'partially_protected'
-            ELSE 'unprotected'
-        END AS physical_protection_state,
-        image_required.required_copy_count AS physical_copies_required,
-        COALESCE(copy_stats.physical_copies_registered, 0) AS physical_copies_registered,
-        COALESCE(copy_stats.physical_copies_verified, 0) AS physical_copies_verified,
+            WHEN COALESCE(disc_stats.discs_registered, 0)
+                >= image_required.required_disc_count
+            THEN 'full'
+            WHEN COALESCE(disc_stats.discs_registered, 0) > 0
+            THEN 'partial'
+            ELSE 'none'
+        END AS disc_redundancy_state,
+        image_required.required_disc_count AS discs_required,
+        COALESCE(disc_stats.discs_registered, 0) AS discs_registered,
+        COALESCE(disc_stats.discs_verified, 0) AS discs_verified,
         CASE
-            WHEN image_required.required_copy_count
-                - COALESCE(copy_stats.physical_copies_registered, 0) > 0
-            THEN image_required.required_copy_count
-                - COALESCE(copy_stats.physical_copies_registered, 0)
+            WHEN image_required.required_disc_count
+                - COALESCE(disc_stats.discs_registered, 0) > 0
+            THEN image_required.required_disc_count
+                - COALESCE(disc_stats.discs_registered, 0)
             ELSE 0
-        END AS physical_copies_missing,
+        END AS discs_missing,
         CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
     FROM image_rows
     JOIN image_required
@@ -1523,8 +1416,8 @@ FROM (
         ON file_stats.image_id = image_rows.image_id
     LEFT JOIN collection_stats
         ON collection_stats.image_id = image_rows.image_id
-    LEFT JOIN copy_stats
-        ON copy_stats.image_id = image_rows.image_id
+    LEFT JOIN disc_stats
+        ON disc_stats.image_id = image_rows.image_id
 ) AS image_operator_summary_refresh
 """
 
@@ -1594,16 +1487,16 @@ def _install_sqlite_image_operator_projection(conn: Connection) -> None:
             "finalized_image_covered_paths",
             refresh("SELECT OLD.image_id AS image_id"),
         ),
-        "riverhog_ios_image_copies_insert": (
-            "image_copies",
+        "riverhog_ios_image_discs_insert": (
+            "image_discs",
             refresh("SELECT NEW.image_id AS image_id"),
         ),
-        "riverhog_ios_image_copies_update": (
-            "image_copies",
+        "riverhog_ios_image_discs_update": (
+            "image_discs",
             refresh("SELECT OLD.image_id AS image_id UNION SELECT NEW.image_id AS image_id"),
         ),
-        "riverhog_ios_image_copies_delete": (
-            "image_copies",
+        "riverhog_ios_image_discs_delete": (
+            "image_discs",
             refresh("SELECT OLD.image_id AS image_id"),
         ),
     }
@@ -1731,8 +1624,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_ios_from_new_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_ios_from_new_image_copies()
+        "riverhog_ios_from_new_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_new_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -1744,8 +1637,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_ios_from_old_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_ios_from_old_image_copies()
+        "riverhog_ios_from_old_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_old_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -1757,8 +1650,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_ios_from_changed_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_ios_from_changed_image_copies()
+        "riverhog_ios_from_changed_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_ios_from_changed_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -1819,25 +1712,25 @@ $riverhog$;
             "riverhog_ios_from_old_covered_paths",
         ),
         (
-            "riverhog_ios_image_copies_insert",
-            "image_copies",
+            "riverhog_ios_image_discs_insert",
+            "image_discs",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_ios_from_new_image_copies",
+            "riverhog_ios_from_new_image_discs",
         ),
         (
-            "riverhog_ios_image_copies_update",
-            "image_copies",
+            "riverhog_ios_image_discs_update",
+            "image_discs",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_ios_from_changed_image_copies",
+            "riverhog_ios_from_changed_image_discs",
         ),
         (
-            "riverhog_ios_image_copies_delete",
-            "image_copies",
+            "riverhog_ios_image_discs_delete",
+            "image_discs",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
-            "riverhog_ios_from_old_image_copies",
+            "riverhog_ios_from_old_image_discs",
         ),
     )
     for trigger_name, table_name, timing, referencing, function_name in triggers:
@@ -1853,76 +1746,76 @@ $riverhog$;
         )
 
 
-def _disc_operator_summary_select_sql(affected_copies_sql: str) -> str:
+def _disc_operator_summary_select_sql(affected_discs_sql: str) -> str:
     return f"""
 SELECT *
 FROM (
-    WITH affected_copies(image_id, copy_id) AS (
-        {affected_copies_sql}
+    WITH affected_discs(image_id, disc_id) AS (
+        {affected_discs_sql}
     ),
-    distinct_copies AS (
-        SELECT DISTINCT image_id, copy_id
-        FROM affected_copies
+    distinct_discs AS (
+        SELECT DISTINCT image_id, disc_id
+        FROM affected_discs
         WHERE image_id IS NOT NULL
-            AND copy_id IS NOT NULL
+            AND disc_id IS NOT NULL
     ),
-    copy_rows AS (
+    disc_rows AS (
         SELECT
-            image_copies.image_id,
-            image_copies.copy_id,
-            image_copies.label_text,
-            image_copies.location,
-            image_copies.created_at,
-            COALESCE(image_copies.state, 'registered') AS state,
-            COALESCE(image_copies.verification_state, 'pending') AS verification_state,
+            image_discs.image_id,
+            image_discs.disc_id,
+            image_discs.label_text,
+            image_discs.location,
+            image_discs.created_at,
+            COALESCE(image_discs.state, 'registered') AS state,
+            COALESCE(image_discs.verification_state, 'pending') AS verification_state,
             finalized_images.filename
-        FROM image_copies
-        JOIN distinct_copies
-            ON distinct_copies.image_id = image_copies.image_id
-            AND distinct_copies.copy_id = image_copies.copy_id
+        FROM image_discs
+        JOIN distinct_discs
+            ON distinct_discs.image_id = image_discs.image_id
+            AND distinct_discs.disc_id = image_discs.disc_id
         JOIN finalized_images
-            ON finalized_images.image_id = image_copies.image_id
+            ON finalized_images.image_id = image_discs.image_id
     )
     SELECT
-        copy_rows.image_id,
-        copy_rows.copy_id,
-        copy_rows.label_text,
-        copy_rows.location,
-        copy_rows.created_at,
-        copy_rows.state,
-        copy_rows.verification_state,
-        copy_rows.filename,
+        disc_rows.image_id,
+        disc_rows.disc_id,
+        disc_rows.label_text,
+        disc_rows.location,
+        disc_rows.created_at,
+        disc_rows.state,
+        disc_rows.verification_state,
+        disc_rows.filename,
         CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
-    FROM copy_rows
+    FROM disc_rows
 ) AS disc_operator_summary_refresh
 """
 
 
 def _disc_operator_summary_upsert_sql(
     conn: Connection,
-    affected_copies_sql: str,
+    affected_discs_sql: str,
 ) -> str:
     columns = ", ".join(_DISC_OPERATOR_SUMMARY_COLUMNS)
-    select_sql = _disc_operator_summary_select_sql(affected_copies_sql)
+    select_sql = _disc_operator_summary_select_sql(affected_discs_sql)
     if conn.dialect.name == "sqlite":
         return f"INSERT OR REPLACE INTO disc_operator_summaries ({columns}) {select_sql}"
     updates = ", ".join(
         f"{column} = EXCLUDED.{column}"
         for column in _DISC_OPERATOR_SUMMARY_COLUMNS
-        if column not in {"image_id", "copy_id"}
+        if column not in {"image_id", "disc_id"}
     )
     return (
         f"INSERT INTO disc_operator_summaries ({columns}) "
         f"{select_sql} "
-        f"ON CONFLICT (image_id, copy_id) DO UPDATE SET {updates}"
+        f"ON CONFLICT (image_id, disc_id) DO UPDATE SET {updates}"
     )
 
 
 def _refresh_disc_operator_summaries(
     conn: Connection,
-    affected_copies_sql: str,
+    affected_discs_sql: str,
 ) -> None:
-    conn.execute(text(_disc_operator_summary_upsert_sql(conn, affected_copies_sql)))
+    conn.execute(text(_disc_operator_summary_upsert_sql(conn, affected_discs_sql)))
 
 
 def _install_disc_operator_projection(engine: Engine) -> None:
@@ -1937,31 +1830,31 @@ def _install_disc_operator_projection(engine: Engine) -> None:
 
 
 def _install_sqlite_disc_operator_projection(conn: Connection) -> None:
-    def refresh(affected_copies_sql: str) -> str:
+    def refresh(affected_discs_sql: str) -> str:
         columns = ", ".join(_DISC_OPERATOR_SUMMARY_COLUMNS)
-        select_sql = _disc_operator_summary_select_sql(affected_copies_sql)
+        select_sql = _disc_operator_summary_select_sql(affected_discs_sql)
         return f"INSERT OR REPLACE INTO disc_operator_summaries ({columns}) {select_sql};"
 
     trigger_sql = {
-        "riverhog_dos_image_copies_insert": (
-            "image_copies",
-            refresh("SELECT NEW.image_id AS image_id, NEW.copy_id AS copy_id"),
+        "riverhog_dos_image_discs_insert": (
+            "image_discs",
+            refresh("SELECT NEW.image_id AS image_id, NEW.disc_id AS disc_id"),
         ),
-        "riverhog_dos_image_copies_update": (
-            "image_copies",
+        "riverhog_dos_image_discs_update": (
+            "image_discs",
             refresh(
-                "SELECT OLD.image_id AS image_id, OLD.copy_id AS copy_id "
-                "UNION SELECT NEW.image_id AS image_id, NEW.copy_id AS copy_id"
+                "SELECT OLD.image_id AS image_id, OLD.disc_id AS disc_id "
+                "UNION SELECT NEW.image_id AS image_id, NEW.disc_id AS disc_id"
             ),
         ),
-        "riverhog_dos_image_copies_delete": (
-            "image_copies",
-            refresh("SELECT OLD.image_id AS image_id, OLD.copy_id AS copy_id"),
+        "riverhog_dos_image_discs_delete": (
+            "image_discs",
+            refresh("SELECT OLD.image_id AS image_id, OLD.disc_id AS disc_id"),
         ),
         "riverhog_dos_finalized_images_update": (
             "finalized_images",
             refresh(
-                "SELECT image_id, copy_id FROM image_copies "
+                "SELECT image_id, disc_id FROM image_discs "
                 "WHERE image_id = OLD.image_id OR image_id = NEW.image_id"
             ),
         ),
@@ -1981,7 +1874,7 @@ def _install_postgresql_disc_operator_projection(conn: Connection) -> None:
         conn,
         "SELECT "
         "split_part(pair_key, E'\\t', 1) AS image_id, "
-        "split_part(pair_key, E'\\t', 2) AS copy_id "
+        "split_part(pair_key, E'\\t', 2) AS disc_id "
         "FROM unnest(p_pair_keys) AS affected_pairs(pair_key)",
     )
     conn.execute(
@@ -1998,12 +1891,12 @@ BEGIN
     END IF;
 
     DELETE FROM disc_operator_summaries
-    WHERE image_id || E'\\t' || copy_id = ANY(p_pair_keys)
+    WHERE image_id || E'\\t' || disc_id = ANY(p_pair_keys)
         AND NOT EXISTS (
             SELECT 1
-            FROM image_copies
-            WHERE image_copies.image_id = disc_operator_summaries.image_id
-                AND image_copies.copy_id = disc_operator_summaries.copy_id
+            FROM image_discs
+            WHERE image_discs.image_id = disc_operator_summaries.image_id
+                AND image_discs.disc_id = disc_operator_summaries.disc_id
         );
 
     {refresh_sql};
@@ -2013,55 +1906,55 @@ $riverhog$;
         )
     )
     trigger_functions = {
-        "riverhog_dos_from_new_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_dos_from_new_image_copies()
+        "riverhog_dos_from_new_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_dos_from_new_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
     PERFORM riverhog_refresh_disc_operator_summaries(
         ARRAY(
-            SELECT DISTINCT image_id::text || E'\\t' || copy_id::text
+            SELECT DISTINCT image_id::text || E'\\t' || disc_id::text
             FROM new_rows
-            WHERE image_id IS NOT NULL AND copy_id IS NOT NULL
+            WHERE image_id IS NOT NULL AND disc_id IS NOT NULL
         )
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_dos_from_old_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_dos_from_old_image_copies()
+        "riverhog_dos_from_old_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_dos_from_old_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
     PERFORM riverhog_refresh_disc_operator_summaries(
         ARRAY(
-            SELECT DISTINCT image_id::text || E'\\t' || copy_id::text
+            SELECT DISTINCT image_id::text || E'\\t' || disc_id::text
             FROM old_rows
-            WHERE image_id IS NOT NULL AND copy_id IS NOT NULL
+            WHERE image_id IS NOT NULL AND disc_id IS NOT NULL
         )
     );
     RETURN NULL;
 END;
 $riverhog$;
 """,
-        "riverhog_dos_from_changed_image_copies": """
-CREATE OR REPLACE FUNCTION riverhog_dos_from_changed_image_copies()
+        "riverhog_dos_from_changed_image_discs": """
+CREATE OR REPLACE FUNCTION riverhog_dos_from_changed_image_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
 BEGIN
     PERFORM riverhog_refresh_disc_operator_summaries(
         ARRAY(
-            SELECT DISTINCT image_id::text || E'\\t' || copy_id::text
+            SELECT DISTINCT image_id::text || E'\\t' || disc_id::text
             FROM (
-                SELECT image_id, copy_id FROM old_rows
+                SELECT image_id, disc_id FROM old_rows
                 UNION
-                SELECT image_id, copy_id FROM new_rows
+                SELECT image_id, disc_id FROM new_rows
             ) AS affected
-            WHERE image_id IS NOT NULL AND copy_id IS NOT NULL
+            WHERE image_id IS NOT NULL AND disc_id IS NOT NULL
         )
     );
     RETURN NULL;
@@ -2076,16 +1969,16 @@ AS $riverhog$
 BEGIN
     PERFORM riverhog_refresh_disc_operator_summaries(
         ARRAY(
-            SELECT DISTINCT image_copies.image_id::text || E'\\t' || image_copies.copy_id::text
-            FROM image_copies
+            SELECT DISTINCT image_discs.image_id::text || E'\\t' || image_discs.disc_id::text
+            FROM image_discs
             JOIN (
                 SELECT image_id FROM old_rows
                 UNION
                 SELECT image_id FROM new_rows
             ) AS affected_images
-                ON affected_images.image_id = image_copies.image_id
-            WHERE image_copies.image_id IS NOT NULL
-                AND image_copies.copy_id IS NOT NULL
+                ON affected_images.image_id = image_discs.image_id
+            WHERE image_discs.image_id IS NOT NULL
+                AND image_discs.disc_id IS NOT NULL
         )
     );
     RETURN NULL;
@@ -2098,25 +1991,25 @@ $riverhog$;
 
     triggers = (
         (
-            "riverhog_dos_image_copies_insert",
-            "image_copies",
+            "riverhog_dos_image_discs_insert",
+            "image_discs",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_dos_from_new_image_copies",
+            "riverhog_dos_from_new_image_discs",
         ),
         (
-            "riverhog_dos_image_copies_update",
-            "image_copies",
+            "riverhog_dos_image_discs_update",
+            "image_discs",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_dos_from_changed_image_copies",
+            "riverhog_dos_from_changed_image_discs",
         ),
         (
-            "riverhog_dos_image_copies_delete",
-            "image_copies",
+            "riverhog_dos_image_discs_delete",
+            "image_discs",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
-            "riverhog_dos_from_old_image_copies",
+            "riverhog_dos_from_old_image_discs",
         ),
         (
             "riverhog_dos_finalized_images_update",
@@ -2191,13 +2084,12 @@ FROM (
             collection_files.path,
             collection_files.bytes,
             collection_files.hot,
-            collection_files.archived,
             EXISTS (
                 SELECT 1
-                FROM file_copies
-                WHERE file_copies.collection_id = collection_files.collection_id
-                    AND file_copies.path = collection_files.path
-            ) AS registered_disc_coverage,
+                FROM file_discs
+                WHERE file_discs.collection_id = collection_files.collection_id
+                    AND file_discs.path = collection_files.path
+            ) AS disc_coverage,
             CAST(CURRENT_TIMESTAMP AS TEXT) AS updated_at
         FROM fetch_rows
         JOIN fetch_selectors
@@ -2211,8 +2103,7 @@ FROM (
         path,
         bytes,
         hot,
-        archived,
-        registered_disc_coverage,
+        disc_coverage,
         updated_at
     FROM selected_files
 ) AS fetch_operator_file_refresh
@@ -2571,15 +2462,15 @@ def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
                 _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path"),
             ),
         ),
-        "riverhog_fos_file_copies_insert": (
-            "file_copies",
+        "riverhog_fos_file_discs_insert": (
+            "file_discs",
             _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
             ),
         ),
-        "riverhog_fos_file_copies_update": (
-            "file_copies",
+        "riverhog_fos_file_discs_update": (
+            "file_discs",
             _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path")
@@ -2587,8 +2478,8 @@ def _install_sqlite_fetch_operator_projection(conn: Connection) -> None:
                 + _sqlite_affected_fetch_ids_for_file("NEW.collection_id", "NEW.path"),
             ),
         ),
-        "riverhog_fos_file_copies_delete": (
-            "file_copies",
+        "riverhog_fos_file_discs_delete": (
+            "file_discs",
             _sqlite_fetch_operator_full_refresh(
                 conn,
                 _sqlite_affected_fetch_ids_for_file("OLD.collection_id", "OLD.path"),
@@ -2844,8 +2735,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_fos_from_new_file_copies": f"""
-CREATE OR REPLACE FUNCTION riverhog_fos_from_new_file_copies()
+        "riverhog_fos_from_new_file_discs": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_new_file_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -2862,8 +2753,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_fos_from_old_file_copies": f"""
-CREATE OR REPLACE FUNCTION riverhog_fos_from_old_file_copies()
+        "riverhog_fos_from_old_file_discs": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_old_file_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -2880,8 +2771,8 @@ BEGIN
 END;
 $riverhog$;
 """,
-        "riverhog_fos_from_changed_file_copies": f"""
-CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_file_copies()
+        "riverhog_fos_from_changed_file_discs": f"""
+CREATE OR REPLACE FUNCTION riverhog_fos_from_changed_file_discs()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $riverhog$
@@ -3011,25 +2902,25 @@ $riverhog$;
             "riverhog_fos_from_old_files",
         ),
         (
-            "riverhog_fos_file_copies_insert",
-            "file_copies",
+            "riverhog_fos_file_discs_insert",
+            "file_discs",
             "AFTER INSERT",
             "REFERENCING NEW TABLE AS new_rows",
-            "riverhog_fos_from_new_file_copies",
+            "riverhog_fos_from_new_file_discs",
         ),
         (
-            "riverhog_fos_file_copies_update",
-            "file_copies",
+            "riverhog_fos_file_discs_update",
+            "file_discs",
             "AFTER UPDATE",
             "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
-            "riverhog_fos_from_changed_file_copies",
+            "riverhog_fos_from_changed_file_discs",
         ),
         (
-            "riverhog_fos_file_copies_delete",
-            "file_copies",
+            "riverhog_fos_file_discs_delete",
+            "file_discs",
             "AFTER DELETE",
             "REFERENCING OLD TABLE AS old_rows",
-            "riverhog_fos_from_old_file_copies",
+            "riverhog_fos_from_old_file_discs",
         ),
         (
             "riverhog_fos_fetch_entries_insert",
@@ -3074,6 +2965,10 @@ def initialize_db(database_url: str) -> None:
     It is safe to call multiple times; all operations are idempotent.
     """
     from riverhog_core.catalog_models import (  # noqa: PLC0415 - avoid circular import at module level
+        ArchiveRestoreCollectionRecord,
+        ArchiveRestoreImageRecord,
+        ArchiveRestoreRecord,
+        ArchiveUsageSnapshotRecord,
         CandidateCoveredPathRecord,
         CollectionArchiveRecord,
         CollectionFileRecord,
@@ -3088,17 +2983,13 @@ def initialize_db(database_url: str) -> None:
         FetchOperatorSummaryRecord,
         FetchRecord,
         FetchSelectorRecord,
-        FileCopyRecord,
+        FileDiscRecord,
         FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
         FinalizedImageCoveredPathRecord,
         FinalizedImageRecord,
-        GlacierRecoverySessionCollectionRecord,
-        GlacierRecoverySessionImageRecord,
-        GlacierRecoverySessionRecord,
-        GlacierUsageSnapshotRecord,
-        ImageCopyEventRecord,
-        ImageCopyRecord,
+        ImageDiscEventRecord,
+        ImageDiscRecord,
         ImageOperatorSummaryRecord,
         PlannedCandidateRecord,
     )
@@ -3116,28 +3007,25 @@ def initialize_db(database_url: str) -> None:
         FetchOperatorSummaryRecord,
         FetchRecord,
         FetchSelectorRecord,
-        FileCopyRecord,
+        FileDiscRecord,
         FinalizedImageCollectionArtifactRecord,
         FinalizedImageCoveragePartRecord,
         FinalizedImageCoveredPathRecord,
         FinalizedImageRecord,
-        GlacierRecoverySessionImageRecord,
-        GlacierRecoverySessionCollectionRecord,
-        GlacierRecoverySessionRecord,
-        GlacierUsageSnapshotRecord,
+        ArchiveRestoreImageRecord,
+        ArchiveRestoreCollectionRecord,
+        ArchiveRestoreRecord,
+        ArchiveUsageSnapshotRecord,
         ImageOperatorSummaryRecord,
-        ImageCopyEventRecord,
-        ImageCopyRecord,
+        ImageDiscEventRecord,
+        ImageDiscRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         PlannedCandidateRecord,
     )
     engine = create_catalog_engine(database_url)
-    _check_database_is_baseline_compatible(engine)
     Base.metadata.create_all(engine)
-    _ensure_schema_columns(engine)
     _ensure_schema_indexes(engine)
-    _ensure_schema_baseline_marker(engine)
     _install_collection_operator_projection(engine)
     _install_collection_image_operator_projection(engine)
     _install_image_operator_projection(engine)

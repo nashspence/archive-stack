@@ -639,10 +639,10 @@ def _finalized_collection_upload_payload(
             for item in manifest
         ]
         files_total = len(files)
-    glacier = collection.get("glacier")
-    archived_bytes = 0
-    if isinstance(glacier, dict):
-        archived_bytes = int(glacier.get("stored_bytes") or 0)
+    archive = collection.get("archive")
+    archive_stored_bytes = 0
+    if isinstance(archive, dict):
+        archive_stored_bytes = int(archive.get("stored_bytes") or 0)
     return {
         "collection_id": collection_id,
         "ingest_source": collection.get("ingest_source"),
@@ -659,8 +659,8 @@ def _finalized_collection_upload_payload(
         "upload_state_expires_at": None,
         "latest_failure": None,
         "archive_phase": "completed",
-        "archive_uploaded_bytes": archived_bytes or bytes_total,
-        "archive_total_bytes": archived_bytes or bytes_total,
+        "archive_uploaded_bytes": archive_stored_bytes or bytes_total,
+        "archive_total_bytes": archive_stored_bytes or bytes_total,
         "archive_uploaded_parts": None,
         "archive_total_parts": None,
         "files": files,
@@ -683,7 +683,7 @@ def _wait_for_finalized_collection(
 
     _notify_upload_status(
         status,
-        "All files uploaded; waiting for Glacier archive verification",
+        "All files uploaded; waiting for archive verification",
     )
     while True:
         now = time.monotonic()
@@ -988,20 +988,19 @@ _COLLECTION_SORT_FIELDS = {
     "bytes",
     "files",
     "hot_bytes",
-    "archived_bytes",
-    "pending_bytes",
-    "protected_bytes",
+    "disc_coverage",
+    "disc_redundancy",
 }
-_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived"}
-_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "archived", "disc"}
+_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "disc"}
+_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot", "disc"}
 
 
-def _collection_list_glacier_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
-    glacier = collection.get("glacier")
-    if not isinstance(glacier, Mapping):
+def _collection_list_archive_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
+    archive = collection.get("archive")
+    if not isinstance(archive, Mapping):
         return None
     return {
-        key: glacier[key]
+        key: archive[key]
         for key in (
             "state",
             "storage_class",
@@ -1010,7 +1009,7 @@ def _collection_list_glacier_payload(collection: Mapping[str, object]) -> dict[s
             "last_verified_at",
             "failure",
         )
-        if key in glacier
+        if key in archive
     }
 
 
@@ -1018,11 +1017,7 @@ def _collection_list_disc_payload(collection: Mapping[str, object]) -> dict[str,
     disc_coverage = collection.get("disc_coverage")
     if not isinstance(disc_coverage, Mapping):
         return None
-    return {
-        key: disc_coverage[key]
-        for key in ("state", "covered_bytes", "verified_physical_bytes")
-        if key in disc_coverage
-    }
+    return {key: disc_coverage[key] for key in ("state", "bytes") if key in disc_coverage}
 
 
 def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str, object]:
@@ -1033,18 +1028,16 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
             "files",
             "bytes",
             "hot_bytes",
-            "archived_bytes",
-            "pending_bytes",
-            "protected_bytes",
-            "protection_state",
+            "disc_coverage",
+            "disc_redundancy",
             "archive_format",
             "compression",
         )
         if key in collection
     }
-    glacier = _collection_list_glacier_payload(collection)
-    if glacier is not None:
-        payload["glacier"] = glacier
+    archive = _collection_list_archive_payload(collection)
+    if archive is not None:
+        payload["archive"] = archive
     disc_coverage = _collection_list_disc_payload(collection)
     if disc_coverage is not None:
         payload["disc_coverage"] = disc_coverage
@@ -1070,7 +1063,7 @@ def _compact_collection_page(payload: Mapping[str, object]) -> dict[str, object]
             "sort",
             "order",
             "query",
-            "protection_state",
+            "disc_redundancy",
         )
         if key in payload
     }
@@ -1084,7 +1077,7 @@ def _sorted_collection_page(
     page: int,
     per_page: int,
     query: str | None,
-    protection_state: str | None,
+    disc_redundancy: str | None,
     sort: str,
     order: str,
 ) -> dict[str, Any]:
@@ -1101,7 +1094,7 @@ def _sorted_collection_page(
         page=page,
         per_page=per_page,
         q=query,
-        protection_state=protection_state,
+        disc_redundancy=disc_redundancy,
         sort=sort,
         order=normalized_order,
     )
@@ -1110,7 +1103,7 @@ def _sorted_collection_page(
         "sort": sort,
         "order": normalized_order,
         "query": query,
-        "protection_state": protection_state,
+        "disc_redundancy": disc_redundancy,
     }
 
 
@@ -1124,11 +1117,11 @@ def collection_list_cmd(
         str | None,
         typer.Option("--query", "--search", help="Substring match over collection ids"),
     ] = None,
-    protection_state: Annotated[
+    disc_redundancy: Annotated[
         str | None,
         typer.Option(
-            "--protection",
-            help="Filter by under_protected, cloud_only, physical_only, or fully_protected",
+            "--disc-redundancy",
+            help="Filter by none, partial, or full disc redundancy",
         ),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1140,7 +1133,7 @@ def collection_list_cmd(
         page=page,
         per_page=per_page,
         query=query,
-        protection_state=protection_state,
+        disc_redundancy=disc_redundancy,
         sort=sort,
         order=order,
     )
@@ -1371,9 +1364,9 @@ def find_cmd(
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
     ] = None,
-    archived: Annotated[
+    disc_coverage: Annotated[
         bool | None,
-        typer.Option("--archived/--not-archived", help="Filter by deep-archive coverage"),
+        typer.Option("--disc/--no-disc", help="Filter by disc coverage"),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -1395,7 +1388,7 @@ def find_cmd(
         order=normalized_order,
         collection=collection,
         hot=hot,
-        archived=archived,
+        disc_coverage=disc_coverage,
     )
     emit(payload if json_mode else format_find(payload), json_mode=json_mode)
 
@@ -1413,8 +1406,8 @@ def show_cmd(
         emit(payload, json_mode=True)
         return
     payload = api.get_collection(collection, coverage_path_limit=4)
-    glacier_payload = api.get_glacier_report(collection=collection)
-    emit(format_collection_summary(payload, glacier_payload), json_mode=False)
+    archive_payload = api.get_archive_report(collection=collection)
+    emit(format_collection_summary(payload, archive_payload), json_mode=False)
 
 
 @fetch_app.command("create")
@@ -1540,13 +1533,9 @@ def fetch_files_cmd(
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
     ] = None,
-    archived: Annotated[
-        bool | None,
-        typer.Option("--archived/--not-archived", help="Filter by deep-archive coverage"),
-    ] = None,
     disc_coverage: Annotated[
         bool | None,
-        typer.Option("--disc/--no-disc", help="Filter by registered disc coverage"),
+        typer.Option("--disc/--no-disc", help="Filter by disc coverage"),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -1569,7 +1558,6 @@ def fetch_files_cmd(
         order=normalized_order,
         query=query,
         hot=hot,
-        archived=archived,
         disc_coverage=disc_coverage,
     )
     emit(payload if json_mode else format_fetch_files(payload), json_mode=json_mode)
@@ -1578,8 +1566,8 @@ def fetch_files_cmd(
 @fetch_app.command("start")
 def fetch_start_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    cloud: Annotated[
-        bool, typer.Option("--cloud", help="Queue for cloud archive recovery")
+    archive: Annotated[
+        bool, typer.Option("--archive", help="Queue for automatic archive restore")
     ] = False,
     dry_run: Annotated[
         bool,
@@ -1587,10 +1575,10 @@ def fetch_start_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Queue a fetch for djdan, or for cloud recovery with --cloud."""
+    """Start a fetch with djdan or an automatic archive restore."""
 
     api = client()
-    payload = api.start_fetch(fetch_id, cloud=cloud, dry_run=dry_run)
+    payload = api.start_fetch(fetch_id, archive=archive, dry_run=dry_run)
     if json_mode:
         emit(payload, json_mode=True)
         return

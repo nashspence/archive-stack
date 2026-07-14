@@ -24,8 +24,7 @@ except Exception as exc:  # pragma: no cover - optional dependency path
 else:  # pragma: no cover - import success is environment-specific
     _MILP_IMPORT_ERROR = None
 
-# Preserve the historical capability probes and monkeypatch points used by
-# callers and tests while still making the optional dependency path explicit.
+# Expose dependency handles for availability checks and focused solver tests.
 np: Any = _np_import
 Bounds: Any = _bounds_import
 LinearConstraint: Any = _linear_constraint_import

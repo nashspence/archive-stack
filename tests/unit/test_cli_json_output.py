@@ -8,7 +8,7 @@ from riverhog_cli.main import _compact_collection_page
 from riverhog_cli.output import emit
 
 
-def test_collection_list_json_omits_heavy_nested_coverage() -> None:
+def test_collection_list_json_keeps_collection_summaries_compact() -> None:
     payload = _compact_collection_page(
         {
             "page": 1,
@@ -23,13 +23,9 @@ def test_collection_list_json_omits_heavy_nested_coverage() -> None:
                     "files": 2,
                     "bytes": 100,
                     "hot_bytes": 25,
-                    "archived_bytes": 100,
-                    "pending_bytes": 0,
-                    "protected_bytes": 50,
-                    "protection_state": "under_protected",
                     "archive_format": "tar",
                     "compression": "none",
-                    "glacier": {
+                    "archive": {
                         "state": "uploaded",
                         "storage_class": "DEEP_ARCHIVE",
                         "stored_bytes": 128,
@@ -37,9 +33,9 @@ def test_collection_list_json_omits_heavy_nested_coverage() -> None:
                     },
                     "disc_coverage": {
                         "state": "partial",
-                        "covered_bytes": 50,
-                        "verified_physical_bytes": 50,
+                        "bytes": 50,
                     },
+                    "disc_redundancy": {"state": "partial", "bytes": 50},
                     "image_coverage": [
                         {
                             "id": "20260420T040001Z",
@@ -57,22 +53,18 @@ def test_collection_list_json_omits_heavy_nested_coverage() -> None:
             "files": 2,
             "bytes": 100,
             "hot_bytes": 25,
-            "archived_bytes": 100,
-            "pending_bytes": 0,
-            "protected_bytes": 50,
-            "protection_state": "under_protected",
             "archive_format": "tar",
             "compression": "none",
-            "glacier": {
+            "archive": {
                 "state": "uploaded",
                 "storage_class": "DEEP_ARCHIVE",
                 "stored_bytes": 128,
             },
             "disc_coverage": {
                 "state": "partial",
-                "covered_bytes": 50,
-                "verified_physical_bytes": 50,
+                "bytes": 50,
             },
+            "disc_redundancy": {"state": "partial", "bytes": 50},
         }
     ]
 

@@ -26,7 +26,7 @@ from riverhog_core.stores.s3_archive_store import (
     ENCRYPTION_METADATA,
     S3ArchiveStore,
 )
-from riverhog_core.stores.s3_support import create_glacier_s3_client
+from riverhog_core.stores.s3_support import create_archive_s3_client
 from tests.fixtures.crypto import FixtureProofStamper
 
 pytestmark = pytest.mark.integration
@@ -169,22 +169,22 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
     prefix = f"garage-encrypted-test/{uuid.uuid4().hex}"
     archive_storage_prefix = f"{prefix}/archives/opaque"
     passphrase = os.environ.get(
-        "RIVERHOG_GLACIER_ARCHIVE_PASSPHRASE",
+        "RIVERHOG_ARCHIVE_PASSPHRASE",
         "garage encrypted archive integration passphrase",
     )
     config = replace(
         load_runtime_config(),
-        glacier_prefix=prefix,
-        glacier_archive_encryption="age_scrypt",
-        glacier_archive_passphrase=passphrase,
-        glacier_archive_work_factor=12,
-        glacier_multipart_part_bytes=5 * 1024 * 1024,
-        glacier_multipart_concurrency=1,
+        archive_prefix=prefix,
+        archive_encryption="age_scrypt",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
+        archive_multipart_part_bytes=5 * 1024 * 1024,
+        archive_multipart_concurrency=1,
     )
     package = _large_package()
     tracker = _MemoryMultipartTracker()
-    real_client = create_glacier_s3_client(config)
-    _ensure_bucket_exists(real_client, bucket=config.glacier_bucket)
+    real_client = create_archive_s3_client(config)
+    _ensure_bucket_exists(real_client, bucket=config.archive_bucket)
     failing_client = _FailingUploadPartClient(real_client, fail_after_successes=1)
     store = S3ArchiveStore(config)
     store._client = failing_client  # type: ignore[attr-defined]
@@ -217,12 +217,12 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         assert receipt.proof.object_path.endswith("/manifest.yml.ots.age")
 
         archive_head = real_client.head_object(
-            Bucket=config.glacier_bucket,
+            Bucket=config.archive_bucket,
             Key=receipt.archive.object_path,
         )
         assert archive_head["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
         manifest_object = real_client.get_object(
-            Bucket=config.glacier_bucket,
+            Bucket=config.archive_bucket,
             Key=receipt.manifest.object_path,
         )
         manifest_ciphertext = b"".join(_body_chunks(manifest_object["Body"]))
@@ -249,5 +249,5 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
             == package.proof_bytes
         )
     finally:
-        _abort_multipart_uploads(real_client, bucket=config.glacier_bucket, prefix=prefix)
-        _delete_prefix(real_client, bucket=config.glacier_bucket, prefix=prefix)
+        _abort_multipart_uploads(real_client, bucket=config.archive_bucket, prefix=prefix)
+        _delete_prefix(real_client, bucket=config.archive_bucket, prefix=prefix)

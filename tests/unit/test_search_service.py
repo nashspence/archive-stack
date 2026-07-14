@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
+from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord, FileDiscRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
 from tests.unit.db_helpers import sqlite_url
@@ -36,7 +36,6 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=21,
                     sha256="b" * 64,
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -44,7 +43,6 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=13,
                     sha256="a" * 64,
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -52,9 +50,19 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
                     bytes=34,
                     sha256="c" * 64,
                     hot=False,
-                    archived=True,
                 ),
             ]
+        )
+        session.add(
+            FileDiscRecord(
+                collection_id="docs",
+                path="tax/2022/invoice-123.pdf",
+                disc_id="disc-1",
+                image_id="image-1",
+                location="shelf-1",
+                disc_path="docs/tax/2022/invoice-123.pdf.age",
+                enc_json="{}",
+            )
         )
 
 
@@ -88,12 +96,12 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
             "bytes": 21,
             "sha256": "b" * 64,
             "hot": True,
-            "archived": False,
+            "disc_coverage": False,
         }
     ]
 
 
-def test_search_files_filters_archive_state(tmp_path: Path) -> None:
+def test_search_files_filters_disc_coverage(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     _seed_docs_collection(sqlite_path)
@@ -103,12 +111,12 @@ def test_search_files_filters_archive_state(tmp_path: Path) -> None:
     payload = service.search(
         q=None,
         collection="docs",
-        archived=True,
+        disc_coverage=True,
         page=1,
         per_page=25,
         sort="target",
         order="asc",
     )
 
-    assert payload["archived"] is True
+    assert payload["disc_coverage"] is True
     assert [file["target"] for file in payload["files"]] == ["docs/tax/2022/invoice-123.pdf"]

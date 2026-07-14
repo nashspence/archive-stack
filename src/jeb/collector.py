@@ -11,7 +11,6 @@ import sqlite3
 import subprocess
 import threading
 import time
-from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -34,14 +33,14 @@ from munchy.preflight import (
     MediaPreflightResult,
     run_media_preflight,
 )
-from munchy.profile_routing import (
+from munchy.routing import (
     apply_sidecar_rules,
     exiftool_routing_facts,
-    profile_routing_exiftool_tags,
-    profile_routing_file_requires_exiftool,
-    profile_routing_file_requires_probe,
     routing_exiftool_summary,
+    routing_exiftool_tags,
     routing_file_facts,
+    routing_file_requires_exiftool,
+    routing_file_requires_probe,
     routing_probe_summary,
     sidecar_exiftool_fact_requests,
 )
@@ -49,7 +48,7 @@ from munchy.runner_client import (
     MunchyRunnerClient,
     RunnerInputFile,
     RunnerJobTerminalDuringUpload,
-    RunnerProfileRoutingPreflightFile,
+    RunnerRoutingPreflightFile,
     RunnerUploadRequest,
     job_finished_cleanly,
 )
@@ -74,11 +73,11 @@ from riverhog_core.webhooks import (
 LOG = logging.getLogger("jeb")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
-BATCH_LIST_SORT_FIELDS = frozenset(
+ATTEMPT_LIST_SORT_FIELDS = frozenset(
     {
         "attempt",
         "bytes",
-        "collection",
+        "collection_slug",
         "collection_timestamp",
         "created_at",
         "file_count",
@@ -109,7 +108,7 @@ def format_progress_bytes(value: int) -> str:
 
 def routing_preflight_notification_message(
     *,
-    source_id: str,
+    account_id: str,
     file_count: int,
     unmatched_count: int,
 ) -> str:
@@ -117,17 +116,17 @@ def routing_preflight_notification_message(
         f"Munchy routing preflight failed: {unmatched_count}/"
         f"{file_count} {plural(file_count, 'file')} unmatched."
     )
-    message = f"{base} Next: fix routes, then run `jeb archive-now --account {source_id}`."
+    message = f"{base} Next: fix routes, then run `jeb archive-now --account {account_id}`."
     if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
         return message
     return f"{base} Next: fix routes, then retry Jeb archive."
 
 
-def munchy_preflight_notification_message(*, source_id: str, error: BaseException) -> str:
+def munchy_preflight_notification_message(*, account_id: str, error: BaseException) -> str:
     status = getattr(error, "status", None)
     reason = f"HTTP {status}" if status is not None else error.__class__.__name__
     base = f"Munchy routing preflight API failed ({reason}); no upload started."
-    message = f"{base} Next: repair Munchy, then run `jeb archive-now --account {source_id}`."
+    message = f"{base} Next: repair Munchy, then run `jeb archive-now --account {account_id}`."
     if len(message) <= ROUTING_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
         return message
     return "Munchy routing preflight API failed. Next: repair Munchy, then retry Jeb archive."
@@ -226,14 +225,10 @@ def sqlite_like_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
-def munchy_archive_mode(value: str) -> str:
-    mode = str(value or "av1_nvenc").strip()
-    if mode not in {"av1_nvenc", "audio", "preserve"}:
-        raise ValueError("archive_mode must be av1_nvenc, audio, or preserve")
+def munchy_output_mode(value: str) -> str:
+    mode = str(value or "video").strip()
+    if mode not in {"video", "audio", "preserve"}:
+        raise ValueError("output_mode must be video, audio, or preserve")
     return mode
 
 
@@ -299,25 +294,18 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class SourceConfig:
+class AccountConfig:
     id: str
     enabled: bool
     path: Path
     upload_root: str
     stable_seconds: int
     include_extensions: frozenset[str]
-
-
-@dataclass(frozen=True)
-class CollectionConfig:
-    id: str
-    enabled: bool
     collection_slug: str
     target: str
     notify: Mapping[str, Any]
     threshold_bytes: int
     cleanup: Literal["never", "after_target_success"]
-    source_ids: tuple[str, ...]
     cadence: Cadence
     weekday: int
     hour: int
@@ -330,8 +318,7 @@ class JebConfig:
     collector: CollectorSettings
     notify: NotifySettings
     targets: Mapping[str, TargetConfig]
-    sources: tuple[SourceConfig, ...]
-    collections: tuple[CollectionConfig, ...]
+    accounts: tuple[AccountConfig, ...]
     munchy_job_defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -346,43 +333,25 @@ class EligibleFile:
 
 
 class Notifier(Protocol):
-    def critical_batch_issue(
+    def issue(
         self,
         *,
-        batch: Mapping[str, Any],
+        context: Mapping[str, Any],
         message: str,
         component: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool: ...
-
-    def enrollment_issue(
-        self,
-        *,
-        batch: Mapping[str, Any],
-        message: str,
-        component: str,
+        severity: str,
         notify: Mapping[str, Any] | None = None,
     ) -> bool: ...
 
 
 class NullNotifier:
-    def critical_batch_issue(
+    def issue(
         self,
         *,
-        batch: Mapping[str, Any],
+        context: Mapping[str, Any],
         message: str,
         component: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool:
-        _ = notify
-        return True
-
-    def enrollment_issue(
-        self,
-        *,
-        batch: Mapping[str, Any],
-        message: str,
-        component: str,
+        severity: str,
         notify: Mapping[str, Any] | None = None,
     ) -> bool:
         _ = notify
@@ -393,48 +362,13 @@ class WebhookNotifier:
     def __init__(self, settings: NotifySettings) -> None:
         self.settings = settings
 
-    def critical_batch_issue(
-        self,
-        *,
-        batch: Mapping[str, Any],
-        message: str,
-        component: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool:
-        return self.issue(
-            batch=batch,
-            message=message,
-            component=component,
-            severity="critical",
-            log_label="critical jeb webhook",
-            notify=notify,
-        )
-
-    def enrollment_issue(
-        self,
-        *,
-        batch: Mapping[str, Any],
-        message: str,
-        component: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool:
-        return self.issue(
-            batch=batch,
-            message=message,
-            component=component,
-            severity="warning",
-            log_label="enrollment jeb webhook",
-            notify=notify,
-        )
-
     def issue(
         self,
         *,
-        batch: Mapping[str, Any],
+        context: Mapping[str, Any],
         message: str,
         component: str,
         severity: str,
-        log_label: str,
         notify: Mapping[str, Any] | None = None,
     ) -> bool:
         if notify is None:
@@ -444,9 +378,7 @@ class WebhookNotifier:
         else:
             if not bool(notify.get("enabled", True)):
                 return True
-            recipients = tuple(str(item) for item in sequence(notify.get("recipients"))) or (
-                None,
-            )
+            recipients = tuple(str(item) for item in sequence(notify.get("recipients"))) or (None,)
         delivered_at = utcnow()
         ok = True
         for recipient in recipients:
@@ -466,7 +398,7 @@ class WebhookNotifier:
             )
             payload = build_jeb_event_payload(
                 event="jeb.issue",
-                batch=batch,
+                context=context,
                 message=message,
                 severity=severity,
                 delivered_at=delivered_at,
@@ -476,13 +408,13 @@ class WebhookNotifier:
             try:
                 post_webhook(config=config, payload=payload)
             except Exception:
-                LOG.exception("failed to deliver %s for batch %s", log_label, batch["id"])
+                LOG.exception("failed to deliver Jeb issue for %s", context.get("id", "unknown"))
                 ok = False
         return ok
 
 
 class TargetRunner(Protocol):
-    def advance(self, collector: Collector, batch_id: str) -> None: ...
+    def advance(self, collector: Collector, attempt_id: str) -> None: ...
 
 
 class Collector:
@@ -521,17 +453,11 @@ class Collector:
             self.ensure_routing_preflight_schema(conn)
 
     def create_batch_schema(self, conn: sqlite3.Connection) -> None:
-        existing_tables = {
-            str(row["name"])
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS batches (
                 id TEXT PRIMARY KEY,
-                collection_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
                 target_name TEXT NOT NULL,
                 collection_slug TEXT NOT NULL,
                 collection_timestamp TEXT NOT NULL,
@@ -567,7 +493,7 @@ class Collector:
             """
             CREATE TABLE IF NOT EXISTS files (
                 batch_id TEXT NOT NULL,
-                source_path TEXT NOT NULL,
+                input_path TEXT NOT NULL,
                 target_path TEXT NOT NULL,
                 bytes INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
@@ -589,53 +515,22 @@ class Collector:
             )
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS batch_sources (
-                batch_id TEXT NOT NULL,
-                source_id TEXT NOT NULL,
-                PRIMARY KEY (batch_id, source_id),
-                FOREIGN KEY(batch_id) REFERENCES batches(id)
-            )
-            """
-        )
-        batch_columns = table_columns(conn, "batches")
-        added_batch_summary_columns = False
-        if "file_count" not in batch_columns:
-            conn.execute(
-                "ALTER TABLE batches ADD COLUMN file_count INTEGER NOT NULL DEFAULT 0"
-            )
-            added_batch_summary_columns = True
-        if "total_bytes" not in batch_columns:
-            conn.execute(
-                "ALTER TABLE batches ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0"
-            )
-            added_batch_summary_columns = True
-        if added_batch_summary_columns:
-            self.backfill_batch_file_summaries(conn)
-        if "batch_sources" not in existing_tables:
-            self.backfill_batch_sources(conn)
         self.ensure_batch_file_summary_triggers(conn)
-        self.ensure_batch_source_triggers(conn)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection_period "
-            "ON batches(collection_id, collection_timestamp)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_account_period "
+            "ON batches(account_id, collection_timestamp)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_collection "
-            "ON batches(collection_id, id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_account ON batches(account_id, id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_target "
-            "ON batches(target_name, id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_target ON batches(target_name, id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_file_count "
-            "ON batches(file_count, id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_file_count ON batches(file_count, id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_total_bytes "
-            "ON batches(total_bytes, id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_total_bytes ON batches(total_bytes, id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_state "
@@ -654,53 +549,15 @@ class Collector:
             "ON batch_attempts(state, updated_at, id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_job "
-            "ON batch_attempts(job_id, id)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_job ON batch_attempts(job_id, id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batch_attempts_batch_state "
             "ON batch_attempts(batch_id, state)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batch_sources_source "
-            "ON batch_sources(source_id, batch_id)"
-        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jeb_files_batch ON files(batch_id)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_attempt_files_attempt ON attempt_files(attempt_id)"
-        )
-
-    def backfill_batch_file_summaries(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            UPDATE batches
-            SET
-                file_count = (
-                    SELECT COUNT(*)
-                    FROM files
-                    WHERE files.batch_id = batches.id
-                ),
-                total_bytes = COALESCE((
-                    SELECT SUM(bytes)
-                    FROM files
-                    WHERE files.batch_id = batches.id
-                ), 0)
-            """
-        )
-
-    def backfill_batch_sources(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
-            SELECT DISTINCT
-                batch_id,
-                CASE
-                    WHEN instr(target_path, '/') = 0 THEN target_path
-                    ELSE substr(target_path, 1, instr(target_path, '/') - 1)
-                END AS source_id
-            FROM files
-            WHERE target_path != ''
-            """
         )
 
     def ensure_batch_file_summary_triggers(self, conn: sqlite3.Connection) -> None:
@@ -763,89 +620,16 @@ class Collector:
             """
         )
 
-    def ensure_batch_source_triggers(self, conn: sqlite3.Connection) -> None:
-        source_expr_new = (
-            "CASE WHEN instr(NEW.target_path, '/') = 0 THEN NEW.target_path "
-            "ELSE substr(NEW.target_path, 1, instr(NEW.target_path, '/') - 1) END"
-        )
-        source_expr_old = (
-            "CASE WHEN instr(OLD.target_path, '/') = 0 THEN OLD.target_path "
-            "ELSE substr(OLD.target_path, 1, instr(OLD.target_path, '/') - 1) END"
-        )
-        conn.execute(
-            f"""
-            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_insert
-            AFTER INSERT ON files
-            BEGIN
-                INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
-                VALUES(NEW.batch_id, {source_expr_new});
-            END
-            """
-        )
-        conn.execute(
-            f"""
-            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_delete
-            AFTER DELETE ON files
-            BEGIN
-                DELETE FROM batch_sources
-                WHERE batch_id = OLD.batch_id
-                  AND source_id = {source_expr_old}
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM files
-                      WHERE files.batch_id = OLD.batch_id
-                        AND (
-                            files.target_path = {source_expr_old}
-                            OR substr(
-                                files.target_path,
-                                1,
-                                length({source_expr_old}) + 1
-                            ) = {source_expr_old} || '/'
-                        )
-                  );
-            END
-            """
-        )
-        conn.execute(
-            f"""
-            CREATE TRIGGER IF NOT EXISTS trg_jeb_batch_sources_update
-            AFTER UPDATE OF batch_id, target_path ON files
-            BEGIN
-                DELETE FROM batch_sources
-                WHERE batch_id = OLD.batch_id
-                  AND source_id = {source_expr_old}
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM files
-                      WHERE files.batch_id = OLD.batch_id
-                        AND files.rowid != NEW.rowid
-                        AND (
-                            files.target_path = {source_expr_old}
-                            OR substr(
-                                files.target_path,
-                                1,
-                                length({source_expr_old}) + 1
-                            ) = {source_expr_old} || '/'
-                        )
-                  );
-
-                INSERT OR IGNORE INTO batch_sources(batch_id, source_id)
-                VALUES(NEW.batch_id, {source_expr_new});
-            END
-            """
-        )
-
     def ensure_routing_preflight_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS routing_preflight_failures (
-                source_id TEXT PRIMARY KEY,
+                account_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
-                failure_kind TEXT NOT NULL DEFAULT 'profile_routing',
-                collection_id TEXT NOT NULL,
+                failure_kind TEXT NOT NULL DEFAULT 'routing',
                 collection_slug TEXT NOT NULL,
                 target_name TEXT NOT NULL,
-                source_paths_json TEXT NOT NULL,
+                input_paths_json TEXT NOT NULL,
                 failure_json TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 message TEXT NOT NULL,
@@ -861,12 +645,6 @@ class Collector:
             )
             """
         )
-        columns = table_columns(conn, "routing_preflight_failures")
-        if "failure_kind" not in columns:
-            conn.execute(
-                "ALTER TABLE routing_preflight_failures "
-                "ADD COLUMN failure_kind TEXT NOT NULL DEFAULT 'profile_routing'"
-            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_routing_preflight_failures_state "
             "ON routing_preflight_failures(state, updated_at)"
@@ -882,15 +660,15 @@ class Collector:
         with self.operation_lock:
             self.init_db()
             self.resolve_inactive_routing_preflight_failures()
-            for batch_id in self.active_batch_ids():
-                self.process_batch(batch_id)
-            active_collections = {str(row["collection_id"]) for row in self.active_batches()}
-            for collection in self.config.collections:
-                if collection.enabled and collection.id not in active_collections:
-                    self.discover_collection(collection)
+            for attempt_id in self.active_attempt_ids():
+                self.process_attempt(attempt_id)
+            active_accounts = {str(row["account_id"]) for row in self.active_attempts()}
+            for account in self.config.accounts:
+                if account.enabled and account.id not in active_accounts:
+                    self.discover_account(account)
             self.notify_routing_preflight_failures()
 
-    def active_batches(self) -> list[sqlite3.Row]:
+    def active_attempts(self) -> list[sqlite3.Row]:
         terminal = tuple(sorted(TERMINAL_STATES))
         placeholders = ", ".join("?" for _ in terminal)
         with self.connect() as conn:
@@ -901,7 +679,7 @@ class Collector:
                     a.batch_id,
                     a.attempt_number,
                     a.state,
-                    b.collection_id,
+                    b.account_id,
                     b.target_name,
                     b.collection_slug,
                     b.collection_timestamp,
@@ -922,10 +700,10 @@ class Collector:
                 terminal,
             ).fetchall()
 
-    def active_batch_ids(self) -> list[str]:
-        return [str(row["id"]) for row in self.active_batches()]
+    def active_attempt_ids(self) -> list[str]:
+        return [str(row["id"]) for row in self.active_attempts()]
 
-    def list_batches(
+    def list_attempts(
         self,
         *,
         page: int = 1,
@@ -937,17 +715,15 @@ class Collector:
         state: str | None = None,
         states: Sequence[str] | None = None,
         account: str | None = None,
-        collection: str | None = None,
+        collection_slug: str | None = None,
         target: str | None = None,
     ) -> dict[str, Any]:
         if page < 1:
             raise ValueError("page must be >= 1")
         if not 1 <= per_page <= 500:
             raise ValueError("per_page must be between 1 and 500")
-        if sort not in BATCH_LIST_SORT_FIELDS:
-            raise ValueError(
-                "sort must be one of: " + ", ".join(sorted(BATCH_LIST_SORT_FIELDS))
-            )
+        if sort not in ATTEMPT_LIST_SORT_FIELDS:
+            raise ValueError("sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS)))
         if order not in {"asc", "desc"}:
             raise ValueError("order must be asc or desc")
         if terminal not in {"active", "terminal", "all"}:
@@ -974,20 +750,11 @@ class Collector:
             clauses.append(f"a.state IN ({placeholders})")
             values.extend(states_tuple)
         if account:
-            clauses.append(
-                """
-                EXISTS (
-                    SELECT 1
-                    FROM batch_sources account_sources
-                    WHERE account_sources.batch_id = b.id
-                      AND account_sources.source_id = ?
-                )
-                """
-            )
+            clauses.append("b.account_id = ?")
             values.append(account)
-        if collection:
-            clauses.append("b.collection_id = ?")
-            values.append(collection)
+        if collection_slug:
+            clauses.append("b.collection_slug = ?")
+            values.append(collection_slug)
         if target:
             clauses.append("b.target_name = ?")
             values.append(target)
@@ -1001,7 +768,7 @@ class Collector:
                     OR a.state LIKE ? ESCAPE '\\'
                     OR a.input_upload_id LIKE ? ESCAPE '\\'
                     OR a.job_id LIKE ? ESCAPE '\\'
-                    OR b.collection_id LIKE ? ESCAPE '\\'
+                    OR b.account_id LIKE ? ESCAPE '\\'
                     OR b.collection_slug LIKE ? ESCAPE '\\'
                     OR b.target_name LIKE ? ESCAPE '\\'
                     OR b.collection_timestamp LIKE ? ESCAPE '\\'
@@ -1018,7 +785,7 @@ class Collector:
                 a.batch_id,
                 a.attempt_number,
                 a.state,
-                b.collection_id,
+                b.account_id,
                 b.target_name,
                 b.collection_slug,
                 b.collection_timestamp,
@@ -1039,7 +806,7 @@ class Collector:
         sort_sql = {
             "attempt": "a.attempt_number",
             "bytes": "b.total_bytes",
-            "collection": "b.collection_id",
+            "collection_slug": "b.collection_slug",
             "collection_timestamp": "b.collection_timestamp",
             "created_at": "a.created_at",
             "file_count": "b.file_count",
@@ -1073,15 +840,7 @@ class Collector:
             )
             for row in rows:
                 row["staged_file_count"] = staged_counts.get(str(row["id"]), 0)
-            accounts_by_batch = self._accounts_by_batch(
-                conn,
-                [str(row["batch_id"]) for row in rows],
-            )
-
-        batches = [
-            self._batch_summary(row, accounts=accounts_by_batch.get(str(row["batch_id"]), ()))
-            for row in rows
-        ]
+        attempts = [self._attempt_summary(row) for row in rows]
         return {
             "page": page,
             "per_page": per_page,
@@ -1093,12 +852,12 @@ class Collector:
             "query": query,
             "filters": {
                 "account": account,
-                "collection": collection,
+                "collection_slug": collection_slug,
                 "state": state,
                 "states": list(states) if states is not None else None,
                 "target": target,
             },
-            "batches": batches,
+            "attempts": attempts,
         }
 
     def _staged_file_counts_by_attempt(
@@ -1136,24 +895,21 @@ class Collector:
             for row in self.routing_preflight_failures(state="failed")
         ]
         return {
-            "sources": self.source_statuses(include_backlog=include_backlog),
-            "collections": [
-                self._collection_summary(collection) for collection in self.config.collections
-            ],
+            "accounts": self.account_statuses(include_backlog=include_backlog),
             "batches": {
                 "total": total_batches,
                 "active": total_batches - terminal_count,
                 "terminal": terminal_count,
                 "states": state_counts,
             },
-            "active_attempts": self.list_batches(
+            "active_attempts": self.list_attempts(
                 terminal="active",
                 sort="updated_at",
                 order="desc",
                 page=1,
                 per_page=10,
             ),
-            "recent_failures": self.list_batches(
+            "recent_failures": self.list_attempts(
                 terminal="all",
                 states=("failed", "failed_notified", "cleanup_failed"),
                 sort="updated_at",
@@ -1179,29 +935,28 @@ class Collector:
             ).fetchall()
         return {str(row["state"]): int(row["count"]) for row in rows}
 
-    def source_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
-        failed_preflight_source_ids = self.failed_routing_preflight_source_ids()
-        collections_by_source: dict[str, list[str]] = defaultdict(list)
-        for collection in self.config.collections:
-            for source_id in collection.source_ids:
-                collections_by_source[source_id].append(collection.id)
-
+    def account_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
+        failed_preflight_account_ids = self.failed_routing_preflight_account_ids()
         statuses: list[dict[str, Any]] = []
-        for source in self.config.sources:
+        for account in self.config.accounts:
             payload: dict[str, Any] = {
-                "id": source.id,
-                "enabled": source.enabled,
-                "path": str(source.path),
-                "path_exists": source.path.exists(),
-                "upload_root": source.upload_root,
-                "stable_seconds": source.stable_seconds,
-                "include_extensions": sorted(source.include_extensions),
-                "collections": sorted(collections_by_source.get(source.id, ())),
-                "routing_preflight_failed": source.id in failed_preflight_source_ids,
+                "id": account.id,
+                "enabled": account.enabled,
+                "path": str(account.path),
+                "path_exists": account.path.exists(),
+                "upload_root": account.upload_root,
+                "stable_seconds": account.stable_seconds,
+                "include_extensions": sorted(account.include_extensions),
+                "collection_slug": account.collection_slug,
+                "target": account.target,
+                "cleanup": account.cleanup,
+                "cadence": account.cadence,
+                "threshold_bytes": account.threshold_bytes,
+                "routing_preflight_failed": account.id in failed_preflight_account_ids,
             }
             if include_backlog:
                 try:
-                    eligible = self.eligible_files(source)
+                    eligible = self.eligible_files(account)
                 except Exception as exc:
                     payload["eligible_error"] = str(exc)
                 else:
@@ -1210,40 +965,13 @@ class Collector:
             statuses.append(payload)
         return statuses
 
-    def _accounts_by_batch(
-        self,
-        conn: sqlite3.Connection,
-        batch_ids: Sequence[str],
-    ) -> dict[str, tuple[str, ...]]:
-        if not batch_ids:
-            return {}
-        placeholders = ", ".join("?" for _ in batch_ids)
-        rows = conn.execute(
-            f"""
-            SELECT batch_id, source_id
-            FROM batch_sources
-            WHERE batch_id IN ({placeholders})
-            ORDER BY source_id
-            """,
-            tuple(batch_ids),
-        ).fetchall()
-        sources_by_batch: dict[str, list[str]] = defaultdict(list)
-        for row in rows:
-            sources_by_batch[str(row["batch_id"])].append(str(row["source_id"]))
+    def _attempt_summary(self, row: Mapping[str, Any]) -> dict[str, Any]:
         return {
-            batch_id: tuple(sorted(set(source_ids)))
-            for batch_id, source_ids in sources_by_batch.items()
-        }
-
-    def _batch_summary(self, row: Mapping[str, Any], *, accounts: Sequence[str]) -> dict[str, Any]:
-        return {
-            "id": str(row["id"]),
             "attempt_id": str(row["id"]),
             "batch_id": str(row["batch_id"]),
             "attempt_number": int(row["attempt_number"]),
             "state": str(row["state"]),
-            "accounts": list(accounts),
-            "collection_id": str(row["collection_id"]),
+            "account_id": str(row["account_id"]),
             "target_name": str(row["target_name"]),
             "collection_slug": str(row["collection_slug"]),
             "collection_timestamp": str(row["collection_timestamp"]),
@@ -1260,24 +988,11 @@ class Collector:
             "staged_file_count": int(row["staged_file_count"]),
         }
 
-    def _collection_summary(self, collection: CollectionConfig) -> dict[str, Any]:
-        return {
-            "id": collection.id,
-            "enabled": collection.enabled,
-            "collection_slug": collection.collection_slug,
-            "target": collection.target,
-            "cleanup": collection.cleanup,
-            "cadence": collection.cadence,
-            "source_ids": list(collection.source_ids),
-            "threshold_bytes": collection.threshold_bytes,
-        }
-
     def _routing_preflight_failure_summary(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
-            "source_id": str(row["source_id"]),
+            "account_id": str(row["account_id"]),
             "state": str(row["state"]),
             "failure_kind": str(row["failure_kind"]),
-            "collection_id": str(row["collection_id"]),
             "collection_slug": str(row["collection_slug"]),
             "target_name": str(row["target_name"]),
             "file_count": int(row["file_count"]),
@@ -1289,17 +1004,11 @@ class Collector:
             "message": str(row["message"]),
         }
 
-    def source_by_id(self, source_id: str) -> SourceConfig:
-        for source in self.config.sources:
-            if source.id == source_id:
-                return source
-        raise KeyError(source_id)
-
-    def collection_by_id(self, collection_id: str) -> CollectionConfig:
-        for collection in self.config.collections:
-            if collection.id == collection_id:
-                return collection
-        raise KeyError(collection_id)
+    def account_by_id(self, account_id: str) -> AccountConfig:
+        for account in self.config.accounts:
+            if account.id == account_id:
+                return account
+        raise KeyError(account_id)
 
     def target_by_name(self, target_name: str) -> TargetConfig:
         try:
@@ -1307,7 +1016,7 @@ class Collector:
         except KeyError as exc:
             raise UnrecoverableJebError(f"unknown target {target_name!r}") from exc
 
-    def load_batch(self, batch_id: str) -> sqlite3.Row:
+    def load_attempt(self, attempt_id: str) -> sqlite3.Row:
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -1316,7 +1025,7 @@ class Collector:
                     a.batch_id,
                     a.attempt_number,
                     a.state,
-                    b.collection_id,
+                    b.account_id,
                     b.target_name,
                     b.collection_slug,
                     b.collection_timestamp,
@@ -1333,20 +1042,20 @@ class Collector:
                 JOIN batches b ON b.id = a.batch_id
                 WHERE a.id = ?
                 """,
-                (batch_id,),
+                (attempt_id,),
             ).fetchone()
         if row is None:
-            raise KeyError(batch_id)
+            raise KeyError(attempt_id)
         return cast(sqlite3.Row, row)
 
-    def batch_files(self, batch_id: str) -> list[sqlite3.Row]:
+    def attempt_files(self, attempt_id: str) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
                 """
                 SELECT
                     f.batch_id,
                     af.attempt_id,
-                    f.source_path,
+                    f.input_path,
                     af.staging_path,
                     f.target_path,
                     f.bytes,
@@ -1361,10 +1070,10 @@ class Collector:
                 WHERE a.id = ?
                 ORDER BY f.target_path
                 """,
-                (batch_id,),
+                (attempt_id,),
             ).fetchall()
 
-    def set_batch_state(self, batch_id: str, state: str, error: str | None = None) -> None:
+    def set_attempt_state(self, attempt_id: str, state: str, error: str | None = None) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
@@ -1372,10 +1081,10 @@ class Collector:
                 SET state = ?, updated_at = ?, last_error = ?
                 WHERE id = ?
                 """,
-                (state, iso(), error, batch_id),
+                (state, iso(), error, attempt_id),
             )
 
-    def set_batch_fields(self, batch_id: str, **fields: object) -> None:
+    def set_attempt_fields(self, attempt_id: str, **fields: object) -> None:
         if not fields:
             return
         allowed = {
@@ -1388,117 +1097,99 @@ class Collector:
         }
         unknown = sorted(set(fields) - allowed)
         if unknown:
-            raise ValueError(f"unsupported batch field(s): {', '.join(unknown)}")
+            raise ValueError(f"unsupported attempt field(s): {', '.join(unknown)}")
         assignments = [f"{name} = ?" for name in fields]
         values = list(fields.values())
         assignments.append("updated_at = ?")
         values.append(iso())
-        values.append(batch_id)
+        values.append(attempt_id)
         with self.connect() as conn:
             conn.execute(
                 f"UPDATE batch_attempts SET {', '.join(assignments)} WHERE id = ?",
                 values,
             )
 
-    def discover_collection(
+    def discover_account(
         self,
-        collection: CollectionConfig,
+        account: AccountConfig,
         *,
-        only_source_ids: Sequence[str] | None = None,
         force: bool = False,
         allow_preflight_retry: bool = False,
     ) -> str | None:
-        if not force and collection.cadence == "manual":
+        if not force and account.cadence == "manual":
             return None
-        period = now() if force else self.collection_period(collection)
-        if only_source_ids is None:
-            source_ids = collection.source_ids
-        else:
-            requested = set(only_source_ids)
-            missing = sorted(requested - set(collection.source_ids))
-            if missing:
-                raise UnrecoverableJebError(
-                    f"collection {collection.id} does not include source(s): " + ", ".join(missing)
-                )
-            source_ids = tuple(
-                source_id for source_id in collection.source_ids if source_id in requested
-            )
-        sources = [self.source_by_id(source_id) for source_id in source_ids]
-        files: list[EligibleFile] = []
+        period = now() if force else self.account_period(account)
         before = None if force else period
-        for source in sources:
-            if source.enabled:
-                if not allow_preflight_retry and self.routing_preflight_failure_active(source.id):
-                    LOG.info(
-                        "source %s has an active routing preflight failure; "
-                        "skipping until operator retry",
-                        source.id,
-                    )
-                    continue
-                source_files = self.eligible_files(source, before=before)
-                if not source_files:
-                    continue
-                routed_files = self.preflight_source_routes(collection, source, source_files)
-                if routed_files is None:
-                    continue
-                files.extend(routed_files)
+        if not account.enabled:
+            return None
+        if not allow_preflight_retry and self.routing_preflight_failure_active(account.id):
+            LOG.info(
+                "account %s has an active routing preflight failure; skipping until operator retry",
+                account.id,
+            )
+            return None
+        files = self.eligible_files(account, before=before)
+        if files:
+            routed_files = self.preflight_account_routes(account, files)
+            if routed_files is None:
+                return None
+            files = routed_files
         if not files:
             return None
         target_paths = [item.target_path for item in files]
         if len(target_paths) != len(set(target_paths)):
             duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
             raise UnrecoverableJebError(
-                f"collection {collection.id} has duplicate upload path(s): "
-                + ", ".join(duplicates[:5])
+                f"account {account.id} has duplicate upload path(s): " + ", ".join(duplicates[:5])
             )
         total = sum(item.bytes for item in files)
-        if total < collection.threshold_bytes:
+        if total < account.threshold_bytes:
             LOG.info(
-                "collection %s below threshold: %.2fGB eligible",
-                collection.id,
+                "account %s below threshold: %.2fGB eligible",
+                account.id,
                 total / 1_000_000_000,
             )
             return None
-        base_batch_id, base_digest = self.batch_identity(collection, files, period=period)
+        base_batch_id, base_digest = self.batch_identity(account, files, period=period)
         if (
             not force
-            and collection.cadence != "manual"
+            and account.cadence != "manual"
             and self.batch_exists_for_period(
-                collection.id,
+                account.id,
                 period,
             )
         ):
             return None
         return self.create_batch(
-            collection,
+            account,
             files,
             period=period,
             batch_id=base_batch_id,
             digest=base_digest,
         )
 
-    def collection_period(self, collection: CollectionConfig) -> datetime:
+    def account_period(self, account: AccountConfig) -> datetime:
         current = now()
-        if collection.cadence == "manual":
+        if account.cadence == "manual":
             return current
-        if collection.cadence == "weekly":
-            return self.last_weekly_boundary(collection, current)
-        period_start = self.current_period_start(collection.cadence, current)
-        candidate = self.first_weekly_boundary_on_or_after(collection, period_start)
+        if account.cadence == "weekly":
+            return self.last_weekly_boundary(account, current)
+        period_start = self.current_period_start(account.cadence, current)
+        candidate = self.first_weekly_boundary_on_or_after(account, period_start)
         if candidate > current:
-            period_start = self.previous_period_start(collection.cadence, period_start)
-            candidate = self.first_weekly_boundary_on_or_after(collection, period_start)
+            period_start = self.previous_period_start(account.cadence, period_start)
+            candidate = self.first_weekly_boundary_on_or_after(account, period_start)
         return candidate.astimezone(UTC)
 
     def last_weekly_boundary(
         self,
-        collection: CollectionConfig,
+        account: AccountConfig,
         current: datetime,
     ) -> datetime:
-        days_since = (current.weekday() - collection.weekday) % 7
+        days_since = (current.weekday() - account.weekday) % 7
         candidate = current.replace(
-            hour=collection.hour,
-            minute=collection.minute,
+            hour=account.hour,
+            minute=account.minute,
             second=0,
             microsecond=0,
         ) - timedelta(days=days_since)
@@ -1508,16 +1199,16 @@ class Collector:
 
     def first_weekly_boundary_on_or_after(
         self,
-        collection: CollectionConfig,
+        account: AccountConfig,
         period_start: datetime,
     ) -> datetime:
         candidate = period_start.replace(
-            hour=collection.hour,
-            minute=collection.minute,
+            hour=account.hour,
+            minute=account.minute,
             second=0,
             microsecond=0,
         )
-        days_until = (collection.weekday - candidate.weekday()) % 7
+        days_until = (account.weekday - candidate.weekday()) % 7
         candidate += timedelta(days=days_until)
         if candidate < period_start:
             candidate += timedelta(days=7)
@@ -1574,7 +1265,7 @@ class Collector:
 
     def batch_exists_for_period(
         self,
-        collection_id: str,
+        account_id: str,
         period: datetime,
     ) -> bool:
         timestamp = period.strftime("%Y%m%dT%H%M%SZ")
@@ -1584,41 +1275,41 @@ class Collector:
                 SELECT a.id, a.state
                 FROM batches b
                 JOIN batch_attempts a ON a.batch_id = b.id
-                WHERE b.collection_id = ? AND b.collection_timestamp = ?
+                WHERE b.account_id = ? AND b.collection_timestamp = ?
                 """,
-                (collection_id, timestamp),
+                (account_id, timestamp),
             ).fetchall()
         return any(str(row["state"]) != "superseded" for row in rows)
 
     def eligible_files(
         self,
-        source: SourceConfig,
+        account: AccountConfig,
         *,
         before: datetime | None = None,
     ) -> list[EligibleFile]:
-        if not source.path.exists():
+        if not account.path.exists():
             return []
-        cutoff = time.time() - source.stable_seconds
+        cutoff = time.time() - account.stable_seconds
         before_ts = before.timestamp() if before is not None else None
         out: list[EligibleFile] = []
         seen_target_paths: set[str] = set()
-        for path in sorted(source.path.rglob("*")):
+        for path in sorted(account.path.rglob("*")):
             if not path.is_file():
                 continue
-            rel = path.relative_to(source.path)
+            rel = path.relative_to(account.path)
             if any(part.startswith(".") for part in rel.parts):
                 continue
-            if source.include_extensions and path.suffix.lower() not in source.include_extensions:
+            if account.include_extensions and path.suffix.lower() not in account.include_extensions:
                 continue
             stat = path.stat()
             if stat.st_mtime > cutoff:
                 continue
             if before_ts is not None and stat.st_mtime >= before_ts:
                 continue
-            target_path = normalize_posix(PurePosixPath(source.upload_root, *rel.parts))
+            target_path = normalize_posix(PurePosixPath(account.upload_root, *rel.parts))
             if target_path in seen_target_paths:
                 raise UnrecoverableJebError(
-                    f"duplicate target path for source {source.id}: {target_path}"
+                    f"duplicate target path for account {account.id}: {target_path}"
                 )
             seen_target_paths.add(target_path)
             out.append(
@@ -1633,24 +1324,21 @@ class Collector:
             )
         return out
 
-    def preflight_source_routes(
+    def preflight_account_routes(
         self,
-        collection: CollectionConfig,
-        source: SourceConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
     ) -> list[EligibleFile] | None:
-        routed, _summary = self.preflight_source_routes_with_summary(
-            collection,
-            source,
+        routed, _summary = self.preflight_account_routes_with_summary(
+            account,
             files,
             record_failures=True,
         )
         return routed
 
-    def preflight_source_routes_with_summary(
+    def preflight_account_routes_with_summary(
         self,
-        collection: CollectionConfig,
-        source: SourceConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
         *,
         record_failures: bool,
@@ -1664,11 +1352,11 @@ class Collector:
                 "unmatched_count": 0,
                 "left_count": 0,
             }
-        munchy_job_defaults = collection_munchy_job_defaults(self.config, collection)
-        profile_routing = mapping(munchy_job_defaults.get("profile_routing"))
-        if not profile_routing:
+        munchy_job_defaults = account_munchy_job_defaults(self.config, account)
+        routing = mapping(munchy_job_defaults.get("routing"))
+        if not routing:
             if record_failures:
-                self.clear_routing_preflight_failure(source.id)
+                self.clear_routing_preflight_failure(account.id)
             return list(files), {
                 "configured": False,
                 "ok": True,
@@ -1677,13 +1365,13 @@ class Collector:
                 "unmatched_count": 0,
                 "left_count": 0,
             }
-        target = self.target_by_name(collection.target)
+        target = self.target_by_name(account.target)
         groups = munchy_groups_from_defaults(munchy_job_defaults)
         path_facts_by_path = {
             item.target_path: routing_file_facts(item.target_path) for item in files
         }
         sidecar_fact_requests = sidecar_exiftool_fact_requests(
-            profile_routing,
+            routing,
             path_facts_by_path,
         )
         sidecar_facts_by_path: dict[str, dict[str, Any]] = {}
@@ -1705,19 +1393,19 @@ class Collector:
             except RoutingFactsError as exc:
                 sidecar_facts_errors_by_path[item.target_path] = str(exc)[:1000]
         base_facts_by_path = apply_sidecar_rules(
-            profile_routing,
+            routing,
             path_facts_by_path,
             sidecar_facts_by_path=sidecar_facts_by_path,
             sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
             require_configured_facts=False,
         )
-        preflight_file_list: list[RunnerProfileRoutingPreflightFile] = []
+        preflight_file_list: list[RunnerRoutingPreflightFile] = []
         for item in files:
             sidecar_request = sidecar_fact_requests.get(item.target_path)
             preflight_file_list.append(
                 self.routing_preflight_file(
                     item,
-                    profile_routing=profile_routing,
+                    routing=routing,
                     sidecar_exiftool_tags=sidecar_request.tags if sidecar_request else (),
                     sidecar_fact_extractors=(
                         sidecar_request.fact_extractors if sidecar_request else ()
@@ -1729,17 +1417,17 @@ class Collector:
             )
         preflight_files = tuple(preflight_file_list)
         try:
-            result = MunchyRunnerClient(target.url).profile_routing_preflight(
+            result = MunchyRunnerClient(target.url).routing_preflight(
                 files=preflight_files,
                 groups=groups,
-                profile_routing=dict(profile_routing),
+                routing=dict(routing),
                 enforce_metadata_projection=True,
             )
         except Exception as exc:
             if is_transient_error(exc):
                 LOG.warning(
-                    "source %s routing preflight hit transient Munchy issue; will retry later: %s",
-                    source.id,
+                    "account %s routing preflight hit transient Munchy issue; will retry later: %s",
+                    account.id,
                     exc,
                 )
                 return None, {
@@ -1753,12 +1441,11 @@ class Collector:
                 }
             if record_failures:
                 self.record_munchy_preflight_failure(
-                    collection=collection,
-                    source=source,
+                    account=account,
                     files=files,
                     error=exc,
                 )
-                self.notify_routing_preflight_failures(source_id=source.id)
+                self.notify_routing_preflight_failures(account_id=account.id)
             return None, {
                 "configured": True,
                 "ok": False,
@@ -1783,36 +1470,35 @@ class Collector:
         }
         if result.get("ok"):
             if record_failures:
-                self.clear_routing_preflight_failure(source.id)
+                self.clear_routing_preflight_failure(account.id)
             return list(files), summary
         if record_failures:
             self.record_routing_preflight_failure(
-                collection=collection,
-                source=source,
+                account=account,
                 files=files,
                 result=result,
             )
-            self.notify_routing_preflight_failures(source_id=source.id)
+            self.notify_routing_preflight_failures(account_id=account.id)
         return None, summary
 
     def routing_preflight_file(
         self,
         item: EligibleFile,
         *,
-        profile_routing: Mapping[str, Any],
+        routing: Mapping[str, Any],
         sidecar_exiftool_tags: Sequence[str] = (),
         sidecar_fact_extractors: Sequence[Mapping[str, Any]] = (),
         base_routing_facts: Mapping[str, Any] | None = None,
         sidecar_facts: Mapping[str, Any] | None = None,
         sidecar_facts_error: str | None = None,
-    ) -> RunnerProfileRoutingPreflightFile:
+    ) -> RunnerRoutingPreflightFile:
         base_facts = dict(base_routing_facts or {})
         is_sidecar_evidence = base_facts.get("sidecar.role") == "evidence"
         path_facts = routing_file_facts(item.target_path, routing_facts=base_facts)
         probe_summary: dict[str, Any] | None = None
         probe_error: str | None = None
-        if not is_sidecar_evidence and profile_routing_file_requires_probe(
-            profile_routing,
+        if not is_sidecar_evidence and routing_file_requires_probe(
+            routing,
             path_facts,
         ):
             try:
@@ -1826,15 +1512,15 @@ class Collector:
             probe_summary=probe_summary,
             routing_facts=base_facts,
         )
-        if not is_sidecar_evidence and profile_routing_file_requires_exiftool(
-            profile_routing,
+        if not is_sidecar_evidence and routing_file_requires_exiftool(
+            routing,
             probe_facts,
         ):
             try:
                 exiftool_summary = routing_exiftool_summary(
                     exiftool_for_routing_preflight(
                         item.path,
-                        tags=profile_routing_exiftool_tags(profile_routing),
+                        tags=routing_exiftool_tags(routing),
                     )
                 )
             except RoutingFactsError as exc:
@@ -1858,7 +1544,7 @@ class Collector:
                 )
             except RoutingFactsError as exc:
                 collected_sidecar_facts_error = str(exc)[:1000]
-        return RunnerProfileRoutingPreflightFile(
+        return RunnerRoutingPreflightFile(
             rel_path=item.target_path,
             bytes=item.bytes,
             probe_summary=probe_summary,
@@ -1877,8 +1563,7 @@ class Collector:
     def record_routing_preflight_failure(
         self,
         *,
-        collection: CollectionConfig,
-        source: SourceConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
         result: Mapping[str, Any],
     ) -> None:
@@ -1896,8 +1581,8 @@ class Collector:
             "error": optional_str(result.get("error")),
         }
         fingerprint_payload = {
-            "failure_kind": "profile_routing",
-            "source_id": source.id,
+            "failure_kind": "routing",
+            "account_id": account.id,
             "unmatched": [
                 {
                     "path": str(item.get("path") or ""),
@@ -1915,15 +1600,14 @@ class Collector:
             "error": optional_str(result.get("error")),
         }
         message = routing_preflight_notification_message(
-            source_id=source.id,
+            account_id=account.id,
             file_count=file_count,
             unmatched_count=unmatched_count,
         )
         self.store_routing_preflight_failure(
-            collection=collection,
-            source=source,
+            account=account,
             files=files,
-            failure_kind="profile_routing",
+            failure_kind="routing",
             failure_payload=failure_payload,
             fingerprint_payload=fingerprint_payload,
             message=message,
@@ -1935,8 +1619,7 @@ class Collector:
     def record_munchy_preflight_failure(
         self,
         *,
-        collection: CollectionConfig,
-        source: SourceConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
         error: BaseException,
     ) -> None:
@@ -1953,15 +1636,14 @@ class Collector:
         }
         fingerprint_payload = {
             "failure_kind": "munchy_preflight",
-            "source_id": source.id,
+            "account_id": account.id,
             "error": error_text[:500],
             "error_type": error.__class__.__name__,
             "status": status,
         }
-        message = munchy_preflight_notification_message(source_id=source.id, error=error)
+        message = munchy_preflight_notification_message(account_id=account.id, error=error)
         self.store_routing_preflight_failure(
-            collection=collection,
-            source=source,
+            account=account,
             files=files,
             failure_kind="munchy_preflight",
             failure_payload=failure_payload,
@@ -1975,10 +1657,9 @@ class Collector:
     def store_routing_preflight_failure(
         self,
         *,
-        collection: CollectionConfig,
-        source: SourceConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
-        failure_kind: Literal["profile_routing", "munchy_preflight"],
+        failure_kind: Literal["routing", "munchy_preflight"],
         failure_payload: Mapping[str, Any],
         fingerprint_payload: Mapping[str, Any],
         message: str,
@@ -1988,34 +1669,33 @@ class Collector:
     ) -> None:
         now_text = iso()
         fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
-        source_paths = [item.target_path for item in files[:20]]
+        input_paths = [item.target_path for item in files[:20]]
         with self.connect() as conn:
             existing = conn.execute(
                 """
                 SELECT first_seen_at, notified_error_fingerprint, notified_error_at
                 FROM routing_preflight_failures
-                WHERE source_id = ?
+                WHERE account_id = ?
                 """,
-                (source.id,),
+                (account.id,),
             ).fetchone()
             first_seen_at = str(existing["first_seen_at"]) if existing is not None else now_text
             conn.execute(
                 """
                 INSERT INTO routing_preflight_failures(
-                    source_id, state, failure_kind, collection_id, collection_slug, target_name,
-                    source_paths_json, failure_json, fingerprint, message,
+                    account_id, state, failure_kind, collection_slug, target_name,
+                    input_paths_json, failure_json, fingerprint, message,
                     file_count, total_bytes, unmatched_count, first_seen_at,
                     last_seen_at, updated_at, resolved_at,
                     notified_error_fingerprint, notified_error_at
                 )
-                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-                ON CONFLICT(source_id) DO UPDATE SET
+                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
                     state = 'failed',
                     failure_kind = excluded.failure_kind,
-                    collection_id = excluded.collection_id,
                     collection_slug = excluded.collection_slug,
                     target_name = excluded.target_name,
-                    source_paths_json = excluded.source_paths_json,
+                    input_paths_json = excluded.input_paths_json,
                     failure_json = excluded.failure_json,
                     fingerprint = excluded.fingerprint,
                     message = excluded.message,
@@ -2027,12 +1707,11 @@ class Collector:
                     resolved_at = NULL
                 """,
                 (
-                    source.id,
+                    account.id,
                     failure_kind,
-                    collection.id,
-                    collection.collection_slug,
-                    collection.target,
-                    stable_json(source_paths),
+                    account.collection_slug,
+                    account.target,
+                    stable_json(input_paths),
                     stable_json(failure_payload),
                     fingerprint,
                     message,
@@ -2056,61 +1735,54 @@ class Collector:
                 ),
             )
 
-    def clear_routing_preflight_failure(self, source_id: str) -> None:
+    def clear_routing_preflight_failure(self, account_id: str) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE routing_preflight_failures
                 SET state = 'resolved', resolved_at = ?, updated_at = ?
-                WHERE source_id = ? AND state = 'failed'
+                WHERE account_id = ? AND state = 'failed'
                 """,
-                (iso(), iso(), source_id),
+                (iso(), iso(), account_id),
             )
 
-    def routing_preflight_failure_active(self, source_id: str) -> bool:
+    def routing_preflight_failure_active(self, account_id: str) -> bool:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM routing_preflight_failures
-                WHERE source_id = ? AND state = 'failed'
+                WHERE account_id = ? AND state = 'failed'
                 """,
-                (source_id,),
+                (account_id,),
             ).fetchone()
         return row is not None
 
-    def failed_routing_preflight_source_ids(self) -> set[str]:
+    def failed_routing_preflight_account_ids(self) -> set[str]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT source_id FROM routing_preflight_failures
+                SELECT account_id FROM routing_preflight_failures
                 WHERE state = 'failed'
                 """
             ).fetchall()
-        return {str(row["source_id"]) for row in rows}
+        return {str(row["account_id"]) for row in rows}
 
-    def active_routing_preflight_source_ids(self) -> set[str]:
-        enabled_sources = {source.id for source in self.config.sources if source.enabled}
-        source_ids: set[str] = set()
-        for collection in self.config.collections:
-            if collection.enabled:
-                source_ids.update(
-                    source_id for source_id in collection.source_ids if source_id in enabled_sources
-                )
-        return source_ids
+    def active_routing_preflight_account_ids(self) -> set[str]:
+        return {account.id for account in self.config.accounts if account.enabled}
 
     def resolve_inactive_routing_preflight_failures(self) -> int:
-        active_source_ids = sorted(self.active_routing_preflight_source_ids())
+        active_account_ids = sorted(self.active_routing_preflight_account_ids())
         now_text = iso()
         with self.connect() as conn:
-            if active_source_ids:
-                placeholders = ", ".join("?" for _ in active_source_ids)
+            if active_account_ids:
+                placeholders = ", ".join("?" for _ in active_account_ids)
                 cursor = conn.execute(
                     f"""
                     UPDATE routing_preflight_failures
                     SET state = 'resolved', resolved_at = ?, updated_at = ?
-                    WHERE state = 'failed' AND source_id NOT IN ({placeholders})
+                    WHERE state = 'failed' AND account_id NOT IN ({placeholders})
                     """,
-                    (now_text, now_text, *active_source_ids),
+                    (now_text, now_text, *active_account_ids),
                 )
             else:
                 cursor = conn.execute(
@@ -2129,14 +1801,14 @@ class Collector:
     def routing_preflight_failures(
         self,
         *,
-        source_id: str | None = None,
+        account_id: str | None = None,
         state: Literal["failed", "resolved", "all"] = "failed",
     ) -> list[sqlite3.Row]:
         clauses: list[str] = []
         values: list[object] = []
-        if source_id:
-            clauses.append("source_id = ?")
-            values.append(source_id)
+        if account_id:
+            clauses.append("account_id = ?")
+            values.append(account_id)
         if state != "all":
             clauses.append("state = ?")
             values.append(state)
@@ -2146,14 +1818,14 @@ class Collector:
                 f"""
                 SELECT * FROM routing_preflight_failures
                 {where}
-                ORDER BY state, source_id, updated_at DESC
+                ORDER BY state, account_id, updated_at DESC
                 """,
                 values,
             ).fetchall()
 
-    def notify_routing_preflight_failures(self, source_id: str | None = None) -> None:
+    def notify_routing_preflight_failures(self, account_id: str | None = None) -> None:
         self.resolve_inactive_routing_preflight_failures()
-        for row in self.routing_preflight_failures(source_id=source_id, state="failed"):
+        for row in self.routing_preflight_failures(account_id=account_id, state="failed"):
             self.notify_routing_preflight_failure(row)
 
     def notify_routing_preflight_failure(self, row: sqlite3.Row) -> bool:
@@ -2163,24 +1835,25 @@ class Collector:
             "notified_error_fingerprint"
         ) == fingerprint and not self.notification_reminder_due(row_payload):
             return True
-        source_id = str(row_payload["source_id"])
-        batch = {
-            "id": f"routing-preflight__{source_id}",
-            "source_id": source_id,
+        account_id = str(row_payload["account_id"])
+        context = {
+            "id": account_id,
+            "account_id": account_id,
             "target_name": str(row_payload["target_name"]),
             "target_type": "munchy",
             "collection_slug": str(row_payload["collection_slug"]),
             "collection_timestamp": iso(),
             "state": "failed",
         }
-        component = str(row_payload.get("failure_kind") or "profile_routing")
-        if component not in {"profile_routing", "munchy_preflight"}:
-            component = "profile_routing"
-        if not self.notifier.critical_batch_issue(
-            batch=batch,
+        component = str(row_payload.get("failure_kind") or "routing")
+        if component not in {"routing", "munchy_preflight"}:
+            component = "routing"
+        if not self.notifier.issue(
+            context=context,
             message=str(row_payload["message"]),
             component=component,
-            notify=self.collection_by_id(str(row_payload["collection_id"])).notify,
+            severity="warning",
+            notify=self.account_by_id(str(row_payload["account_id"])).notify,
         ):
             return False
         now_text = iso()
@@ -2189,129 +1862,98 @@ class Collector:
                 """
                 UPDATE routing_preflight_failures
                 SET notified_error_fingerprint = ?, notified_error_at = ?, updated_at = ?
-                WHERE source_id = ?
+                WHERE account_id = ?
                 """,
-                (fingerprint, now_text, now_text, source_id),
+                (fingerprint, now_text, now_text, account_id),
             )
         return True
 
     def archive_now(
         self,
         *,
-        source_id: str,
+        account_id: str,
         process: bool = True,
     ) -> str | None:
         with self.operation_lock:
             try:
-                source = self.source_by_id(source_id)
+                account = self.account_by_id(account_id)
             except KeyError as exc:
                 raise UnrecoverableJebError(
-                    f"account {source_id!r} is not in the active Jeb env"
+                    f"account {account_id!r} is not in the active Jeb env"
                 ) from exc
-            if not source.enabled:
+            if not account.enabled:
                 raise UnrecoverableJebError(
-                    f"account {source_id!r} is disabled in the active Jeb env"
+                    f"account {account_id!r} is disabled in the active Jeb env"
                 )
-            collections = [
-                collection
-                for collection in self.config.collections
-                if collection.enabled and source_id in collection.source_ids
-            ]
-            if not collections:
-                raise UnrecoverableJebError(
-                    f"account {source_id!r} is not included in the active Jeb schedule"
-                )
-            if len(collections) > 1:
-                raise UnrecoverableJebError(
-                    f"account {source_id!r} is in multiple scheduled collections"
-                )
-            collection = collections[0]
-            failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
-            batch_id: str | None
+            failed_attempt = self.latest_failed_attempt_for_account(account.id)
+            attempt_id: str | None
             if failed_attempt is not None:
                 if self.failed_attempt_target_paths_match_current_config(
                     failed_attempt,
-                    collection,
+                    account,
                 ):
-                    batch_id = self.create_retry_attempt(str(failed_attempt["id"]))
+                    attempt_id = self.create_retry_attempt(str(failed_attempt["id"]))
                 else:
                     LOG.info(
                         "failed attempt %s target paths no longer match current source "
-                        "config; rediscovering collection %s",
+                        "config; rediscovering account %s",
                         failed_attempt["id"],
-                        collection.id,
+                        account.id,
                     )
-                    batch_id = self.discover_collection(
-                        collection,
-                        only_source_ids=(source_id,),
+                    attempt_id = self.discover_account(
+                        account,
                         force=True,
                         allow_preflight_retry=True,
                     )
-                    if batch_id is not None:
-                        self.supersede_batch_attempt(str(failed_attempt["id"]))
+                    if attempt_id is not None:
+                        self.supersede_attempt(str(failed_attempt["id"]))
             else:
-                batch_id = self.discover_collection(
-                    collection,
-                    only_source_ids=(source_id,),
+                attempt_id = self.discover_account(
+                    account,
                     force=True,
                     allow_preflight_retry=True,
                 )
-            if batch_id is not None and process:
-                self.process_batch(batch_id)
-            return batch_id
+            if attempt_id is not None and process:
+                self.process_attempt(attempt_id)
+            return attempt_id
 
     def archive_plan(
         self,
         *,
-        source_id: str,
+        account_id: str,
         process: bool = True,
     ) -> dict[str, Any]:
         with self.operation_lock:
             try:
-                source = self.source_by_id(source_id)
+                account = self.account_by_id(account_id)
             except KeyError as exc:
                 raise UnrecoverableJebError(
-                    f"account {source_id!r} is not in the active Jeb env"
+                    f"account {account_id!r} is not in the active Jeb env"
                 ) from exc
-            if not source.enabled:
+            if not account.enabled:
                 raise UnrecoverableJebError(
-                    f"account {source_id!r} is disabled in the active Jeb env"
+                    f"account {account_id!r} is disabled in the active Jeb env"
                 )
-            collections = [
-                collection
-                for collection in self.config.collections
-                if collection.enabled and source_id in collection.source_ids
-            ]
-            if not collections:
-                raise UnrecoverableJebError(
-                    f"account {source_id!r} is not included in the active Jeb schedule"
-                )
-            if len(collections) > 1:
-                raise UnrecoverableJebError(
-                    f"account {source_id!r} is in multiple scheduled collections"
-                )
-            collection = collections[0]
-            target = self.target_by_name(collection.target)
+            target = self.target_by_name(account.target)
             base_payload: dict[str, Any] = {
-                "account": source.id,
-                "collection_id": collection.id,
-                "collection_slug": collection.collection_slug,
+                "account": account.id,
+                "collection_slug": account.collection_slug,
                 "target_name": target.name,
-                "upload_root": source.upload_root,
-                "cleanup": collection.cleanup,
-                "cadence": collection.cadence,
-                "threshold_bytes": collection.threshold_bytes,
+                "upload_root": account.upload_root,
+                "cleanup": account.cleanup,
+                "cadence": account.cadence,
+                "threshold_bytes": account.threshold_bytes,
                 "process": process,
                 "dry_run": True,
             }
 
-            failed_attempt = self.latest_failed_attempt_for_collection(collection.id)
+            failed_attempt = self.latest_failed_attempt_for_account(account.id)
             if failed_attempt is not None and self.failed_attempt_target_paths_match_current_config(
                 failed_attempt,
-                collection,
+                account,
             ):
                 batch_id = str(failed_attempt["batch_id"])
-                rows = self.batch_files(batch_id)
+                rows = self.attempt_files(batch_id)
                 return {
                     **base_payload,
                     "status": "would_retry_process" if process else "would_retry_stage",
@@ -2329,8 +1971,8 @@ class Collector:
                 }
 
             period = now()
-            source_files = self.eligible_files(source)
-            if not source_files:
+            eligible_files = self.eligible_files(account)
+            if not eligible_files:
                 return {
                     **base_payload,
                     "status": "no_eligible_files",
@@ -2344,10 +1986,9 @@ class Collector:
                     },
                 }
 
-            routed_files, preflight = self.preflight_source_routes_with_summary(
-                collection,
-                source,
-                source_files,
+            routed_files, preflight = self.preflight_account_routes_with_summary(
+                account,
+                eligible_files,
                 record_failures=False,
             )
             if routed_files is None:
@@ -2355,8 +1996,8 @@ class Collector:
                     **base_payload,
                     "status": "routing_preflight_failed",
                     "mode": "discover",
-                    "file_count": len(source_files),
-                    "total_bytes": sum(item.bytes for item in source_files),
+                    "file_count": len(eligible_files),
+                    "total_bytes": sum(item.bytes for item in eligible_files),
                     "routing_preflight": preflight,
                 }
 
@@ -2364,11 +2005,11 @@ class Collector:
             duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
             if duplicates:
                 raise UnrecoverableJebError(
-                    f"collection {collection.id} has duplicate upload path(s): "
+                    f"account {account.id} has duplicate upload path(s): "
                     + ", ".join(duplicates[:5])
                 )
             total = sum(item.bytes for item in routed_files)
-            if total < collection.threshold_bytes:
+            if total < account.threshold_bytes:
                 return {
                     **base_payload,
                     "status": "below_threshold",
@@ -2378,9 +2019,9 @@ class Collector:
                     "routing_preflight": preflight,
                 }
 
-            batch_id, digest = self.batch_identity(collection, routed_files, period=period)
+            batch_id, digest = self.batch_identity(account, routed_files, period=period)
             collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
-            input_upload_id = f"jeb-{collection.id}-{collection_timestamp.lower()}-{digest}"
+            input_upload_id = f"jeb-{account.id}-{collection_timestamp.lower()}-{digest}"
             return {
                 **base_payload,
                 "status": "would_process" if process else "would_stage",
@@ -2396,38 +2037,37 @@ class Collector:
                 "routing_preflight": preflight,
             }
 
-    def latest_failed_attempt_for_collection(self, collection_id: str) -> sqlite3.Row | None:
+    def latest_failed_attempt_for_account(self, account_id: str) -> sqlite3.Row | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT a.*
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
-                WHERE b.collection_id = ?
+                WHERE b.account_id = ?
                   AND a.state IN ('failed', 'failed_notified')
                 ORDER BY a.created_at DESC, a.id DESC
                 LIMIT 1
                 """,
-                (collection_id,),
+                (account_id,),
             ).fetchone()
         return cast(sqlite3.Row | None, row)
 
     def failed_attempt_target_paths_match_current_config(
         self,
         failed_attempt: sqlite3.Row,
-        collection: CollectionConfig,
+        account: AccountConfig,
     ) -> bool:
-        sources = [self.source_by_id(source_id) for source_id in collection.source_ids]
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT source_path, target_path FROM files WHERE batch_id = ?",
+                "SELECT input_path, target_path FROM files WHERE batch_id = ?",
                 (failed_attempt["batch_id"],),
             ).fetchall()
         current_target_paths: list[str] = []
         for row in rows:
-            current_target_path = self.current_target_path_for_source_path(
-                Path(str(row["source_path"])),
-                sources,
+            current_target_path = self.current_target_path_for_input_path(
+                Path(str(row["input_path"])),
+                account,
             )
             if current_target_path is None:
                 return False
@@ -2437,20 +2077,18 @@ class Collector:
         stored_target_paths = [str(row["target_path"]) for row in rows]
         return sorted(stored_target_paths) == sorted(current_target_paths)
 
-    def current_target_path_for_source_path(
+    def current_target_path_for_input_path(
         self,
-        source_path: Path,
-        sources: Sequence[SourceConfig],
+        input_path: Path,
+        account: AccountConfig,
     ) -> str | None:
-        for source in sources:
-            try:
-                rel = source_path.relative_to(source.path)
-            except ValueError:
-                continue
-            return normalize_posix(PurePosixPath(source.upload_root, *rel.parts))
-        return None
+        try:
+            rel = input_path.relative_to(account.path)
+        except ValueError:
+            return None
+        return normalize_posix(PurePosixPath(account.upload_root, *rel.parts))
 
-    def supersede_batch_attempt(self, attempt_id: str) -> None:
+    def supersede_attempt(self, attempt_id: str) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
@@ -2462,7 +2100,7 @@ class Collector:
             )
 
     def create_retry_attempt(self, failed_attempt_id: str) -> str:
-        failed_attempt = self.load_batch(failed_attempt_id)
+        failed_attempt = self.load_attempt(failed_attempt_id)
         batch_id = str(failed_attempt["batch_id"])
         with self.connect() as conn:
             row = conn.execute(
@@ -2479,7 +2117,7 @@ class Collector:
                 raise UnrecoverableJebError(f"retry attempt already exists: {attempt_id}")
             suffix = "" if attempt_number == 1 else f"-r{attempt_number}"
             input_upload_id = (
-                f"jeb-{failed_attempt['collection_id']}-"
+                f"jeb-{failed_attempt['account_id']}-"
                 f"{str(failed_attempt['collection_timestamp']).lower()}-"
                 f"{failed_attempt['manifest_digest']}{suffix}"
             )
@@ -2545,7 +2183,7 @@ class Collector:
 
     def create_batch(
         self,
-        collection: CollectionConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
         *,
         period: datetime,
@@ -2554,9 +2192,9 @@ class Collector:
     ) -> str:
         collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         if batch_id is None or digest is None:
-            batch_id, digest = self.batch_identity(collection, files, period=period)
-        target = self.target_by_name(collection.target)
-        input_upload_id = f"jeb-{collection.id}-{collection_timestamp.lower()}-{digest}"
+            batch_id, digest = self.batch_identity(account, files, period=period)
+        target = self.target_by_name(account.target)
+        input_upload_id = f"jeb-{account.id}-{collection_timestamp.lower()}-{digest}"
         job_id = f"{input_upload_id}-job"
         batch_root = self.config.collector.batch_dir / batch_id / "input"
         created_at = iso()
@@ -2567,18 +2205,18 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO batches(
-                    id, collection_id, target_name, collection_slug,
+                    id, account_id, target_name, collection_slug,
                     collection_timestamp, cleanup, manifest_digest, created_at, updated_at
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
-                    collection.id,
+                    account.id,
                     target.name,
-                    collection.collection_slug,
+                    account.collection_slug,
                     collection_timestamp,
-                    collection.cleanup,
+                    account.cleanup,
                     digest,
                     created_at,
                     created_at,
@@ -2605,7 +2243,7 @@ class Collector:
                 staging = batch_root / PurePosixPath(item.target_path)
                 conn.execute(
                     """
-                    INSERT INTO files(batch_id, source_path, target_path, bytes, mtime_ns, sha256)
+                    INSERT INTO files(batch_id, input_path, target_path, bytes, mtime_ns, sha256)
                     VALUES(?, ?, ?, ?, ?, NULL)
                     """,
                     (
@@ -2624,16 +2262,16 @@ class Collector:
                     (batch_id, item.target_path, str(staging)),
                 )
         LOG.info(
-            "created batch %s for collection %s with %d files",
+            "created batch %s for account %s with %d files",
             batch_id,
-            collection.id,
+            account.id,
             len(files),
         )
         return batch_id
 
     def batch_identity(
         self,
-        collection: CollectionConfig,
+        account: AccountConfig,
         files: Sequence[EligibleFile],
         *,
         period: datetime,
@@ -2641,80 +2279,83 @@ class Collector:
         collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
         manifest = "\n".join(f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files)
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
-        return f"{collection_timestamp}__{collection.id}__{digest}", digest
+        return f"{collection_timestamp}__{account.id}__{digest}", digest
 
-    def batch_process_lock_path(self, batch_id: str) -> Path:
-        digest = hashlib.sha256(batch_id.encode("utf-8")).hexdigest()[:16]
-        return self.config.collector.state_db.parent / "locks" / f"batch-process-{digest}.lock"
+    def attempt_process_lock_path(self, attempt_id: str) -> Path:
+        digest = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:16]
+        return self.config.collector.state_db.parent / "locks" / f"attempt-process-{digest}.lock"
 
     @contextmanager
-    def batch_process_lock(self, batch_id: str) -> Iterator[bool]:
-        lock_path = self.batch_process_lock_path(batch_id)
+    def attempt_process_lock(self, attempt_id: str) -> Iterator[bool]:
+        lock_path = self.attempt_process_lock_path(attempt_id)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock_file:
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                LOG.info("batch %s is already being processed; skipping concurrent run", batch_id)
+                LOG.info(
+                    "attempt %s is already being processed; skipping concurrent run", attempt_id
+                )
                 yield False
                 return
             try:
                 lock_file.seek(0)
                 lock_file.truncate()
-                lock_file.write(f"pid={os.getpid()}\nbatch_id={batch_id}\nacquired_at={iso()}\n")
+                lock_file.write(
+                    f"pid={os.getpid()}\nattempt_id={attempt_id}\nacquired_at={iso()}\n"
+                )
                 lock_file.flush()
                 yield True
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def process_batch(self, batch_id: str) -> None:
-        with self.batch_process_lock(batch_id) as acquired:
+    def process_attempt(self, attempt_id: str) -> None:
+        with self.attempt_process_lock(attempt_id) as acquired:
             if not acquired:
                 return
-            self._process_batch_locked(batch_id)
+            self._process_attempt_locked(attempt_id)
 
-    def _process_batch_locked(self, batch_id: str) -> None:
+    def _process_attempt_locked(self, attempt_id: str) -> None:
         try:
-            batch = self.load_batch(batch_id)
-            state = str(batch["state"])
+            attempt = self.load_attempt(attempt_id)
+            state = str(attempt["state"])
             if state in {"failed", "failed_notified"}:
-                self.notify_failed_batch(batch_id)
+                self.notify_failed_attempt(attempt_id)
                 return
             if state in {"cleanup_pending", "cleanup_failed"}:
-                self.cleanup_batch(batch_id)
+                self.cleanup_attempt(attempt_id)
                 return
             if state == "batching":
-                self.move_batch_files(batch_id)
-            if self.load_batch(batch_id)["state"] == "batched":
-                self.ensure_hashes(batch_id)
-            if self.load_batch(batch_id)["state"] == "hashed":
-                self.ensure_media_preflight(batch_id)
-            batch = self.load_batch(batch_id)
+                self.stage_attempt_files(attempt_id)
+            if self.load_attempt(attempt_id)["state"] == "batched":
+                self.ensure_hashes(attempt_id)
+            if self.load_attempt(attempt_id)["state"] == "hashed":
+                self.ensure_media_preflight(attempt_id)
             runner = self.target_runners["munchy"]
-            runner.advance(self, batch_id)
-            self.finish_target_success(batch_id)
+            runner.advance(self, attempt_id)
+            self.finish_attempt_success(attempt_id)
         except PreflightJebError as exc:
-            LOG.exception("batch %s failed media preflight", batch_id)
-            self.mark_unrecoverable(batch_id, str(exc), component="preflight")
+            LOG.exception("attempt %s failed media preflight", attempt_id)
+            self.mark_unrecoverable(attempt_id, str(exc), component="preflight")
         except UnrecoverableJebError as exc:
-            LOG.exception("batch %s has unrecoverable error", batch_id)
-            self.mark_unrecoverable(batch_id, str(exc), component="target")
+            LOG.exception("attempt %s has unrecoverable error", attempt_id)
+            self.mark_unrecoverable(attempt_id, str(exc), component="target")
         except TransientJebError as exc:
-            LOG.warning("batch %s hit transient issue; will retry: %s", batch_id, exc)
-            self.set_batch_fields(batch_id, last_error=str(exc))
+            LOG.warning("attempt %s hit transient issue; will retry: %s", attempt_id, exc)
+            self.set_attempt_fields(attempt_id, last_error=str(exc))
         except Exception as exc:
             if is_transient_error(exc):
-                LOG.warning("batch %s hit transient issue; will retry: %s", batch_id, exc)
-                self.set_batch_fields(batch_id, last_error=str(exc))
+                LOG.warning("attempt %s hit transient issue; will retry: %s", attempt_id, exc)
+                self.set_attempt_fields(attempt_id, last_error=str(exc))
                 return
-            LOG.exception("batch %s failed with unrecoverable target error", batch_id)
-            self.mark_unrecoverable(batch_id, str(exc), component="target")
+            LOG.exception("attempt %s failed with unrecoverable target error", attempt_id)
+            self.mark_unrecoverable(attempt_id, str(exc), component="target")
 
-    def move_batch_files(self, batch_id: str) -> None:
-        for row in self.batch_files(batch_id):
+    def stage_attempt_files(self, attempt_id: str) -> None:
+        for row in self.attempt_files(attempt_id):
             if row["staged_at"]:
                 continue
-            source = Path(str(row["source_path"]))
+            source = Path(str(row["input_path"]))
             staging = Path(str(row["staging_path"]))
             if source.exists():
                 hardlink_stage_file(source, staging)
@@ -2729,9 +2370,9 @@ class Collector:
                     SET staged_at = ?
                     WHERE attempt_id = ? AND target_path = ?
                     """,
-                    (iso(), batch_id, row["target_path"]),
+                    (iso(), attempt_id, row["target_path"]),
                 )
-        self.set_batch_state(batch_id, "batched")
+        self.set_attempt_state(attempt_id, "batched")
 
     def ensure_hashes(self, batch_id: str) -> None:
         with self.connect() as conn:
@@ -2749,7 +2390,7 @@ class Collector:
                 (batch_id,),
             ).fetchall()
         if not rows:
-            self.set_batch_state(batch_id, "hashed")
+            self.set_attempt_state(batch_id, "hashed")
             return
         started_at = time.monotonic()
         last_logged_at = started_at
@@ -2789,12 +2430,12 @@ class Collector:
                     elapsed,
                 )
                 last_logged_at = now
-        self.set_batch_state(batch_id, "hashed")
+        self.set_attempt_state(batch_id, "hashed")
 
     def ensure_media_preflight(self, batch_id: str) -> None:
         files = self.media_preflight_files(batch_id)
         if not files:
-            self.set_batch_state(batch_id, "preflighted")
+            self.set_attempt_state(batch_id, "preflighted")
             return
         total_bytes = sum(file.bytes for file in files)
         LOG.info(
@@ -2845,7 +2486,7 @@ class Collector:
             format_progress_bytes(sum(result.file.bytes for result in report.results)),
             report.elapsed_seconds,
         )
-        self.set_batch_state(batch_id, "preflighted")
+        self.set_attempt_state(batch_id, "preflighted")
 
     def media_preflight_files(self, batch_id: str) -> list[MediaPreflightFile]:
         return [
@@ -2854,7 +2495,7 @@ class Collector:
                 label=str(row["target_path"]),
                 bytes=int(row["bytes"]),
             )
-            for row in self.batch_files(batch_id)
+            for row in self.attempt_files(batch_id)
             if Path(str(row["target_path"])).suffix.lower() in PREFLIGHT_MEDIA_EXTENSIONS
         ]
 
@@ -2863,7 +2504,7 @@ class Collector:
         batch_id: str,
         report: MediaPreflightReport,
     ) -> tuple[MediaPreflightReport, list[str]]:
-        rows = {str(row["target_path"]): row for row in self.batch_files(batch_id)}
+        rows = {str(row["target_path"]): row for row in self.attempt_files(batch_id)}
         results_by_label = {result.file.label: result for result in report.results if result.ok}
         notes: list[str] = []
         repaired = 0
@@ -2900,7 +2541,7 @@ class Collector:
             LOG.info("quarantined %d unrepaired media file(s) for batch %s", quarantined, batch_id)
         remaining_labels = {
             str(row["target_path"])
-            for row in self.batch_files(batch_id)
+            for row in self.attempt_files(batch_id)
             if Path(str(row["target_path"])).suffix.lower() in PREFLIGHT_MEDIA_EXTENSIONS
         }
         final_results: list[MediaPreflightResult] = []
@@ -2917,7 +2558,7 @@ class Collector:
         row: sqlite3.Row,
     ) -> MediaPreflightResult:
         target_path = str(row["target_path"])
-        source = Path(str(row["source_path"]))
+        source = Path(str(row["input_path"]))
         staging = Path(str(row["staging_path"]))
         input_path = source if source.exists() else staging
         if not input_path.exists():
@@ -3000,7 +2641,7 @@ class Collector:
 
     def quarantine_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
         target_path = str(row["target_path"])
-        source = Path(str(row["source_path"]))
+        source = Path(str(row["input_path"]))
         staging = Path(str(row["staging_path"]))
         corrupt_dest = unique_corrupt_path(
             self.config.collector.preflight_repair_corrupt_dir / PurePosixPath(target_path)
@@ -3025,71 +2666,72 @@ class Collector:
                 (row["batch_id"], target_path),
             )
 
-    def finish_target_success(self, batch_id: str) -> None:
-        batch = self.load_batch(batch_id)
-        state = str(batch["state"])
+    def finish_attempt_success(self, attempt_id: str) -> None:
+        attempt = self.load_attempt(attempt_id)
+        state = str(attempt["state"])
         if state == "target_succeeded":
             return
         if state != "target_complete":
             return
-        if batch["cleanup"] == "after_target_success":
-            self.set_batch_state(batch_id, "cleanup_pending")
-            self.cleanup_batch(batch_id)
+        if attempt["cleanup"] == "after_target_success":
+            self.set_attempt_state(attempt_id, "cleanup_pending")
+            self.cleanup_attempt(attempt_id)
             return
-        self.set_batch_state(batch_id, "target_succeeded")
+        self.set_attempt_state(attempt_id, "target_succeeded")
 
-    def cleanup_batch(self, batch_id: str) -> None:
+    def cleanup_attempt(self, attempt_id: str) -> None:
         try:
-            for row in self.batch_files(batch_id):
-                Path(str(row["source_path"])).unlink(missing_ok=True)
-            shutil.rmtree(self.config.collector.batch_dir / batch_id)
+            for row in self.attempt_files(attempt_id):
+                Path(str(row["input_path"])).unlink(missing_ok=True)
+            shutil.rmtree(self.config.collector.batch_dir / attempt_id)
         except FileNotFoundError:
             pass
         except Exception as exc:
-            message = f"failed to delete completed batch files: {exc}"
-            self.set_batch_state(batch_id, "cleanup_failed", message)
-            self.notify_cleanup_failed(batch_id, message)
+            message = f"failed to delete completed attempt files: {exc}"
+            self.set_attempt_state(attempt_id, "cleanup_failed", message)
+            self.notify_cleanup_failed(attempt_id, message)
             return
-        self.set_batch_state(batch_id, "cleanup_done")
+        self.set_attempt_state(attempt_id, "cleanup_done")
 
-    def mark_unrecoverable(self, batch_id: str, message: str, *, component: str) -> None:
-        self.set_batch_state(batch_id, "failed", message)
-        self.notify_failed_batch(batch_id, component=component)
+    def mark_unrecoverable(self, attempt_id: str, message: str, *, component: str) -> None:
+        self.set_attempt_state(attempt_id, "failed", message)
+        self.notify_failed_attempt(attempt_id, component=component)
 
-    def notify_failed_batch(self, batch_id: str, *, component: str = "target") -> None:
-        batch = self.load_batch(batch_id)
-        message = str(batch["last_error"] or "jeb batch failed")
-        if self.notify_batch_issue(batch, message=message, component=component):
-            self.set_batch_fields(batch_id, state="failed_notified")
+    def notify_failed_attempt(self, attempt_id: str, *, component: str = "target") -> None:
+        attempt = self.load_attempt(attempt_id)
+        message = str(attempt["last_error"] or "Jeb attempt failed")
+        if self.notify_attempt_issue(attempt, message=message, component=component):
+            self.set_attempt_fields(attempt_id, state="failed_notified")
 
-    def notify_cleanup_failed(self, batch_id: str, message: str) -> None:
-        batch = self.load_batch(batch_id)
-        self.notify_batch_issue(batch, message=message, component="cleanup")
+    def notify_cleanup_failed(self, attempt_id: str, message: str) -> None:
+        attempt = self.load_attempt(attempt_id)
+        self.notify_attempt_issue(attempt, message=message, component="cleanup")
 
-    def notify_batch_issue(
+    def notify_attempt_issue(
         self,
-        batch: Mapping[str, Any] | sqlite3.Row,
+        attempt: Mapping[str, Any] | sqlite3.Row,
         *,
         message: str,
         component: str,
     ) -> bool:
-        batch_payload = dict(batch)
+        attempt_payload = dict(attempt)
         fingerprint = hashlib.sha256(
-            f"{batch_payload['id']}:{component}:{message}".encode()
+            f"{attempt_payload['id']}:{component}:{message}".encode()
         ).hexdigest()[:24]
-        if batch_payload.get(
+        if attempt_payload.get(
             "notified_error_fingerprint"
-        ) == fingerprint and not self.notification_reminder_due(batch_payload):
+        ) == fingerprint and not self.notification_reminder_due(attempt_payload):
             return True
-        if not self.notifier.critical_batch_issue(
-            batch=batch_payload,
+        if not self.notifier.issue(
+            context=attempt_payload,
             message=message,
             component=component,
-            notify=self.collection_by_id(str(batch_payload["collection_id"])).notify,
+            severity="critical",
+            notify=self.account_by_id(str(attempt_payload["account_id"])).notify,
         ):
             return False
-        self.set_batch_fields(
-            str(batch_payload["id"]),
+        self.set_attempt_fields(
+            str(attempt_payload["id"]),
             notified_error_fingerprint=fingerprint,
             notified_error_at=iso(),
         )
@@ -3113,52 +2755,52 @@ class Collector:
 
 
 class MunchyTargetRunner:
-    def advance(self, collector: Collector, batch_id: str) -> None:
-        batch = collector.load_batch(batch_id)
-        if batch["state"] == "target_complete":
+    def advance(self, collector: Collector, attempt_id: str) -> None:
+        attempt = collector.load_attempt(attempt_id)
+        if attempt["state"] == "target_complete":
             return
-        target = collector.target_by_name(str(batch["target_name"]))
+        target = collector.target_by_name(str(attempt["target_name"]))
         client = MunchyRunnerClient(target.url)
-        request = munchy_upload_request(collector, batch_id, target)
+        request = munchy_upload_request(collector, attempt_id, target)
 
-        state = str(batch["state"])
+        state = str(attempt["state"])
         if state == "preflighted":
             client.create_or_get_input_upload(request)
-            collector.set_batch_state(batch_id, "munchy_input_registered")
+            collector.set_attempt_state(attempt_id, "munchy_input_registered")
             state = "munchy_input_registered"
         if state == "munchy_input_registered":
             client.create_job(request)
-            collector.set_batch_state(batch_id, "munchy_job_submitted")
+            collector.set_attempt_state(attempt_id, "munchy_job_submitted")
             state = "munchy_job_submitted"
         if state in {"munchy_job_submitted", "munchy_uploading"}:
-            collector.set_batch_state(batch_id, "munchy_uploading")
+            collector.set_attempt_state(attempt_id, "munchy_uploading")
             try:
                 client.upload_files(request)
             except RunnerJobTerminalDuringUpload as exc:
                 if job_finished_cleanly(exc.job):
-                    collector.set_batch_state(batch_id, "target_complete")
+                    collector.set_attempt_state(attempt_id, "target_complete")
                     return
                 raise UnrecoverableJebError(str(exc)) from exc
-            collector.set_batch_state(batch_id, "munchy_uploaded")
+            collector.set_attempt_state(attempt_id, "munchy_uploaded")
             state = "munchy_uploaded"
         if state == "munchy_uploaded":
             job = client.wait_for_job(
-                str(batch["job_id"]),
+                str(attempt["job_id"]),
                 wait_for_safe_delete=target.wait_for_safe_delete,
             )
             if not job_finished_cleanly(job):
                 raise UnrecoverableJebError(f"munchy job did not finish cleanly: {job}")
-            collector.set_batch_state(batch_id, "target_complete")
+            collector.set_attempt_state(attempt_id, "target_complete")
 
 
 def munchy_upload_request(
     collector: Collector,
-    batch_id: str,
+    attempt_id: str,
     target: TargetConfig,
 ) -> RunnerUploadRequest:
-    batch = collector.load_batch(batch_id)
-    collection = collector.collection_by_id(str(batch["collection_id"]))
-    rows = collector.batch_files(batch_id)
+    attempt = collector.load_attempt(attempt_id)
+    account = collector.account_by_id(str(attempt["account_id"]))
+    rows = collector.attempt_files(attempt_id)
     files = tuple(
         RunnerInputFile(
             source=Path(str(row["staging_path"])),
@@ -3169,44 +2811,43 @@ def munchy_upload_request(
         )
         for row in rows
     )
-    munchy_job_defaults = collection_munchy_job_defaults(collector.config, collection)
+    munchy_job_defaults = account_munchy_job_defaults(collector.config, account)
     groups = munchy_groups_from_defaults(munchy_job_defaults)
-    profile_routing = mapping(munchy_job_defaults.get("profile_routing"))
+    routing = mapping(munchy_job_defaults.get("routing"))
     job_payload = {
-        "job_id": str(batch["job_id"]),
-        "input_upload_id": str(batch["input_upload_id"]),
-        "collection_slug": str(batch["collection_slug"]),
-        "collection_timestamp": str(batch["collection_timestamp"]),
+        "job_id": str(attempt["job_id"]),
+        "input_upload_id": str(attempt["input_upload_id"]),
+        "collection_slug": str(attempt["collection_slug"]),
+        "collection_timestamp": str(attempt["collection_timestamp"]),
         "workflow_mode": munchy_job_defaults.get(
             "workflow_mode",
             "collection_archive",
         ),
-        "archive_mode": munchy_job_defaults.get("archive_mode", "av1_nvenc"),
+        "output_mode": munchy_job_defaults.get("output_mode", "video"),
         "tasks": list(munchy_job_defaults.get("tasks") or ["archive_video"]),
         "groups": groups,
         "collection_archive": dict(
-            munchy_job_defaults.get("collection_archive")
-            or {"destination": "riverhog"}
+            munchy_job_defaults.get("collection_archive") or {"destination": "riverhog"}
         ),
-        "notify": dict(collection.notify),
+        "notify": dict(account.notify),
         "cleanup_local_on_success": bool(
             munchy_job_defaults.get("cleanup_local_on_success", False)
         ),
         "riverhog_upload_session_on_failure": "cancel",
     }
-    if profile_routing:
-        job_payload["profile_routing"] = dict(profile_routing)
+    if routing:
+        job_payload["routing"] = dict(routing)
     storage_hint = {
         "workflow_mode": job_payload["workflow_mode"],
         "collection_archive_destination": str(
             job_payload["collection_archive"].get("destination") or "riverhog"
         ),
-        "archive_mode": job_payload["archive_mode"],
+        "output_mode": job_payload["output_mode"],
         "tasks": job_payload["tasks"],
-        "structured_routing": bool(job_payload.get("profile_routing")),
+        "structured_routing": bool(job_payload.get("routing")),
         "groups": {
             name: {
-                "archive_mode": munchy_archive_mode(str(group.get("archive_mode") or "av1_nvenc")),
+                "output_mode": munchy_output_mode(str(group.get("output_mode") or "video")),
                 "tasks": list(group.get("tasks") or []),
             }
             for name, group in groups.items()
@@ -3217,8 +2858,8 @@ def munchy_upload_request(
         if eager_pipeline_batches is not None:
             storage_hint["groups"][name]["eager_pipeline_batches"] = eager_pipeline_batches
     return RunnerUploadRequest(
-        upload_id=str(batch["input_upload_id"]),
-        job_id=str(batch["job_id"]),
+        input_upload_id=str(attempt["input_upload_id"]),
+        job_id=str(attempt["job_id"]),
         files=files,
         storage_hint=storage_hint,
         job_payload=job_payload,
@@ -3228,7 +2869,7 @@ def munchy_upload_request(
 
 
 def filesystem_metadata_source(row: sqlite3.Row) -> Path:
-    source = Path(str(row["source_path"]))
+    source = Path(str(row["input_path"]))
     if source.exists():
         return source
     staging = Path(str(row["staging_path"]))
@@ -3483,36 +3124,77 @@ def env_int(env: Mapping[str, str], name: str, default: int) -> int:
 def parse_cadence(value: str | None, *, env_name: str) -> Cadence:
     cadence = (value or "weekly").strip().lower()
     if cadence not in JEB_CADENCES:
-        raise ValueError(
-            f"{env_name} must be one of: " + ", ".join(sorted(JEB_CADENCES))
-        )
+        raise ValueError(f"{env_name} must be one of: " + ", ".join(sorted(JEB_CADENCES)))
     return cast(Cadence, cadence)
 
 
-def source_from_account(
+def account_from_env(
     account: str,
     env: Mapping[str, str],
     *,
     landing_dir: Path,
     stable_seconds: int,
     include_extensions: frozenset[str],
-) -> SourceConfig:
-    return SourceConfig(
+) -> AccountConfig:
+    cleanup = env_value_from(env, "JEB_CLEANUP", "never") or "never"
+    if cleanup not in {"never", "after_target_success"}:
+        raise ValueError("JEB_CLEANUP must be never or after_target_success")
+    default_cadence = parse_cadence(
+        env_value_from(env, "JEB_CADENCE", "weekly"),
+        env_name="JEB_CADENCE",
+    )
+    account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
+    account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
+    account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
+    notify_enabled = env_bool(
+        env,
+        account_notify_enabled_env,
+        env_bool(env, "JEB_NOTIFY_ENABLED", False),
+    )
+    notify_recipients = env_csv(
+        env,
+        account_notify_recipients_env,
+        env_csv(env, "JEB_NOTIFY_RECIPIENTS"),
+    )
+    notify: dict[str, Any] = {"enabled": notify_enabled}
+    if notify_recipients:
+        notify["recipients"] = list(notify_recipients)
+    cadence = parse_cadence(
+        env_value_from(env, account_cadence_env, default_cadence),
+        env_name=account_cadence_env,
+    )
+    hour = env_int(env, "JEB_HOUR", 0)
+    minute = env_int(env, "JEB_MINUTE", 0)
+    if not 0 <= hour <= 23:
+        raise ValueError("JEB_HOUR must be 0..23")
+    if not 0 <= minute <= 59:
+        raise ValueError("JEB_MINUTE must be 0..59")
+    return AccountConfig(
         id=account,
         enabled=True,
         path=landing_dir / account,
         upload_root=normalize_posix(account),
         stable_seconds=stable_seconds,
         include_extensions=include_extensions,
+        collection_slug=account,
+        target="munchy",
+        notify=notify,
+        threshold_bytes=parse_size(env_value_from(env, "JEB_THRESHOLD", "0B")),
+        cleanup=cast(Literal["never", "after_target_success"], cleanup),
+        cadence=cadence,
+        weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
+        hour=hour,
+        minute=minute,
+        munchy_job_defaults=load_account_munchy_job_defaults(account, env),
     )
 
 
-def collection_munchy_job_defaults(
+def account_munchy_job_defaults(
     config: JebConfig,
-    collection: CollectionConfig,
+    account: AccountConfig,
 ) -> dict[str, Any]:
     defaults = dict(config.munchy_job_defaults)
-    defaults.update(dict(collection.munchy_job_defaults))
+    defaults.update(dict(account.munchy_job_defaults))
     return defaults
 
 
@@ -3552,8 +3234,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     if preflight_repair not in {"off", "safe_remux"}:
         raise ValueError("JEB_PREFLIGHT_REPAIR must be off or safe_remux")
     preflight_repair_original = (
-        env_value_from(values, "JEB_PREFLIGHT_REPAIR_ORIGINAL", "keep_corrupt")
-        or "keep_corrupt"
+        env_value_from(values, "JEB_PREFLIGHT_REPAIR_ORIGINAL", "keep_corrupt") or "keep_corrupt"
     )
     if preflight_repair_original not in {"keep_corrupt", "delete"}:
         raise ValueError("JEB_PREFLIGHT_REPAIR_ORIGINAL must be keep_corrupt or delete")
@@ -3625,9 +3306,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         name="munchy",
         url=required_env(values, "JEB_MUNCHY_URL").rstrip("/"),
         upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
-        upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64))
-        * 1024
-        * 1024,
+        upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64)) * 1024 * 1024,
         wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),
     )
     if (
@@ -3640,8 +3319,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         for item in env_csv(values, "JEB_INCLUDE_EXTENSIONS", DEFAULT_JEB_INCLUDE_EXTENSIONS)
     )
     stable_seconds = parse_duration(env_value_from(values, "JEB_STABLE_AGE"), 600)
-    sources = tuple(
-        source_from_account(
+    account_configs = tuple(
+        account_from_env(
             account,
             values,
             landing_dir=landing_dir,
@@ -3650,20 +3329,18 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         )
         for account in accounts
     )
-    collections = tuple(collection_from_account(account, values) for account in accounts)
     tasks = list(env_csv(values, "JEB_ARCHIVE_TASKS", ("archive_video",)))
     notify_defaults: dict[str, Any] = {"enabled": notify.enabled}
     if notify.recipients:
         notify_defaults["recipients"] = list(notify.recipients)
     munchy_job_defaults = {
         "workflow_mode": "collection_archive",
-        "archive_mode": env_value_from(values, "JEB_ARCHIVE_MODE", "av1_nvenc") or "av1_nvenc",
+        "output_mode": env_value_from(values, "JEB_OUTPUT_MODE", "video") or "video",
         "tasks": tasks,
         "collection_archive": {
             "destination": "riverhog",
             "riverhog": {
-                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized")
-                or "finalized"
+                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized") or "finalized"
             },
         },
         "notify": notify_defaults,
@@ -3673,60 +3350,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         collector=collector,
         notify=notify,
         targets={"munchy": target},
-        sources=sources,
-        collections=collections,
+        accounts=account_configs,
         munchy_job_defaults=munchy_job_defaults,
-    )
-
-
-def collection_from_account(account: str, env: Mapping[str, str]) -> CollectionConfig:
-    cleanup = env_value_from(env, "JEB_CLEANUP", "never") or "never"
-    if cleanup not in {"never", "after_target_success"}:
-        raise ValueError("JEB_CLEANUP must be never or after_target_success")
-    default_cadence = parse_cadence(
-        env_value_from(env, "JEB_CADENCE", "weekly"),
-        env_name="JEB_CADENCE",
-    )
-    account_cadence_env = f"JEB_ACCOUNT_{account_env_name(account)}_CADENCE"
-    account_notify_enabled_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_ENABLED"
-    account_notify_recipients_env = f"JEB_ACCOUNT_{account_env_name(account)}_NOTIFY_RECIPIENTS"
-    notify_enabled = env_bool(
-        env,
-        account_notify_enabled_env,
-        env_bool(env, "JEB_NOTIFY_ENABLED", False),
-    )
-    notify_recipients = env_csv(
-        env,
-        account_notify_recipients_env,
-        env_csv(env, "JEB_NOTIFY_RECIPIENTS"),
-    )
-    notify: dict[str, Any] = {"enabled": notify_enabled}
-    if notify_recipients:
-        notify["recipients"] = list(notify_recipients)
-    cadence = parse_cadence(
-        env_value_from(env, account_cadence_env, default_cadence),
-        env_name=account_cadence_env,
-    )
-    hour = env_int(env, "JEB_HOUR", 0)
-    minute = env_int(env, "JEB_MINUTE", 0)
-    if not 0 <= hour <= 23:
-        raise ValueError("JEB_HOUR must be 0..23")
-    if not 0 <= minute <= 59:
-        raise ValueError("JEB_MINUTE must be 0..59")
-    return CollectionConfig(
-        id=account,
-        enabled=True,
-        collection_slug=account,
-        target="munchy",
-        notify=notify,
-        threshold_bytes=parse_size(env_value_from(env, "JEB_THRESHOLD", "0B")),
-        cleanup=cast(Literal["never", "after_target_success"], cleanup),
-        source_ids=(account,),
-        cadence=cadence,
-        weekday=parse_weekday(env_value_from(env, "JEB_WEEKDAY", "monday")),
-        hour=hour,
-        minute=minute,
-        munchy_job_defaults=load_account_munchy_job_defaults(account, env),
     )
 
 

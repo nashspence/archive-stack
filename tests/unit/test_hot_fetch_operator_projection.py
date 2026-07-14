@@ -14,7 +14,7 @@ from riverhog_core.catalog_models import (
     FetchOperatorSummaryRecord,
     FetchRecord,
     FetchSelectorRecord,
-    FileCopyRecord,
+    FileDiscRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.fetches import SqlAlchemyFetchService
@@ -72,7 +72,6 @@ def _seed_fetch(sqlite_path: Path) -> None:
                     bytes=50,
                     sha256=_sha256(b"ready"),
                     hot=True,
-                    archived=True,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -80,7 +79,6 @@ def _seed_fetch(sqlite_path: Path) -> None:
                     bytes=100,
                     sha256=_sha256(b"missing"),
                     hot=False,
-                    archived=True,
                 ),
             ]
         )
@@ -122,16 +120,16 @@ def test_fetch_operator_projection_tracks_selector_and_entry_changes(tmp_path: P
         ("docs", "missing.txt", False),
         ("docs", "ready.txt", True),
     ]
-    assert not files[0].registered_disc_coverage
+    assert not files[0].disc_coverage
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
         session.add(
-            FileCopyRecord(
+            FileDiscRecord(
                 collection_id="docs",
                 path="missing.txt",
-                copy_id="copy-1",
-                volume_id="BD-001",
+                disc_id="disc-1",
+                image_id="BD-001",
                 location="shelf",
                 disc_path="docs/missing.txt",
                 enc_json="{}",
@@ -140,7 +138,7 @@ def test_fetch_operator_projection_tracks_selector_and_entry_changes(tmp_path: P
 
     files = _file_rows(sqlite_path, "fx-1")
     assert files[0].path == "missing.txt"
-    assert files[0].registered_disc_coverage
+    assert files[0].disc_coverage
 
     with session_scope(session_factory) as session:
         session.add(

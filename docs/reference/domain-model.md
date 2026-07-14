@@ -7,11 +7,11 @@ Use these core nouns consistently:
 - `collection` — the logical namespace the user thinks in
 - `candidate` — one provisional planner proposal that may be re-allocated
 - `image` — one finalized ISO artifact
-- `copy` — one physical burned disc of an image
+- `disc` — one physical burned disc of an image
 - `fetch` — a named, operator-created manifest of target selectors that can be
-  fulfilled from optical media or cloud archive data
+  fulfilled from optical media or archive data
 - `hot eviction` — explicit removal of compliant hot bytes from the fast cache
-- `recovery_session` — an automatic Glacier restore or image rebuild workflow
+- `archive_restore` — an automatic archive restore or disc rebuild workflow
 
 ## Core terms
 
@@ -21,7 +21,7 @@ A logical namespace uploaded from a human-readable slug. A collection has a
 server-minted stable id and contains many files at stable relative paths.
 
 Riverhog accepts a collection only after every uploaded file verifies and the
-whole-collection Glacier archive package has uploaded and verified.
+whole-collection archive package has uploaded and verified.
 
 Collection-id rules:
 
@@ -32,7 +32,7 @@ Collection-id rules:
 - migration uploads may provide an explicit UTC basic timestamp like
   `20250712T213200Z`; the slug is still required
 - no collection id may be an ancestor or descendant of another collection id
-- accepted collections are immediately Glacier-backed and eligible for hot
+- accepted collections are immediately archive-backed and eligible for hot
   visibility and disc planning
 
 ### File
@@ -46,9 +46,8 @@ The server-side materialized cache of file bytes currently available without opt
 Selectors operate over the projected hot namespace, not over literal hot-store paths on disk.
 
 Immediately after collection finalization, files are hot cache entries.
-Under-protected files are not evictable until enough verified physical copies
-exist. Operators use `riverhog hot evict` to synchronously remove compliant hot
-bytes from the cache.
+Files without the required disc redundancy are not evictable. Operators use
+`riverhog hot evict` to synchronously remove compliant hot bytes from the cache.
 
 ### Durable authoritative state
 
@@ -57,8 +56,8 @@ The authoritative archive state survives service restarts.
 This includes at least:
 
 - collections and their coverage summaries
-- collection Glacier archive package state
-- finalized images and registered copies
+- collection archive package state
+- finalized images and registered discs
 - named fetch manifests and their selector targets
 - hot-residency state and any unexpired resumable-upload progress
 
@@ -89,7 +88,7 @@ Image lifecycle rules:
 - `GET /v1/images/{image_id}` addresses finalized images only
 - finalized `image.id` uses compact UTC basic form `YYYYMMDDTHHMMSSZ`
 - finalized `image.id` is the same media-facing identifier carried on the ISO and disc manifest
-- finalized images are physical recovery artifacts; Glacier archive state belongs
+- finalized images define disc recovery artifacts; archive state belongs
   to collections
 
 ### Target
@@ -99,20 +98,20 @@ A selector over the projected hot namespace naming either:
 - a projected directory that may span multiple collections
 - a projected file
 
-### Copy
+### Disc
 
-A physical burned disc identified by `(volume_id, copy_id)`.
+A physical burned disc belonging to one finalized image and identified by `disc_id`.
 
-Copy rules:
+Disc rules:
 
-- finalized images create two generated copy ids by default using `{image_id}-N`
-- the generated `copy_id` is the exact disc label text to write on media
+- finalized images create two generated disc ids by default using `{image_id}-N`
+- the generated `disc_id` is the exact disc label text to write on media
 - `location` is mutable operational metadata
-- `location` is never part of copy identity
-- copy registration records the generated id, location, and lifecycle state
+- `location` is never part of disc identity
+- disc registration records the generated id, location, and lifecycle state
   synchronously with the per-file recovery-index rows
-- each covered file-copy row records the on-disc payload path plus exact encrypted recovery-byte length; missing
-  recovery-byte digests are backfilled before fetch manifests expose cold-recovery copy hints
+- each covered file-disc row records the on-disc payload path plus the exact
+  encrypted recovery-byte length and digest exposed in fetch manifests
 
 ## Summary models
 
@@ -124,37 +123,30 @@ A collection summary exposes at least:
 - `files`
 - `bytes`
 - `hot_bytes`
-- `archived_bytes`
-- `pending_bytes`
-- `glacier`
+- `archive`
 - `collection_manifest`
 - `archive_format`
 - `compression`
 - `disc_coverage`
-- `protection_state`
-- `protected_bytes`
+- `disc_redundancy`
 - `image_coverage`
 
 Definitions:
 
 - `bytes` — total bytes of all logical files in the collection
 - `hot_bytes` — total bytes currently materialized in hot storage for files in the collection
-- `archived_bytes` — total bytes stored on at least one registered copy
-- `pending_bytes` — `bytes - archived_bytes`
-- `protected_bytes` — total logical-file bytes currently covered by enough
-  verified physical copies while the collection archive remains uploaded and
-  verified
-- `glacier` — direct collection archive state and object metadata
+- `disc_coverage` — `state` and logical bytes recoverable from registered discs
+- `disc_redundancy` — `state` and logical bytes represented by the required
+  number of registered discs
+- `archive` — direct collection archive state and object metadata
 - `collection_manifest` — manifest object path, manifest SHA-256, OTS proof object
   path, and OTS proof state for the collection archive package
 - OTS proof state records proof object presence and integrity. Restore/recovery
   verification separately validates the `.ots` proof against the exact
   collection manifest with the configured OpenTimestamps verification command.
-- `disc_coverage` — physical media coverage state and verified physical bytes
-- `protection_state` — one of `under_protected`, `cloud_only`,
-  `physical_only`, or `fully_protected`
-- `image_coverage` — finalized-image physical coverage details for this
-  collection, including registered copies
+- both coverage states are one of `none`, `partial`, or `full`
+- `image_coverage` — finalized-image disc coverage details for this collection,
+  including registered discs
 
 ### Fetch operator projections
 
@@ -201,11 +193,11 @@ An image summary exposes at least:
 - `collections`
 - `collection_ids`
 - `iso_ready`
-- `physical_protection_state`
-- `physical_copies_required`
-- `physical_copies_registered`
-- `physical_copies_verified`
-- `physical_copies_missing`
+- `disc_redundancy_state`
+- `discs_required`
+- `discs_registered`
+- `discs_verified`
+- `discs_missing`
 
 Finalized-image summary rules:
 
@@ -213,18 +205,17 @@ Finalized-image summary rules:
 - `collection_ids` is the lexically sorted list of contained collection ids
 - `finalized_at` is the UTC timestamp encoded by finalized `image.id`
 - finalized images always report `iso_ready = true`
-- `physical_protection_state` is one of `unprotected`,
-  `partially_protected`, or `protected`
-- `physical_copies_required` defaults to `2`
-- `physical_copies_registered` counts currently registered or verified physical copies
-- `physical_copies_verified` counts registered copies whose verification state is
+- `disc_redundancy_state` is one of `none`, `partial`, or `full`
+- `discs_required` defaults to `2`
+- `discs_registered` counts currently registered or verified discs
+- `discs_verified` counts registered discs whose verification state is
   `verified`
-- `physical_copies_missing` is the remaining shortfall to the required physical-copy count
-- finalized-image protection is physical-copy state
+- `discs_missing` is the remaining shortfall to the required disc count
+- `disc_redundancy_state` is the finalized image's disc redundancy state
 
-### Glacier usage report
+### Archive usage report
 
-A Glacier-usage report exposes at least:
+An Archive-usage report exposes at least:
 
 - `scope`
 - `measured_at`
@@ -233,7 +224,7 @@ A Glacier-usage report exposes at least:
 - `images`
 - `history`
 
-Glacier-usage-report rules:
+Archive-usage-report rules:
 
 - `totals.measured_storage_bytes` sums measured uploaded archive-store bytes, including
   Standard S3 collection manifest and OTS proof objects
@@ -241,13 +232,13 @@ Glacier-usage-report rules:
 - `totals.uploaded_collections` counts collection archives in `uploaded` state
 - `collections` expose direct measured usage for whole-collection archive object
   sets, including manifest and OTS proof state
-- `images` may explain which finalized images physically cover reported
+- `images` may explain which finalized images provide disc coverage for reported
   collections
-- `history` stores overall Glacier-usage snapshots rather than collection-scoped rows
+- `history` stores overall archive-usage snapshots rather than collection-scoped rows
 
-### Recovery session
+### Archive restore
 
-A recovery session exposes at least:
+An archive restore exposes at least:
 
 - `id`
 - `type`
@@ -256,30 +247,30 @@ A recovery session exposes at least:
 - `images`
 - `notification`
 
-Recovery-session rules:
+Archive-restore rules:
 
-- `type` is `collection_restore` or `image_rebuild`
-- `collection_restore` is the internal collection-native session type behind
-  fetch-scoped cloud-fetch recovery; it restores collection content from the
+- `type` is `fetch_materialization` or `disc_rebuild`
+- `fetch_materialization` is the internal collection-native archive restore type behind
+  fetch-scoped materialization; it restores collection content from the
   collection archive, manifest, and OTS proof
-- `image_rebuild` restores the collection archives needed to rebuild a lost
+- `disc_rebuild` restores the collection archives needed to rebuild a lost
   finalized image from persisted coverage metadata
-- session cost estimates count the required collection archive restores
+- archive restore cost estimates count the required collection archive restores
 - AWS S3 Glacier restores use the configured retrieval tier and ready TTL as a
   temporary-copy window; the archive object remains in its archive storage class
   until copied elsewhere
 - collection manifests and OTS proofs are Standard S3 sibling objects, so
-  recovery reads them directly and only restores archived `archive.tar` payloads
-- recovered image rebuilds stream restored archive tars into a temporary image
+  recovery reads them directly and restores only the required collection `archive.tar` payloads
+- disc rebuild restores stream restored archive tars into a temporary image
   tree and stream the rebuilt ISO from `xorriso`; Riverhog does not keep whole
   collection archives or replacement ISOs in process memory
 
-### Copy summary
+### Disc summary
 
-A copy summary exposes at least:
+A disc summary exposes at least:
 
-- `id`
-- `volume_id`
+- `disc_id`
+- `image_id`
 - `label_text`
 - `location`
 - `created_at`
@@ -302,7 +293,7 @@ A fetch summary exposes at least:
 - `entries_uploaded`
 - `uploaded_bytes`
 - `missing_bytes`
-- `copies`
+- `discs`
 - `upload_state_expires_at`
 
 Definitions:

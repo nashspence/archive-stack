@@ -4,15 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from riverhog_core.domain.enums import (
-    CopyState,
+    ArchiveRestoreState,
+    ArchiveState,
+    CoverageState,
+    DiscState,
     FetchState,
-    GlacierState,
-    ProtectionState,
-    RecoveryCoverageState,
-    RecoverySessionState,
     VerificationState,
 )
-from riverhog_core.domain.types import CollectionId, CopyId, FetchId, ImageId, Sha256Hex, TargetStr
+from riverhog_core.domain.types import CollectionId, DiscId, FetchId, ImageId, Sha256Hex, TargetStr
 
 
 @dataclass(frozen=True)
@@ -29,8 +28,8 @@ class Target:
 
 
 @dataclass(frozen=True)
-class GlacierArchiveStatus:
-    state: GlacierState = GlacierState.PENDING
+class ArchiveStatus:
+    state: ArchiveState = ArchiveState.PENDING
     object_path: str | None = None
     stored_bytes: int | None = None
     backend: str | None = None
@@ -50,57 +49,57 @@ class CollectionManifestStatus:
 
 
 @dataclass(frozen=True)
-class GlacierUsageTotals:
+class ArchiveUsageTotals:
     collections: int
     uploaded_collections: int
     measured_storage_bytes: int
 
 
 @dataclass(frozen=True)
-class GlacierUsageImage:
+class ArchiveUsageImage:
     id: ImageId
     filename: str
     collection_ids: list[str]
 
 
 @dataclass(frozen=True)
-class GlacierCollectionContribution:
+class ArchiveCollectionContribution:
     image_id: ImageId
     filename: str
     represented_bytes: int
 
 
 @dataclass(frozen=True)
-class GlacierUsageCollection:
+class ArchiveUsageCollection:
     id: CollectionId
     bytes: int
     measured_storage_bytes: int
-    images: tuple[GlacierCollectionContribution, ...] = ()
-    glacier: GlacierArchiveStatus = field(default_factory=GlacierArchiveStatus)
+    images: tuple[ArchiveCollectionContribution, ...] = ()
+    archive: ArchiveStatus = field(default_factory=ArchiveStatus)
     collection_manifest: CollectionManifestStatus | None = None
     archive_format: str | None = None
     compression: str | None = None
 
 
 @dataclass(frozen=True)
-class GlacierUsageSnapshot:
+class ArchiveUsageSnapshot:
     captured_at: str
     uploaded_collections: int
     measured_storage_bytes: int
 
 
 @dataclass(frozen=True)
-class GlacierUsageReport:
+class ArchiveUsageReport:
     scope: str
     measured_at: str
-    totals: GlacierUsageTotals
-    images: tuple[GlacierUsageImage, ...]
-    collections: tuple[GlacierUsageCollection, ...]
-    history: tuple[GlacierUsageSnapshot, ...] = ()
+    totals: ArchiveUsageTotals
+    images: tuple[ArchiveUsageImage, ...]
+    collections: tuple[ArchiveUsageCollection, ...]
+    history: tuple[ArchiveUsageSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
-class RecoveryNotificationStatus:
+class ArchiveRestoreNotificationStatus:
     webhook_configured: bool
     reminder_count: int
     next_reminder_at: str | None
@@ -111,14 +110,14 @@ class RecoveryNotificationStatus:
 
 
 @dataclass(frozen=True)
-class RecoverySessionProgress:
+class ArchiveRestoreProgress:
     archive_verification: str = "pending"
     extraction: str = "pending"
     materialization: str = "pending"
 
 
 @dataclass(frozen=True)
-class RecoverySessionImage:
+class ArchiveRestoreImage:
     id: ImageId
     filename: str
     collection_ids: tuple[CollectionId, ...] = ()
@@ -126,37 +125,37 @@ class RecoverySessionImage:
 
 
 @dataclass(frozen=True)
-class RecoverySessionCollection:
+class ArchiveRestoreCollection:
     id: CollectionId
-    glacier: GlacierArchiveStatus
+    archive: ArchiveStatus
     collection_manifest: CollectionManifestStatus | None
     stored_bytes: int
 
 
 @dataclass(frozen=True)
-class RecoverySessionSummary:
+class ArchiveRestoreSummary:
     id: str
     type: str
-    state: RecoverySessionState
+    state: ArchiveRestoreState
     created_at: str
-    restore_requested_at: str | None
-    restore_ready_at: str | None
-    restore_expires_at: str | None
+    requested_at: str | None
+    ready_at: str | None
+    expires_at: str | None
     completed_at: str | None
     canceled_at: str | None
     paused_at: str | None
     paused_from_state: str | None
-    restore_paths: tuple[str, ...] | None
+    paths: tuple[str, ...] | None
     latest_message: str | None
     warnings: tuple[str, ...]
-    notification: RecoveryNotificationStatus
-    progress: RecoverySessionProgress
-    collections: tuple[RecoverySessionCollection, ...]
-    images: tuple[RecoverySessionImage, ...]
+    notification: ArchiveRestoreNotificationStatus
+    progress: ArchiveRestoreProgress
+    collections: tuple[ArchiveRestoreCollection, ...]
+    images: tuple[ArchiveRestoreImage, ...]
 
 
 @dataclass(frozen=True)
-class RecoverySessionListPage:
+class ArchiveRestoreListPage:
     page: int
     per_page: int
     total: int
@@ -168,34 +167,27 @@ class RecoverySessionListPage:
     state: str | None
     collection: str | None
     image: str | None
-    sessions: list[RecoverySessionSummary]
+    restores: list[ArchiveRestoreSummary]
 
 
 @dataclass(frozen=True)
 class CollectionCoverageImage:
     id: ImageId
     filename: str
-    protection_state: ProtectionState
-    physical_copies_required: int
-    physical_copies_registered: int
-    physical_copies_verified: int
-    physical_copies_missing: int
+    disc_redundancy_state: CoverageState
+    discs_required: int
+    discs_registered: int
+    discs_verified: int
+    discs_missing: int
     covered_paths: list[str]
-    copies: list[CopySummary]
+    discs: list[DiscSummary]
     covered_paths_total: int | None = None
 
 
 @dataclass(frozen=True)
-class RecoveryCoverage:
-    state: RecoveryCoverageState
+class Coverage:
+    state: CoverageState
     bytes: int
-
-
-@dataclass(frozen=True)
-class CollectionRecoverySummary:
-    verified_physical: RecoveryCoverage
-    glacier: RecoveryCoverage
-    available: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -204,31 +196,17 @@ class CollectionSummary:
     files: int
     bytes: int
     hot_bytes: int
-    archived_bytes: int
-    protection_state: ProtectionState = ProtectionState.UNPROTECTED
-    protected_bytes: int = 0
-    recovery: CollectionRecoverySummary = field(
-        default_factory=lambda: CollectionRecoverySummary(
-            verified_physical=RecoveryCoverage(
-                state=RecoveryCoverageState.NONE,
-                bytes=0,
-            ),
-            glacier=RecoveryCoverage(
-                state=RecoveryCoverageState.NONE,
-                bytes=0,
-            ),
-            available=(),
-        )
+    disc_coverage: Coverage = field(
+        default_factory=lambda: Coverage(state=CoverageState.NONE, bytes=0)
+    )
+    disc_redundancy: Coverage = field(
+        default_factory=lambda: Coverage(state=CoverageState.NONE, bytes=0)
     )
     image_coverage: list[CollectionCoverageImage] = field(default_factory=list)
-    glacier: GlacierArchiveStatus = field(default_factory=GlacierArchiveStatus)
+    archive: ArchiveStatus = field(default_factory=ArchiveStatus)
     collection_manifest: CollectionManifestStatus | None = None
     archive_format: str | None = None
     compression: str | None = None
-
-    @property
-    def pending_bytes(self) -> int:
-        return self.bytes - self.archived_bytes
 
 
 @dataclass(frozen=True)
@@ -251,39 +229,39 @@ class ImageSummary:
     collections: int
     collection_ids: list[str]
     iso_ready: bool
-    protection_state: ProtectionState
-    physical_copies_required: int
-    physical_copies_registered: int
-    physical_copies_verified: int
-    physical_copies_missing: int
-    glacier: GlacierArchiveStatus
+    disc_redundancy_state: CoverageState
+    discs_required: int
+    discs_registered: int
+    discs_verified: int
+    discs_missing: int
+    archive: ArchiveStatus
 
 
 @dataclass(frozen=True)
-class CopyHistoryEntry:
+class DiscHistoryEntry:
     at: str
     event: str
-    state: CopyState
+    state: DiscState
     verification_state: VerificationState
     location: str | None
 
 
 @dataclass(frozen=True)
-class CopySummary:
-    id: CopyId
-    volume_id: str
+class DiscSummary:
+    disc_id: DiscId
+    image_id: str
     label_text: str
     location: str | None
     created_at: str
-    state: CopyState = CopyState.REGISTERED
+    state: DiscState = DiscState.REGISTERED
     verification_state: VerificationState = VerificationState.PENDING
-    history: tuple[CopyHistoryEntry, ...] = ()
+    history: tuple[DiscHistoryEntry, ...] = ()
 
 
 @dataclass(frozen=True)
-class FetchCopyHint:
-    id: CopyId
-    volume_id: str
+class FetchDiscHint:
+    disc_id: DiscId
+    image_id: str
     location: str
 
 
@@ -295,7 +273,7 @@ class FetchSummary:
     state: FetchState
     files: int
     bytes: int
-    copies: list[FetchCopyHint]
+    discs: list[FetchDiscHint]
     entries_total: int = 0
     entries_pending: int = 0
     entries_partial: int = 0
@@ -321,4 +299,4 @@ class FileRef:
     path: str
     bytes: int
     sha256: Sha256Hex
-    copies: list[FetchCopyHint]
+    discs: list[FetchDiscHint]

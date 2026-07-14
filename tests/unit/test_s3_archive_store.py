@@ -35,8 +35,8 @@ from tests.fixtures.crypto import FixtureProofStamper
 from tests.fixtures.data import DOCS_FILES
 from tests.unit.db_helpers import sqlite_url
 
-DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-docs"
-LARGE_DOCS_ARCHIVE_PREFIX = "glacier/archives/opaque-large-docs"
+DOCS_ARCHIVE_PREFIX = "archive/archives/opaque-docs"
+LARGE_DOCS_ARCHIVE_PREFIX = "archive/archives/opaque-large-docs"
 
 
 class _MissingObjectError(Exception):
@@ -308,7 +308,7 @@ def _store_with_client(
     **config_overrides: object,
 ) -> S3ArchiveStore:
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_store.create_glacier_s3_client",
+        "riverhog_core.stores.s3_archive_store.create_archive_s3_client",
         lambda config: client,
     )
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
@@ -324,11 +324,11 @@ def test_upload_collection_archive_package_uploads_encrypted_manifest_and_proof_
         monkeypatch,
         tmp_path,
         client,
-        glacier_backend="aws",
-        glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
-        glacier_storage_class="DEEP_ARCHIVE",
-        glacier_archive_passphrase=passphrase,
-        glacier_archive_work_factor=12,
+        archive_backend="aws",
+        archive_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        archive_storage_class="DEEP_ARCHIVE",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
     )
     package = _package()
 
@@ -383,9 +383,9 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
         monkeypatch,
         tmp_path,
         client,
-        glacier_archive_encryption="age_scrypt",
-        glacier_archive_passphrase=passphrase,
-        glacier_archive_work_factor=12,
+        archive_encryption="age_scrypt",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
     )
     package = _package()
 
@@ -439,7 +439,7 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     )
 
 
-def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
+def test_publish_restore_catalog_writes_generic_readme_and_encrypted_catalog(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -449,11 +449,11 @@ def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
         monkeypatch,
         tmp_path,
         client,
-        glacier_archive_passphrase=passphrase,
-        glacier_archive_work_factor=12,
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
     )
 
-    store.publish_recovery_catalog(
+    store.publish_restore_catalog(
         generated_at="2026-06-03T06:00:00Z",
         entries=[
             {
@@ -470,7 +470,7 @@ def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
         ],
     )
 
-    readme = client.objects["glacier/README.md"]["Body"].decode("utf-8")
+    readme = client.objects["archive/README.md"]["Body"].decode("utf-8")
     assert "Riverhog" not in readme
     assert "S3 credentials, token, or S3 login/session" in readme
     assert "will fail until the CLI is authenticated" in readme
@@ -478,7 +478,7 @@ def test_publish_recovery_catalog_writes_generic_readme_and_encrypted_catalog(
     assert "archive passphrase" in readme
     assert "age --decrypt -o collections.yml collections.yml.age" in readme
     assert "Enter the archive passphrase when age prompts." in readme
-    catalog_object = client.objects["glacier/catalog/collections.yml.age"]
+    catalog_object = client.objects["archive/catalog/collections.yml.age"]
     assert b"private-family-photos" not in catalog_object["Body"]
     assert catalog_object["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
     catalog = yaml.safe_load(decrypt_age_scrypt(catalog_object["Body"], passphrase))
@@ -512,11 +512,11 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
         monkeypatch,
         tmp_path,
         client,
-        glacier_archive_encryption="age_scrypt",
-        glacier_archive_passphrase=passphrase,
-        glacier_archive_work_factor=12,
-        glacier_multipart_part_bytes=5 * 1024 * 1024,
-        glacier_multipart_concurrency=1,
+        archive_encryption="age_scrypt",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
+        archive_multipart_part_bytes=5 * 1024 * 1024,
+        archive_multipart_concurrency=1,
     )
     tracker = _FakeMultipartTracker()
     package = _large_package()
@@ -570,9 +570,9 @@ def test_request_collection_archive_restore_requests_collection_manifest_and_pro
         monkeypatch,
         tmp_path,
         client,
-        glacier_backend="aws",
-        glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
-        glacier_storage_class="DEEP_ARCHIVE",
+        archive_backend="aws",
+        archive_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        archive_storage_class="DEEP_ARCHIVE",
     )
     package = _package()
     receipt = store.upload_collection_archive_package(
@@ -605,9 +605,9 @@ def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
         monkeypatch,
         tmp_path,
         client,
-        glacier_backend="aws",
-        glacier_endpoint_url="https://s3.us-west-2.amazonaws.com",
-        glacier_storage_class="INTELLIGENT_TIERING",
+        archive_backend="aws",
+        archive_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        archive_storage_class="INTELLIGENT_TIERING",
     )
     package = _package()
     receipt = store.upload_collection_archive_package(

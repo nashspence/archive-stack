@@ -1,6 +1,6 @@
 @acceptance @api @mvp
 Feature: Plan and images API
-  The API reports the current best image plan, exposes image summaries, and registers physical copies.
+  The API reports the current best image plan, exposes image summaries, and registers physical discs.
 
   Background:
     Given an archive with planner fixtures
@@ -11,7 +11,7 @@ Feature: Plan and images API
     Then the response status is 200
     And the response contains "page", "per_page", "total", "pages", "sort", "order", "ready", "target_bytes", "min_fill_bytes", "candidates", and "unplanned_bytes"
     And each plan candidate contains "candidate_id", "bytes", "target_bytes", "fill", "files", "collections", "collection_ids", and "iso_ready"
-    And plan candidates do not contain field "volume_id"
+    And plan candidates do not contain field "image_id"
     And each candidate fill equals candidate bytes divided by target bytes
     And candidates are returned fullest-first
 
@@ -34,7 +34,7 @@ Feature: Plan and images API
     Then the response status is 200
     And the response contains 1 plan candidates
     And the response plan candidates contain only "img_2026-04-20_02"
-  Scenario: Plan excludes collections until Glacier archiving succeeds
+  Scenario: Plan excludes collections until Archive archiving succeeds
     Given collection upload "staged-photos" has completed file verification and is archiving
     When the client gets "/v1/plan?collection=staged-photos"
     Then the response status is 200
@@ -54,15 +54,15 @@ Feature: Plan and images API
     When the client posts to "/v1/plan/candidates/img_2026-04-20_01/finalize"
     Then the response status is 200
     And the response contains image id "20260420T040001Z"
-    And the response image physical_protection_state is "unprotected"
-    And the response does not contain field "volume_id"
+    And the response image disc_redundancy_state is "none"
+    And the response does not contain field "image_id"
     When the client gets "/v1/plan"
     Then the response status is 200
     And the response candidates do not contain candidate id "img_2026-04-20_01"
     When the client gets "/v1/images/20260420T040001Z"
     Then the response status is 200
     And the response contains image id "20260420T040001Z"
-    And the response does not contain field "volume_id"
+    And the response does not contain field "image_id"
   Scenario: List finalized images separately from the provisional plan
     Given an archive with split planner fixtures
     And candidate "img_2026-04-20_01" is finalized
@@ -71,7 +71,7 @@ Feature: Plan and images API
     When the client gets "/v1/images"
     Then the response status is 200
     And the response contains "page", "per_page", "total", "pages", "sort", "order", and "images"
-    And each finalized image contains "id", "filename", "finalized_at", "bytes", "target_bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "physical_protection_state", "physical_copies_required", "physical_copies_registered", "physical_copies_verified", and "physical_copies_missing"
+    And each finalized image contains "id", "filename", "finalized_at", "bytes", "target_bytes", "fill", "files", "collections", "collection_ids", "iso_ready", "disc_redundancy_state", "discs_required", "discs_registered", "discs_verified", and "discs_missing"
     And finalized images are returned newest-first
     And each finalized image is iso-ready
 
@@ -86,15 +86,15 @@ Feature: Plan and images API
     And the response contains 2 finalized images
     And the response finalized images include "20260420T040004Z" and "20260420T040003Z"
 
-  Scenario: Finalized image listing can filter by copy presence
+  Scenario: Finalized image listing can filter by disc presence
     Given an archive with split planner fixtures
     And candidate "img_2026-04-20_01" is finalized
     And candidate "img_2026-04-20_03" is finalized
-    And copy "20260420T040001Z-1" already exists
-    When the client gets "/v1/images?has_copies=true"
+    And disc "20260420T040001Z-1" already exists
+    When the client gets "/v1/images?has_discs=true"
     Then the response status is 200
     And the response finalized images contain only "20260420T040001Z"
-    And each finalized image has physical_copies_registered greater than 0
+    And each finalized image has discs_registered greater than 0
 
   Scenario: Finalized image listing can filter by filename query and contained collection
     Given candidate "img_2026-04-20_01" is finalized
@@ -110,11 +110,11 @@ Feature: Plan and images API
     Then the response status is 200 both times
     And both responses contain the same value for field "id"
 
-  Scenario: Finalizing an image creates two required generated copy slots
+  Scenario: Finalizing an image creates two required generated disc slots
     Given candidate "img_2026-04-20_01" is finalized
-    When the client gets "/v1/images/20260420T040001Z/copies"
+    When the client gets "/v1/images/20260420T040001Z/discs"
     Then the response status is 200
-    And the response copies contain only "20260420T040001Z-1" and "20260420T040001Z-2"
+    And the response discs contain only "20260420T040001Z-1" and "20260420T040001Z-2"
 
   Scenario: Downloading an ISO for a finalized id that does not exist yet fails
     Given candidate "img_2026-04-20_01" exists
@@ -165,35 +165,34 @@ Feature: Plan and images API
       And the current split payload for "/tax/2022/invoice-123.pdf" is recorded
       And the recorded split payloads for "docs/tax/2022/invoice-123.pdf" reconstruct the original plaintext
 
-  Rule: Registering a copy increases archived coverage
+  Rule: Registering a disc increases disc coverage
     Background:
       Given candidate "img_2026-04-20_01" covers bytes from collection "docs"
       And candidate "img_2026-04-20_01" is finalized
 
-    Scenario: Register a physical copy
-      When the client posts to "/v1/images/20260420T040001Z/copies" with location "Shelf B1"
+    Scenario: Register a physical disc
+      When the client posts to "/v1/images/20260420T040001Z/discs" with location "Shelf B1"
       Then the response status is 200
-      And the response contains copy id "20260420T040001Z-1"
-      And the response copy contains "volume_id", "label_text", "location", "created_at", "state", "verification_state", and "history"
-      And the response copy state is "registered"
-      And the response copy verification_state is "pending"
-      And collection "docs" archived_bytes increases
-      And collection "docs" pending_bytes decreases
-    Scenario: Registering one copy leaves the image partially protected
-      When the client posts to "/v1/images/20260420T040001Z/copies" with location "Shelf B1"
+      And the response contains disc id "20260420T040001Z-1"
+      And the response disc contains "image_id", "label_text", "location", "created_at", "state", "verification_state", and "history"
+      And the response disc state is "registered"
+      And the response disc verification_state is "pending"
+      And collection "docs" disc coverage increases
+    Scenario: Registering one disc leaves image disc redundancy partial
+      When the client posts to "/v1/images/20260420T040001Z/discs" with location "Shelf B1"
       Then the response status is 200
       When the client gets "/v1/images/20260420T040001Z"
       Then the response status is 200
-      And the response image physical_protection_state is "partially_protected"
+      And the response image disc_redundancy_state is "partial"
 
-    Scenario: Reusing a copy id for the same finalized image fails
-      Given copy "20260420T040001Z-1" already exists
-      When the client posts to "/v1/images/20260420T040001Z/copies" with id "20260420T040001Z-1" and location "Shelf B2"
+    Scenario: Reusing a disc id for the same finalized image fails
+      Given disc "20260420T040001Z-1" already exists
+      When the client posts to "/v1/images/20260420T040001Z/discs" with id "20260420T040001Z-1" and location "Shelf B2"
       Then the response status is 409
       And the error code is "conflict"
 
-    Scenario: Registering a copy writes physical disc paths to the fetch manifest
-      When the client posts to "/v1/images/20260420T040001Z/copies" with location "Shelf B1"
+    Scenario: Registering a disc writes physical disc paths to the fetch manifest
+      When the client posts to "/v1/images/20260420T040001Z/discs" with location "Shelf B1"
       Then the response status is 200
       When the client creates fetch "Tax manifest" with target "docs/tax/2022/invoice-123.pdf"
       Then the response status is 200
@@ -202,46 +201,46 @@ Feature: Plan and images API
       Then the response status is 200
       When the client gets the manifest for the returned fetch
       Then the response status is 200
-      And fetch manifest entry "e1" has at least one copy with a disc_path
+      And fetch manifest entry "e1" has at least one disc with a disc_path
 
-    Scenario: Updating a generated copy preserves identity while changing location and state
-      Given copy "20260420T040001Z-1" already exists
-      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with location "Shelf B2", state "verified", and verification_state "verified"
+    Scenario: Updating a generated disc preserves identity while changing location and state
+      Given disc "20260420T040001Z-1" already exists
+      When the client patches "/v1/images/20260420T040001Z/discs/20260420T040001Z-1" with location "Shelf B2", state "verified", and verification_state "verified"
       Then the response status is 200
-      And the response contains copy id "20260420T040001Z-1"
-      And the response copy state is "verified"
-      And the response copy verification_state is "verified"
+      And the response contains disc id "20260420T040001Z-1"
+      And the response disc state is "verified"
+      And the response disc verification_state is "verified"
 
-    Scenario: Reporting one confirmed copy lost preserves history and creates a fresh replacement slot
-      Given copy "20260420T040001Z-1" already exists
-      And copy "20260420T040001Z-2" already exists
-      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with state "lost"
+    Scenario: Reporting one confirmed disc lost preserves history and creates a fresh replacement slot
+      Given disc "20260420T040001Z-1" already exists
+      And disc "20260420T040001Z-2" already exists
+      When the client patches "/v1/images/20260420T040001Z/discs/20260420T040001Z-1" with state "lost"
       Then the response status is 200
-      And the response contains copy id "20260420T040001Z-1"
-      And the response copy state is "lost"
-      And the response copy history contains events "created", "registered", and "state_updated" in order
-      And the response copy history entry 3 has event "state_updated", state "lost", verification_state "pending", and location "Shelf B1"
-      When the client gets "/v1/images/20260420T040001Z/copies"
+      And the response contains disc id "20260420T040001Z-1"
+      And the response disc state is "lost"
+      And the response disc history contains events "created", "registered", and "state_updated" in order
+      And the response disc history entry 3 has event "state_updated", state "lost", verification_state "pending", and location "Shelf B1"
+      When the client gets "/v1/images/20260420T040001Z/discs"
       Then the response status is 200
-      And copy "20260420T040001Z-1" for image "20260420T040001Z" state is "lost"
-      And copy "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
-      And image "20260420T040001Z" has physical_copies_registered 1
+      And disc "20260420T040001Z-1" for image "20260420T040001Z" state is "lost"
+      And disc "20260420T040001Z-3" for image "20260420T040001Z" state is "needed"
+      And image "20260420T040001Z" has discs_registered 1
 
-    Scenario: Updating a generated copy appends lifecycle history
-      Given copy "20260420T040001Z-1" already exists
-      When the client patches "/v1/images/20260420T040001Z/copies/20260420T040001Z-1" with location "Shelf B2", state "verified", and verification_state "verified"
+    Scenario: Updating a generated disc appends lifecycle history
+      Given disc "20260420T040001Z-1" already exists
+      When the client patches "/v1/images/20260420T040001Z/discs/20260420T040001Z-1" with location "Shelf B2", state "verified", and verification_state "verified"
       Then the response status is 200
-      And the response copy history contains events "created", "registered", and "updated" in order
-      And the response copy history entry 3 has event "updated", state "verified", verification_state "verified", and location "Shelf B2"
-      When the client gets "/v1/images/20260420T040001Z/copies"
+      And the response disc history contains events "created", "registered", and "updated" in order
+      And the response disc history entry 3 has event "updated", state "verified", verification_state "verified", and location "Shelf B2"
+      When the client gets "/v1/images/20260420T040001Z/discs"
       Then the response status is 200
-      And listed copy "20260420T040001Z-1" history contains events "created", "registered", and "updated" in order
-      And listed copy "20260420T040001Z-1" history entry 3 has event "updated", state "verified", verification_state "verified", and location "Shelf B2"
+      And listed disc "20260420T040001Z-1" history contains events "created", "registered", and "updated" in order
+      And listed disc "20260420T040001Z-1" history entry 3 has event "updated", state "verified", verification_state "verified", and location "Shelf B2"
 
-    Scenario: Restarting the API preserves finalized images and registered copies
-      Given copy "20260420T040001Z-1" already exists
+    Scenario: Restarting the API preserves finalized images and registered discs
+      Given disc "20260420T040001Z-1" already exists
       When the API process restarts
-      And the client gets "/v1/images?has_copies=true"
+      And the client gets "/v1/images?has_discs=true"
       Then the response status is 200
       And the response finalized images contain only "20260420T040001Z"
-      And each finalized image has physical_copies_registered greater than 0
+      And each finalized image has discs_registered greater than 0

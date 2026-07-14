@@ -168,7 +168,7 @@ def storage_hint_for(
     *,
     workflow_mode: str = "collection_archive",
     collection_archive_destination: str = "riverhog",
-    archive_mode: str = "preserve",
+    output_mode: str = "preserve",
     tasks: list[str] | None = None,
 ) -> dict:
     group_name = rel_path.split("/", 1)[0]
@@ -176,11 +176,11 @@ def storage_hint_for(
     return {
         "workflow_mode": workflow_mode,
         "collection_archive_destination": collection_archive_destination,
-        "archive_mode": archive_mode,
+        "output_mode": output_mode,
         "tasks": tasks,
         "groups": {
             group_name: {
-                "archive_mode": archive_mode,
+                "output_mode": output_mode,
                 "tasks": tasks,
             },
         },
@@ -194,7 +194,7 @@ def create_upload(
     *,
     workflow_mode: str = "collection_archive",
     collection_archive_destination: str = "riverhog",
-    archive_mode: str = "preserve",
+    output_mode: str = "preserve",
     tasks: list[str] | None = None,
 ) -> dict:
     digest = hashlib.sha256(content).hexdigest()
@@ -209,7 +209,7 @@ def create_upload(
                 rel_path,
                 workflow_mode=workflow_mode,
                 collection_archive_destination=collection_archive_destination,
-                archive_mode=archive_mode,
+                output_mode=output_mode,
                 tasks=tasks,
             ),
         },
@@ -290,11 +290,9 @@ def main() -> int:
         raise AssertionError(
             f"runner capabilities did not advertise operational controls: {capabilities}"
         )
-    profile_groups = capabilities.get("profile_groups", {})
-    if profile_groups.get("input_path_shape") != "<profile-group>/<file>":
-        raise AssertionError(
-            f"runner capabilities did not advertise profile groups: {capabilities}"
-        )
+    groups = capabilities.get("groups", {})
+    if groups.get("input_path_shape") != "<group>/<file>":
+        raise AssertionError(f"runner capabilities did not advertise groups: {capabilities}")
     storage = capabilities.get("storage", {})
     if not storage.get("input_upload_storage_hint_required"):
         raise AssertionError(
@@ -359,11 +357,11 @@ def main() -> int:
                 "collection_slug": "runner-smoke-preupload",
                 "collection_timestamp": stamp,
                 "workflow_mode": "collection_archive",
-                "archive_mode": "preserve",
+                "output_mode": "preserve",
                 "tasks": [],
                 "groups": {
                     group_name: {
-                        "archive_mode": "preserve",
+                        "output_mode": "preserve",
                         "tasks": [],
                     },
                 },
@@ -394,9 +392,9 @@ def main() -> int:
                 f"{referenced_preupload_delete.body.decode('utf-8', 'replace')}"
             )
         api("POST", f"/v1/jobs/{preupload_job_id}/cancel", expect=202)
-        cancelled_preupload_job = poll_job_state(preupload_job_id, {"cancelled"})
-        if cancelled_preupload_job.get("state") != "cancelled":
-            raise AssertionError(f"pre-upload job did not cancel: {cancelled_preupload_job}")
+        canceled_preupload_job = poll_job_state(preupload_job_id, {"canceled"})
+        if canceled_preupload_job.get("state") != "canceled":
+            raise AssertionError(f"pre-upload job did not cancel: {canceled_preupload_job}")
 
         target_upload_id = f"{prefix}-target-upload"
         create_upload(
@@ -418,11 +416,11 @@ def main() -> int:
                 "collection_slug": "runner-smoke-target",
                 "collection_timestamp": stamp,
                 "workflow_mode": "collection_archive",
-                "archive_mode": "preserve",
+                "output_mode": "preserve",
                 "tasks": [],
                 "groups": {
                     group_name: {
-                        "archive_mode": "preserve",
+                        "output_mode": "preserve",
                         "tasks": [],
                     },
                 },
@@ -463,11 +461,11 @@ def main() -> int:
             "input_upload_id": upload_id,
             "run_id": stamp,
             "workflow_mode": "review",
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["qcut_video"],
             "groups": {
                 group_name: {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                 }
             },
@@ -501,7 +499,7 @@ def main() -> int:
             "input_upload_id": invalid_target_upload_id,
             "collection_slug": "runner-smoke",
             "workflow_mode": "collection_archive",
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["qcut_video"],
             "collection_archive": {
                 "destination": "target",
@@ -527,7 +525,7 @@ def main() -> int:
             "job_id": f"{prefix}-bad-notify",
             "input_upload_id": upload_id,
             "collection_slug": "runner-smoke",
-            "archive_mode": "preserve",
+            "output_mode": "preserve",
             "tasks": [],
             "notify": {"enabled": True, "recipients": []},
         },

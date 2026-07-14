@@ -1,12 +1,12 @@
 # Munchy
 
 `munchy` is Riverhog's generic ingest and encode layer. It accepts an input
-upload, applies optional ordered profile routing, writes archive outputs, and can
+upload, applies optional ordered routing, writes archive outputs, and can
 project source metadata into XMP sidecars next to those outputs.
 
-## Profile Routing
+## Routing
 
-Profile routing is ordered. Each route is evaluated against files that have not
+Routing is ordered. Each route is evaluated against files that have not
 already matched an earlier route. A file that falls through all routes is a
 preflight failure unless it was intentionally matched by a `leave` route.
 
@@ -111,7 +111,7 @@ archived, the evidence entry also records source-artifacts custody:
 }
 ```
 
-`archive_mode: preserve` copies the primary source bytes to the collection
+`output_mode: preserve` copies the primary source bytes to the collection
 archive output without mutating them. If an existing XMP sidecar is attached as
 evidence for a preserve output, Munchy writes the visible output XMP by merging
 the normalized projected metadata into that existing XMP. Scalar conflicts fail
@@ -134,9 +134,9 @@ parameters:
   device_id:
     required: true
 section:
-  upload_prefix: '{device_id}-media'
-  profile_group: video
-  archive_mode: av1_nvenc
+  destination_prefix: '{device_id}-media'
+  group: video
+  output_mode: video
   routing:
     routes:
       - id: video
@@ -186,7 +186,7 @@ sidecar:
 ```yaml
 groups:
   video:
-    archive_mode: av1_nvenc
+    output_mode: video
     tasks:
       - archive_video
     metadata_projection:
@@ -206,7 +206,7 @@ groups:
 The only supported target is `immich_xmp`. Munchy writes sidecars as
 `output.ext.xmp` next to the output file.
 
-Profile-routing preflight returns a `readout` block in addition to the routing
+Routing preflight returns a `readout` block in addition to the routing
 plan. The readout is intended for operator tooling: it lists sidecars attached
 to each primary and summarizes metadata projection resolution, including the
 selected capture date source and GPS source when the submitted facts are enough
@@ -347,7 +347,7 @@ sent or downloaded media, screenshots, high-frame-rate modes, audio-only modes,
 or any other source shape the device can produce. Use this set to iterate on
 ordered routes, output group names, sidecar attachment, metadata projection
 sources, and fallthrough behavior. The routing set should stay small enough that
-profile-routing preflight and collection-archive target runs are cheap and
+routing preflight and collection-archive target runs are cheap and
 repeatable.
 
 An encode tuning set should contain fuller realistic examples for routes that
@@ -359,7 +359,7 @@ inspecting the generated collection outputs and source artifacts.
 The preferred enrollment loop is:
 
 1. Collect a small routing demo set from original exports.
-2. Write the profile groups, routes, sidecar rules, and metadata projection
+2. Write the groups, routes, sidecar rules, and metadata projection
    settings.
 3. Run preflight and inspect the readout for route ids, attached sidecars,
    capture date source, GPS source, device metadata, and unmatched files.
@@ -371,7 +371,7 @@ The preferred enrollment loop is:
 
 ## Audio Archive
 
-Audio-only archive groups use `archive_mode: audio` and the `archive_audio`
+Audio-only archive groups use `output_mode: audio` and the `archive_audio`
 task. If `tasks` is omitted on an audio group, Munchy defaults it to
 `["archive_audio"]`. Audio archive work runs on CPU and does not reserve the GPU
 target.
@@ -395,7 +395,7 @@ profiles:
 groups:
   voice:
     profile: voice
-    archive_mode: audio
+    output_mode: audio
 ```
 
 Munchy currently supports Opus audio archives in an `.opus` container. Source

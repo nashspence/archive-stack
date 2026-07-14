@@ -62,7 +62,7 @@ profiles:
 groups:
   video:
     profile: example-camera
-    archive_mode: av1_nvenc
+    output_mode: video
     metadata_projection:
       creators:
         - Example Operator
@@ -72,4 +72,4 @@ groups:
         make: Example
         model: Camera
   preserve:
-    archive_mode: preserve
+    output_mode: preserve

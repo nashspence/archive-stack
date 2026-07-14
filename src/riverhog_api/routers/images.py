@@ -8,17 +8,16 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from riverhog_api.deps import ContainerDep
-from riverhog_api.mappers import map_copy
+from riverhog_api.mappers import map_disc
 from riverhog_api.schemas.images import (
-    CopyOut,
     DiscOut,
     FinalizedImageSummaryResponse,
-    ListCopiesResponse,
+    ImageDiscsResponse,
     ListDiscsResponse,
     ListImagesResponse,
-    RegisterCopyRequest,
-    RegisterCopyResponse,
-    UpdateCopyRequest,
+    RegisterDiscRequest,
+    RegisterDiscResponse,
+    UpdateDiscRequest,
 )
 from riverhog_core.iso.streaming import IsoStream
 
@@ -30,12 +29,14 @@ def list_discs(
     container: ContainerDep,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["id", "image_id", "state", "verification_state", "location"] = Query("id"),
+    sort: Literal["disc_id", "image_id", "state", "verification_state", "location"] = Query(
+        "disc_id"
+    ),
     order: Literal["asc", "desc"] = Query("asc"),
     q: str | None = Query(None),
     image_id: str | None = Query(None),
 ) -> ListDiscsResponse:
-    payload = container.copies.list_discs(
+    payload = container.discs.list_discs(
         page=page,
         per_page=per_page,
         sort=sort,
@@ -46,9 +47,9 @@ def list_discs(
     return ListDiscsResponse.model_validate(payload)
 
 
-@router.get("/discs/{copy_id}", response_model=DiscOut)
-def get_disc(copy_id: str, container: ContainerDep) -> DiscOut:
-    payload = container.copies.get_disc(copy_id)
+@router.get("/discs/{disc_id}", response_model=DiscOut)
+def get_disc(disc_id: str, container: ContainerDep) -> DiscOut:
+    payload = container.discs.get_disc(disc_id)
     return DiscOut.model_validate(payload)
 
 
@@ -57,11 +58,11 @@ def list_images(
     container: ContainerDep,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["finalized_at", "bytes", "physical_copies_registered"] = Query("finalized_at"),
+    sort: Literal["finalized_at", "bytes", "discs_registered"] = Query("finalized_at"),
     order: Literal["asc", "desc"] = Query("desc"),
     q: str | None = Query(None),
     collection: str | None = Query(None),
-    has_copies: bool | None = Query(None),
+    has_discs: bool | None = Query(None),
 ) -> ListImagesResponse:
     payload = container.planning.list_images(
         page=page,
@@ -70,7 +71,7 @@ def list_images(
         order=order,
         q=q,
         collection=collection,
-        has_copies=has_copies,
+        has_discs=has_discs,
     )
     return ListImagesResponse.model_validate(payload)
 
@@ -102,58 +103,52 @@ async def get_iso(image_id: str, container: ContainerDep) -> StreamingResponse:
     return StreamingResponse(body, media_type="application/octet-stream")
 
 
-@router.post("/images/{image_id}/copies", response_model=RegisterCopyResponse)
-def register_copy(
+@router.post("/images/{image_id}/discs", response_model=RegisterDiscResponse)
+def register_disc(
     image_id: str,
-    request: RegisterCopyRequest,
+    request: RegisterDiscRequest,
     container: ContainerDep,
-) -> RegisterCopyResponse:
-    summary = container.copies.register(
-        image_id=image_id, copy_id=request.copy_id, location=request.location
+) -> RegisterDiscResponse:
+    summary = container.discs.register(
+        image_id=image_id, disc_id=request.disc_id, location=request.location
     )
-    return RegisterCopyResponse.model_validate(
-        {"copy": CopyOut.model_validate(map_copy(summary)).model_dump()}
-    )
+    return RegisterDiscResponse(disc=DiscOut.model_validate(map_disc(summary)))
 
 
-@router.get("/images/{image_id}/copies", response_model=ListCopiesResponse)
-def list_copies(
+@router.get("/images/{image_id}/discs", response_model=ImageDiscsResponse)
+def list_image_discs(
     image_id: str,
     container: ContainerDep,
-) -> ListCopiesResponse:
-    copies = container.copies.list_for_image(image_id)
-    return ListCopiesResponse.model_validate({"copies": [map_copy(copy) for copy in copies]})
+) -> ImageDiscsResponse:
+    discs = container.discs.list_for_image(image_id)
+    return ImageDiscsResponse.model_validate({"discs": [map_disc(disc) for disc in discs]})
 
 
 @router.post(
-    "/images/{image_id}/copies/{copy_id}/label-needed",
-    response_model=RegisterCopyResponse,
+    "/images/{image_id}/discs/{disc_id}/label-needed",
+    response_model=RegisterDiscResponse,
 )
-def notify_copy_label_needed(
+def notify_disc_label_needed(
     image_id: str,
-    copy_id: str,
+    disc_id: str,
     container: ContainerDep,
-) -> RegisterCopyResponse:
-    summary = container.copies.notify_label_needed(image_id=image_id, copy_id=copy_id)
-    return RegisterCopyResponse.model_validate(
-        {"copy": CopyOut.model_validate(map_copy(summary)).model_dump()}
-    )
+) -> RegisterDiscResponse:
+    summary = container.discs.notify_label_needed(image_id=image_id, disc_id=disc_id)
+    return RegisterDiscResponse(disc=DiscOut.model_validate(map_disc(summary)))
 
 
-@router.patch("/images/{image_id}/copies/{copy_id}", response_model=RegisterCopyResponse)
-def update_copy(
+@router.patch("/images/{image_id}/discs/{disc_id}", response_model=RegisterDiscResponse)
+def update_disc(
     image_id: str,
-    copy_id: str,
-    request: UpdateCopyRequest,
+    disc_id: str,
+    request: UpdateDiscRequest,
     container: ContainerDep,
-) -> RegisterCopyResponse:
-    summary = container.copies.update(
+) -> RegisterDiscResponse:
+    summary = container.discs.update(
         image_id=image_id,
-        copy_id=copy_id,
+        disc_id=disc_id,
         location=request.location,
         state=request.state,
         verification_state=request.verification_state,
     )
-    return RegisterCopyResponse.model_validate(
-        {"copy": CopyOut.model_validate(map_copy(summary)).model_dump()}
-    )
+    return RegisterDiscResponse(disc=DiscOut.model_validate(map_disc(summary)))

@@ -14,7 +14,7 @@ Conventions:
 - Step wording is intentionally repetitive where it protects exact semantics, especially for:
   - selector validity
   - fetch-editing and hot-eviction selector behavior
-  - archived vs hot coverage
+  - disc coverage vs hot availability
   - fetch lifecycle and hash verification
 - `riverhog` and `djdan` acceptance cases are contract tests for CLI behavior, not internal command structure.
 - disc-media scenarios should validate against the machine-readable contracts in `contracts/disc/`, not duplicate ad hoc path and schema rules in steps.

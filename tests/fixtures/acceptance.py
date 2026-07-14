@@ -30,60 +30,58 @@ from fastapi.responses import JSONResponse
 
 from riverhog_api.app import create_app
 from riverhog_api.deps import ServiceContainer
-from riverhog_core.archive_compliance import (
-    collection_protection_state,
-    copy_counts_as_verified,
-    copy_counts_toward_protection,
-    image_protection_state,
-    normalize_copy_state,
-    normalize_required_copy_count,
-    registered_copy_shortfall,
-)
 from riverhog_core.domain.enums import (
-    CopyState,
+    ArchiveRestoreState,
+    ArchiveState,
+    CoverageState,
+    DiscState,
     FetchState,
-    GlacierState,
-    ProtectionState,
-    RecoveryCoverageState,
-    RecoverySessionState,
     VerificationState,
 )
 from riverhog_core.domain.errors import BadRequest, Conflict, HashMismatch, InvalidState, NotFound
 from riverhog_core.domain.models import (
+    ArchiveCollectionContribution,
+    ArchiveRestoreCollection,
+    ArchiveRestoreImage,
+    ArchiveRestoreListPage,
+    ArchiveRestoreNotificationStatus,
+    ArchiveRestoreProgress,
+    ArchiveRestoreSummary,
+    ArchiveStatus,
+    ArchiveUsageCollection,
+    ArchiveUsageImage,
+    ArchiveUsageReport,
+    ArchiveUsageSnapshot,
+    ArchiveUsageTotals,
     CollectionCoverageImage,
     CollectionListPage,
     CollectionManifestStatus,
-    CollectionRecoverySummary,
     CollectionSummary,
-    CopyHistoryEntry,
-    CopySummary,
-    FetchCopyHint,
+    Coverage,
+    DiscHistoryEntry,
+    DiscSummary,
+    FetchDiscHint,
     FetchListPage,
     FetchSummary,
-    GlacierArchiveStatus,
-    GlacierCollectionContribution,
-    GlacierUsageCollection,
-    GlacierUsageImage,
-    GlacierUsageReport,
-    GlacierUsageSnapshot,
-    GlacierUsageTotals,
-    RecoveryCoverage,
-    RecoveryNotificationStatus,
-    RecoverySessionCollection,
-    RecoverySessionImage,
-    RecoverySessionListPage,
-    RecoverySessionProgress,
-    RecoverySessionSummary,
 )
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import (
     CollectionId,
-    CopyId,
+    DiscId,
     EntryId,
     FetchId,
     ImageId,
     Sha256Hex,
     TargetStr,
+)
+from riverhog_core.durability import (
+    coverage_state,
+    disc_counts_as_verified,
+    disc_counts_toward_redundancy,
+    disc_redundancy_state,
+    normalize_disc_state,
+    normalize_required_disc_count,
+    registered_disc_shortfall,
 )
 from riverhog_core.fs_paths import (
     find_collection_id_conflict,
@@ -96,12 +94,12 @@ from riverhog_core.iso.streaming import IsoStream, build_iso_cmd_from_root
 from riverhog_core.planner.manifest import MANIFEST_FILENAME
 from riverhog_core.webhooks import (
     WebhookConfig,
+    build_archive_restore_paused_reminder_payload,
+    build_archive_restore_ready_payload,
     build_fetch_queued_payload,
-    build_recovery_paused_reminder_payload,
-    build_recovery_ready_payload,
 )
 from tests.fixtures.data import (
-    DEFAULT_COPY_CREATED_AT,
+    DEFAULT_DISC_CREATED_AT,
     DOCS_COLLECTION_ID,
     DOCS_FILES,
     IMAGE_FIXTURES,
@@ -111,14 +109,14 @@ from tests.fixtures.data import (
     PHOTOS_COLLECTION_ID,
     PHOTOS_NESTED_COLLECTION_ID,
     PHOTOS_PARENT_COLLECTION_ID,
-    SPLIT_COPY_ONE_ID,
-    SPLIT_COPY_ONE_LOCATION,
-    SPLIT_COPY_TWO_ID,
-    SPLIT_COPY_TWO_LOCATION,
+    SPLIT_DISC_ONE_ID,
+    SPLIT_DISC_ONE_LOCATION,
+    SPLIT_DISC_TWO_ID,
+    SPLIT_DISC_TWO_LOCATION,
     SPLIT_FILE_RELPATH,
     SPLIT_IMAGE_FIXTURES,
     TARGET_BYTES,
-    build_file_copy,
+    build_file_disc,
     fixture_decrypt_bytes,
     fixture_encrypt_bytes,
     split_fixture_plaintext,
@@ -131,28 +129,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 FIXTURE_UPLOAD_EXPIRES_AT = "2099-12-31T23:59:59Z"
 _UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS = 0.05
-_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS = 1.0
-_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS = 0.05
-_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS = 0.2
-_GLACIER_RECOVERY_READY_TTL_SECONDS = 4.0
+_ARCHIVE_UPLOAD_SWEEP_INTERVAL_SECONDS = 1.0
+_ARCHIVE_RESTORE_SWEEP_INTERVAL_SECONDS = 0.05
+_ARCHIVE_RESTORE_LATENCY_SECONDS = 0.2
+_ARCHIVE_RESTORE_READY_TTL_SECONDS = 4.0
 _OPERATOR_WEBHOOK_RETRY_DELAY_SECONDS = 1.0
 _OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS = 2.0
 _CLI_SUBPROCESS_TIMEOUT_SECONDS = 30.0
 _CLI_TIMEOUT_OUTPUT_CHARS = 4_000
-_DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
+_DISC_SORT_FIELDS = {"disc_id", "image_id", "state", "verification_state", "location"}
 
 
-def _generated_copy_id(image_id: str, ordinal: int) -> str:
+def _generated_disc_id(image_id: str, ordinal: int) -> str:
     return f"{image_id}-{ordinal}"
 
 
 def _fixture_archive_prefix(collection_id: str) -> str:
     digest = hashlib.sha256(collection_id.encode("utf-8")).hexdigest()[:32]
-    return f"glacier/archives/{digest}"
+    return f"archive/archives/{digest}"
 
 
-def _copy_counts_toward_slot_pool(state: CopyState) -> bool:
-    return state in {CopyState.NEEDED, CopyState.BURNING} or copy_counts_toward_protection(
+def _disc_counts_toward_slot_pool(state: DiscState) -> bool:
+    return state in {DiscState.NEEDED, DiscState.BURNING} or disc_counts_toward_redundancy(
         state.value
     )
 
@@ -161,12 +159,12 @@ def _recovery_coverage_state(
     *,
     covered_bytes: int,
     total_bytes: int,
-) -> RecoveryCoverageState:
+) -> CoverageState:
     if total_bytes <= 0 or covered_bytes <= 0:
-        return RecoveryCoverageState.NONE
+        return CoverageState.NONE
     if covered_bytes >= total_bytes:
-        return RecoveryCoverageState.FULL
-    return RecoveryCoverageState.PARTIAL
+        return CoverageState.FULL
+    return CoverageState.PARTIAL
 
 
 def _history_event_name(
@@ -187,16 +185,16 @@ def _history_event_name(
     return "updated"
 
 
-def _copy_history(
+def _disc_history(
     *,
     at: str,
     event: str,
-    state: CopyState,
+    state: DiscState,
     verification_state,
     location: str | None,
-) -> tuple[CopyHistoryEntry, ...]:
+) -> tuple[DiscHistoryEntry, ...]:
     return (
-        CopyHistoryEntry(
+        DiscHistoryEntry(
             at=at,
             event=event,
             state=state,
@@ -207,9 +205,9 @@ def _copy_history(
 
 
 @dataclass(frozen=True, slots=True)
-class FileCopy:
-    id: CopyId
-    volume_id: str
+class FileDisc:
+    disc_id: DiscId
+    image_id: str
     location: str
     disc_path: str
     enc: dict[str, object]
@@ -219,8 +217,12 @@ class FileCopy:
     part_sha256: str | None = None
 
     @property
-    def hint(self) -> FetchCopyHint:
-        return FetchCopyHint(id=self.id, volume_id=self.volume_id, location=self.location)
+    def hint(self) -> FetchDiscHint:
+        return FetchDiscHint(
+            disc_id=self.disc_id,
+            image_id=self.image_id,
+            location=self.location,
+        )
 
 
 @dataclass(slots=True)
@@ -229,9 +231,8 @@ class StoredFile:
     path: str
     content: bytes
     hot: bool
-    archived: bool
     hot_backing_missing: bool = False
-    copies: list[FileCopy] = field(default_factory=list)
+    discs: list[FileDisc] = field(default_factory=list)
 
     @property
     def bytes(self) -> int:
@@ -240,6 +241,10 @@ class StoredFile:
     @property
     def sha256(self) -> Sha256Hex:
         return cast(Sha256Hex, hashlib.sha256(self.content).hexdigest())
+
+    @property
+    def disc_coverage(self) -> bool:
+        return bool(self.discs)
 
     @property
     def projected_target(self) -> str:
@@ -294,13 +299,13 @@ class CandidateRecord:
     def finalized_image_payload(
         self,
         *,
-        physical_copies_registered: int = 0,
-        physical_copies_verified: int = 0,
+        discs_registered: int = 0,
+        discs_verified: int = 0,
     ) -> dict[str, object]:
-        required_copy_count = normalize_required_copy_count(None)
-        protection_state = image_protection_state(
-            required_copy_count=required_copy_count,
-            registered_copy_count=physical_copies_registered,
+        required_disc_count = normalize_required_disc_count(None)
+        redundancy_state = disc_redundancy_state(
+            required_disc_count=required_disc_count,
+            registered_disc_count=discs_registered,
         )
         return {
             "id": self.finalized_id,
@@ -313,13 +318,13 @@ class CandidateRecord:
             "collections": len(self.collections),
             "collection_ids": self.collections,
             "iso_ready": True,
-            "physical_protection_state": protection_state.value,
-            "physical_copies_required": required_copy_count,
-            "physical_copies_registered": physical_copies_registered,
-            "physical_copies_verified": physical_copies_verified,
-            "physical_copies_missing": registered_copy_shortfall(
-                required_copy_count=required_copy_count,
-                registered_copy_count=physical_copies_registered,
+            "disc_redundancy_state": redundancy_state.value,
+            "discs_required": required_disc_count,
+            "discs_registered": discs_registered,
+            "discs_verified": discs_verified,
+            "discs_missing": registered_disc_shortfall(
+                required_disc_count=required_disc_count,
+                registered_disc_count=discs_registered,
             ),
         }
 
@@ -338,7 +343,7 @@ class FetchEntryRecord:
     bytes: int
     sha256: Sha256Hex
     content: bytes
-    copies: list[FileCopy]
+    discs: list[FileDisc]
     uploaded_bytes: int = 0
     uploaded_content: bytes | None = None
     upload_expires_at: str | None = None
@@ -378,19 +383,19 @@ class CollectionUploadRecord:
 
 
 @dataclass(slots=True)
-class AcceptanceRecoverySessionRecord:
-    session_id: str
+class AcceptanceArchiveRestoreRecord:
+    restore_id: str
     image_id: ImageId
-    state: RecoverySessionState
+    state: ArchiveRestoreState
     created_at: str
-    type: str = "image_rebuild"
+    type: str = "disc_rebuild"
     image_ids: tuple[ImageId, ...] = ()
     collection_ids: tuple[CollectionId, ...] = ()
-    restore_paths: tuple[str, ...] | None = None
-    restore_requested_at: str | None = None
-    restore_ready_at: str | None = None
-    restore_next_poll_at: str | None = None
-    restore_expires_at: str | None = None
+    paths: tuple[str, ...] | None = None
+    requested_at: str | None = None
+    ready_at: str | None = None
+    next_poll_at: str | None = None
+    expires_at: str | None = None
     completed_at: str | None = None
     canceled_at: str | None = None
     paused_at: str | None = None
@@ -413,18 +418,16 @@ class AcceptanceState:
     files_by_collection: dict[CollectionId, dict[str, StoredFile]] = field(default_factory=dict)
     candidates_by_id: dict[ImageId, CandidateRecord] = field(default_factory=dict)
     finalized_images_by_id: dict[ImageId, CandidateRecord] = field(default_factory=dict)
-    copy_summaries: dict[tuple[str, CopyId], CopySummary] = field(default_factory=dict)
+    disc_summaries: dict[tuple[str, DiscId], DiscSummary] = field(default_factory=dict)
     fetches: dict[FetchId, FetchRecord] = field(default_factory=dict)
     collection_uploads: dict[CollectionId, CollectionUploadRecord] = field(default_factory=dict)
-    collection_glacier_status_by_collection: dict[CollectionId, GlacierArchiveStatus] = field(
+    collection_archive_status_by_collection: dict[CollectionId, ArchiveStatus] = field(
         default_factory=dict
     )
-    glacier_usage_snapshots: list[GlacierUsageSnapshot] = field(default_factory=list)
-    recovery_sessions_by_id: dict[str, AcceptanceRecoverySessionRecord] = field(
-        default_factory=dict
-    )
-    glacier_upload_failures_by_collection: dict[CollectionId, str] = field(default_factory=dict)
-    glacier_upload_defer_until_by_collection: dict[CollectionId, float] = field(
+    archive_usage_snapshots: list[ArchiveUsageSnapshot] = field(default_factory=list)
+    archive_restores_by_id: dict[str, AcceptanceArchiveRestoreRecord] = field(default_factory=dict)
+    archive_upload_failures_by_collection: dict[CollectionId, str] = field(default_factory=dict)
+    archive_upload_defer_until_by_collection: dict[CollectionId, float] = field(
         default_factory=dict
     )
     webhook_deliveries: list[dict[str, object]] = field(default_factory=list)
@@ -551,7 +554,6 @@ class AcceptanceState:
         files: Mapping[str, bytes],
         *,
         hot_paths: set[str],
-        archived_paths: set[str],
     ) -> None:
         with self.lock:
             normalized_collection_id = normalize_collection_id(collection_id)
@@ -572,7 +574,6 @@ class AcceptanceState:
                     path=normalized,
                     content=content,
                     hot=normalized in hot_paths,
-                    archived=normalized in archived_paths,
                 )
             self.files_by_collection[collection_key] = records
 
@@ -580,19 +581,19 @@ class AcceptanceState:
         with self.lock:
             self.candidates_by_id[image.candidate_id] = image
 
-    def collection_glacier_status(self, collection_id: str) -> GlacierArchiveStatus:
-        return self.collection_glacier_status_by_collection.get(
+    def collection_archive_status(self, collection_id: str) -> ArchiveStatus:
+        return self.collection_archive_status_by_collection.get(
             CollectionId(normalize_collection_id(collection_id)),
-            GlacierArchiveStatus(state=GlacierState.PENDING),
+            ArchiveStatus(state=ArchiveState.PENDING),
         )
 
     def mark_collection_archive_uploaded(self, collection_id: str) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
         records = self.collection_files(normalized_collection_id)
-        now = DEFAULT_COPY_CREATED_AT
-        self.collection_glacier_status_by_collection[CollectionId(normalized_collection_id)] = (
-            GlacierArchiveStatus(
-                state=GlacierState.UPLOADED,
+        now = DEFAULT_DISC_CREATED_AT
+        self.collection_archive_status_by_collection[CollectionId(normalized_collection_id)] = (
+            ArchiveStatus(
+                state=ArchiveState.UPLOADED,
                 object_path=f"{_fixture_archive_prefix(normalized_collection_id)}/archive.tar.age",
                 stored_bytes=sum(record.bytes for record in records),
                 backend="s3",
@@ -603,7 +604,7 @@ class AcceptanceState:
             )
         )
 
-    def ensure_glacier_recovery_session(self, image_id: str) -> None:
+    def ensure_archive_restore(self, image_id: str) -> None:
         image = self.finalized_images_by_id.get(ImageId(image_id))
         if image is None:
             return
@@ -611,18 +612,18 @@ class AcceptanceState:
             sorted({collection_id for collection_id, _ in image.covered_paths})
         )
         if not required_collection_ids or any(
-            self.collection_glacier_status(collection_id).state != GlacierState.UPLOADED
+            self.collection_archive_status(collection_id).state != ArchiveState.UPLOADED
             for collection_id in required_collection_ids
         ):
             return
-        if self._protected_copy_count(image_id) > 0:
+        if self._disc_redundancy_count(image_id) > 0:
             return
-        if not self._has_recovery_triggering_copy_history(image_id):
+        if not self._has_recovery_triggering_disc_history(image_id):
             return
-        if self.active_recovery_session(image_id) is not None:
+        if self.active_archive_restore(image_id) is not None:
             return
-        pending_rebuild = self.active_image_rebuild_session()
-        if pending_rebuild is not None and pending_rebuild.restore_requested_at is None:
+        pending_rebuild = self.active_disc_rebuild_restore()
+        if pending_rebuild is not None and pending_rebuild.requested_at is None:
             image_key = ImageId(image_id)
             if image_key not in pending_rebuild.image_ids:
                 pending_rebuild.image_ids = tuple(sorted((*pending_rebuild.image_ids, image_key)))
@@ -630,148 +631,150 @@ class AcceptanceState:
                 sorted({*pending_rebuild.collection_ids, *required_collection_ids})
             )
             return
-        session_id = self._generated_recovery_session_id(image_id)
+        restore_id = self._generated_archive_restore_id(image_id)
         image_key = ImageId(image_id)
-        self.recovery_sessions_by_id[session_id] = AcceptanceRecoverySessionRecord(
-            session_id=session_id,
+        self.archive_restores_by_id[restore_id] = AcceptanceArchiveRestoreRecord(
+            restore_id=restore_id,
             image_id=image_key,
-            state=RecoverySessionState.RESTORE_REQUESTED,
+            state=ArchiveRestoreState.REQUESTED,
             created_at=_acceptance_isoformat(datetime.now(UTC)),
-            type="image_rebuild",
+            type="disc_rebuild",
             image_ids=(image_key,),
             collection_ids=required_collection_ids,
             latest_message=(
-                "Archive restore queued; Riverhog will request archived collection data."
+                "Archive restore queued; Riverhog will restore collection data from the archive."
             ),
         )
 
-    def active_image_rebuild_session(self) -> AcceptanceRecoverySessionRecord | None:
+    def active_disc_rebuild_restore(self) -> AcceptanceArchiveRestoreRecord | None:
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
-            RecoverySessionState.PAUSED,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
+            ArchiveRestoreState.PAUSED,
         }
-        sessions = [
+        restores = [
             record
-            for record in self.recovery_sessions_by_id.values()
-            if record.type == "image_rebuild" and record.state in active_states
+            for record in self.archive_restores_by_id.values()
+            if record.type == "disc_rebuild" and record.state in active_states
         ]
-        if not sessions:
+        if not restores:
             return None
-        return sorted(sessions, key=lambda current: current.created_at, reverse=True)[0]
+        return sorted(restores, key=lambda current: current.created_at, reverse=True)[0]
 
-    def active_recovery_session(self, image_id: str) -> AcceptanceRecoverySessionRecord | None:
+    def active_archive_restore(self, image_id: str) -> AcceptanceArchiveRestoreRecord | None:
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
-            RecoverySessionState.PAUSED,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
+            ArchiveRestoreState.PAUSED,
         }
-        sessions = [
+        restores = [
             record
-            for record in self.recovery_sessions_by_id.values()
+            for record in self.archive_restores_by_id.values()
             if ImageId(image_id) in self._record_image_ids(record) and record.state in active_states
         ]
-        if not sessions:
+        if not restores:
             return None
-        return sorted(sessions, key=lambda current: current.created_at, reverse=True)[0]
+        return sorted(restores, key=lambda current: current.created_at, reverse=True)[0]
 
-    def latest_recovery_session(self, image_id: str) -> AcceptanceRecoverySessionRecord | None:
-        sessions = [
+    def latest_archive_restore(self, image_id: str) -> AcceptanceArchiveRestoreRecord | None:
+        restores = [
             record
-            for record in self.recovery_sessions_by_id.values()
+            for record in self.archive_restores_by_id.values()
             if ImageId(image_id) in self._record_image_ids(record)
         ]
-        if not sessions:
+        if not restores:
             return None
-        return sorted(sessions, key=lambda current: current.created_at, reverse=True)[0]
+        return sorted(restores, key=lambda current: current.created_at, reverse=True)[0]
 
-    def _generated_recovery_session_id(self, image_id: str) -> str:
+    def _generated_archive_restore_id(self, image_id: str) -> str:
         existing_ids = {
-            record.session_id
-            for record in self.recovery_sessions_by_id.values()
+            record.restore_id
+            for record in self.archive_restores_by_id.values()
             if str(record.image_id) == image_id
         }
         ordinal = 1
         while True:
-            candidate = f"rs-{image_id}-rebuild-{ordinal}"
+            candidate = f"ar-{image_id}-rebuild-{ordinal}"
             ordinal += 1
             if candidate not in existing_ids:
                 return candidate
 
     @staticmethod
-    def _record_image_ids(record: AcceptanceRecoverySessionRecord) -> tuple[ImageId, ...]:
+    def _record_image_ids(record: AcceptanceArchiveRestoreRecord) -> tuple[ImageId, ...]:
         return record.image_ids or ((record.image_id,) if str(record.image_id) else ())
 
-    def _protected_copy_count(self, image_id: str) -> int:
+    def _disc_redundancy_count(self, image_id: str) -> int:
         return sum(
             1
-            for (volume_id, _copy_id), summary in self.copy_summaries.items()
-            if volume_id == image_id and copy_counts_toward_protection(summary.state.value)
+            for (scoped_image_id, _disc_id), summary in self.disc_summaries.items()
+            if scoped_image_id == image_id and disc_counts_toward_redundancy(summary.state.value)
         )
 
-    def _has_recovery_triggering_copy_history(self, image_id: str) -> bool:
+    def _has_recovery_triggering_disc_history(self, image_id: str) -> bool:
         return any(
-            volume_id == image_id
-            and normalize_copy_state(summary.state.value)
-            not in {CopyState.NEEDED, CopyState.BURNING}
-            for (volume_id, _copy_id), summary in self.copy_summaries.items()
+            scoped_image_id == image_id
+            and normalize_disc_state(summary.state.value)
+            not in {DiscState.NEEDED, DiscState.BURNING}
+            for (scoped_image_id, _disc_id), summary in self.disc_summaries.items()
         )
 
-    def ensure_required_copy_slots(self, image_id: str) -> None:
+    def ensure_required_disc_slots(self, image_id: str) -> None:
         image = self.finalized_images_by_id.get(ImageId(image_id))
         if image is None:
             raise NotFound(f"image not found: {image_id}")
-        required_copy_count = normalize_required_copy_count(None)
-        copies = [
+        required_disc_count = normalize_required_disc_count(None)
+        discs = [
             summary
-            for (volume_id, _copy_id), summary in sorted(self.copy_summaries.items())
-            if volume_id == image_id
+            for (scoped_image_id, _disc_id), summary in sorted(self.disc_summaries.items())
+            if scoped_image_id == image_id
         ]
         existing_ids = {
-            str(copy_id) for volume_id, copy_id in self.copy_summaries if volume_id == image_id
+            str(disc_id)
+            for scoped_image_id, disc_id in self.disc_summaries
+            if scoped_image_id == image_id
         }
 
-        if not copies:
-            while len(existing_ids) < required_copy_count:
-                self._create_generated_copy_slot(image_id, existing_ids=existing_ids)
+        if not discs:
+            while len(existing_ids) < required_disc_count:
+                self._create_generated_disc_slot(image_id, existing_ids=existing_ids)
             return
 
         active_slot_count = sum(
-            1 for summary in copies if _copy_counts_toward_slot_pool(summary.state)
+            1 for summary in discs if _disc_counts_toward_slot_pool(summary.state)
         )
-        protected_copy_count = sum(
-            1 for summary in copies if copy_counts_toward_protection(summary.state.value)
+        disc_redundancy_count = sum(
+            1 for summary in discs if disc_counts_toward_redundancy(summary.state.value)
         )
-        if protected_copy_count > 0:
-            while active_slot_count < required_copy_count:
-                self._create_generated_copy_slot(image_id, existing_ids=existing_ids)
+        if disc_redundancy_count > 0:
+            while active_slot_count < required_disc_count:
+                self._create_generated_disc_slot(image_id, existing_ids=existing_ids)
                 active_slot_count += 1
 
-    def _create_generated_copy_slot(self, image_id: str, *, existing_ids: set[str]) -> CopySummary:
+    def _create_generated_disc_slot(self, image_id: str, *, existing_ids: set[str]) -> DiscSummary:
         ordinal = 1
         while True:
-            copy_id = _generated_copy_id(image_id, ordinal)
+            disc_id = _generated_disc_id(image_id, ordinal)
             ordinal += 1
-            if copy_id in existing_ids:
+            if disc_id in existing_ids:
                 continue
-            summary = CopySummary(
-                id=CopyId(copy_id),
-                volume_id=image_id,
-                label_text=copy_id,
+            summary = DiscSummary(
+                disc_id=DiscId(disc_id),
+                image_id=image_id,
+                label_text=disc_id,
                 location=None,
-                created_at=DEFAULT_COPY_CREATED_AT,
-                state=CopyState.NEEDED,
+                created_at=DEFAULT_DISC_CREATED_AT,
+                state=DiscState.NEEDED,
                 verification_state=VerificationState.PENDING,
-                history=_copy_history(
-                    at=DEFAULT_COPY_CREATED_AT,
+                history=_disc_history(
+                    at=DEFAULT_DISC_CREATED_AT,
                     event="created",
-                    state=CopyState.NEEDED,
+                    state=DiscState.NEEDED,
                     verification_state=VerificationState.PENDING,
                     location=None,
                 ),
             )
-            self.copy_summaries[(image_id, CopyId(copy_id))] = summary
-            existing_ids.add(copy_id)
+            self.disc_summaries[(image_id, DiscId(disc_id))] = summary
+            existing_ids.add(disc_id)
             return summary
 
     def collection_files(self, collection_id: str | CollectionId) -> list[StoredFile]:
@@ -800,16 +803,15 @@ class AcceptanceState:
             covered_paths,
             recovery_parts_by_image_path,
         ) = self.collection_image_coverage(collection_id)
-        protected_bytes = 0
-        image_states = {str(image.id): image.protection_state for image in image_coverage}
+        disc_redundancy_bytes = 0
+        image_states = {str(image.id): image.disc_redundancy_state for image in image_coverage}
         for record in records:
             image_ids = covered_paths.get(record.path, set())
             if image_ids and all(
-                image_states.get(image_id) == ProtectionState.PROTECTED for image_id in image_ids
+                image_states.get(image_id) == CoverageState.FULL for image_id in image_ids
             ):
-                protected_bytes += record.bytes
-        archived_bytes = sum(record.bytes for record in records if record.archived)
-        recovery = self.collection_recovery_summary(
+                disc_redundancy_bytes += record.bytes
+        disc_coverage = self.collection_disc_coverage(
             records,
             image_coverage=image_coverage,
             covered_paths=covered_paths,
@@ -820,40 +822,39 @@ class AcceptanceState:
             files=len(records),
             bytes=sum(record.bytes for record in records),
             hot_bytes=sum(record.bytes for record in records if record.hot),
-            archived_bytes=archived_bytes,
-            protection_state=collection_protection_state(
-                bytes_total=sum(record.bytes for record in records),
-                protected_bytes=protected_bytes,
-                archived_bytes=archived_bytes,
-                image_states=(image.protection_state for image in image_coverage),
+            disc_coverage=disc_coverage,
+            disc_redundancy=Coverage(
+                state=coverage_state(
+                    total_bytes=sum(record.bytes for record in records),
+                    covered_bytes=disc_redundancy_bytes,
+                ),
+                bytes=disc_redundancy_bytes,
             ),
-            protected_bytes=protected_bytes,
-            recovery=recovery,
             image_coverage=image_coverage,
-            glacier=self._collection_glacier_status(str(collection_id), records),
+            archive=self._collection_archive_status(str(collection_id), records),
             collection_manifest=self._collection_manifest_status(str(collection_id)),
             archive_format="tar",
             compression="none",
         )
 
-    def _collection_glacier_status(
+    def _collection_archive_status(
         self,
         collection_id: str,
         records: list[StoredFile],
-    ) -> GlacierArchiveStatus:
+    ) -> ArchiveStatus:
         _ = records
-        direct = self.collection_glacier_status(collection_id)
+        direct = self.collection_archive_status(collection_id)
         return direct
 
     def _collection_manifest_status(
         self,
         collection_id: str,
     ) -> CollectionManifestStatus | None:
-        status = self._collection_glacier_status(
+        status = self._collection_archive_status(
             collection_id,
             self.collection_files(collection_id),
         )
-        if status.state != GlacierState.UPLOADED:
+        if status.state != ArchiveState.UPLOADED:
             return None
         return CollectionManifestStatus(
             object_path=f"{_fixture_archive_prefix(collection_id)}/manifest.yml.age",
@@ -893,60 +894,59 @@ class AcceptanceState:
                 recovery_parts = manifest_entries.get(path)
                 if recovery_parts is not None:
                     recovery_parts_by_image_path[(image.finalized_id, path)] = recovery_parts
-            copies = [
+            discs = [
                 summary
-                for (volume_id, _copy_id), summary in sorted(self.copy_summaries.items())
-                if volume_id == image.finalized_id
+                for (image_id, _disc_id), summary in sorted(self.disc_summaries.items())
+                if image_id == image.finalized_id
             ]
-            physical_copies_registered = sum(
-                1 for copy in copies if copy_counts_toward_protection(copy.state.value)
+            discs_registered = sum(
+                1 for disc in discs if disc_counts_toward_redundancy(disc.state.value)
             )
-            physical_copies_verified = sum(
+            discs_verified = sum(
                 1
-                for copy in copies
-                if copy_counts_as_verified(
-                    state=copy.state.value,
-                    verification_state=copy.verification_state.value,
+                for disc in discs
+                if disc_counts_as_verified(
+                    state=disc.state.value,
+                    verification_state=disc.verification_state.value,
                 )
             )
-            physical_copies_required = normalize_required_copy_count(None)
+            discs_required = normalize_required_disc_count(None)
             image_coverage.append(
                 CollectionCoverageImage(
                     id=ImageId(image.finalized_id),
                     filename=image.filename,
-                    protection_state=image_protection_state(
-                        required_copy_count=physical_copies_required,
-                        registered_copy_count=physical_copies_registered,
+                    disc_redundancy_state=disc_redundancy_state(
+                        required_disc_count=discs_required,
+                        registered_disc_count=discs_registered,
                     ),
-                    physical_copies_required=physical_copies_required,
-                    physical_copies_registered=physical_copies_registered,
-                    physical_copies_verified=physical_copies_verified,
-                    physical_copies_missing=registered_copy_shortfall(
-                        required_copy_count=physical_copies_required,
-                        registered_copy_count=physical_copies_registered,
+                    discs_required=discs_required,
+                    discs_registered=discs_registered,
+                    discs_verified=discs_verified,
+                    discs_missing=registered_disc_shortfall(
+                        required_disc_count=discs_required,
+                        registered_disc_count=discs_registered,
                     ),
                     covered_paths=sorted(
                         path
                         for covered_collection_id, path in image.covered_paths
                         if covered_collection_id == normalized_collection_id
                     ),
-                    copies=copies,
+                    discs=discs,
                 )
             )
         return image_coverage, covered_paths, recovery_parts_by_image_path
 
-    def collection_recovery_summary(
+    def collection_disc_coverage(
         self,
         records: list[StoredFile],
         *,
         image_coverage: Sequence[CollectionCoverageImage],
         covered_paths: dict[str, set[str]],
         recovery_parts_by_image_path: dict[tuple[str, str], _RecoveryParts],
-    ) -> CollectionRecoverySummary:
+    ) -> Coverage:
         total_bytes = sum(record.bytes for record in records)
         image_by_id = {str(image.id): image for image in image_coverage}
-        verified_physical_bytes = 0
-        glacier_bytes = 0
+        verified_disc_available_bytes = 0
 
         for record in records:
             image_ids = covered_paths.get(record.path, set())
@@ -954,48 +954,23 @@ class AcceptanceState:
                 record.path,
                 image_ids=image_ids,
                 recovery_parts_by_image_path=recovery_parts_by_image_path,
-                image_available=lambda image: image.physical_copies_registered > 0,
+                image_available=lambda image: image.discs_registered > 0,
                 image_by_id=image_by_id,
             ):
-                verified_physical_bytes += record.bytes
+                verified_disc_available_bytes += record.bytes
             else:
-                verified_physical_bytes += _partial_recoverable_bytes(
+                verified_disc_available_bytes += _partial_recoverable_bytes(
                     record.bytes,
                     image_ids=image_ids,
                     recovery_parts_by_image_path=recovery_parts_by_image_path,
-                    image_available=lambda image: image.physical_copies_registered > 0,
+                    image_available=lambda image: image.discs_registered > 0,
                     image_by_id=image_by_id,
                 )
-            if (
-                self.collection_glacier_status(str(record.collection_id)).state
-                == GlacierState.UPLOADED
-            ):
-                glacier_bytes += record.bytes
-
-        verified_physical_state = _recovery_coverage_state(
-            covered_bytes=verified_physical_bytes,
+        state = coverage_state(
+            covered_bytes=verified_disc_available_bytes,
             total_bytes=total_bytes,
         )
-        glacier_state = _recovery_coverage_state(
-            covered_bytes=glacier_bytes,
-            total_bytes=total_bytes,
-        )
-        available: list[str] = []
-        if verified_physical_state is RecoveryCoverageState.FULL:
-            available.append("verified_physical")
-        if glacier_state is RecoveryCoverageState.FULL:
-            available.append("glacier")
-        return CollectionRecoverySummary(
-            verified_physical=RecoveryCoverage(
-                state=verified_physical_state,
-                bytes=verified_physical_bytes,
-            ),
-            glacier=RecoveryCoverage(
-                state=glacier_state,
-                bytes=glacier_bytes,
-            ),
-            available=tuple(available),
-        )
+        return Coverage(state=state, bytes=verified_disc_available_bytes)
 
     def selected_files(self, raw_target: str, *, missing_ok: bool = False) -> list[StoredFile]:
         target = parse_target(raw_target)
@@ -1028,13 +1003,13 @@ class AcceptanceState:
         ]
         if not covering_images:
             return False
-        required = normalize_required_copy_count(None)
+        required = normalize_required_disc_count(None)
         return all(
             sum(
                 1
-                for (volume_id, _copy_id), summary in self.copy_summaries.items()
-                if volume_id == image.finalized_id
-                and copy_counts_as_verified(
+                for (image_id, _disc_id), summary in self.disc_summaries.items()
+                if image_id == image.finalized_id
+                and disc_counts_as_verified(
                     state=summary.state.value,
                     verification_state=summary.verification_state.value,
                 )
@@ -1059,10 +1034,10 @@ class AcceptanceState:
                 self.next_fetch_number = max(self.next_fetch_number, int(suffix))
 
     @staticmethod
-    def _copy_from_dict(item: dict[str, object]) -> FileCopy:
-        return FileCopy(
-            id=CopyId(str(item["id"])),
-            volume_id=str(item["volume_id"]),
+    def _disc_from_dict(item: dict[str, object]) -> FileDisc:
+        return FileDisc(
+            disc_id=DiscId(str(item["disc_id"])),
+            image_id=str(item["image_id"]),
             location=str(item["location"]),
             disc_path=str(item["disc_path"]),
             enc=cast(dict[str, object], item["enc"]),
@@ -1717,7 +1692,7 @@ class AcceptanceCollectionService:
         page: int,
         per_page: int,
         q: str | None,
-        protection_state: str | None,
+        disc_redundancy_state: str | None,
         sort: str = "id",
         order: str = "asc",
     ) -> CollectionListPage:
@@ -1728,26 +1703,33 @@ class AcceptanceCollectionService:
         ]
         if needle is not None:
             summaries = [summary for summary in summaries if needle in str(summary.id).casefold()]
-        if protection_state is not None:
+        if disc_redundancy_state is not None:
             summaries = [
                 summary
                 for summary in summaries
-                if summary.protection_state.value == protection_state
+                if summary.disc_redundancy.state.value == disc_redundancy_state
             ]
         if sort not in {
             "id",
             "bytes",
             "files",
             "hot_bytes",
-            "archived_bytes",
-            "pending_bytes",
-            "protected_bytes",
+            "disc_coverage",
+            "disc_redundancy",
         }:
             sort = "id"
         reverse = order == "desc"
+        sort_values = {
+            "disc_coverage": lambda summary: summary.disc_coverage.bytes,
+            "disc_redundancy": lambda summary: summary.disc_redundancy.bytes,
+        }
         summaries.sort(
             key=lambda summary: (
-                str(summary.id).casefold() if sort == "id" else int(getattr(summary, sort))
+                str(summary.id).casefold()
+                if sort == "id"
+                else sort_values[sort](summary)
+                if sort in sort_values
+                else int(getattr(summary, sort))
             ),
             reverse=reverse,
         )
@@ -1836,7 +1818,6 @@ class AcceptanceCollectionService:
             str(upload.collection_id),
             files,
             hot_paths=hot_paths,
-            archived_paths=set(),
         )
         summary = self.state.collection_summary(str(upload.collection_id))
         self.state.mark_collection_archive_uploaded(str(upload.collection_id))
@@ -1897,8 +1878,14 @@ class AcceptanceCollectionService:
                     "files": collection.files,
                     "bytes": collection.bytes,
                     "hot_bytes": collection.hot_bytes,
-                    "archived_bytes": collection.archived_bytes,
-                    "pending_bytes": collection.pending_bytes,
+                    "disc_coverage": {
+                        "state": collection.disc_coverage.state.value,
+                        "bytes": collection.disc_coverage.bytes,
+                    },
+                    "disc_redundancy": {
+                        "state": collection.disc_redundancy.state.value,
+                        "bytes": collection.disc_redundancy.bytes,
+                    },
                 }
                 if collection is not None
                 else None
@@ -1932,7 +1919,7 @@ class AcceptanceSearchService:
         order: str,
         collection: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
+        disc_coverage: bool | None = None,
     ) -> dict[str, object]:
         normalized_collection = normalize_collection_id(collection) if collection else None
         needle = q.casefold() if q else None
@@ -1949,7 +1936,7 @@ class AcceptanceSearchService:
                     continue
                 if hot is not None and record.hot is not hot:
                     continue
-                if archived is not None and record.archived is not archived:
+                if disc_coverage is not None and record.disc_coverage is not disc_coverage:
                     continue
                 records.append(
                     {
@@ -1959,7 +1946,7 @@ class AcceptanceSearchService:
                         "bytes": record.bytes,
                         "sha256": record.sha256,
                         "hot": record.hot,
-                        "archived": record.archived,
+                        "disc_coverage": record.disc_coverage,
                     }
                 )
 
@@ -1988,7 +1975,7 @@ class AcceptanceSearchService:
             "query": q,
             "collection": normalized_collection,
             "hot": hot,
-            "archived": archived,
+            "disc_coverage": disc_coverage,
             "page": page,
             "per_page": per_page,
             "total": total,
@@ -2026,8 +2013,8 @@ class AcceptancePlanningService:
             if ImageId(image.finalized_id) not in self.state.finalized_images_by_id
             and all(
                 CollectionId(collection_id) in self.state.files_by_collection
-                and self.state.collection_glacier_status(collection_id).state
-                == GlacierState.UPLOADED
+                and self.state.collection_archive_status(collection_id).state
+                == ArchiveState.UPLOADED
                 for collection_id in image.collections
             )
         ]
@@ -2124,7 +2111,7 @@ class AcceptancePlanningService:
         order: str,
         q: str | None,
         collection: str | None,
-        has_copies: bool | None,
+        has_discs: bool | None,
     ) -> dict[str, object]:
         images = list(self.state.finalized_images_by_id.values())
         if q:
@@ -2138,19 +2125,15 @@ class AcceptancePlanningService:
             ]
         if collection:
             images = [image for image in images if collection in image.collections]
-        if has_copies is not None:
-            images = [
-                image
-                for image in images
-                if (self._physical_copies_registered(image) > 0) is has_copies
-            ]
+        if has_discs is not None:
+            images = [image for image in images if (self._discs_registered(image) > 0) is has_discs]
 
         reverse = order == "desc"
         sort_key = {
             "finalized_at": lambda image: (image.finalized_id, image.filename),
             "bytes": lambda image: (image.bytes, image.finalized_id),
-            "physical_copies_registered": lambda image: (
-                self._physical_copies_registered(image),
+            "discs_registered": lambda image: (
+                self._discs_registered(image),
                 image.finalized_id,
             ),
         }[sort]
@@ -2170,8 +2153,8 @@ class AcceptancePlanningService:
             "order": order,
             "images": [
                 image.finalized_image_payload(
-                    physical_copies_registered=self._physical_copies_registered(image),
-                    physical_copies_verified=self._physical_copies_verified(image),
+                    discs_registered=self._discs_registered(image),
+                    discs_verified=self._discs_verified(image),
                 )
                 for image in page_images
             ],
@@ -2181,8 +2164,8 @@ class AcceptancePlanningService:
     def get_image(self, image_id: str) -> dict[str, object]:
         image = self._finalized_image_record(image_id)
         return image.finalized_image_payload(
-            physical_copies_registered=self._physical_copies_registered(image),
-            physical_copies_verified=self._physical_copies_verified(image),
+            discs_registered=self._discs_registered(image),
+            discs_verified=self._discs_verified(image),
         )
 
     @_with_state_lock
@@ -2192,11 +2175,11 @@ class AcceptancePlanningService:
             raise InvalidState("image must be ISO-ready before finalization")
         finalized_key = ImageId(candidate.finalized_id)
         self.state.finalized_images_by_id.setdefault(finalized_key, candidate)
-        self.state.ensure_required_copy_slots(candidate.finalized_id)
+        self.state.ensure_required_disc_slots(candidate.finalized_id)
         image = self.state.finalized_images_by_id[finalized_key]
         return image.finalized_image_payload(
-            physical_copies_registered=self._physical_copies_registered(image),
-            physical_copies_verified=self._physical_copies_verified(image),
+            discs_registered=self._discs_registered(image),
+            discs_verified=self._discs_verified(image),
         )
 
     @_with_state_lock
@@ -2230,20 +2213,19 @@ class AcceptancePlanningService:
             raise NotFound(f"image not found: {image_id}")
         return image
 
-    def _physical_copies_registered(self, image: CandidateRecord) -> int:
+    def _discs_registered(self, image: CandidateRecord) -> int:
         return sum(
             1
-            for (volume_id, _copy_id), summary in self.state.copy_summaries.items()
-            if volume_id == image.finalized_id
-            and copy_counts_toward_protection(summary.state.value)
+            for (image_id, _disc_id), summary in self.state.disc_summaries.items()
+            if image_id == image.finalized_id and disc_counts_toward_redundancy(summary.state.value)
         )
 
-    def _physical_copies_verified(self, image: CandidateRecord) -> int:
+    def _discs_verified(self, image: CandidateRecord) -> int:
         return sum(
             1
-            for (volume_id, _copy_id), summary in self.state.copy_summaries.items()
-            if volume_id == image.finalized_id
-            and copy_counts_as_verified(
+            for (image_id, _disc_id), summary in self.state.disc_summaries.items()
+            if image_id == image.finalized_id
+            and disc_counts_as_verified(
                 state=summary.state.value,
                 verification_state=summary.verification_state.value,
             )
@@ -2253,7 +2235,7 @@ class AcceptancePlanningService:
         if self.state.real_iso_streams_enabled:
             return _fixture_real_iso_bytes(
                 image_root=image.image_root,
-                volume_id=str(image.finalized_id),
+                image_id=str(image.finalized_id),
             )
         payload = {
             "fixture": "spec-iso",
@@ -2268,7 +2250,7 @@ class AcceptancePlanningService:
         return json.dumps(payload, sort_keys=True).encode("utf-8")
 
 
-class AcceptanceGlacierUploadService:
+class AcceptanceArchiveUploadService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
@@ -2289,11 +2271,11 @@ class AcceptanceGlacierUploadService:
         return requeued
 
     @_with_state_lock
-    def publish_recovery_catalog(self) -> int:
+    def publish_restore_catalog(self) -> int:
         return sum(
             1
-            for archive in self.state.collection_glacier_status_by_collection.values()
-            if archive.state == GlacierState.UPLOADED
+            for archive in self.state.collection_archive_status_by_collection.values()
+            if archive.state == ArchiveState.UPLOADED
         )
 
     @_with_state_lock
@@ -2306,21 +2288,19 @@ class AcceptanceGlacierUploadService:
                 self.state
             )._is_complete(upload):
                 continue
-            defer_until = self.state.glacier_upload_defer_until_by_collection.get(collection_id)
+            defer_until = self.state.archive_upload_defer_until_by_collection.get(collection_id)
             if defer_until is not None:
                 if time.monotonic() < defer_until:
                     continue
-                self.state.glacier_upload_defer_until_by_collection.pop(collection_id, None)
-            failure = self.state.glacier_upload_failures_by_collection.get(collection_id)
+                self.state.archive_upload_defer_until_by_collection.pop(collection_id, None)
+            failure = self.state.archive_upload_failures_by_collection.get(collection_id)
             upload.archive_attempt_count += 1
             if failure is not None:
                 upload.latest_failure = failure
                 upload.state = "archiving"
-                self.state.collection_glacier_status_by_collection[collection_id] = (
-                    GlacierArchiveStatus(
-                        state=GlacierState.RETRYING,
-                        failure=failure,
-                    )
+                self.state.collection_archive_status_by_collection[collection_id] = ArchiveStatus(
+                    state=ArchiveState.RETRYING,
+                    failure=failure,
                 )
                 self.state.deliver_webhook_payload(
                     {
@@ -2331,9 +2311,9 @@ class AcceptanceGlacierUploadService:
                         "failed_at": _acceptance_isoformat(datetime.now(UTC)),
                         "next_retry_at": _acceptance_isoformat(
                             datetime.now(UTC)
-                            + timedelta(seconds=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS)
+                            + timedelta(seconds=_ARCHIVE_UPLOAD_SWEEP_INTERVAL_SECONDS)
                         ),
-                        "retry_delay_seconds": _GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
+                        "retry_delay_seconds": _ARCHIVE_UPLOAD_SWEEP_INTERVAL_SECONDS,
                     },
                     delivered_at=datetime.now(UTC),
                     timeout_seconds=self.state.webhook_config().timeout_seconds,
@@ -2341,12 +2321,12 @@ class AcceptanceGlacierUploadService:
                 attempted += 1
                 continue
             AcceptanceCollectionService(self.state)._finalize_upload(upload)
-            self.state.glacier_usage_snapshots.append(_acceptance_glacier_snapshot(self.state))
+            self.state.archive_usage_snapshots.append(_acceptance_archive_snapshot(self.state))
             attempted += 1
         return attempted
 
 
-class AcceptanceRecoverySessionService:
+class AcceptanceArchiveRestoreService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
@@ -2368,11 +2348,11 @@ class AcceptanceRecoverySessionService:
         sort: str,
         order: str,
         terminal: str = "all",
-        recovery_type: str | None = None,
+        restore_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
         image: str | None = None,
-    ) -> RecoverySessionListPage:
+    ) -> ArchiveRestoreListPage:
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
@@ -2382,9 +2362,9 @@ class AcceptanceRecoverySessionService:
         if terminal not in {"active", "terminal", "all"}:
             raise BadRequest("terminal must be active, terminal, or all")
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
-            RecoverySessionState.PAUSED,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
+            ArchiveRestoreState.PAUSED,
         }
         normalized_collection = (
             CollectionId(normalize_collection_id(collection)) if collection else None
@@ -2392,8 +2372,8 @@ class AcceptanceRecoverySessionService:
         image_id = ImageId(image) if image else None
         records = [
             record
-            for record in self.state.recovery_sessions_by_id.values()
-            if (recovery_type is None or record.type == recovery_type)
+            for record in self.state.archive_restores_by_id.values()
+            if (restore_type is None or record.type == restore_type)
             and (
                 terminal == "all"
                 or (terminal == "active" and record.state in active_states)
@@ -2404,31 +2384,30 @@ class AcceptanceRecoverySessionService:
             and (image_id is None or image_id in self.state._record_image_ids(record))
         ]
 
-        def sort_value(record: AcceptanceRecoverySessionRecord) -> object:
+        def sort_value(record: AcceptanceArchiveRestoreRecord) -> object:
             if sort == "id":
-                return record.session_id
+                return record.restore_id
             if sort == "type":
                 return record.type
             if sort == "state":
                 return record.state.value
-            if sort == "restore_ready_at":
-                return record.restore_ready_at or ""
-            if sort == "restore_expires_at":
-                return record.restore_expires_at or ""
+            if sort == "ready_at":
+                return record.ready_at or ""
+            if sort == "expires_at":
+                return record.expires_at or ""
             if sort == "created_at":
                 return record.created_at
             raise BadRequest(
-                "sort must be one of created_at, id, restore_expires_at, "
-                "restore_ready_at, state, type"
+                "sort must be one of created_at, id, expires_at, ready_at, state, type"
             )
 
-        records.sort(key=lambda record: (sort_value(record), record.session_id))
+        records.sort(key=lambda record: (sort_value(record), record.restore_id))
         if order == "desc":
             records.reverse()
         total = len(records)
         pages = (total + per_page - 1) // per_page if total else 0
         start = (page - 1) * per_page
-        return RecoverySessionListPage(
+        return ArchiveRestoreListPage(
             page=page,
             per_page=per_page,
             total=total,
@@ -2436,33 +2415,33 @@ class AcceptanceRecoverySessionService:
             sort=sort,
             order=order,
             terminal=terminal,
-            type=recovery_type,
+            type=restore_type,
             state=state,
             collection=str(normalized_collection) if normalized_collection else None,
             image=str(image_id) if image_id else None,
-            sessions=[self._summary(record) for record in records[start : start + per_page]],
+            restores=[self._summary(record) for record in records[start : start + per_page]],
         )
 
     @_with_state_lock
-    def get(self, session_id: str) -> RecoverySessionSummary:
+    def get(self, restore_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
+                raise NotFound(f"archive restore not found: {restore_id}")
             return self._summary(record)
 
     @_with_state_lock
-    def get_for_collection(self, collection_id: str) -> RecoverySessionSummary:
+    def get_for_collection(self, collection_id: str) -> ArchiveRestoreSummary:
         normalized_collection_id = CollectionId(normalize_collection_id(collection_id))
-        sessions = [
+        restores = [
             record
-            for record in self.state.recovery_sessions_by_id.values()
-            if record.type == "collection_restore"
+            for record in self.state.archive_restores_by_id.values()
+            if record.type == "fetch_materialization"
             and normalized_collection_id in record.collection_ids
         ]
-        if not sessions:
-            raise NotFound(f"recovery session not found for collection: {collection_id}")
-        return self._summary(sorted(sessions, key=lambda record: record.created_at)[-1])
+        if not restores:
+            raise NotFound(f"archive restore not found for collection: {collection_id}")
+        return self._summary(sorted(restores, key=lambda record: record.created_at)[-1])
 
     @_with_state_lock
     def create_or_resume_for_collection(
@@ -2470,50 +2449,50 @@ class AcceptanceRecoverySessionService:
         collection_id: str,
         *,
         paths: Sequence[str] | None = None,
-    ) -> RecoverySessionSummary:
+    ) -> ArchiveRestoreSummary:
         normalized_collection_id = CollectionId(normalize_collection_id(collection_id))
         if (
-            self.state.collection_glacier_status(str(normalized_collection_id)).state
-            != GlacierState.UPLOADED
+            self.state.collection_archive_status(str(normalized_collection_id)).state
+            != ArchiveState.UPLOADED
         ):
             raise InvalidState(
                 "collection archive is not uploaded and cannot be restored yet: "
                 f"{normalized_collection_id}"
             )
-        normalized_paths = self._normalize_collection_restore_paths(
+        normalized_paths = self._normalize_fetch_materialization_paths(
             normalized_collection_id,
             paths,
         )
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
         }
-        for record in self.state.recovery_sessions_by_id.values():
+        for record in self.state.archive_restores_by_id.values():
             if (
-                record.type == "collection_restore"
+                record.type == "fetch_materialization"
                 and normalized_collection_id in record.collection_ids
                 and record.state in active_states
             ):
                 if normalized_paths is None:
-                    record.restore_paths = None
-                elif record.restore_paths is not None:
-                    record.restore_paths = tuple(sorted({*record.restore_paths, *normalized_paths}))
+                    record.paths = None
+                elif record.paths is not None:
+                    record.paths = tuple(sorted({*record.paths, *normalized_paths}))
                 return self._summary(record)
         current = datetime.now(UTC)
-        session_id = self._generated_collection_restore_session_id(str(normalized_collection_id))
-        record = AcceptanceRecoverySessionRecord(
-            session_id=session_id,
+        restore_id = self._generated_fetch_materialization_restore_id(str(normalized_collection_id))
+        record = AcceptanceArchiveRestoreRecord(
+            restore_id=restore_id,
             image_id=ImageId(""),
-            state=RecoverySessionState.RESTORE_REQUESTED,
+            state=ArchiveRestoreState.REQUESTED,
             created_at=_acceptance_isoformat(current),
-            type="collection_restore",
+            type="fetch_materialization",
             image_ids=(),
             collection_ids=(normalized_collection_id,),
-            restore_paths=normalized_paths,
+            paths=normalized_paths,
             latest_message="Archive restore queued; Riverhog will materialize requested files.",
         )
         self._request_restore(record, current)
-        self.state.recovery_sessions_by_id[session_id] = record
+        self.state.archive_restores_by_id[restore_id] = record
         return self._summary(record)
 
     @_with_state_lock
@@ -2526,7 +2505,7 @@ class AcceptanceRecoverySessionService:
         sort: str,
         order: str,
         state: str | None = None,
-    ) -> RecoverySessionListPage:
+    ) -> ArchiveRestoreListPage:
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
@@ -2534,33 +2513,32 @@ class AcceptanceRecoverySessionService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
         record = self._fetch_record(fetch_id)
-        records = self._collection_restore_records_for_fetch(record, state=state)
+        records = self._fetch_materialization_records_for_fetch(record, state=state)
 
-        def sort_value(item: AcceptanceRecoverySessionRecord) -> object:
+        def sort_value(item: AcceptanceArchiveRestoreRecord) -> object:
             if sort == "id":
-                return item.session_id
+                return item.restore_id
             if sort == "type":
                 return item.type
             if sort == "state":
                 return item.state.value
-            if sort == "restore_ready_at":
-                return item.restore_ready_at or ""
-            if sort == "restore_expires_at":
-                return item.restore_expires_at or ""
+            if sort == "ready_at":
+                return item.ready_at or ""
+            if sort == "expires_at":
+                return item.expires_at or ""
             if sort == "created_at":
                 return item.created_at
             raise BadRequest(
-                "sort must be one of created_at, id, restore_expires_at, "
-                "restore_ready_at, state, type"
+                "sort must be one of created_at, id, expires_at, ready_at, state, type"
             )
 
-        records.sort(key=lambda item: (sort_value(item), item.session_id))
+        records.sort(key=lambda item: (sort_value(item), item.restore_id))
         if order == "desc":
             records.reverse()
         total = len(records)
         pages = (total + per_page - 1) // per_page if total else 0
         start = (page - 1) * per_page
-        return RecoverySessionListPage(
+        return ArchiveRestoreListPage(
             page=page,
             per_page=per_page,
             total=total,
@@ -2568,22 +2546,22 @@ class AcceptanceRecoverySessionService:
             sort=sort,
             order=order,
             terminal="all",
-            type="collection_restore",
+            type="fetch_materialization",
             state=state,
             collection=None,
             image=None,
-            sessions=[self._summary(item) for item in records[start : start + per_page]],
+            restores=[self._summary(item) for item in records[start : start + per_page]],
         )
 
     @_with_state_lock
-    def create_or_resume_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+    def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         fetch = self._fetch_record(fetch_id)
-        if fetch.summary.state == FetchState.QUEUED_CLOUD:
+        if fetch.summary.state == FetchState.QUEUED_ARCHIVE:
             fetch.summary = AcceptanceFetchService(self.state)._replace_summary(
                 fetch,
-                state=FetchState.CLOUD_FETCHING,
+                state=FetchState.RESTORING_ARCHIVE,
             )
-        paths_by_collection = self._fetch_restore_paths(fetch, missing_only=True)
+        paths_by_collection = self._fetch_paths(fetch, missing_only=True)
         for collection_id, paths in sorted(paths_by_collection.items()):
             self.create_or_resume_for_collection(str(collection_id), paths=sorted(paths))
         return self.list_for_fetch(
@@ -2595,28 +2573,28 @@ class AcceptanceRecoverySessionService:
         )
 
     @_with_state_lock
-    def cancel_for_fetch(self, fetch_id: str) -> RecoverySessionListPage:
+    def cancel_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         fetch = self._fetch_record(fetch_id)
         if fetch.summary.state in {
-            FetchState.QUEUED_CLOUD,
-            FetchState.CLOUD_FETCHING,
+            FetchState.QUEUED_ARCHIVE,
+            FetchState.RESTORING_ARCHIVE,
         }:
             fetch.summary = AcceptanceFetchService(self.state)._replace_summary(
                 fetch,
                 state=FetchState.DRAFT,
             )
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
-            RecoverySessionState.PAUSED,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
+            ArchiveRestoreState.PAUSED,
         }
-        session_ids = [
-            record.session_id
-            for record in self._collection_restore_records_for_fetch(fetch, state=None)
+        restore_ids = [
+            record.restore_id
+            for record in self._fetch_materialization_records_for_fetch(fetch, state=None)
             if record.state in active_states
         ]
-        for session_id in session_ids:
-            self.cancel(session_id)
+        for restore_id in restore_ids:
+            self.cancel(restore_id)
         return self.list_for_fetch(
             fetch_id,
             page=1,
@@ -2631,7 +2609,7 @@ class AcceptanceRecoverySessionService:
         except KeyError as exc:
             raise NotFound(f"fetch not found: {fetch_id}") from exc
 
-    def _fetch_restore_paths(
+    def _fetch_paths(
         self,
         fetch: FetchRecord,
         *,
@@ -2645,16 +2623,16 @@ class AcceptanceRecoverySessionService:
             paths_by_collection.setdefault(entry.collection_id, set()).add(entry.path)
         return paths_by_collection
 
-    def _collection_restore_records_for_fetch(
+    def _fetch_materialization_records_for_fetch(
         self,
         fetch: FetchRecord,
         *,
         state: str | None,
-    ) -> list[AcceptanceRecoverySessionRecord]:
-        paths_by_collection = self._fetch_restore_paths(fetch, missing_only=False)
-        records: list[AcceptanceRecoverySessionRecord] = []
-        for record in self.state.recovery_sessions_by_id.values():
-            if record.type != "collection_restore":
+    ) -> list[AcceptanceArchiveRestoreRecord]:
+        paths_by_collection = self._fetch_paths(fetch, missing_only=False)
+        records: list[AcceptanceArchiveRestoreRecord] = []
+        for record in self.state.archive_restores_by_id.values():
+            if record.type != "fetch_materialization":
                 continue
             if state is not None and record.state.value != state:
                 continue
@@ -2664,18 +2642,18 @@ class AcceptanceRecoverySessionService:
 
     @staticmethod
     def _record_intersects_fetch(
-        record: AcceptanceRecoverySessionRecord,
+        record: AcceptanceArchiveRestoreRecord,
         paths_by_collection: dict[CollectionId, set[str]],
     ) -> bool:
         for collection_id in record.collection_ids:
             fetch_paths = paths_by_collection.get(collection_id)
             if not fetch_paths:
                 continue
-            if record.restore_paths is None or set(record.restore_paths) & fetch_paths:
+            if record.paths is None or set(record.paths) & fetch_paths:
                 return True
         return False
 
-    def _normalize_collection_restore_paths(
+    def _normalize_fetch_materialization_paths(
         self,
         collection_id: CollectionId,
         paths: Sequence[str] | None,
@@ -2695,160 +2673,168 @@ class AcceptanceRecoverySessionService:
 
     def _request_restore(
         self,
-        record: AcceptanceRecoverySessionRecord,
+        record: AcceptanceArchiveRestoreRecord,
         current: datetime,
     ) -> None:
-        if record.restore_requested_at is not None:
+        if record.requested_at is not None:
             return
         current_text = _acceptance_isoformat(current)
         estimated_ready_at = _acceptance_isoformat(
-            current + timedelta(seconds=_GLACIER_RECOVERY_RESTORE_LATENCY_SECONDS)
+            current + timedelta(seconds=_ARCHIVE_RESTORE_LATENCY_SECONDS)
         )
-        record.state = RecoverySessionState.RESTORE_REQUESTED
-        record.restore_requested_at = current_text
-        record.restore_ready_at = estimated_ready_at
-        record.restore_expires_at = None
-        record.restore_next_poll_at = _acceptance_isoformat(
-            current + timedelta(seconds=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS)
+        record.state = ArchiveRestoreState.REQUESTED
+        record.requested_at = current_text
+        record.ready_at = estimated_ready_at
+        record.expires_at = None
+        record.next_poll_at = _acceptance_isoformat(
+            current + timedelta(seconds=_ARCHIVE_RESTORE_SWEEP_INTERVAL_SECONDS)
         )
-        if record.type == "collection_restore":
+        if record.type == "fetch_materialization":
             record.latest_message = (
                 "Archive restore requested; Riverhog will materialize the requested files "
                 "when the archive is ready."
             )
             return
         record.latest_message = (
-            "Archive restore requested; wait until the session is ready before burning "
+            "Archive restore requested; wait until the restore is ready before burning "
             "replacement media."
         )
 
     @_with_state_lock
-    def get_for_image(self, image_id: str) -> RecoverySessionSummary:
+    def get_for_image(self, image_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.latest_recovery_session(image_id)
+            record = self.state.latest_archive_restore(image_id)
             if record is None:
-                raise NotFound(f"recovery session not found for image: {image_id}")
+                raise NotFound(f"archive restore not found for image: {image_id}")
             return self._summary(record)
 
     @_with_state_lock
-    def complete(self, session_id: str) -> RecoverySessionSummary:
+    def complete(self, restore_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
+                raise NotFound(f"archive restore not found: {restore_id}")
             if record.state not in {
-                RecoverySessionState.READY,
-                RecoverySessionState.EXPIRED,
+                ArchiveRestoreState.READY,
+                ArchiveRestoreState.EXPIRED,
             }:
-                raise InvalidState("recovery session is not ready to complete")
+                raise InvalidState("archive restore is not ready to complete")
             current_text = _acceptance_isoformat(datetime.now(UTC))
-            record.state = RecoverySessionState.COMPLETED
+            record.state = ArchiveRestoreState.COMPLETED
             record.completed_at = current_text
-            record.restore_expires_at = current_text
-            record.restore_next_poll_at = None
+            record.expires_at = current_text
+            record.next_poll_at = None
             record.next_reminder_at = None
             record.latest_message = (
-                "Recovery session completed and restored ISO cleanup was recorded."
+                "Archive restore completed and restored ISO cleanup was recorded."
             )
             return self._summary(record)
 
     @_with_state_lock
-    def cancel(self, session_id: str) -> RecoverySessionSummary:
+    def cancel(self, restore_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.type != "collection_restore":
-                raise InvalidState("image rebuild sessions can be paused and resumed, not canceled")
+                raise NotFound(f"archive restore not found: {restore_id}")
+            if record.type != "fetch_materialization":
+                raise InvalidState(
+                    "disc rebuild archive restores can be paused and resumed, not canceled"
+                )
             if record.state not in {
-                RecoverySessionState.RESTORE_REQUESTED,
-                RecoverySessionState.READY,
+                ArchiveRestoreState.REQUESTED,
+                ArchiveRestoreState.READY,
             }:
-                raise InvalidState("recovery session is not active and cannot be canceled")
+                raise InvalidState("archive restore is not active and cannot be canceled")
             current_text = _acceptance_isoformat(datetime.now(UTC))
-            record.state = RecoverySessionState.CANCELED
+            record.state = ArchiveRestoreState.CANCELED
             record.canceled_at = current_text
-            record.restore_next_poll_at = None
+            record.next_poll_at = None
             record.next_reminder_at = None
             record.latest_message = (
-                "Cloud-fetch recovery was canceled by the operator; Riverhog will not materialize "
-                "files for this session."
+                "Fetch materialization was canceled by the operator; Riverhog will not "
+                "materialize files for this restore."
             )
             return self._summary(record)
 
     @_with_state_lock
-    def pause(self, session_id: str) -> RecoverySessionSummary:
+    def pause(self, restore_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.type != "image_rebuild":
-                raise InvalidState("cloud-fetch recovery sessions can be canceled, not paused")
-            if record.state == RecoverySessionState.PAUSED:
+                raise NotFound(f"archive restore not found: {restore_id}")
+            if record.type != "disc_rebuild":
+                raise InvalidState(
+                    "fetch materialization archive restores can be canceled, not paused"
+                )
+            if record.state == ArchiveRestoreState.PAUSED:
                 return self._summary(record)
             if record.state not in {
-                RecoverySessionState.RESTORE_REQUESTED,
-                RecoverySessionState.READY,
+                ArchiveRestoreState.REQUESTED,
+                ArchiveRestoreState.READY,
             }:
-                raise InvalidState("image rebuild session is not active and cannot be paused")
+                raise InvalidState(
+                    "disc rebuild archive restore is not active and cannot be paused"
+                )
             current = datetime.now(UTC)
             record.paused_from_state = record.state.value
-            record.state = RecoverySessionState.PAUSED
+            record.state = ArchiveRestoreState.PAUSED
             record.paused_at = _acceptance_isoformat(current)
-            record.restore_next_poll_at = None
+            record.next_poll_at = None
             record.next_reminder_at = _acceptance_isoformat(
                 current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
             )
             record.latest_message = (
-                "Image rebuild recovery is paused by the operator; resume it when replacement "
+                "Disc rebuild is paused by the operator; resume it when replacement "
                 "media should continue."
             )
             return self._summary(record)
 
     @_with_state_lock
-    def resume(self, session_id: str) -> RecoverySessionSummary:
+    def resume(self, restore_id: str) -> ArchiveRestoreSummary:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.type != "image_rebuild":
-                raise InvalidState("cloud-fetch recovery sessions cannot be resumed from pause")
-            if record.state != RecoverySessionState.PAUSED:
-                raise InvalidState("image rebuild session is not paused")
+                raise NotFound(f"archive restore not found: {restore_id}")
+            if record.type != "disc_rebuild":
+                raise InvalidState(
+                    "fetch materialization archive restores cannot be resumed from pause"
+                )
+            if record.state != ArchiveRestoreState.PAUSED:
+                raise InvalidState("disc rebuild archive restore is not paused")
             current_text = _acceptance_isoformat(datetime.now(UTC))
-            resume_state = record.paused_from_state or RecoverySessionState.RESTORE_REQUESTED.value
+            resume_state = record.paused_from_state or ArchiveRestoreState.REQUESTED.value
             if resume_state not in {
-                RecoverySessionState.RESTORE_REQUESTED.value,
-                RecoverySessionState.READY.value,
+                ArchiveRestoreState.REQUESTED.value,
+                ArchiveRestoreState.READY.value,
             }:
-                resume_state = RecoverySessionState.RESTORE_REQUESTED.value
-            record.state = RecoverySessionState(resume_state)
+                resume_state = ArchiveRestoreState.REQUESTED.value
+            record.state = ArchiveRestoreState(resume_state)
             record.paused_at = None
             record.paused_from_state = None
-            record.restore_next_poll_at = current_text
+            record.next_poll_at = current_text
             record.next_reminder_at = None
-            record.latest_message = "Image rebuild recovery resumed by the operator."
+            record.latest_message = "Disc rebuild resumed by the operator."
             return self._summary(record)
 
     @_with_state_lock
-    def iter_restored_iso(self, session_id: str, image_id: str) -> Iterator[bytes]:
+    def iter_restored_iso(self, restore_id: str, image_id: str) -> Iterator[bytes]:
         with self.state.lock:
-            record = self.state.recovery_sessions_by_id.get(session_id)
+            record = self.state.archive_restores_by_id.get(restore_id)
             if record is None:
-                raise NotFound(f"recovery session not found: {session_id}")
-            if record.state != RecoverySessionState.READY:
-                raise InvalidState("recovery session is not ready for ISO download")
+                raise NotFound(f"archive restore not found: {restore_id}")
+            if record.state != ArchiveRestoreState.READY:
+                raise InvalidState("archive restore is not ready for ISO download")
             if ImageId(image_id) not in self.state._record_image_ids(record):
-                raise NotFound(f"image not found in recovery session: {image_id}")
+                raise NotFound(f"image not found in archive restore: {image_id}")
             image = self.state.finalized_images_by_id[ImageId(image_id)]
             if self.state.real_iso_streams_enabled:
                 image_root = image.image_root
-                volume_id = str(image.finalized_id)
+                image_id = str(image.finalized_id)
             else:
                 image_root = None
-                volume_id = ""
+                image_id = ""
         if image_root is not None:
-            yield _fixture_real_iso_bytes(image_root=image_root, volume_id=volume_id)
+            yield _fixture_real_iso_bytes(image_root=image_root, image_id=image_id)
             return
         with self.state.lock:
             payload = {
@@ -2864,7 +2850,7 @@ class AcceptanceRecoverySessionService:
             yield json.dumps(payload, sort_keys=True).encode("utf-8")
 
     @_with_state_lock
-    def process_due_sessions(self, *, limit: int = 100) -> int:
+    def process_due_restores(self, *, limit: int = 100) -> int:
         with self.state.lock:
             if limit < 1:
                 return 0
@@ -2872,28 +2858,25 @@ class AcceptanceRecoverySessionService:
             current_text = _acceptance_isoformat(current)
             processed = 0
             for record in sorted(
-                self.state.recovery_sessions_by_id.values(),
-                key=lambda current_record: (current_record.created_at, current_record.session_id),
+                self.state.archive_restores_by_id.values(),
+                key=lambda current_record: (current_record.created_at, current_record.restore_id),
             ):
                 if processed >= limit:
                     break
-                if (
-                    record.state == RecoverySessionState.RESTORE_REQUESTED
-                    and record.restore_requested_at is None
-                ):
+                if record.state == ArchiveRestoreState.REQUESTED and record.requested_at is None:
                     self._request_restore(record, current)
                     processed += 1
                     continue
                 if (
-                    record.state == RecoverySessionState.RESTORE_REQUESTED
-                    and record.restore_ready_at is not None
-                    and record.restore_ready_at <= current_text
+                    record.state == ArchiveRestoreState.REQUESTED
+                    and record.ready_at is not None
+                    and record.ready_at <= current_text
                 ):
                     self._mark_ready(record, current)
                     processed += 1
                     continue
                 if (
-                    record.state == RecoverySessionState.READY
+                    record.state == ArchiveRestoreState.READY
                     and record.next_reminder_at is not None
                     and record.next_reminder_at <= current_text
                 ):
@@ -2901,10 +2884,10 @@ class AcceptanceRecoverySessionService:
                     initial_notification_succeeded = record.last_notified_at is not None
                     try:
                         self.state.deliver_webhook_payload(
-                            build_recovery_ready_payload(
+                            build_archive_restore_ready_payload(
                                 config=self.state.webhook_config(),
-                                session_id=record.session_id,
-                                restore_expires_at=record.restore_expires_at,
+                                restore_id=record.restore_id,
+                                expires_at=record.expires_at,
                                 images=[
                                     {
                                         "image_id": str(record.image_id),
@@ -2937,20 +2920,20 @@ class AcceptanceRecoverySessionService:
                     processed += 1
                     continue
                 if (
-                    record.state == RecoverySessionState.READY
-                    and record.restore_expires_at is not None
-                    and record.restore_expires_at <= current_text
+                    record.state == ArchiveRestoreState.READY
+                    and record.expires_at is not None
+                    and record.expires_at <= current_text
                 ):
-                    record.state = RecoverySessionState.EXPIRED
+                    record.state = ArchiveRestoreState.EXPIRED
                     record.next_reminder_at = None
-                    record.restore_next_poll_at = None
+                    record.next_poll_at = None
                     record.latest_message = (
                         "Restored ISO data expired and cleanup was recorded; "
                         "re-initiate recovery to request a new restore."
                     )
                     processed += 1
                 if (
-                    record.state == RecoverySessionState.PAUSED
+                    record.state == ArchiveRestoreState.PAUSED
                     and record.next_reminder_at is not None
                     and record.next_reminder_at <= current_text
                 ):
@@ -2960,9 +2943,9 @@ class AcceptanceRecoverySessionService:
                     ]
                     try:
                         self.state.deliver_webhook_payload(
-                            build_recovery_paused_reminder_payload(
+                            build_archive_restore_paused_reminder_payload(
                                 config=self.state.webhook_config(),
-                                session_id=record.session_id,
+                                restore_id=record.restore_id,
                                 images=[
                                     {
                                         "image_id": str(image.finalized_id),
@@ -3003,30 +2986,30 @@ class AcceptanceRecoverySessionService:
 
     def _mark_ready(
         self,
-        record: AcceptanceRecoverySessionRecord,
+        record: AcceptanceArchiveRestoreRecord,
         current: datetime,
     ) -> None:
         current_text = _acceptance_isoformat(current)
-        record.state = RecoverySessionState.READY
-        record.restore_ready_at = current_text
-        record.restore_expires_at = _acceptance_isoformat(
-            current + timedelta(seconds=_GLACIER_RECOVERY_READY_TTL_SECONDS)
+        record.state = ArchiveRestoreState.READY
+        record.ready_at = current_text
+        record.expires_at = _acceptance_isoformat(
+            current + timedelta(seconds=_ARCHIVE_RESTORE_READY_TTL_SECONDS)
         )
-        record.restore_next_poll_at = None
+        record.next_poll_at = None
         record.latest_message = (
-            "Restored ISO data is ready; reopen the session to complete download, "
+            "Restored ISO data is ready; reopen the restore to complete download, "
             "verify the ISO, and burn replacement media before cleanup."
         )
-        if record.type == "collection_restore":
-            self._complete_collection_restore(record, current)
+        if record.type == "fetch_materialization":
+            self._complete_fetch_materialization(record, current)
             return
         image = self.state.finalized_images_by_id[record.image_id]
         try:
             self.state.deliver_webhook_payload(
-                build_recovery_ready_payload(
+                build_archive_restore_ready_payload(
                     config=self.state.webhook_config(),
-                    session_id=record.session_id,
-                    restore_expires_at=record.restore_expires_at,
+                    restore_id=record.restore_id,
+                    expires_at=record.expires_at,
                     images=[
                         {
                             "image_id": str(record.image_id),
@@ -3054,16 +3037,16 @@ class AcceptanceRecoverySessionService:
             current + timedelta(seconds=_OPERATOR_WEBHOOK_REMINDER_INTERVAL_SECONDS)
         )
 
-    def _complete_collection_restore(
+    def _complete_fetch_materialization(
         self,
-        record: AcceptanceRecoverySessionRecord,
+        record: AcceptanceArchiveRestoreRecord,
         current: datetime,
     ) -> None:
         for collection_id in record.collection_ids:
             collection_files = self.state.files_by_collection.get(collection_id)
             if collection_files is None:
                 raise NotFound(f"collection not found: {collection_id}")
-            selected_paths = record.restore_paths or tuple(sorted(collection_files))
+            selected_paths = record.paths or tuple(sorted(collection_files))
             for path in selected_paths:
                 if path not in collection_files:
                     raise NotFound(f"collection file not found: {path}")
@@ -3072,27 +3055,27 @@ class AcceptanceRecoverySessionService:
         record.archive_verification_state = "completed"
         record.extraction_state = "completed"
         record.materialization_state = "completed"
-        record.state = RecoverySessionState.COMPLETED
+        record.state = ArchiveRestoreState.COMPLETED
         record.completed_at = current_text
-        record.restore_expires_at = current_text
-        record.restore_next_poll_at = None
+        record.expires_at = current_text
+        record.next_poll_at = None
         record.next_reminder_at = None
         record.latest_message = (
-            "Cloud-fetch recovery completed; requested files are materialized and temporary "
+            "Fetch materialization completed; requested files are hot and temporary "
             "archive restore cleanup was recorded."
         )
 
-    def _generated_collection_restore_session_id(self, collection_id: str) -> str:
-        existing_ids = set(self.state.recovery_sessions_by_id)
+    def _generated_fetch_materialization_restore_id(self, collection_id: str) -> str:
+        existing_ids = set(self.state.archive_restores_by_id)
         safe_collection_id = collection_id.replace("/", "-")
         ordinal = 1
         while True:
-            session_id = f"rs-{safe_collection_id}-restore-{ordinal}"
+            restore_id = f"ar-{safe_collection_id}-restore-{ordinal}"
             ordinal += 1
-            if session_id not in existing_ids:
-                return session_id
+            if restore_id not in existing_ids:
+                return restore_id
 
-    def _summary(self, record: AcceptanceRecoverySessionRecord) -> RecoverySessionSummary:
+    def _summary(self, record: AcceptanceArchiveRestoreRecord) -> ArchiveRestoreSummary:
         images = tuple(
             self.state.finalized_images_by_id[image_id]
             for image_id in self.state._record_image_ids(record)
@@ -3110,22 +3093,22 @@ class AcceptanceRecoverySessionService:
             "Restored ISO data will be cleaned up after the configured ready "
             "window if recovery is not completed sooner.",
         )
-        return RecoverySessionSummary(
-            id=record.session_id,
+        return ArchiveRestoreSummary(
+            id=record.restore_id,
             type=record.type,
             state=record.state,
             created_at=record.created_at,
-            restore_requested_at=record.restore_requested_at,
-            restore_ready_at=record.restore_ready_at,
-            restore_expires_at=record.restore_expires_at,
+            requested_at=record.requested_at,
+            ready_at=record.ready_at,
+            expires_at=record.expires_at,
             completed_at=record.completed_at,
             canceled_at=record.canceled_at,
             paused_at=record.paused_at,
             paused_from_state=record.paused_from_state,
-            restore_paths=record.restore_paths if record.type == "collection_restore" else None,
+            paths=record.paths if record.type == "fetch_materialization" else None,
             latest_message=record.latest_message,
             warnings=warnings,
-            notification=RecoveryNotificationStatus(
+            notification=ArchiveRestoreNotificationStatus(
                 webhook_configured=True,
                 reminder_count=record.reminder_count,
                 next_reminder_at=record.next_reminder_at,
@@ -3134,15 +3117,15 @@ class AcceptanceRecoverySessionService:
                 last_failure_at=record.last_failure_at,
                 last_failure=record.last_failure,
             ),
-            progress=RecoverySessionProgress(
+            progress=ArchiveRestoreProgress(
                 archive_verification=record.archive_verification_state,
                 extraction=record.extraction_state,
                 materialization=record.materialization_state,
             ),
             collections=tuple(
-                RecoverySessionCollection(
+                ArchiveRestoreCollection(
                     id=collection_id,
-                    glacier=self.state.collection_glacier_status(str(collection_id)),
+                    archive=self.state.collection_archive_status(str(collection_id)),
                     collection_manifest=CollectionManifestStatus(
                         object_path=(
                             f"{_fixture_archive_prefix(str(collection_id))}/manifest.yml.age"
@@ -3155,14 +3138,14 @@ class AcceptanceRecoverySessionService:
                         ots_sha256="1" * 64,
                     ),
                     stored_bytes=int(
-                        self.state.collection_glacier_status(str(collection_id)).stored_bytes or 0
+                        self.state.collection_archive_status(str(collection_id)).stored_bytes or 0
                     ),
                 )
                 for collection_id in collection_ids
             ),
             images=(
                 tuple(
-                    RecoverySessionImage(
+                    ArchiveRestoreImage(
                         id=image.finalized_id,
                         filename=image.filename,
                         collection_ids=tuple(
@@ -3176,7 +3159,7 @@ class AcceptanceRecoverySessionService:
         )
 
 
-class AcceptanceGlacierReportingService:
+class AcceptanceArchiveReportingService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
@@ -3186,7 +3169,7 @@ class AcceptanceGlacierReportingService:
         *,
         image_id: str | None = None,
         collection: str | None = None,
-    ) -> GlacierUsageReport:
+    ) -> ArchiveUsageReport:
         images = [
             image
             for image in self.state.finalized_images_by_id.values()
@@ -3200,15 +3183,15 @@ class AcceptanceGlacierReportingService:
             )
         ]
         images.sort(key=lambda current: current.finalized_id, reverse=True)
-        image_reports = tuple(_acceptance_glacier_image(image) for image in images)
+        image_reports = tuple(_acceptance_archive_image(image) for image in images)
         collection_reports = tuple(
-            _acceptance_glacier_collections(
+            _acceptance_archive_collections(
                 images=images,
                 state=self.state,
                 collection_filter=collection,
             )
         )
-        totals = GlacierUsageTotals(
+        totals = ArchiveUsageTotals(
             collections=len(collection_reports),
             uploaded_collections=sum(
                 1 for report in collection_reports if report.measured_storage_bytes > 0
@@ -3218,12 +3201,12 @@ class AcceptanceGlacierReportingService:
             ),
         )
         history = (
-            tuple(self.state.glacier_usage_snapshots)
+            tuple(self.state.archive_usage_snapshots)
             if image_id is None and collection is None
             else ()
         )
-        return GlacierUsageReport(
-            scope=_acceptance_glacier_scope(image_id=image_id, collection=collection),
+        return ArchiveUsageReport(
+            scope=_acceptance_archive_scope(image_id=image_id, collection=collection),
             measured_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             totals=totals,
             images=image_reports,
@@ -3236,21 +3219,21 @@ def _acceptance_isoformat(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _acceptance_rebuild_state(record: AcceptanceRecoverySessionRecord) -> str:
-    if record.state == RecoverySessionState.RESTORE_REQUESTED:
+def _acceptance_rebuild_state(record: AcceptanceArchiveRestoreRecord) -> str:
+    if record.state == ArchiveRestoreState.REQUESTED:
         return "restoring_collections"
-    if record.state in {RecoverySessionState.READY, RecoverySessionState.COMPLETED}:
+    if record.state in {ArchiveRestoreState.READY, ArchiveRestoreState.COMPLETED}:
         return "ready"
-    if record.state == RecoverySessionState.PAUSED:
+    if record.state == ArchiveRestoreState.PAUSED:
         return "paused"
-    if record.state == RecoverySessionState.CANCELED:
+    if record.state == ArchiveRestoreState.CANCELED:
         return "canceled"
-    if record.state in {RecoverySessionState.EXPIRED, RecoverySessionState.FAILED}:
+    if record.state in {ArchiveRestoreState.EXPIRED, ArchiveRestoreState.FAILED}:
         return "failed"
     return "pending"
 
 
-def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -> str:
+def _acceptance_archive_scope(*, image_id: str | None, collection: str | None) -> str:
     if image_id is not None and collection is not None:
         return "filtered"
     if image_id is not None:
@@ -3260,21 +3243,21 @@ def _acceptance_glacier_scope(*, image_id: str | None, collection: str | None) -
     return "all"
 
 
-def _acceptance_glacier_image(image: CandidateRecord) -> GlacierUsageImage:
-    return GlacierUsageImage(
+def _acceptance_archive_image(image: CandidateRecord) -> ArchiveUsageImage:
+    return ArchiveUsageImage(
         id=image.finalized_id,
         filename=image.filename,
         collection_ids=image.collections,
     )
 
 
-def _acceptance_glacier_collections(
+def _acceptance_archive_collections(
     *,
     images: list[CandidateRecord],
     state: AcceptanceState,
     collection_filter: str | None,
-) -> list[GlacierUsageCollection]:
-    contributions_by_collection: dict[str, list[GlacierCollectionContribution]] = defaultdict(list)
+) -> list[ArchiveUsageCollection]:
+    contributions_by_collection: dict[str, list[ArchiveCollectionContribution]] = defaultdict(list)
     for image in images:
         represented_by_collection = _acceptance_represented_bytes_by_collection(state, image)
         if collection_filter is not None:
@@ -3285,14 +3268,14 @@ def _acceptance_glacier_collections(
             }
         for collection_id, represented_bytes in represented_by_collection.items():
             contributions_by_collection[collection_id].append(
-                GlacierCollectionContribution(
+                ArchiveCollectionContribution(
                     image_id=image.finalized_id,
                     filename=image.filename,
                     represented_bytes=represented_bytes,
                 )
             )
 
-    reports: list[GlacierUsageCollection] = []
+    reports: list[ArchiveUsageCollection] = []
     for collection_id, records in sorted(state.files_by_collection.items()):
         normalized_collection_id = str(collection_id)
         if collection_filter is not None and normalized_collection_id != collection_filter:
@@ -3302,17 +3285,17 @@ def _acceptance_glacier_collections(
             key=lambda current: str(current.image_id),
             reverse=True,
         )
-        glacier = state.collection_glacier_status(normalized_collection_id)
+        archive = state.collection_archive_status(normalized_collection_id)
         measured_storage_bytes = (
-            int(glacier.stored_bytes or 0) if glacier.state == GlacierState.UPLOADED else 0
+            int(archive.stored_bytes or 0) if archive.state == ArchiveState.UPLOADED else 0
         )
         reports.append(
-            GlacierUsageCollection(
+            ArchiveUsageCollection(
                 id=normalized_collection_id,
                 bytes=sum(record.bytes for record in records.values()),
                 measured_storage_bytes=measured_storage_bytes,
                 images=tuple(contributions),
-                glacier=glacier,
+                archive=archive,
                 collection_manifest=(
                     CollectionManifestStatus(
                         object_path=(
@@ -3325,11 +3308,11 @@ def _acceptance_glacier_collections(
                         ots_state="uploaded",
                         ots_sha256="1" * 64,
                     )
-                    if glacier.state == GlacierState.UPLOADED
+                    if archive.state == ArchiveState.UPLOADED
                     else None
                 ),
-                archive_format="tar" if glacier.state == GlacierState.UPLOADED else None,
-                compression="none" if glacier.state == GlacierState.UPLOADED else None,
+                archive_format="tar" if archive.state == ArchiveState.UPLOADED else None,
+                compression="none" if archive.state == ArchiveState.UPLOADED else None,
             )
         )
     return reports
@@ -3455,15 +3438,15 @@ def _partial_recoverable_bytes(
     )
 
 
-def _acceptance_glacier_snapshot(state: AcceptanceState) -> GlacierUsageSnapshot:
+def _acceptance_archive_snapshot(state: AcceptanceState) -> ArchiveUsageSnapshot:
     collection_reports = tuple(
-        _acceptance_glacier_collections(
+        _acceptance_archive_collections(
             images=list(state.finalized_images_by_id.values()),
             state=state,
             collection_filter=None,
         )
     )
-    return GlacierUsageSnapshot(
+    return ArchiveUsageSnapshot(
         captured_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         uploaded_collections=sum(
             1 for collection in collection_reports if collection.measured_storage_bytes > 0
@@ -3479,7 +3462,7 @@ def _split_part_length(total_bytes: int, *, part_count: int, part_index: int) ->
     return base + int(part_index < remainder)
 
 
-class AcceptanceCopyService:
+class AcceptanceDiscService:
     def __init__(self, state: AcceptanceState) -> None:
         self.state = state
 
@@ -3509,41 +3492,40 @@ class AcceptanceCopyService:
         image_id: str,
         location: str,
         *,
-        copy_id: str | None = None,
-    ) -> CopySummary:
+        disc_id: str | None = None,
+    ) -> DiscSummary:
         image = self.state.finalized_images_by_id.get(ImageId(image_id))
         if image is None:
             raise NotFound(f"image not found: {image_id}")
-        self.state.ensure_required_copy_slots(image.finalized_id)
-        target = self._registration_target(image.finalized_id, copy_id)
-        summary = CopySummary(
-            id=target.id,
-            volume_id=image.finalized_id,
+        self.state.ensure_required_disc_slots(image.finalized_id)
+        target = self._registration_target(image.finalized_id, disc_id)
+        summary = DiscSummary(
+            disc_id=target.disc_id,
+            image_id=image.finalized_id,
             label_text=target.label_text,
             location=location,
             created_at=target.created_at,
-            state=CopyState.REGISTERED,
+            state=DiscState.REGISTERED,
             verification_state=target.verification_state,
             history=(
                 *target.history,
-                CopyHistoryEntry(
-                    at=DEFAULT_COPY_CREATED_AT,
+                DiscHistoryEntry(
+                    at=DEFAULT_DISC_CREATED_AT,
                     event="registered",
-                    state=CopyState.REGISTERED,
+                    state=DiscState.REGISTERED,
                     verification_state=target.verification_state,
                     location=location,
                 ),
             ),
         )
-        scoped_key = (image.finalized_id, target.id)
-        self.state.copy_summaries[scoped_key] = summary
+        scoped_key = (image.finalized_id, target.disc_id)
+        self.state.disc_summaries[scoped_key] = summary
         disc_info = self._read_disc_part_info(image)
         for collection_id, path in image.covered_paths:
             record = self.state.files_by_collection[collection_id][path]
-            record.archived = True
             if all(
-                (existing.id, existing.volume_id) != (target.id, image.finalized_id)
-                for existing in record.copies
+                (existing.disc_id, existing.image_id) != (target.disc_id, image.finalized_id)
+                for existing in record.discs
             ):
                 part_index, part_count = disc_info.get((str(collection_id), path), (None, None))
                 kwargs: dict[str, object] = {}
@@ -3555,11 +3537,11 @@ class AcceptanceCopyService:
                         "part_bytes": len(file_parts[part_index]),
                         "part_sha256": hashlib.sha256(file_parts[part_index]).hexdigest(),
                     }
-                record.copies.append(
-                    AcceptanceState._copy_from_dict(
-                        build_file_copy(
-                            copy_id=str(target.id),
-                            volume_id=image.finalized_id,
+                record.discs.append(
+                    AcceptanceState._disc_from_dict(
+                        build_file_disc(
+                            disc_id=str(target.disc_id),
+                            image_id=image.finalized_id,
                             location=location,
                             collection_id=str(collection_id),
                             path=path,
@@ -3570,12 +3552,12 @@ class AcceptanceCopyService:
         return summary
 
     @_with_state_lock
-    def list_for_image(self, image_id: str) -> list[CopySummary]:
-        self.state.ensure_required_copy_slots(image_id)
+    def list_for_image(self, image_id: str) -> list[DiscSummary]:
+        self.state.ensure_required_disc_slots(image_id)
         return [
             summary
-            for (volume_id, _copy_id), summary in sorted(self.state.copy_summaries.items())
-            if volume_id == image_id
+            for (scoped_image_id, _disc_id), summary in sorted(self.state.disc_summaries.items())
+            if scoped_image_id == image_id
         ]
 
     @_with_state_lock
@@ -3590,7 +3572,7 @@ class AcceptanceCopyService:
         image_id: str | None,
     ) -> dict[str, object]:
         if image_id is not None:
-            self.state.ensure_required_copy_slots(image_id)
+            self.state.ensure_required_disc_slots(image_id)
         normalized_order = order.casefold()
         if normalized_order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
@@ -3599,8 +3581,8 @@ class AcceptanceCopyService:
 
         discs = [
             self._disc_payload(summary)
-            for (volume_id, _copy_id), summary in sorted(self.state.copy_summaries.items())
-            if image_id is None or volume_id == image_id
+            for (scoped_image_id, _disc_id), summary in sorted(self.state.disc_summaries.items())
+            if image_id is None or scoped_image_id == image_id
         ]
         if q:
             needle = q.casefold()
@@ -3610,7 +3592,13 @@ class AcceptanceCopyService:
                 if needle
                 in " ".join(
                     str(disc.get(field, ""))
-                    for field in ("id", "image_id", "state", "verification_state", "location")
+                    for field in (
+                        "disc_id",
+                        "image_id",
+                        "state",
+                        "verification_state",
+                        "location",
+                    )
                 ).casefold()
             ]
         discs.sort(
@@ -3635,24 +3623,23 @@ class AcceptanceCopyService:
         return payload
 
     @_with_state_lock
-    def get_disc(self, copy_id: str) -> dict[str, object]:
+    def get_disc(self, disc_id: str) -> dict[str, object]:
         matches = [
             summary
-            for (_volume_id, scoped_copy_id), summary in sorted(self.state.copy_summaries.items())
-            if str(scoped_copy_id) == copy_id
+            for (_image_id, scoped_disc_id), summary in sorted(self.state.disc_summaries.items())
+            if str(scoped_disc_id) == disc_id
         ]
         if not matches:
-            raise NotFound(f"disc not found: {copy_id}")
+            raise NotFound(f"disc not found: {disc_id}")
         if len(matches) > 1:
-            raise BadRequest(f"disc id is ambiguous: {copy_id}")
+            raise BadRequest(f"disc id is ambiguous: {disc_id}")
         return self._disc_payload(matches[0])
 
-    def _disc_payload(self, summary: CopySummary) -> dict[str, object]:
-        image = self.state.finalized_images_by_id.get(ImageId(summary.volume_id))
+    def _disc_payload(self, summary: DiscSummary) -> dict[str, object]:
+        image = self.state.finalized_images_by_id.get(ImageId(summary.image_id))
         return {
-            "id": str(summary.id),
-            "image_id": summary.volume_id,
-            "volume_id": summary.volume_id,
+            "disc_id": str(summary.disc_id),
+            "image_id": summary.image_id,
             "filename": image.filename if image is not None else None,
             "label_text": summary.label_text,
             "location": summary.location,
@@ -3672,31 +3659,31 @@ class AcceptanceCopyService:
         }
 
     @_with_state_lock
-    def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:
-        self.state.ensure_required_copy_slots(image_id)
-        scoped_key = (image_id, CopyId(copy_id))
-        summary = self.state.copy_summaries.get(scoped_key)
+    def notify_label_needed(self, image_id: str, disc_id: str) -> DiscSummary:
+        self.state.ensure_required_disc_slots(image_id)
+        scoped_key = (image_id, DiscId(disc_id))
+        summary = self.state.disc_summaries.get(scoped_key)
         if summary is None:
-            raise NotFound(f"copy not found for image: {copy_id}")
+            raise NotFound(f"disc not found for image: {disc_id}")
         return summary
 
     @_with_state_lock
     def update(
         self,
         image_id: str,
-        copy_id: str,
+        disc_id: str,
         *,
         location: str | None = None,
         state: str | None = None,
         verification_state: str | None = None,
-    ) -> CopySummary:
-        self.state.ensure_required_copy_slots(image_id)
-        scoped_key = (image_id, CopyId(copy_id))
-        summary = self.state.copy_summaries.get(scoped_key)
+    ) -> DiscSummary:
+        self.state.ensure_required_disc_slots(image_id)
+        scoped_key = (image_id, DiscId(disc_id))
+        summary = self.state.disc_summaries.get(scoped_key)
         if summary is None:
-            raise NotFound(f"copy not found for image: {copy_id}")
+            raise NotFound(f"disc not found for image: {disc_id}")
         previous_state = summary.state
-        next_state = CopyState(state) if state is not None else summary.state
+        next_state = DiscState(state) if state is not None else summary.state
         next_verification_state = (
             VerificationState(verification_state)
             if verification_state is not None
@@ -3706,9 +3693,9 @@ class AcceptanceCopyService:
         location_changed = location is not None and location != summary.location
         state_changed = next_state != summary.state
         verification_changed = next_verification_state != summary.verification_state
-        updated = CopySummary(
-            id=summary.id,
-            volume_id=summary.volume_id,
+        updated = DiscSummary(
+            disc_id=summary.disc_id,
+            image_id=summary.image_id,
             label_text=summary.label_text,
             location=next_location,
             created_at=summary.created_at,
@@ -3716,8 +3703,8 @@ class AcceptanceCopyService:
             verification_state=next_verification_state,
             history=(
                 *summary.history,
-                CopyHistoryEntry(
-                    at=DEFAULT_COPY_CREATED_AT,
+                DiscHistoryEntry(
+                    at=DEFAULT_DISC_CREATED_AT,
                     event=_history_event_name(
                         location_changed=location_changed,
                         state_changed=state_changed,
@@ -3729,59 +3716,58 @@ class AcceptanceCopyService:
                 ),
             ),
         )
-        self.state.copy_summaries[scoped_key] = updated
-        self._sync_file_copy_visibility(updated)
-        if copy_counts_toward_protection(previous_state.value) and next_state in {
-            CopyState.LOST,
-            CopyState.DAMAGED,
+        self.state.disc_summaries[scoped_key] = updated
+        self._sync_file_disc_visibility(updated)
+        if disc_counts_toward_redundancy(previous_state.value) and next_state in {
+            DiscState.LOST,
+            DiscState.DAMAGED,
         }:
-            self.state.ensure_required_copy_slots(image_id)
-            self.state.ensure_glacier_recovery_session(image_id)
+            self.state.ensure_required_disc_slots(image_id)
+            self.state.ensure_archive_restore(image_id)
         return updated
 
-    def _registration_target(self, image_id: str, copy_id: str | None) -> CopySummary:
-        copies = self.list_for_image(image_id)
-        if copy_id is None:
-            for summary in copies:
-                if summary.state in {CopyState.NEEDED, CopyState.BURNING}:
+    def _registration_target(self, image_id: str, disc_id: str | None) -> DiscSummary:
+        discs = self.list_for_image(image_id)
+        if disc_id is None:
+            for summary in discs:
+                if summary.state in {DiscState.NEEDED, DiscState.BURNING}:
                     return summary
-            raise Conflict("all required copy slots are already registered")
-        for summary in copies:
-            if str(summary.id) != copy_id:
+            raise Conflict("all required disc slots are already registered")
+        for summary in discs:
+            if str(summary.disc_id) != disc_id:
                 continue
-            if summary.state not in {CopyState.NEEDED, CopyState.BURNING}:
-                raise Conflict(f"copy is not available for registration: {copy_id}")
+            if summary.state not in {DiscState.NEEDED, DiscState.BURNING}:
+                raise Conflict(f"disc is not available for registration: {disc_id}")
             return summary
-        raise NotFound(f"copy not found for image: {copy_id}")
+        raise NotFound(f"disc not found for image: {disc_id}")
 
-    def _sync_file_copy_visibility(self, summary: CopySummary) -> None:
+    def _sync_file_disc_visibility(self, summary: DiscSummary) -> None:
         for records in self.state.files_by_collection.values():
             for record in records.values():
-                remaining_copies: list[FileCopy] = []
-                updated_existing = False
-                for copy in record.copies:
-                    if (copy.volume_id, str(copy.id)) != (summary.volume_id, str(summary.id)):
-                        remaining_copies.append(copy)
+                remaining_discs: list[FileDisc] = []
+                for disc in record.discs:
+                    if (disc.image_id, str(disc.disc_id)) != (
+                        summary.image_id,
+                        str(summary.disc_id),
+                    ):
+                        remaining_discs.append(disc)
                         continue
-                    if copy_counts_toward_protection(summary.state.value) and summary.location:
-                        remaining_copies.append(
-                            FileCopy(
-                                id=copy.id,
-                                volume_id=copy.volume_id,
+                    if disc_counts_toward_redundancy(summary.state.value) and summary.location:
+                        remaining_discs.append(
+                            FileDisc(
+                                disc_id=disc.disc_id,
+                                image_id=disc.image_id,
                                 location=summary.location,
-                                disc_path=copy.disc_path,
-                                enc=copy.enc,
-                                part_index=copy.part_index,
-                                part_count=copy.part_count,
-                                part_bytes=copy.part_bytes,
-                                part_sha256=copy.part_sha256,
+                                disc_path=disc.disc_path,
+                                enc=disc.enc,
+                                part_index=disc.part_index,
+                                part_count=disc.part_count,
+                                part_bytes=disc.part_bytes,
+                                part_sha256=disc.part_sha256,
                             )
                         )
-                        updated_existing = True
-                record.copies = remaining_copies
-                record.archived = bool(record.copies)
-                if updated_existing and summary.location:
-                    record.archived = True
+                record.discs = remaining_discs
+
 
 def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
     return {
@@ -3799,9 +3785,13 @@ def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
         "uploaded_bytes": summary.uploaded_bytes,
         "missing_bytes": summary.missing_bytes,
         "upload_state_expires_at": summary.upload_state_expires_at,
-        "copies": [
-            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-            for copy in summary.copies
+        "discs": [
+            {
+                "disc_id": str(disc.disc_id),
+                "image_id": disc.image_id,
+                "location": disc.location,
+            }
+            for disc in summary.discs
         ],
     }
 
@@ -3898,7 +3888,7 @@ class AcceptanceFetchService:
         return record.summary
 
     @_with_state_lock
-    def start(self, fetch_id: str, *, cloud: bool = False) -> FetchSummary:
+    def start(self, fetch_id: str, *, archive: bool = False) -> FetchSummary:
         record = self._record(fetch_id)
         if record.summary.state == FetchState.DONE:
             raise InvalidState("fetch is already complete")
@@ -3906,20 +3896,20 @@ class AcceptanceFetchService:
             FetchState.QUEUED_DJDAN,
             FetchState.UPLOADING,
             FetchState.VERIFYING,
-            FetchState.QUEUED_CLOUD,
-            FetchState.CLOUD_FETCHING,
+            FetchState.QUEUED_ARCHIVE,
+            FetchState.RESTORING_ARCHIVE,
         }:
             raise InvalidState("fetch is already started")
         if record.summary.state != FetchState.DRAFT:
             raise InvalidState(f"fetch cannot be started from state {record.summary.state.value}")
         if not record.summary.targets:
             raise InvalidState("fetch has no targets")
-        state = FetchState.QUEUED_CLOUD if cloud else FetchState.QUEUED_DJDAN
+        state = FetchState.QUEUED_ARCHIVE if archive else FetchState.QUEUED_DJDAN
         record.summary = self._replace_summary(record, state=state)
         return record.summary
 
     @_with_state_lock
-    def start_plan(self, fetch_id: str, *, cloud: bool = False) -> dict[str, object]:
+    def start_plan(self, fetch_id: str, *, archive: bool = False) -> dict[str, object]:
         record = self._record(fetch_id)
         if record.summary.state == FetchState.DONE:
             raise InvalidState("fetch is already complete")
@@ -3927,8 +3917,8 @@ class AcceptanceFetchService:
             FetchState.QUEUED_DJDAN,
             FetchState.UPLOADING,
             FetchState.VERIFYING,
-            FetchState.QUEUED_CLOUD,
-            FetchState.CLOUD_FETCHING,
+            FetchState.QUEUED_ARCHIVE,
+            FetchState.RESTORING_ARCHIVE,
         }:
             raise InvalidState("fetch is already started")
         if record.summary.state != FetchState.DRAFT:
@@ -3938,22 +3928,22 @@ class AcceptanceFetchService:
         return {
             **_fetch_summary_payload(record.summary),
             "dry_run": True,
-            "status": "would_queue_cloud" if cloud else "would_queue_djdan",
-            "cloud": cloud,
+            "status": "would_queue_archive" if archive else "would_queue_djdan",
+            "archive": archive,
             "queued_state": (
-                FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+                FetchState.QUEUED_ARCHIVE.value if archive else FetchState.QUEUED_DJDAN.value
             ),
-            "will_create_recovery_session": cloud,
+            "will_create_archive_restore": archive,
         }
 
     @_with_state_lock
     def cancel(self, fetch_id: str) -> FetchSummary:
         record = self._record(fetch_id)
         if record.summary.state in {
-            FetchState.QUEUED_CLOUD,
-            FetchState.CLOUD_FETCHING,
+            FetchState.QUEUED_ARCHIVE,
+            FetchState.RESTORING_ARCHIVE,
         }:
-            raise InvalidState("cloud fetches are canceled through recovery sessions")
+            raise InvalidState("archive fetches are canceled through archive restores")
         if record.summary.state == FetchState.DONE:
             raise InvalidState("completed fetches cannot be canceled")
         for entry in record.entries.values():
@@ -3977,7 +3967,7 @@ class AcceptanceFetchService:
         if noncompliant:
             first = noncompliant[0]
             raise Conflict(
-                "cannot evict hot file without verified disc protection: "
+                "cannot evict hot file without verified disc redundancy: "
                 f"{first.collection_id}/{first.path}"
             )
         would_evict_files = sum(1 for record in selected if record.hot)
@@ -4038,7 +4028,7 @@ class AcceptanceFetchService:
             state=initial_state,
             files=len(entries),
             bytes=sum(entry.bytes for entry in entries.values()),
-            copies=self._summary_copies(entries.values()),
+            discs=self._summary_discs(entries.values()),
         )
         record = FetchRecord(summary=summary, entries=entries)
         record.summary = self._replace_summary(record, state=initial_state)
@@ -4076,7 +4066,7 @@ class AcceptanceFetchService:
                     ),
                     "uploaded_bytes": entry.uploaded_bytes,
                     "upload_state_expires_at": entry.upload_expires_at,
-                    "copies": [self._manifest_copy(entry, copy) for copy in entry.copies],
+                    "discs": [self._manifest_disc(entry, disc) for disc in entry.discs],
                     "parts": self._manifest_parts(entry),
                 }
                 for entry in record.entries.values()
@@ -4132,9 +4122,8 @@ class AcceptanceFetchService:
             "bytes": record.summary.bytes,
             "hot_files": file_rollup["hot_files"],
             "hot_bytes": file_rollup["hot_bytes"],
-            "archived_files": file_rollup["archived_files"],
-            "archived_bytes": file_rollup["archived_bytes"],
-            "registered_disc_files": file_rollup["registered_disc_files"],
+            "disc_files": file_rollup["disc_files"],
+            "disc_bytes": file_rollup["disc_bytes"],
             "missing_files": file_rollup["missing_files"],
             "missing_with_disc_files": file_rollup["missing_with_disc_files"],
             "missing_without_disc_files": file_rollup["missing_without_disc_files"],
@@ -4146,9 +4135,13 @@ class AcceptanceFetchService:
             "uploaded_bytes": record.summary.uploaded_bytes,
             "missing_bytes": record.summary.missing_bytes,
             "upload_state_expires_at": record.summary.upload_state_expires_at,
-            "copies": [
-                {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
-                for copy in record.summary.copies
+            "discs": [
+                {
+                    "disc_id": str(disc.disc_id),
+                    "image_id": disc.image_id,
+                    "location": disc.location,
+                }
+                for disc in record.summary.discs
             ],
             "entries_limit": limit,
             "entries_returned": len(entries),
@@ -4172,14 +4165,13 @@ class AcceptanceFetchService:
         order: str,
         q: str | None = None,
         hot: bool | None = None,
-        archived: bool | None = None,
         disc_coverage: bool | None = None,
     ) -> dict[str, object]:
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
-        if sort not in {"target", "collection", "path", "bytes", "hot", "archived", "disc"}:
+        if sort not in {"target", "collection", "path", "bytes", "hot", "disc"}:
             raise BadRequest("invalid fetch file sort field")
         normalized_order = order.casefold()
         if normalized_order not in {"asc", "desc"}:
@@ -4198,10 +4190,8 @@ class AcceptanceFetchService:
             ]
         if hot is not None:
             rows = [row for row in rows if row["hot"] is hot]
-        if archived is not None:
-            rows = [row for row in rows if row["archived"] is archived]
         if disc_coverage is not None:
-            rows = [row for row in rows if row["registered_disc_coverage"] is disc_coverage]
+            rows = [row for row in rows if row["disc_coverage"] is disc_coverage]
         rows.sort(key=lambda row: (str(row["collection_id"]), str(row["path"])))
         sort_key = {
             "target": lambda row: str(row["target"]),
@@ -4209,8 +4199,7 @@ class AcceptanceFetchService:
             "path": lambda row: str(row["path"]),
             "bytes": lambda row: int(row["bytes"]),
             "hot": lambda row: bool(row["hot"]),
-            "archived": lambda row: bool(row["archived"]),
-            "disc": lambda row: bool(row["registered_disc_coverage"]),
+            "disc": lambda row: bool(row["disc_coverage"]),
         }[sort]
         rows.sort(key=sort_key, reverse=normalized_order == "desc")
         total = len(rows)
@@ -4220,7 +4209,6 @@ class AcceptanceFetchService:
             "fetch_id": fetch_id,
             "query": q,
             "hot": hot,
-            "archived": archived,
             "disc_coverage": disc_coverage,
             "page": page,
             "per_page": per_page,
@@ -4238,7 +4226,7 @@ class AcceptanceFetchService:
         self._expire_stale_upload_record(record)
         if record.summary.state == FetchState.DONE:
             raise InvalidState("fetch is already complete")
-        self._raise_if_cloud_fetching(record)
+        self._raise_if_restoring_archive(record)
         entry = record.entries.get(EntryId(entry_id))
         if entry is None:
             raise NotFound(f"entry not found: {entry_id}")
@@ -4266,7 +4254,7 @@ class AcceptanceFetchService:
     ) -> dict[str, object]:
         record = self._record(fetch_id)
         self._expire_stale_upload_record(record)
-        self._raise_if_cloud_fetching(record)
+        self._raise_if_restoring_archive(record)
         entry = record.entries.get(EntryId(entry_id))
         if entry is None:
             raise NotFound(f"entry not found: {entry_id}")
@@ -4350,7 +4338,7 @@ class AcceptanceFetchService:
             record.summary = self._replace_summary(record)
             if record.summary.state != FetchState.QUEUED_DJDAN:
                 continue
-            if self._active_cloud_fetch_session_id(record) is not None:
+            if self._active_archive_restore_id(record) is not None:
                 continue
             if (
                 record.notification_sent_at is not None
@@ -4367,13 +4355,13 @@ class AcceptanceFetchService:
                         name=record.summary.name,
                         files=record.summary.files,
                         bytes=record.summary.bytes,
-                        copies=[
+                        discs=[
                             {
-                                "id": str(copy.id),
-                                "volume_id": copy.volume_id,
-                                "location": copy.location,
+                                "disc_id": str(disc.disc_id),
+                                "image_id": disc.image_id,
+                                "location": disc.location,
                             }
-                            for copy in record.summary.copies
+                            for disc in record.summary.discs
                         ],
                         delivered_at=current,
                         reminder_count=record.notification_count,
@@ -4409,7 +4397,7 @@ class AcceptanceFetchService:
                 "hot": self._hot_payload_for_fetch(record),
             }
         self._require_djdan_fetch(record)
-        self._raise_if_cloud_fetching(record)
+        self._raise_if_restoring_archive(record)
         if any(
             self._entry_upload_state(entry, fetch_state=record.summary.state) != "byte_complete"
             for entry in record.entries.values()
@@ -4495,26 +4483,23 @@ class AcceptanceFetchService:
             "path": record.path,
             "bytes": record.bytes,
             "hot": record.hot,
-            "archived": record.archived,
-            "registered_disc_coverage": bool(record.copies),
+            "disc_coverage": record.disc_coverage,
         }
 
     @staticmethod
     def _fetch_file_rollup(files: list[StoredFile]) -> dict[str, int]:
         hot_files = [record for record in files if record.hot]
-        archived_files = [record for record in files if record.archived]
-        registered_disc_files = [record for record in files if record.copies]
+        disc_files = [record for record in files if record.discs]
         missing_files = [record for record in files if not record.hot]
-        missing_with_disc_files = [record for record in missing_files if record.copies]
-        missing_without_disc_files = [record for record in missing_files if not record.copies]
+        missing_with_disc_files = [record for record in missing_files if record.discs]
+        missing_without_disc_files = [record for record in missing_files if not record.discs]
         return {
             "files": len(files),
             "bytes": sum(record.bytes for record in files),
             "hot_files": len(hot_files),
             "hot_bytes": sum(record.bytes for record in hot_files),
-            "archived_files": len(archived_files),
-            "archived_bytes": sum(record.bytes for record in archived_files),
-            "registered_disc_files": len(registered_disc_files),
+            "disc_files": len(disc_files),
+            "disc_bytes": sum(record.bytes for record in disc_files),
             "missing_files": len(missing_files),
             "missing_with_disc_files": len(missing_with_disc_files),
             "missing_without_disc_files": len(missing_without_disc_files),
@@ -4540,7 +4525,7 @@ class AcceptanceFetchService:
             if file_rollup["missing_files"] <= 0:
                 return "already_hot", "all selected files are already hot"
             if file_rollup["missing_without_disc_files"] > 0:
-                return "start_cloud", "some missing files have no registered disc coverage"
+                return "start_archive", "some missing files have no registered disc coverage"
             return "start_djdan", "missing files have registered disc coverage"
         if summary.state == FetchState.QUEUED_DJDAN:
             return "run_djdan_fetch", "queued for optical media recovery"
@@ -4548,8 +4533,8 @@ class AcceptanceFetchService:
             return "continue_djdan_fetch", "optical media upload is in progress"
         if summary.state == FetchState.VERIFYING:
             return "wait", "server-side verification is in progress"
-        if summary.state in {FetchState.QUEUED_CLOUD, FetchState.CLOUD_FETCHING}:
-            return "monitor_cloud_fetch", "cloud materialization is active"
+        if summary.state in {FetchState.QUEUED_ARCHIVE, FetchState.RESTORING_ARCHIVE}:
+            return "monitor_archive_restore", "archive materialization is active"
         if summary.state == FetchState.DONE:
             return "done", "all selected files are hot"
         if summary.state == FetchState.FAILED:
@@ -4567,7 +4552,7 @@ class AcceptanceFetchService:
             state=summary.state,
             files=len(record.entries),
             bytes=sum(entry.bytes for entry in record.entries.values()),
-            copies=self._summary_copies(record.entries.values()),
+            discs=self._summary_discs(record.entries.values()),
         )
         record.summary = self._replace_summary(record)
 
@@ -4581,7 +4566,7 @@ class AcceptanceFetchService:
                 bytes=record.bytes,
                 sha256=record.sha256,
                 content=record.content,
-                copies=list(record.copies),
+                discs=list(record.discs),
             )
             for index, record in enumerate(
                 sorted(files, key=lambda item: (str(item.collection_id), item.path)),
@@ -4611,37 +4596,37 @@ class AcceptanceFetchService:
         except KeyError as exc:
             raise NotFound(f"fetch not found: {fetch_id}") from exc
 
-    def _active_cloud_fetch_session_id(self, fetch: FetchRecord) -> str | None:
+    def _active_archive_restore_id(self, fetch: FetchRecord) -> str | None:
         paths_by_collection: dict[CollectionId, set[str]] = {}
         for entry in fetch.entries.values():
             paths_by_collection.setdefault(entry.collection_id, set()).add(entry.path)
         active_states = {
-            RecoverySessionState.RESTORE_REQUESTED,
-            RecoverySessionState.READY,
-            RecoverySessionState.PAUSED,
+            ArchiveRestoreState.REQUESTED,
+            ArchiveRestoreState.READY,
+            ArchiveRestoreState.PAUSED,
         }
         for record in sorted(
-            self.state.recovery_sessions_by_id.values(),
+            self.state.archive_restores_by_id.values(),
             key=lambda item: item.created_at,
             reverse=True,
         ):
-            if record.type != "collection_restore" or record.state not in active_states:
+            if record.type != "fetch_materialization" or record.state not in active_states:
                 continue
             for collection_id in record.collection_ids:
                 fetch_paths = paths_by_collection.get(collection_id)
                 if not fetch_paths:
                     continue
-                if record.restore_paths is None or set(record.restore_paths) & fetch_paths:
-                    return record.session_id
+                if record.paths is None or set(record.paths) & fetch_paths:
+                    return record.restore_id
         return None
 
-    def _raise_if_cloud_fetching(self, fetch: FetchRecord) -> None:
-        session_id = self._active_cloud_fetch_session_id(fetch)
-        if session_id is None:
+    def _raise_if_restoring_archive(self, fetch: FetchRecord) -> None:
+        restore_id = self._active_archive_restore_id(fetch)
+        if restore_id is None:
             return
         raise InvalidState(
-            f"fetch {fetch.summary.id} is actively being cloud-fetched by {session_id}; "
-            "wait for cloud-fetch to finish before running djdan fetch"
+            f"fetch {fetch.summary.id} is actively being fetch materializationed by {restore_id}; "
+            "wait for the archive restore to finish before running djdan fetch"
         )
 
     def _replace_summary(
@@ -4685,7 +4670,7 @@ class AcceptanceFetchService:
             state=effective_state,
             files=summary.files,
             bytes=summary.bytes,
-            copies=list(summary.copies),
+            discs=list(summary.discs),
             entries_total=entries_total,
             entries_pending=entries_pending,
             entries_partial=entries_partial,
@@ -4739,52 +4724,52 @@ class AcceptanceFetchService:
         }
 
     @staticmethod
-    def _summary_copies(entries: Iterator[FetchEntryRecord]) -> list[FetchCopyHint]:
-        out: list[FetchCopyHint] = []
-        seen: set[tuple[str, CopyId]] = set()
+    def _summary_discs(entries: Iterator[FetchEntryRecord]) -> list[FetchDiscHint]:
+        out: list[FetchDiscHint] = []
+        seen: set[tuple[str, DiscId]] = set()
         for entry in entries:
-            for copy in entry.copies:
-                key = (copy.volume_id, copy.id)
+            for disc in entry.discs:
+                key = (disc.image_id, disc.disc_id)
                 if key in seen:
                     continue
                 seen.add(key)
-                out.append(copy.hint)
+                out.append(disc.hint)
         return out
 
-    def _manifest_copy(self, entry: FetchEntryRecord, copy: FileCopy) -> dict[str, object]:
-        recovery_payload = self._copy_recovery_payload(entry, copy)
+    def _manifest_disc(self, entry: FetchEntryRecord, disc: FileDisc) -> dict[str, object]:
+        recovery_payload = self._disc_recovery_payload(entry, disc)
         return {
-            "copy": str(copy.id),
-            "volume_id": copy.volume_id,
-            "location": copy.location,
-            "disc_path": copy.disc_path,
+            "disc_id": str(disc.disc_id),
+            "image_id": disc.image_id,
+            "location": disc.location,
+            "disc_path": disc.disc_path,
             "recovery_bytes": len(recovery_payload),
             "recovery_sha256": hashlib.sha256(recovery_payload).hexdigest(),
         }
 
     def _manifest_parts(self, entry: FetchEntryRecord) -> list[dict[str, object]]:
-        if not entry.copies:
+        if not entry.discs:
             return []
 
-        if all(copy.part_index is None for copy in entry.copies):
+        if all(disc.part_index is None for disc in entry.discs):
             return [
                 {
                     "index": 0,
                     "bytes": entry.bytes,
                     "sha256": str(entry.sha256),
                     "recovery_bytes": self._entry_recovery_bytes(entry),
-                    "copies": [self._manifest_copy(entry, copy) for copy in entry.copies],
+                    "discs": [self._manifest_disc(entry, disc) for disc in entry.discs],
                 }
             ]
 
-        part_count = max((copy.part_count or 1) for copy in entry.copies)
+        part_count = max((disc.part_count or 1) for disc in entry.discs)
         parts: list[dict[str, object]] = []
         for part_index in range(part_count):
-            part_copies = [copy for copy in entry.copies if copy.part_index == part_index]
-            if not part_copies:
-                raise NotFound(f"missing copy hints for part {part_index} of entry {entry.id}")
-            bytes_hint = part_copies[0].part_bytes
-            sha256_hint = part_copies[0].part_sha256
+            part_discs = [disc for disc in entry.discs if disc.part_index == part_index]
+            if not part_discs:
+                raise NotFound(f"missing disc hints for part {part_index} of entry {entry.id}")
+            bytes_hint = part_discs[0].part_bytes
+            sha256_hint = part_discs[0].part_sha256
             if bytes_hint is None or sha256_hint is None:
                 raise NotFound(f"missing part metadata for part {part_index} of entry {entry.id}")
             parts.append(
@@ -4792,16 +4777,16 @@ class AcceptanceFetchService:
                     "index": part_index,
                     "bytes": bytes_hint,
                     "sha256": sha256_hint,
-                    "recovery_bytes": len(self._copy_recovery_payload(entry, part_copies[0])),
-                    "copies": [self._manifest_copy(entry, copy) for copy in part_copies],
+                    "recovery_bytes": len(self._disc_recovery_payload(entry, part_discs[0])),
+                    "discs": [self._manifest_disc(entry, disc) for disc in part_discs],
                 }
             )
         return parts
 
     def _entry_recovery_payloads(self, entry: FetchEntryRecord) -> tuple[bytes, ...]:
-        if not entry.copies or all(copy.part_index is None for copy in entry.copies):
+        if not entry.discs or all(disc.part_index is None for disc in entry.discs):
             return (fixture_encrypt_bytes(entry.content),)
-        part_count = max((copy.part_count or 1) for copy in entry.copies)
+        part_count = max((disc.part_count or 1) for disc in entry.discs)
         return tuple(
             fixture_encrypt_bytes(part)
             for part in split_fixture_plaintext(entry.content, part_count)
@@ -4810,11 +4795,11 @@ class AcceptanceFetchService:
     def _entry_recovery_bytes(self, entry: FetchEntryRecord) -> int:
         return sum(len(payload) for payload in self._entry_recovery_payloads(entry))
 
-    def _copy_recovery_payload(self, entry: FetchEntryRecord, copy: FileCopy) -> bytes:
+    def _disc_recovery_payload(self, entry: FetchEntryRecord, disc: FileDisc) -> bytes:
         payloads = self._entry_recovery_payloads(entry)
-        if copy.part_index is None:
+        if disc.part_index is None:
             return payloads[0]
-        return payloads[copy.part_index]
+        return payloads[disc.part_index]
 
     def _verify_uploaded_entry(self, entry: FetchEntryRecord) -> None:
         if entry.uploaded_content is None:
@@ -4879,7 +4864,7 @@ class AcceptanceFileService:
                     "bytes": record.bytes,
                     "sha256": str(record.sha256),
                     "hot": record.hot,
-                    "archived": record.archived,
+                    "disc_coverage": record.disc_coverage,
                 }
                 for record in selected
             ],
@@ -4914,9 +4899,9 @@ class AcceptanceFileService:
         return self.state.file_content(record.collection_id, record.path)
 
 
-def _fixture_real_iso_bytes(*, image_root: Path, volume_id: str) -> bytes:
+def _fixture_real_iso_bytes(*, image_root: Path, image_id: str) -> bytes:
     proc = subprocess.run(
-        build_iso_cmd_from_root(image_root=image_root, volume_id=volume_id),
+        build_iso_cmd_from_root(image_root=image_root, volume_id=image_id),
         capture_output=True,
         check=False,
     )
@@ -5082,10 +5067,10 @@ class AcceptanceSystem:
     collections: AcceptanceCollectionService
     search: AcceptanceSearchService
     planning: AcceptancePlanningService
-    glacier_uploads: AcceptanceGlacierUploadService
-    glacier_reporting: AcceptanceGlacierReportingService
-    recovery_sessions: AcceptanceRecoverySessionService
-    copies: AcceptanceCopyService
+    archive_uploads: AcceptanceArchiveUploadService
+    archive_reporting: AcceptanceArchiveReportingService
+    archive_restores: AcceptanceArchiveRestoreService
+    discs: AcceptanceDiscService
     fetches: AcceptanceFetchService
     files: AcceptanceFileService
     _container_slot: _ContainerSlot
@@ -5107,10 +5092,10 @@ class AcceptanceSystem:
         collections = AcceptanceCollectionService(state)
         search = AcceptanceSearchService(state)
         planning = AcceptancePlanningService(state)
-        glacier_uploads = AcceptanceGlacierUploadService(state)
-        glacier_reporting = AcceptanceGlacierReportingService(state)
-        recovery_sessions = AcceptanceRecoverySessionService(state)
-        copies = AcceptanceCopyService(state)
+        archive_uploads = AcceptanceArchiveUploadService(state)
+        archive_reporting = AcceptanceArchiveReportingService(state)
+        archive_restores = AcceptanceArchiveRestoreService(state)
+        discs = AcceptanceDiscService(state)
         fetches = AcceptanceFetchService(state)
         files = AcceptanceFileService(state)
 
@@ -5118,10 +5103,10 @@ class AcceptanceSystem:
             collections=collections,
             search=search,
             planning=planning,
-            glacier_uploads=glacier_uploads,
-            glacier_reporting=glacier_reporting,
-            recovery_sessions=recovery_sessions,
-            copies=copies,
+            archive_uploads=archive_uploads,
+            archive_reporting=archive_reporting,
+            archive_restores=archive_restores,
+            discs=discs,
             fetches=fetches,
             files=files,
         )
@@ -5129,8 +5114,8 @@ class AcceptanceSystem:
         app = create_app(
             container_provider=lambda: container_slot.container,
             upload_expiry_reaper_interval=_UPLOAD_EXPIRY_SWEEP_INTERVAL_SECONDS,
-            glacier_upload_reaper_interval=_GLACIER_UPLOAD_SWEEP_INTERVAL_SECONDS,
-            glacier_recovery_reaper_interval=_GLACIER_RECOVERY_SWEEP_INTERVAL_SECONDS,
+            archive_upload_reaper_interval=_ARCHIVE_UPLOAD_SWEEP_INTERVAL_SECONDS,
+            archive_restore_reaper_interval=_ARCHIVE_RESTORE_SWEEP_INTERVAL_SECONDS,
         )
         _install_live_collection_upload_routes(app, container_slot)
         fixture_path = workspace / "djdan_fixture.json"
@@ -5146,10 +5131,10 @@ class AcceptanceSystem:
             collections=collections,
             search=search,
             planning=planning,
-            glacier_uploads=glacier_uploads,
-            glacier_reporting=glacier_reporting,
-            recovery_sessions=recovery_sessions,
-            copies=copies,
+            archive_uploads=archive_uploads,
+            archive_reporting=archive_reporting,
+            archive_restores=archive_restores,
+            discs=discs,
             fetches=fetches,
             files=files,
             _container_slot=container_slot,
@@ -5185,10 +5170,10 @@ class AcceptanceSystem:
             self.collections = restarted.collections
             self.search = restarted.search
             self.planning = restarted.planning
-            self.glacier_uploads = restarted.glacier_uploads
-            self.glacier_reporting = restarted.glacier_reporting
-            self.recovery_sessions = restarted.recovery_sessions
-            self.copies = restarted.copies
+            self.archive_uploads = restarted.archive_uploads
+            self.archive_reporting = restarted.archive_reporting
+            self.archive_restores = restarted.archive_restores
+            self.discs = restarted.discs
             self.fetches = restarted.fetches
             self.files = restarted.files
             self._container_slot = restarted._container_slot
@@ -5202,10 +5187,10 @@ class AcceptanceSystem:
             self.collections = reset.collections
             self.search = reset.search
             self.planning = reset.planning
-            self.glacier_uploads = reset.glacier_uploads
-            self.glacier_reporting = reset.glacier_reporting
-            self.recovery_sessions = reset.recovery_sessions
-            self.copies = reset.copies
+            self.archive_uploads = reset.archive_uploads
+            self.archive_reporting = reset.archive_reporting
+            self.archive_restores = reset.archive_restores
+            self.discs = reset.discs
             self.fetches = reset.fetches
             self.files = reset.files
             self._container_slot.container = reset._container_slot.container
@@ -5323,7 +5308,7 @@ class AcceptanceSystem:
                 self.state.candidates_by_id[candidate_key] = candidate
             self.state.finalized_images_by_id[ImageId(candidate.finalized_id)] = candidate
 
-    def ensure_image_rebuild_session(self, *, session_id: str, image_id: str) -> None:
+    def ensure_disc_rebuild_restore(self, *, restore_id: str, image_id: str) -> None:
         with self.state.lock:
             image = self.state.finalized_images_by_id[ImageId(image_id)]
             collection_ids = tuple(
@@ -5331,24 +5316,25 @@ class AcceptanceSystem:
             )
             for collection_id in collection_ids:
                 if (
-                    self.state.collection_glacier_status(str(collection_id)).state
-                    != GlacierState.UPLOADED
+                    self.state.collection_archive_status(str(collection_id)).state
+                    != ArchiveState.UPLOADED
                 ):
                     self.state.mark_collection_archive_uploaded(str(collection_id))
-            self.state.recovery_sessions_by_id[session_id] = AcceptanceRecoverySessionRecord(
-                session_id=session_id,
+            self.state.archive_restores_by_id[restore_id] = AcceptanceArchiveRestoreRecord(
+                restore_id=restore_id,
                 image_id=ImageId(image_id),
-                state=RecoverySessionState.RESTORE_REQUESTED,
+                state=ArchiveRestoreState.REQUESTED,
                 created_at=_acceptance_isoformat(datetime.now(UTC)),
-                type="image_rebuild",
+                type="disc_rebuild",
                 image_ids=(ImageId(image_id),),
                 collection_ids=collection_ids,
                 latest_message=(
-                    "Archive restore queued; Riverhog will request archived collection data."
+                    "Archive restore queued; Riverhog will restore collection data from "
+                    "the archive."
                 ),
             )
 
-    def wait_for_collection_glacier_state(
+    def wait_for_collection_archive_state(
         self,
         collection_id: str,
         state: str,
@@ -5363,15 +5349,15 @@ class AcceptanceSystem:
             )
             if response.status_code == 200:
                 payload = response.json()
-                if payload["glacier"]["state"] == state:
+                if payload["archive"]["state"] == state:
                     return payload
             with self.state.lock:
-                status = self.state.collection_glacier_status(collection_id)
+                status = self.state.collection_archive_status(collection_id)
             if status.state.value == state:
-                return {"id": normalize_collection_id(collection_id), "glacier": {"state": state}}
+                return {"id": normalize_collection_id(collection_id), "archive": {"state": state}}
             time.sleep(0.05)
         raise AssertionError(
-            f"timed out waiting for collection glacier state {collection_id} -> {state}"
+            f"timed out waiting for collection archive state {collection_id} -> {state}"
         )
 
     def wait_for_collection_upload_state(
@@ -5408,7 +5394,7 @@ class AcceptanceSystem:
             f"timed out waiting for collection upload state {collection_id} -> {state}"
         )
 
-    def defer_collection_glacier_archiving(
+    def defer_collection_archive_archiving(
         self,
         collection_id: str,
         *,
@@ -5416,28 +5402,26 @@ class AcceptanceSystem:
     ) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
         with self.state.lock:
-            self.state.glacier_upload_defer_until_by_collection[
+            self.state.archive_upload_defer_until_by_collection[
                 CollectionId(normalized_collection_id)
             ] = time.monotonic() + seconds
 
-    def wait_for_recovery_session_state(
+    def wait_for_archive_restore_state(
         self,
-        session_id: str,
+        restore_id: str,
         state: str,
         *,
         timeout: float = 5.0,
     ) -> dict[str, object]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            response = self.request("GET", f"/v1/recovery-sessions/{session_id}")
+            response = self.request("GET", f"/v1/archive-restores/{restore_id}")
             assert response.status_code == 200, response.text
             payload = response.json()
             if payload["state"] == state:
                 return payload
             time.sleep(0.05)
-        raise AssertionError(
-            f"timed out waiting for recovery session state {session_id} -> {state}"
-        )
+        raise AssertionError(f"timed out waiting for archive restore state {restore_id} -> {state}")
 
     def list_webhook_deliveries(self) -> list[dict[str, object]]:
         return self.state.list_webhook_deliveries()
@@ -5503,9 +5487,9 @@ class AcceptanceSystem:
             f"timed out waiting for captured webhook attempt {event} {result} #{attempt}"
         )
 
-    def fail_collection_glacier_upload(self, collection_id: str, *, error: str) -> None:
+    def fail_collection_archive_upload(self, collection_id: str, *, error: str) -> None:
         with self.state.lock:
-            self.state.glacier_upload_failures_by_collection[
+            self.state.archive_upload_failures_by_collection[
                 CollectionId(normalize_collection_id(collection_id))
             ] = error
 
@@ -5513,20 +5497,20 @@ class AcceptanceSystem:
         with self.state.lock:
             self.state.mark_collection_archive_uploaded(collection_id)
 
-    def collection_glacier_failure_configured(self, collection_id: str) -> bool:
+    def collection_archive_failure_configured(self, collection_id: str) -> bool:
         with self.state.lock:
             return (
                 CollectionId(normalize_collection_id(collection_id))
-                in self.state.glacier_upload_failures_by_collection
+                in self.state.archive_upload_failures_by_collection
             )
 
-    def collection_glacier_failure(self, collection_id: str) -> str:
+    def collection_archive_failure(self, collection_id: str) -> str:
         with self.state.lock:
-            return self.state.glacier_upload_failures_by_collection[
+            return self.state.archive_upload_failures_by_collection[
                 CollectionId(normalize_collection_id(collection_id))
             ]
 
-    def start_collection_glacier_archiving(self, collection_id: str) -> None:
+    def start_collection_archive_archiving(self, collection_id: str) -> None:
         normalized_collection_id = normalize_collection_id(collection_id)
         with self.state.lock:
             if CollectionId(normalized_collection_id) not in self.state.files_by_collection:
@@ -5558,9 +5542,9 @@ class AcceptanceSystem:
                 )
             )
 
-    def clear_collection_glacier_upload_failure(self, collection_id: str) -> None:
+    def clear_collection_archive_upload_failure(self, collection_id: str) -> None:
         with self.state.lock:
-            self.state.glacier_upload_failures_by_collection.pop(
+            self.state.archive_upload_failures_by_collection.pop(
                 CollectionId(normalize_collection_id(collection_id)),
                 None,
             )
@@ -5830,7 +5814,7 @@ class AcceptanceSystem:
                 )
                 assert response.status_code == 204, response.text
             payload = self.wait_for_collection_upload_state(minted_collection_id, "archiving")
-            self.defer_collection_glacier_archiving(minted_collection_id)
+            self.defer_collection_archive_archiving(minted_collection_id)
             return payload
 
     def seed_photos_hot(self) -> None:
@@ -5856,23 +5840,25 @@ class AcceptanceSystem:
             normalized,
             files,
             hot_paths={path.lstrip("/") for path in files},
-            archived_paths=set(),
         )
 
     def seed_docs_archive(self) -> None:
         docs_key = CollectionId(normalize_collection_id(DOCS_COLLECTION_ID))
         with self.state.lock:
             docs = self.state.files_by_collection.get(docs_key, {})
-            if docs.get("tax/2022/invoice-123.pdf") and docs["tax/2022/invoice-123.pdf"].archived:
+            invoice = docs.get("tax/2022/invoice-123.pdf")
+            if invoice and invoice.disc_coverage:
                 return
         self.seed_docs_hot()
         self.seed_image_fixtures((IMAGE_FIXTURES[0],))
-        resp = self.request("POST", f"/v1/plan/candidates/{IMAGE_FIXTURES[0].id}/finalize")
+        resp = self.request(
+            "POST", f"/v1/plan/candidates/{IMAGE_FIXTURES[0].candidate_id}/finalize"
+        )
         assert resp.status_code == 200, resp.text
         image_id = resp.json()["id"]
         resp = self.request(
             "POST",
-            f"/v1/images/{image_id}/copies",
+            f"/v1/images/{image_id}/discs",
             json_body={"location": "vault-a/shelf-01"},
         )
         assert resp.status_code == 200, resp.text
@@ -5882,17 +5868,17 @@ class AcceptanceSystem:
     def seed_docs_tax_fully_compliant(self) -> None:
         self.seed_planner_fixtures()
         self.planning.finalize_image(IMAGE_ID)
-        for copy_id, location in (
+        for disc_id, location in (
             ("20260420T040001Z-1", "vault-a/shelf-01"),
             ("20260420T040001Z-2", "vault-b/shelf-01"),
         ):
             with self.state.lock:
-                existing = self.state.copy_summaries.get(("20260420T040001Z", CopyId(copy_id)))
-            if existing is None or existing.state == CopyState.NEEDED:
-                self.copies.register("20260420T040001Z", location, copy_id=copy_id)
-            self.copies.update(
+                existing = self.state.disc_summaries.get(("20260420T040001Z", DiscId(disc_id)))
+            if existing is None or existing.state == DiscState.NEEDED:
+                self.discs.register("20260420T040001Z", location, disc_id=disc_id)
+            self.discs.update(
                 "20260420T040001Z",
-                copy_id,
+                disc_id,
                 location=location,
                 state="verified",
                 verification_state="verified",
@@ -5905,24 +5891,24 @@ class AcceptanceSystem:
             invoice = docs.get(SPLIT_FILE_RELPATH)
             if (
                 invoice
-                and invoice.archived
-                and any(c.part_index is not None for c in invoice.copies)
+                and invoice.disc_coverage
+                and any(c.part_index is not None for c in invoice.discs)
             ):
                 return
         self.seed_docs_hot()
         self.seed_image_fixtures(SPLIT_IMAGE_FIXTURES)
-        for fixture, _copy_id, location in zip(
+        for fixture, _disc_id, location in zip(
             SPLIT_IMAGE_FIXTURES,
-            (SPLIT_COPY_ONE_ID, SPLIT_COPY_TWO_ID),
-            (SPLIT_COPY_ONE_LOCATION, SPLIT_COPY_TWO_LOCATION),
+            (SPLIT_DISC_ONE_ID, SPLIT_DISC_TWO_ID),
+            (SPLIT_DISC_ONE_LOCATION, SPLIT_DISC_TWO_LOCATION),
             strict=True,
         ):
-            resp = self.request("POST", f"/v1/plan/candidates/{fixture.id}/finalize")
+            resp = self.request("POST", f"/v1/plan/candidates/{fixture.candidate_id}/finalize")
             assert resp.status_code == 200, resp.text
             image_id = resp.json()["id"]
             resp = self.request(
                 "POST",
-                f"/v1/images/{image_id}/copies",
+                f"/v1/images/{image_id}/discs",
                 json_body={"location": location},
             )
             assert resp.status_code == 200, resp.text
@@ -5951,7 +5937,6 @@ class AcceptanceSystem:
         paths: Sequence[str],
         *,
         hot: bool,
-        archived: bool,
     ) -> None:
         with self.state.lock:
             collection_key = CollectionId(normalize_collection_id(collection_id))
@@ -5964,7 +5949,6 @@ class AcceptanceSystem:
                     del records[path]
             for record in records.values():
                 record.hot = hot
-                record.archived = archived
 
     def constrain_collection_to_finalized_image_coverage(
         self,
@@ -5972,7 +5956,6 @@ class AcceptanceSystem:
         image_id: str,
         *,
         hot: bool,
-        archived: bool,
     ) -> None:
         with self.state.lock:
             image = self.state.finalized_images_by_id[ImageId(image_id)]
@@ -5986,17 +5969,16 @@ class AcceptanceSystem:
             collection_id,
             paths,
             hot=hot,
-            archived=archived,
         )
 
     def seed_image_fixtures(self, fixtures: tuple[Any, ...]) -> None:
         images_root = self.workspace / "images"
         for fixture in fixtures:
-            image_root = write_tree(images_root / fixture.id, fixture.files)
+            image_root = write_tree(images_root / fixture.candidate_id, fixture.files)
             self.state.seed_image(
                 CandidateRecord(
-                    candidate_id=ImageId(fixture.id),
-                    finalized_id=fixture.volume_id,
+                    candidate_id=ImageId(fixture.candidate_id),
+                    finalized_id=fixture.image_id,
                     filename=fixture.filename,
                     image_root=image_root,
                     bytes=fixture.bytes,
@@ -6085,8 +6067,8 @@ class AcceptanceSystem:
         with self.state.lock:
             if storage == "archive":
                 return any(
-                    status.object_path == key and status.state == GlacierState.UPLOADED
-                    for status in self.state.collection_glacier_status_by_collection.values()
+                    status.object_path == key and status.state == ArchiveState.UPLOADED
+                    for status in self.state.collection_archive_status_by_collection.values()
                 )
             if storage != "hot":
                 raise AssertionError(f"unsupported storage bucket kind: {storage}")
@@ -6104,8 +6086,8 @@ class AcceptanceSystem:
         with self.state.lock:
             if storage != "archive":
                 raise AssertionError(f"unsupported object metadata bucket kind: {storage}")
-            for status in self.state.collection_glacier_status_by_collection.values():
-                if status.object_path == key and status.state == GlacierState.UPLOADED:
+            for status in self.state.collection_archive_status_by_collection.values():
+                if status.object_path == key and status.state == ArchiveState.UPLOADED:
                     stored_bytes = status.stored_bytes or 0
                     return {
                         "riverhog-archive-bytes": str(stored_bytes),
@@ -6120,8 +6102,8 @@ class AcceptanceSystem:
             if storage == "archive":
                 return any(
                     (status.object_path or "").startswith(prefix)
-                    and status.state == GlacierState.UPLOADED
-                    for status in self.state.collection_glacier_status_by_collection.values()
+                    and status.state == ArchiveState.UPLOADED
+                    for status in self.state.collection_archive_status_by_collection.values()
                 )
             if storage != "hot":
                 raise AssertionError(f"unsupported storage bucket kind: {storage}")
@@ -6200,14 +6182,14 @@ class AcceptanceSystem:
                 "fail_disc_paths": [],
             },
             "burn": {
-                "confirmed_copy_ids": [],
-                "available_copy_ids": [],
-                "location_by_copy_id": {},
-                "label_text_by_copy_id": {},
-                "fail_copy_ids": [],
-                "verify_fail_copy_ids": [],
-                "verify_fail_once_copy_ids": [],
-                "blank_media_blocked_copy_ids": [],
+                "confirmed_disc_ids": [],
+                "available_disc_ids": [],
+                "location_by_disc_id": {},
+                "label_text_by_disc_id": {},
+                "fail_disc_ids": [],
+                "verify_fail_disc_ids": [],
+                "verify_fail_once_disc_ids": [],
+                "blank_media_blocked_disc_ids": [],
             },
         }
 
@@ -6228,8 +6210,8 @@ class AcceptanceSystem:
         fetch_id: str = "fx-1",
         fail_path: str | None = None,
         corrupt_path: str | None = None,
-        fail_copy_ids: set[str] | None = None,
-        corrupt_copy_ids: set[str] | None = None,
+        fail_disc_ids: set[str] | None = None,
+        corrupt_disc_ids: set[str] | None = None,
     ) -> None:
         manifest = cast(dict[str, Any], self.fetches.manifest(fetch_id))
         with self.state.lock:
@@ -6240,8 +6222,8 @@ class AcceptanceSystem:
             }
         payload_by_disc_path: dict[str, str] = {}
         fail_disc_paths: list[str] = []
-        fail_copy_ids = fail_copy_ids or set()
-        corrupt_copy_ids = corrupt_copy_ids or set()
+        fail_disc_ids = fail_disc_ids or set()
+        corrupt_disc_ids = corrupt_disc_ids or set()
 
         for entry in cast(list[dict[str, Any]], manifest["entries"]):
             entry_collection_id = str(entry["collection_id"])
@@ -6254,14 +6236,14 @@ class AcceptanceSystem:
             for part in parts:
                 part_index = int(part["index"])
                 part_plaintext = plaintext_parts[part_index]
-                for copy_info in cast(list[dict[str, Any]], part["copies"]):
-                    copy_id = str(copy_info["copy"])
-                    disc_path = str(copy_info["disc_path"])
+                for disc_info in cast(list[dict[str, Any]], part["discs"]):
+                    disc_id = str(disc_info["disc_id"])
+                    disc_path = str(disc_info["disc_path"])
                     payload = fixture_encrypt_bytes(part_plaintext)
-                    if entry_path == corrupt_path or copy_id in corrupt_copy_ids:
+                    if entry_path == corrupt_path or disc_id in corrupt_disc_ids:
                         payload = b"X" + payload[1:]
                     payload_by_disc_path[disc_path] = base64.b64encode(payload).decode("ascii")
-                    if entry_path == fail_path or copy_id in fail_copy_ids:
+                    if entry_path == fail_path or disc_id in fail_disc_ids:
                         fail_disc_paths.append(disc_path)
 
         payload = self._load_djdan_fixture()
@@ -6271,62 +6253,62 @@ class AcceptanceSystem:
         }
         self._write_djdan_fixture(payload)
 
-    def confirm_djdan_burn_copy(self, copy_id: str, *, location: str) -> None:
+    def confirm_djdan_burn_disc(self, disc_id: str, *, location: str) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        confirmed = set(cast(list[str], burn.get("confirmed_copy_ids", [])))
-        confirmed.add(copy_id)
-        burn["confirmed_copy_ids"] = sorted(confirmed)
-        location_by_copy_id = dict(cast(dict[str, str], burn.get("location_by_copy_id", {})))
-        location_by_copy_id[copy_id] = location
-        burn["location_by_copy_id"] = location_by_copy_id
-        label_text_by_copy_id = dict(cast(dict[str, str], burn.get("label_text_by_copy_id", {})))
-        label_text_by_copy_id[copy_id] = copy_id
-        burn["label_text_by_copy_id"] = label_text_by_copy_id
+        confirmed = set(cast(list[str], burn.get("confirmed_disc_ids", [])))
+        confirmed.add(disc_id)
+        burn["confirmed_disc_ids"] = sorted(confirmed)
+        location_by_disc_id = dict(cast(dict[str, str], burn.get("location_by_disc_id", {})))
+        location_by_disc_id[disc_id] = location
+        burn["location_by_disc_id"] = location_by_disc_id
+        label_text_by_disc_id = dict(cast(dict[str, str], burn.get("label_text_by_disc_id", {})))
+        label_text_by_disc_id[disc_id] = disc_id
+        burn["label_text_by_disc_id"] = label_text_by_disc_id
         self._write_djdan_fixture(payload)
 
-    def set_djdan_burn_copy_available(self, copy_id: str, *, available: bool) -> None:
+    def set_djdan_burn_disc_available(self, disc_id: str, *, available: bool) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        available_copy_ids = set(cast(list[str], burn.get("available_copy_ids", [])))
+        available_disc_ids = set(cast(list[str], burn.get("available_disc_ids", [])))
         if available:
-            available_copy_ids.add(copy_id)
+            available_disc_ids.add(disc_id)
         else:
-            available_copy_ids.discard(copy_id)
-        burn["available_copy_ids"] = sorted(available_copy_ids)
+            available_disc_ids.discard(disc_id)
+        burn["available_disc_ids"] = sorted(available_disc_ids)
         self._write_djdan_fixture(payload)
 
-    def fail_djdan_burn_copy(self, copy_id: str) -> None:
+    def fail_djdan_burn_disc(self, disc_id: str) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        failures = set(cast(list[str], burn.get("fail_copy_ids", [])))
-        failures.add(copy_id)
-        burn["fail_copy_ids"] = sorted(failures)
+        failures = set(cast(list[str], burn.get("fail_disc_ids", [])))
+        failures.add(disc_id)
+        burn["fail_disc_ids"] = sorted(failures)
         self._write_djdan_fixture(payload)
 
-    def fail_djdan_burn_copy_verification(self, copy_id: str) -> None:
+    def fail_djdan_burn_disc_verification(self, disc_id: str) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        failures = set(cast(list[str], burn.get("verify_fail_copy_ids", [])))
-        failures.add(copy_id)
-        burn["verify_fail_copy_ids"] = sorted(failures)
+        failures = set(cast(list[str], burn.get("verify_fail_disc_ids", [])))
+        failures.add(disc_id)
+        burn["verify_fail_disc_ids"] = sorted(failures)
         self._write_djdan_fixture(payload)
 
-    def fail_djdan_burn_copy_verification_once(self, copy_id: str) -> None:
+    def fail_djdan_burn_disc_verification_once(self, disc_id: str) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        failures = set(cast(list[str], burn.get("verify_fail_once_copy_ids", [])))
-        failures.add(copy_id)
-        burn["verify_fail_once_copy_ids"] = sorted(failures)
+        failures = set(cast(list[str], burn.get("verify_fail_once_disc_ids", [])))
+        failures.add(disc_id)
+        burn["verify_fail_once_disc_ids"] = sorted(failures)
         self._write_djdan_fixture(payload)
 
     def clear_djdan_burn_failures(self) -> None:
         payload = self._load_djdan_fixture()
         burn = cast(dict[str, Any], payload["burn"])
-        burn["fail_copy_ids"] = []
-        burn["verify_fail_copy_ids"] = []
-        burn["verify_fail_once_copy_ids"] = []
-        burn["blank_media_blocked_copy_ids"] = []
+        burn["fail_disc_ids"] = []
+        burn["verify_fail_disc_ids"] = []
+        burn["verify_fail_once_disc_ids"] = []
+        burn["blank_media_blocked_disc_ids"] = []
         self._write_djdan_fixture(payload)
 
     def corrupt_djdan_staged_iso(self, image_id: str) -> None:

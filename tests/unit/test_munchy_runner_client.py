@@ -17,7 +17,7 @@ from munchy.runner_client import (
     RunnerHttpError,
     RunnerInputFile,
     RunnerJobTerminalDuringUpload,
-    RunnerProfileRoutingPreflightFile,
+    RunnerRoutingPreflightFile,
     RunnerUploadRequest,
     UploadProgress,
     UploadRetryReporter,
@@ -110,7 +110,7 @@ def test_keep_system_awake_uses_caffeinate_on_macos(monkeypatch) -> None:  # typ
     assert fake_process.killed is False
 
 
-def test_profile_routing_preflight_posts_manifest() -> None:
+def test_routing_preflight_posts_manifest() -> None:
     client = MunchyRunnerClient("http://runner", token="runner-token")
     seen: list[dict[str, object]] = []
 
@@ -134,17 +134,17 @@ def test_profile_routing_preflight_posts_manifest() -> None:
         return FakeResponse()
 
     with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
-        result = client.profile_routing_preflight(
+        result = client.routing_preflight(
             files=(
-                RunnerProfileRoutingPreflightFile(
+                RunnerRoutingPreflightFile(
                     rel_path="phone/IMG_0001.MOV",
                     bytes=123,
                     probe_summary={"video_codec_name": "hevc"},
                     routing_facts={"path.suffix": ".mov", "video.codec": "hevc"},
                 ),
             ),
-            groups={"video": {"archive_mode": "av1_nvenc", "tasks": []}},
-            profile_routing={
+            groups={"video": {"output_mode": "video", "tasks": []}},
+            routing={
                 "routes": [
                     {
                         "id": "phone-video",
@@ -158,7 +158,7 @@ def test_profile_routing_preflight_posts_manifest() -> None:
     assert result["ok"] is True
     assert seen == [
         {
-            "url": "http://runner/v1/profile-routing/preflight",
+            "url": "http://runner/v1/routing/preflight",
             "method": "POST",
             "auth": "Bearer runner-token",
             "payload": {
@@ -175,8 +175,8 @@ def test_profile_routing_preflight_posts_manifest() -> None:
                         "sidecar_facts_error": None,
                     }
                 ],
-                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
-                "profile_routing": {
+                "groups": {"video": {"output_mode": "video", "tasks": []}},
+                "routing": {
                     "routes": [
                         {
                             "id": "phone-video",
@@ -190,7 +190,7 @@ def test_profile_routing_preflight_posts_manifest() -> None:
     ]
 
 
-def test_profile_routing_preflight_posts_metadata_projection_enforcement() -> None:
+def test_routing_preflight_posts_metadata_projection_enforcement() -> None:
     client = MunchyRunnerClient("http://runner", token="runner-token")
     seen: list[dict[str, object]] = []
 
@@ -206,15 +206,15 @@ def test_profile_routing_preflight_posts_metadata_projection_enforcement() -> No
         return FakeResponse()
 
     with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
-        result = client.profile_routing_preflight(
+        result = client.routing_preflight(
             files=(
-                RunnerProfileRoutingPreflightFile(
+                RunnerRoutingPreflightFile(
                     rel_path="camera/C0001.MP4",
                     bytes=123,
                 ),
             ),
-            groups={"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
-            profile_routing={
+            groups={"video": {"output_mode": "video", "tasks": ["archive_video"]}},
+            routing={
                 "routes": [
                     {
                         "id": "camera-video",
@@ -916,7 +916,7 @@ def test_cancel_job_cleanup_uses_long_timeout() -> None:
         seen["path"] = path
         seen["timeout"] = kwargs.get("timeout")
         seen["expect"] = kwargs.get("expect")
-        return {"job_id": "job-1", "state": "cancelled"}
+        return {"job_id": "job-1", "state": "canceled"}
 
     client.json = fake_json  # type: ignore[method-assign]
 
@@ -995,7 +995,7 @@ def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
         filesystem_metadata=metadata,
     )
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=(item,),
         storage_hint={"source_bytes": item.bytes},
@@ -1014,7 +1014,7 @@ def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
         seen_payload.update(kwargs["payload"])  # type: ignore[arg-type]
         return (
             201,
-            json.dumps({"upload_id": "upload-1", "files": seen_payload["files"]}).encode(),
+            json.dumps({"input_upload_id": "upload-1", "files": seen_payload["files"]}).encode(),
             object(),
         )
 
@@ -1022,7 +1022,7 @@ def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
 
     upload = client.create_or_get_input_upload(request)
 
-    assert upload["upload_id"] == "upload-1"
+    assert upload["input_upload_id"] == "upload-1"
     assert seen_payload["files"] == [
         {
             "path": "video/clip.mp4",
@@ -1043,7 +1043,7 @@ def test_create_input_upload_retries_transient_setup_timeout(tmp_path: Path) -> 
         sha256="0" * 64,
     )
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=(item,),
         storage_hint={"source_bytes": item.bytes},
@@ -1065,7 +1065,7 @@ def test_create_input_upload_retries_transient_setup_timeout(tmp_path: Path) -> 
             raise TimeoutError("timed out")
         return (
             201,
-            json.dumps({"upload_id": "upload-1", "files": []}).encode(),
+            json.dumps({"input_upload_id": "upload-1", "files": []}).encode(),
             object(),
         )
 
@@ -1074,13 +1074,13 @@ def test_create_input_upload_retries_transient_setup_timeout(tmp_path: Path) -> 
     with patch("munchy.runner_client.time.sleep"):
         upload = client.create_or_get_input_upload(request)
 
-    assert upload["upload_id"] == "upload-1"
+    assert upload["input_upload_id"] == "upload-1"
     assert post_calls == 2
 
 
 def test_create_job_retries_transient_setup_timeout() -> None:
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=(),
         storage_hint={"source_bytes": 0},
@@ -1117,7 +1117,7 @@ def test_create_job_retries_transient_setup_timeout() -> None:
 
 def test_create_job_preserves_non_existing_job_conflict() -> None:
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=(),
         storage_hint={"source_bytes": 0},
@@ -1390,7 +1390,7 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
             )
         )
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=tuple(files),
         storage_hint={"source_bytes": sum(item.bytes for item in files)},
@@ -1450,7 +1450,7 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
         sha256="0" * 64,
     )
     request = RunnerUploadRequest(
-        upload_id="upload-1",
+        input_upload_id="upload-1",
         job_id="job-1",
         files=(file,),
         storage_hint={"source_bytes": file.bytes},

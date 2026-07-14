@@ -13,7 +13,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyRecord,
+    ImageDiscRecord,
 )
 from riverhog_core.domain.errors import Conflict, NotFound
 from riverhog_core.ports.hot_store import HotFileStat
@@ -149,7 +149,6 @@ def _seed_hot_docs(sqlite_path: Path, hot_store: _FakeHotStore) -> None:
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
                     hot=True,
-                    archived=True,
                 )
             )
 
@@ -165,7 +164,7 @@ def _mark_docs_fully_compliant(sqlite_path: Path) -> None:
                 bytes=1234,
                 image_root="/tmp/docs-image",
                 target_bytes=50_000_000_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for path in {
@@ -182,9 +181,9 @@ def _mark_docs_fully_compliant(sqlite_path: Path) -> None:
             )
         for ordinal in (1, 2):
             session.add(
-                ImageCopyRecord(
+                ImageDiscRecord(
                     image_id="20260530T000000Z",
-                    copy_id=f"20260530T000000Z-{ordinal}",
+                    disc_id=f"20260530T000000Z-{ordinal}",
                     label_text=f"20260530T000000Z-{ordinal}",
                     location="test shelf",
                     created_at="2026-05-30T00:00:00Z",
@@ -286,7 +285,7 @@ def test_evicting_noncompliant_target_is_refused(tmp_path: Path) -> None:
     _seed_hot_docs(sqlite_path, hot_store)
     service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
 
-    with pytest.raises(Conflict, match="without verified disc protection"):
+    with pytest.raises(Conflict, match="without verified disc redundancy"):
         service.evict(["docs/tax/2022/invoice-123.pdf"])
 
     assert hot_store.deleted == []
@@ -321,7 +320,7 @@ def test_listing_fetches_reports_aggregate_stats_from_projection(tmp_path: Path)
     assert fetch.files == 2
     assert fetch.bytes == len(b"invoice") + len(b"receipt")
     assert fetch.missing_bytes == len(b"receipt")
-    assert fetch.copies == []
+    assert fetch.discs == []
 
 
 def test_start_plan_reports_queue_without_changing_fetch_state(tmp_path: Path) -> None:
@@ -332,10 +331,10 @@ def test_start_plan_reports_queue_without_changing_fetch_state(tmp_path: Path) -
     service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
     fetch = service.create(name="Tax docs", targets=["docs/tax/"])
 
-    payload = service.start_plan(str(fetch.id), cloud=True)
+    payload = service.start_plan(str(fetch.id), archive=True)
 
     assert payload["dry_run"] is True
-    assert payload["status"] == "would_queue_cloud"
-    assert payload["queued_state"] == "queued_cloud"
-    assert payload["will_create_recovery_session"] is True
+    assert payload["status"] == "would_queue_archive"
+    assert payload["queued_state"] == "queued_archive"
+    assert payload["will_create_archive_restore"] is True
     assert service.get(str(fetch.id)).state.value == "draft"

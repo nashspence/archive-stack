@@ -59,7 +59,10 @@ class SqlAlchemyFileService:
 
         with session_scope(self._session_factory) as session:
             all_files = session.scalars(
-                select(CollectionFileRecord).options(selectinload(CollectionFileRecord.collection))
+                select(CollectionFileRecord).options(
+                    selectinload(CollectionFileRecord.collection),
+                    selectinload(CollectionFileRecord.discs),
+                )
             ).all()
 
         result: list[dict[str, object]] = []
@@ -79,7 +82,7 @@ class SqlAlchemyFileService:
                     "bytes": file_record.bytes,
                     "sha256": file_record.sha256,
                     "hot": file_record.hot,
-                    "archived": file_record.archived,
+                    "disc_coverage": bool(file_record.discs),
                 }
             )
         records = sorted(result, key=lambda r: str(r["target"]))

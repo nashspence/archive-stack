@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from riverhog_api.schemas.archive_restores import ArchiveRestoreListOut
 from riverhog_api.schemas.common import RiverhogModel
-from riverhog_api.schemas.recovery_sessions import RecoverySessionListOut
 
 
 class HotStatusOut(RiverhogModel):
@@ -14,9 +14,9 @@ class HotStatusOut(RiverhogModel):
     missing_bytes: int
 
 
-class FetchCopyHintOut(RiverhogModel):
-    id: str
-    volume_id: str
+class FetchDiscHintOut(RiverhogModel):
+    disc_id: str
+    image_id: str
     location: str
 
 
@@ -35,7 +35,7 @@ class FetchSummaryOut(RiverhogModel):
     uploaded_bytes: int
     missing_bytes: int
     upload_state_expires_at: str | None
-    copies: list[FetchCopyHintOut]
+    discs: list[FetchDiscHintOut]
 
 
 class FetchesResponse(RiverhogModel):
@@ -56,16 +56,16 @@ class FetchTargetsRequest(RiverhogModel):
 
 
 class StartFetchRequest(RiverhogModel):
-    cloud: bool = False
+    archive: bool = False
     dry_run: bool = False
 
 
 class FetchStartPlanOut(FetchSummaryOut):
     dry_run: bool
     status: str
-    cloud: bool
+    archive: bool
     queued_state: str
-    will_create_recovery_session: bool
+    will_create_archive_restore: bool
 
 
 class HotEvictRequest(RiverhogModel):
@@ -101,9 +101,8 @@ class FetchTargetSummaryOut(RiverhogModel):
     bytes: int
     hot_files: int
     hot_bytes: int
-    archived_files: int
-    archived_bytes: int
-    registered_disc_files: int
+    disc_files: int
+    disc_bytes: int
     missing_files: int
     missing_with_disc_files: int
     missing_without_disc_files: int
@@ -115,16 +114,14 @@ class FetchFileOut(RiverhogModel):
     path: str
     bytes: int
     hot: bool
-    archived: bool
-    registered_disc_coverage: bool
+    disc_coverage: bool
 
 
 class FetchStatusResponse(FetchSummaryOut):
     hot_files: int
     hot_bytes: int
-    archived_files: int
-    archived_bytes: int
-    registered_disc_files: int
+    disc_files: int
+    disc_bytes: int
     missing_files: int
     missing_with_disc_files: int
     missing_without_disc_files: int
@@ -134,7 +131,7 @@ class FetchStatusResponse(FetchSummaryOut):
     files_preview: list[FetchFileOut]
     next_action: str
     next_action_reason: str
-    cloud_fetch: RecoverySessionListOut
+    archive_restores: ArchiveRestoreListOut
     entries_limit: int
     entries_returned: int
     entries: list[FetchStatusEntryOut]
@@ -144,20 +141,19 @@ class FetchFilesResponse(RiverhogModel):
     fetch_id: str
     query: str | None
     hot: bool | None
-    archived: bool | None
     disc_coverage: bool | None
     page: int
     per_page: int
     total: int
     pages: int
-    sort: Literal["target", "collection", "path", "bytes", "hot", "archived", "disc"]
+    sort: Literal["target", "collection", "path", "bytes", "hot", "disc"]
     order: Literal["asc", "desc"]
     files: list[FetchFileOut]
 
 
-class FetchManifestCopyOut(RiverhogModel):
-    copy_: str = Field(alias="copy")
-    volume_id: str
+class FetchManifestDiscOut(RiverhogModel):
+    disc_id: str
+    image_id: str
     location: str
     disc_path: str
     recovery_bytes: int
@@ -169,7 +165,7 @@ class FetchManifestPartOut(RiverhogModel):
     bytes: int
     sha256: str
     recovery_bytes: int
-    copies: list[FetchManifestCopyOut]
+    discs: list[FetchManifestDiscOut]
 
 
 class FetchManifestEntryOut(RiverhogModel):
@@ -182,7 +178,7 @@ class FetchManifestEntryOut(RiverhogModel):
     upload_state: str
     uploaded_bytes: int
     upload_state_expires_at: str | None
-    copies: list[FetchManifestCopyOut]
+    discs: list[FetchManifestDiscOut]
     parts: list[FetchManifestPartOut]
 
 

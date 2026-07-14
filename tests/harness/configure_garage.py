@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.stores.s3_support import create_glacier_s3_client, create_s3_client
+from riverhog_core.stores.s3_support import create_archive_s3_client, create_s3_client
 
 EXPECTED_LIFECYCLE_CONFIGURATION = {
     "Rules": [
@@ -40,11 +40,11 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
 def _lifecycle_targets(config) -> list[tuple[object, str]]:
     targets: list[tuple[object, str]] = [(create_s3_client(config), config.s3_bucket)]
     archive_signature = (
-        config.glacier_endpoint_url,
-        config.glacier_region,
-        config.glacier_bucket,
-        config.glacier_access_key_id,
-        config.glacier_force_path_style,
+        config.archive_endpoint_url,
+        config.archive_region,
+        config.archive_bucket,
+        config.archive_access_key_id,
+        config.archive_force_path_style,
     )
     storage_signature = (
         config.s3_endpoint_url,
@@ -54,7 +54,7 @@ def _lifecycle_targets(config) -> list[tuple[object, str]]:
         config.s3_force_path_style,
     )
     if archive_signature != storage_signature:
-        targets.append((create_glacier_s3_client(config), config.glacier_bucket))
+        targets.append((create_archive_s3_client(config), config.archive_bucket))
     return targets
 
 

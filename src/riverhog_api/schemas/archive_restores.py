@@ -4,11 +4,11 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field
 
-from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
+from riverhog_api.schemas.archive import ArchiveOut, CollectionManifestOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class RecoveryNotificationStatusOut(RiverhogModel):
+class ArchiveRestoreNotificationStatusOut(RiverhogModel):
     webhook_configured: bool
     reminder_count: int
     next_reminder_at: str | None
@@ -18,13 +18,13 @@ class RecoveryNotificationStatusOut(RiverhogModel):
     last_failure: str | None = None
 
 
-class RecoverySessionProgressOut(RiverhogModel):
+class ArchiveRestoreProgressOut(RiverhogModel):
     archive_verification: Literal["pending", "in_progress", "completed", "failed"]
     extraction: Literal["pending", "in_progress", "completed", "failed"]
     materialization: Literal["pending", "in_progress", "completed", "failed"]
 
 
-class RecoverySessionImageOut(RiverhogModel):
+class ArchiveRestoreImageOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
@@ -41,20 +41,20 @@ class RecoverySessionImageOut(RiverhogModel):
     ] = "pending"
 
 
-class RecoverySessionCollectionOut(RiverhogModel):
+class ArchiveRestoreCollectionOut(RiverhogModel):
     id: str
-    glacier: GlacierArchiveOut
+    archive: ArchiveOut
     collection_manifest: CollectionManifestOut | None = None
     stored_bytes: int
 
 
-class RecoverySessionOut(RiverhogModel):
+class ArchiveRestoreOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    type: Literal["collection_restore", "image_rebuild"] = "image_rebuild"
+    type: Literal["fetch_materialization", "disc_rebuild"] = "disc_rebuild"
     state: Literal[
-        "restore_requested",
+        "requested",
         "ready",
         "paused",
         "expired",
@@ -63,23 +63,23 @@ class RecoverySessionOut(RiverhogModel):
         "canceled",
     ]
     created_at: str
-    restore_requested_at: str | None
-    restore_ready_at: str | None
-    restore_expires_at: str | None
+    requested_at: str | None
+    ready_at: str | None
+    expires_at: str | None
     completed_at: str | None
     canceled_at: str | None = None
     paused_at: str | None = None
     paused_from_state: str | None = None
-    restore_paths: list[str] | None = None
+    paths: list[str] | None = None
     latest_message: str | None
     warnings: list[str]
-    notification: RecoveryNotificationStatusOut
-    progress: RecoverySessionProgressOut
-    collections: list[RecoverySessionCollectionOut] = Field(default_factory=list)
-    images: list[RecoverySessionImageOut]
+    notification: ArchiveRestoreNotificationStatusOut
+    progress: ArchiveRestoreProgressOut
+    collections: list[ArchiveRestoreCollectionOut] = Field(default_factory=list)
+    images: list[ArchiveRestoreImageOut]
 
 
-class RecoverySessionListOut(RiverhogModel):
+class ArchiveRestoreListOut(RiverhogModel):
     page: int
     per_page: int
     total: int
@@ -89,15 +89,15 @@ class RecoverySessionListOut(RiverhogModel):
         "id",
         "type",
         "state",
-        "restore_ready_at",
-        "restore_expires_at",
+        "ready_at",
+        "expires_at",
     ]
     order: Literal["asc", "desc"]
     terminal: Literal["active", "terminal", "all"] = "all"
-    type: Literal["collection_restore", "image_rebuild"] | None
+    type: Literal["fetch_materialization", "disc_rebuild"] | None
     state: (
         Literal[
-            "restore_requested",
+            "requested",
             "ready",
             "paused",
             "expired",
@@ -109,4 +109,4 @@ class RecoverySessionListOut(RiverhogModel):
     )
     collection: str | None
     image: str | None
-    sessions: list[RecoverySessionOut]
+    restores: list[ArchiveRestoreOut]

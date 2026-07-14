@@ -4,9 +4,9 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from riverhog_api.schemas.archive import CollectionManifestOut, GlacierArchiveOut
+from riverhog_api.schemas.archive import ArchiveOut, CollectionManifestOut
 from riverhog_api.schemas.common import RiverhogModel
-from riverhog_api.schemas.images import CopyOut
+from riverhog_api.schemas.images import DiscOut
 
 
 class CollectionUploadFileIn(RiverhogModel):
@@ -63,6 +63,11 @@ class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
     pass
 
 
+class CoverageOut(RiverhogModel):
+    state: Literal["none", "partial", "full"]
+    bytes: int
+
+
 class CollectionSummaryOut(RiverhogModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -70,15 +75,12 @@ class CollectionSummaryOut(RiverhogModel):
     files: int
     bytes: int
     hot_bytes: int
-    archived_bytes: int
-    pending_bytes: int
-    glacier: GlacierArchiveOut | None = None
+    archive: ArchiveOut | None = None
     collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
-    disc_coverage: CollectionDiscCoverageOut | None = None
-    protection_state: str
-    protected_bytes: int
+    disc_coverage: CoverageOut
+    disc_redundancy: CoverageOut
     image_coverage: list[CollectionCoverageImageOut]
 
 
@@ -89,15 +91,12 @@ class CollectionListItemOut(RiverhogModel):
     files: int
     bytes: int
     hot_bytes: int
-    archived_bytes: int
-    pending_bytes: int
-    glacier: GlacierArchiveOut | None = None
+    archive: ArchiveOut | None = None
     collection_manifest: CollectionManifestOut | None = None
     archive_format: str | None = None
     compression: str | None = None
-    disc_coverage: CollectionDiscCoverageOut | None = None
-    protection_state: str
-    protected_bytes: int
+    disc_coverage: CoverageOut
+    disc_redundancy: CoverageOut
 
 
 class CollectionCoverageImageOut(RiverhogModel):
@@ -105,22 +104,14 @@ class CollectionCoverageImageOut(RiverhogModel):
 
     id: str
     filename: str
-    physical_protection_state: Literal["unprotected", "partially_protected", "protected"] | None = (
-        None
-    )
-    physical_copies_required: int
-    physical_copies_registered: int
-    physical_copies_verified: int
-    physical_copies_missing: int
+    disc_redundancy_state: Literal["none", "partial", "full"]
+    discs_required: int
+    discs_registered: int
+    discs_verified: int
+    discs_missing: int
     covered_paths: list[str]
     covered_paths_total: int | None = None
-    copies: list[CopyOut]
-
-
-class CollectionDiscCoverageOut(RiverhogModel):
-    state: Literal["none", "partial", "full"]
-    covered_bytes: int = 0
-    verified_physical_bytes: int = 0
+    discs: list[DiscOut]
 
 
 class ListCollectionsResponse(RiverhogModel):

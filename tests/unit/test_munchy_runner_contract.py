@@ -92,7 +92,7 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
 
     capabilities = runner.capabilities()
 
-    assert capabilities["archive_modes"] == ["av1_nvenc", "audio", "preserve"]
+    assert capabilities["output_modes"] == ["video", "audio", "preserve"]
     assert capabilities["tasks"] == [
         "archive_video",
         "archive_audio",
@@ -102,8 +102,8 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc", "munchy-audio"]
     assert capabilities["encode_profile"]["archive_codecs"] == ["av1_nvenc", "opus"]
     assert capabilities["encode_profile"]["containers"] == ["mkv", "webm", "opus"]
-    assert capabilities["profile_groups"]["input_path_shape"] == "<profile-group>/<file>"
-    assert capabilities["profile_groups"]["structured_routing"] is True
+    assert capabilities["groups"]["input_path_shape"] == "<group>/<file>"
+    assert capabilities["groups"]["structured_routing"] is True
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
     assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
@@ -137,16 +137,16 @@ def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
     data_path.write_bytes(b"x")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "collection_archive_destination": "riverhog",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "groups": {},
             },
-            "files": [{"path": "video/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "video/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
 
@@ -230,7 +230,7 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
             structured_routing=True,
             groups={
                 "video": runner.StorageGroupHint(
-                    archive_mode="av1_nvenc",
+                    output_mode="video",
                     tasks=["archive_video"],
                 )
             },
@@ -246,24 +246,24 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     )
 
 
-def test_preserve_profile_groups_are_copy_only(
+def test_preserve_groups_are_copy_only(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
-    group = runner.ProfileGroupConfig(
-        archive_mode="preserve",
+    group = runner.GroupConfig(
+        output_mode="preserve",
         tasks=["archive_video"],
     )
     storage_group = runner.StorageGroupHint(
-        archive_mode="preserve",
+        output_mode="preserve",
         tasks=["archive_video"],
     )
 
-    assert group.archive_mode == "preserve"
+    assert group.output_mode == "preserve"
     assert group.tasks == []
-    assert storage_group.archive_mode == "preserve"
+    assert storage_group.output_mode == "preserve"
     assert storage_group.tasks == []
 
 
@@ -314,8 +314,8 @@ def test_review_job_request_accepts_general_sweep_config(
     req = runner.CreateJobRequest(
         workflow_mode="review",
         groups={
-            "video": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]},
-            "photo": {"archive_mode": "preserve", "tasks": []},
+            "video": {"output_mode": "video", "tasks": ["qcut_video"]},
+            "photo": {"output_mode": "preserve", "tasks": []},
         },
         review={
             "device_id": "camera",
@@ -353,11 +353,11 @@ def test_review_job_storage_hint_uses_review_target_destination(
 
     req = runner.CreateJobRequest(
         workflow_mode="review",
-        archive_mode="av1_nvenc",
+        output_mode="video",
         tasks=["qcut_video"],
         groups={
             "camera-main-video": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
                 "max_parallel_encodes": 4,
                 "eager_pipeline_batches": 1,
@@ -378,11 +378,11 @@ def test_review_job_storage_hint_uses_review_target_destination(
     assert hint == {
         "workflow_mode": "review",
         "collection_archive_destination": "target",
-        "archive_mode": "av1_nvenc",
+        "output_mode": "video",
         "tasks": ["qcut_video"],
         "groups": {
             "camera-main-video": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
                 "eager_pipeline_batches": 1,
             }
@@ -402,7 +402,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
         workflow_mode="collection_archive",
         groups={
             "phone-video": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "metadata_projection": {
                     "creators": ["Nash Spence", "Katie Spence", "Nash Spence"],
@@ -421,7 +421,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
         },
     )
 
-    projection = runner.profile_group_dump(req.groups["phone-video"])["metadata_projection"]
+    projection = runner.group_dump(req.groups["phone-video"])["metadata_projection"]
 
     assert projection["creators"] == ["Nash Spence", "Katie Spence"]
     assert projection["device"] == {
@@ -447,16 +447,16 @@ def test_create_job_request_accepts_disabled_group_metadata_projection(
         workflow_mode="collection_archive",
         groups={
             "device-state": {
-                "archive_mode": "preserve",
+                "output_mode": "preserve",
                 "metadata_projection": False,
             },
         },
     )
 
-    assert runner.profile_group_dump(req.groups["device-state"])["metadata_projection"] is False
+    assert runner.group_dump(req.groups["device-state"])["metadata_projection"] is False
 
 
-def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
+def test_create_job_request_accepts_routing_extra_exiftool_tags(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -467,11 +467,11 @@ def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
         workflow_mode="collection_archive",
         groups={
             "video": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
             },
         },
-        profile_routing={
+        routing={
             "extra_exiftool_tags": [
                 "AndroidCaptureFPS",
                 "AndroidMake",
@@ -487,7 +487,7 @@ def test_create_job_request_accepts_profile_routing_extra_exiftool_tags(
         },
     )
 
-    routing = req.profile_routing.model_dump(exclude_none=True)
+    routing = req.routing.model_dump(exclude_none=True)
 
     assert routing["extra_exiftool_tags"] == ["AndroidCaptureFPS", "AndroidMake"]
 
@@ -503,11 +503,11 @@ def test_create_job_request_accepts_sidecar_fact_extractors(
         workflow_mode="collection_archive",
         groups={
             "video": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
             },
         },
-        profile_routing={
+        routing={
             "sidecars": [
                 {
                     "id": "camera_xml",
@@ -542,7 +542,7 @@ def test_create_job_request_accepts_sidecar_fact_extractors(
         },
     )
 
-    routing = req.profile_routing.model_dump(exclude_none=True)
+    routing = req.routing.model_dump(exclude_none=True)
 
     assert routing["sidecars"][0]["facts"]["extractors"] == [
         {
@@ -567,28 +567,28 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     shared_file.write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
-                    "preserve": {"archive_mode": "preserve", "tasks": []},
+                    "video": {"output_mode": "video", "tasks": ["archive_video"]},
+                    "preserve": {"output_mode": "preserve", "tasks": []},
                 },
             },
             "files": [
                 {
                     "path": "front-door/clip.mp4",
                     "bytes": 5,
-                    "upload_id": "front-door-clip",
+                    "file_upload_id": "front-door-clip",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "front-door/pending.mp4",
                     "bytes": 5,
-                    "upload_id": "front-door-pending",
+                    "file_upload_id": "front-door-pending",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -598,7 +598,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "routes": [
                 {
                     "id": "front-door-video",
@@ -609,8 +609,8 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
         },
     }
     groups = {
-        "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
-        "preserve": {"archive_mode": "preserve", "tasks": []},
+        "video": {"output_mode": "video", "tasks": ["archive_video"]},
+        "preserve": {"output_mode": "preserve", "tasks": []},
     }
 
     routed = runner.route_completed_input_files(job, upload, groups)
@@ -624,7 +624,7 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     )
 
 
-def test_profile_routing_manifest_records_actual_route_and_output(
+def test_routing_manifest_records_actual_route_and_output(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -636,13 +636,13 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     shared_file.write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+                    "video": {"output_mode": "video", "tasks": ["archive_video"]},
                 },
             },
             "files": [
@@ -650,7 +650,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
                     "path": "phone/IMG_0001.MOV",
                     "bytes": 5,
                     "sha256": "0" * 64,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 }
@@ -662,7 +662,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
         "input_upload_id": "upload-1",
         "collection_slug": "phone-collection-archive",
         "collection_timestamp": "20260628T000000Z",
-        "profile_routing": {
+        "routing": {
             "routes": [
                 {
                     "id": "iphone-video",
@@ -675,7 +675,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     }
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
         }
@@ -692,10 +692,10 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"webm")
 
-    runner.write_profile_routing_manifest(job, routed, groups, archive_dir)
+    runner.write_routing_manifest(job, routed, groups, archive_dir)
 
     manifest = json.loads((archive_dir / runner.ROUTING_MANIFEST_FILENAME).read_text())
-    assert manifest["schema"] == "munchy.profile-routing-manifest"
+    assert manifest["schema"] == "munchy.routing-manifest"
     assert manifest["job_id"] == "job-1"
     assert manifest["files"] == [
         {
@@ -719,7 +719,7 @@ def test_profile_routing_manifest_records_actual_route_and_output(
     ]
 
 
-def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
+def test_routing_manifest_records_sidecar_evidence_without_fake_output(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -732,13 +732,13 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
     (shared_root / "IMG_0001.MOV.xmp").write_text("<xmpmeta />", encoding="utf-8")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+                    "video": {"output_mode": "video", "tasks": ["archive_video"]},
                 },
             },
             "files": [
@@ -746,7 +746,7 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
                     "path": "phone/IMG_0001.MOV",
                     "bytes": 5,
                     "sha256": "0" * 64,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -754,7 +754,7 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
                     "path": "phone/IMG_0001.MOV.xmp",
                     "bytes": 11,
                     "sha256": "1" * 64,
-                    "upload_id": "phone-xmp-1",
+                    "file_upload_id": "phone-xmp-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -766,7 +766,7 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
         "input_upload_id": "upload-1",
         "collection_slug": "phone-collection-archive",
         "collection_timestamp": "20260628T000000Z",
-        "profile_routing": {
+        "routing": {
             "sidecars": [
                 {
                     "id": "xmp",
@@ -786,7 +786,7 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
     }
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
         }
@@ -802,7 +802,7 @@ def test_profile_routing_manifest_records_sidecar_evidence_without_fake_output(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"webm")
 
-    runner.write_profile_routing_manifest(job, routed, groups, archive_dir)
+    runner.write_routing_manifest(job, routed, groups, archive_dir)
 
     manifest = json.loads((archive_dir / runner.ROUTING_MANIFEST_FILENAME).read_text())
     files_by_source = {item["source"]["path"]: item for item in manifest["files"]}
@@ -834,12 +834,12 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     runner.init_state_store()
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "video/IMG_0001.MOV",
                     "bytes": 5,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "metadata_projection_metadata": {
                         "capture_date": "2026-06-28T20:30:40-07:00",
                         "capture_date_source": "exif.date_time_original",
@@ -852,10 +852,10 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                         "creators": ["Nash Spence"],
                         "tags": [],
                     },
-                    "profile_route_id": "iphone-video",
+                    "route_id": "iphone-video",
                     "resolved_group_rel": "iphone/video/IMG_0001.MOV",
-                    "profile_pair_kind": "live-photo",
-                    "profile_pair_role": "movie",
+                    "pair_kind": "live-photo",
+                    "pair_role": "movie",
                 }
             ],
         }
@@ -868,7 +868,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     runner.save_job(job)
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
             "metadata_projection": {
@@ -929,12 +929,12 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     runner.init_state_store()
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "video/IMG_0001.MOV",
                     "bytes": 5,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "metadata_projection_metadata": {
                         "capture_date": "2026-06-28T20:30:40-07:00",
                         "capture_date_source": "exif.date_time_original",
@@ -947,7 +947,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
                         "creators": ["Nash Spence"],
                         "tags": [],
                     },
-                    "profile_route_id": "iphone-video",
+                    "route_id": "iphone-video",
                     "resolved_group_rel": "iphone/video/IMG_0001.MOV",
                 }
             ],
@@ -955,7 +955,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     )
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
             "metadata_projection": {
@@ -1020,7 +1020,7 @@ def test_metadata_projection_still_fails_for_missing_unhanded_output(
     runner.init_state_store()
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "video/IMG_0001.MOV",
@@ -1041,7 +1041,7 @@ def test_metadata_projection_still_fails_for_missing_unhanded_output(
     job = {"job_id": "job-1", "input_upload_id": "upload-1"}
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
             "metadata_projection": {"enabled": True},
@@ -1073,12 +1073,12 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     )
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "phone/IMG_0001.HEIC",
                     "bytes": 5,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "metadata_projection_metadata": {
                         "capture_date": "2026-06-28T20:30:40-07:00",
                         "capture_date_source": "exif.date_time_original",
@@ -1091,18 +1091,18 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
                         "creators": ["Nash Spence"],
                         "tags": [],
                     },
-                    "profile_route_id": "iphone-photo",
+                    "route_id": "iphone-photo",
                     "resolved_group": "photos",
                     "resolved_group_rel": "IMG_0001.HEIC",
                 },
                 {
                     "path": "phone/IMG_0001.HEIC.xmp",
                     "bytes": 20,
-                    "upload_id": "phone-xmp-1",
-                    "profile_route_action": "evidence",
-                    "profile_sidecar_id": "xmp",
-                    "profile_sidecar_format": "xmp",
-                    "profile_sidecar_for": "phone/IMG_0001.HEIC",
+                    "file_upload_id": "phone-xmp-1",
+                    "route_action": "evidence",
+                    "sidecar_id": "xmp",
+                    "sidecar_format": "xmp",
+                    "sidecar_for": "phone/IMG_0001.HEIC",
                     "resolved_group": "photos",
                     "resolved_group_rel": "IMG_0001.HEIC.xmp",
                 },
@@ -1117,7 +1117,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     runner.save_job(job)
     groups = {
         "photos": {
-            "archive_mode": "preserve",
+            "output_mode": "preserve",
             "tasks": [],
             "metadata_projection": {
                 "enabled": True,
@@ -1165,10 +1165,10 @@ def test_source_artifact_entries_include_sidecar_evidence_for_reencodes(
             primary_state,
             {
                 "path": "phone/IMG_0001.MOV.xmp",
-                "profile_route_action": "evidence",
-                "profile_sidecar_id": "xmp",
-                "profile_sidecar_format": "xmp",
-                "profile_sidecar_for": "phone/IMG_0001.MOV",
+                "route_action": "evidence",
+                "sidecar_id": "xmp",
+                "sidecar_format": "xmp",
+                "sidecar_for": "phone/IMG_0001.MOV",
                 "resolved_group": "video",
                 "resolved_group_rel": "iphone/IMG_0001.MOV.xmp",
             },
@@ -1291,23 +1291,23 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
 
     monkeypatch.setattr(runner, "exiftool_for_routing", fake_exiftool)
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
             {
                 "path": "camera/C0001.MP4",
                 "bytes": 5,
-                "upload_id": "camera-video-1",
+                "file_upload_id": "camera-video-1",
                 "resolved_group": "video",
                 "resolved_group_rel": "camera/C0001.MP4",
             },
             {
                 "path": "camera/C0001M01.XML",
                 "bytes": 12,
-                "upload_id": "camera-xml-1",
-                "profile_route_action": "evidence",
-                "profile_sidecar_id": "camera_xml",
-                "profile_sidecar_format": "xml",
-                "profile_sidecar_for": "camera/C0001.MP4",
+                "file_upload_id": "camera-xml-1",
+                "route_action": "evidence",
+                "sidecar_id": "camera_xml",
+                "sidecar_format": "xml",
+                "sidecar_for": "camera/C0001.MP4",
                 "resolved_group": "video",
                 "resolved_group_rel": "camera/C0001M01.XML",
             },
@@ -1315,7 +1315,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     }
     job = {
         "job_id": "job-1",
-        "profile_routing": {
+        "routing": {
             "sidecars": [
                 {
                     "id": "camera_xml",
@@ -1396,10 +1396,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     )
     assert metadata["gps"]["latitude"] == pytest.approx(48.99950361)
     assert metadata["gps"]["longitude"] == pytest.approx(-122.74043861)
-    assert (
-        metadata["gps_source"]
-        == "sidecar:camera_xml:exif.gps_latitude+exif.gps_longitude"
-    )
+    assert metadata["gps_source"] == "sidecar:camera_xml:exif.gps_latitude+exif.gps_longitude"
     assert (
         sidecar_path,
         (
@@ -1535,7 +1532,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
     group_config = {
-        "archive_mode": "av1_nvenc",
+        "output_mode": "video",
         "tasks": ["archive_video"],
         "max_parallel_encodes": 3,
         "metadata_projection": {
@@ -1546,7 +1543,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     file_state = {
         "path": "camera/IMG_0001.MOV",
         "bytes": 5,
-        "upload_id": "upload-a",
+        "file_upload_id": "upload-a",
         "metadata_projection_metadata": {
             "capture_date": "2026-06-28T20:30:40-07:00",
             "capture_date_source": "exif.date_time_original",
@@ -1560,7 +1557,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
 
     container_metadata, changed = runner.container_metadata_for_gpu_payload(
         {"job_id": "job-1"},
-        {"upload_id": "upload-1", "files": [file_state]},
+        {"input_upload_id": "upload-1", "files": [file_state]},
         [file_state],
         group_name="camera",
         group_config=group_config,
@@ -1597,20 +1594,18 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     tusd_source.write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
-                "groups": {
-                    "camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
-                },
+                "groups": {"camera": {"output_mode": "video", "tasks": ["archive_video"]}},
             },
             "files": [
                 {
                     "path": "camera/Back Yard_00_20260630123456.mp4",
                     "bytes": 5,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                 }
             ],
         }
@@ -1623,7 +1618,7 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     }
     runner.save_job(job)
     group_config = {
-        "archive_mode": "av1_nvenc",
+        "output_mode": "video",
         "tasks": ["archive_video"],
         "metadata_projection": {
             "gps": {"latitude": 48.9995, "longitude": -122.7404},
@@ -1659,9 +1654,10 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     assert exiftool_paths[0] != tusd_source
     assert exiftool_paths[0].name == "Back Yard_00_20260630123456.mp4"
     assert "eager-input" in exiftool_paths[0].parts
-    assert payloads[0]["container_metadata"]["Back Yard_00_20260630123456.mp4"][
-        "capture_date"
-    ] == "2026-06-30T12:34:56-07:00"
+    assert (
+        payloads[0]["container_metadata"]["Back Yard_00_20260630123456.mp4"]["capture_date"]
+        == "2026-06-30T12:34:56-07:00"
+    )
     assert updated["files"][0]["metadata_projection_metadata"]["capture_date"] == (
         "2026-06-30T12:34:56-07:00"
     )
@@ -1678,7 +1674,7 @@ def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     file_state = {
         "path": "phone/IMG_0001.HEIC",
         "bytes": 5,
-        "upload_id": "phone-img-0001",
+        "file_upload_id": "phone-img-0001",
         "input_upload_id": upload_id,
         "structured_routing": True,
         "resolved_group": "phone-preserve",
@@ -1709,18 +1705,18 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     shared_file.write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}},
+                "groups": {"phone-video": {"output_mode": "video", "tasks": []}},
             },
             "files": [
                 {
                     "path": "phone/IMG_0001.MOV",
                     "bytes": 5,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 }
@@ -1748,7 +1744,7 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "routes": [
                 {
                     "id": "iphone-4k",
@@ -1764,14 +1760,11 @@ def test_completed_structured_file_can_route_by_probe_metadata(
             ]
         },
     }
-    groups = {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}}
+    groups = {"phone-video": {"output_mode": "video", "tasks": []}}
 
     routed = runner.route_completed_input_files(job, upload, groups)
 
-    assert (
-        runner.upload_files_for_groups(routed, {"phone-video"})[0]["profile_route_id"]
-        == "iphone-4k"
-    )
+    assert runner.upload_files_for_groups(routed, {"phone-video"})[0]["route_id"] == "iphone-4k"
 
 
 def test_sidecar_evidence_is_not_probed_during_runner_routing(
@@ -1788,25 +1781,25 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     sidecar_file.write_text("<xmpmeta />", encoding="utf-8")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}},
+                "groups": {"phone-video": {"output_mode": "video", "tasks": []}},
             },
             "files": [
                 {
                     "path": "phone/IMG_0001.MOV",
                     "bytes": 5,
-                    "upload_id": "phone-img-1",
+                    "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "phone/IMG_0001.MOV.xmp",
                     "bytes": 11,
-                    "upload_id": "phone-xmp-1",
+                    "file_upload_id": "phone-xmp-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -1836,7 +1829,7 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "sidecars": [
                 {
                     "id": "xmp",
@@ -1858,18 +1851,16 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
             ],
         },
     }
-    groups = {"phone-video": {"archive_mode": "av1_nvenc", "tasks": []}}
+    groups = {"phone-video": {"output_mode": "video", "tasks": []}}
 
     routed = runner.route_completed_input_files(job, upload, groups)
 
     assert probed == [video_file]
     files_by_path = {item["path"]: item for item in routed["files"]}
-    assert files_by_path["phone/IMG_0001.MOV"]["profile_route_id"] == "iphone-4k"
-    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_route_action"] == "evidence"
-    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_sidecar_id"] == "xmp"
-    assert files_by_path["phone/IMG_0001.MOV.xmp"]["profile_sidecar_for"] == (
-        "phone/IMG_0001.MOV"
-    )
+    assert files_by_path["phone/IMG_0001.MOV"]["route_id"] == "iphone-4k"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["route_action"] == "evidence"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["sidecar_id"] == "xmp"
+    assert files_by_path["phone/IMG_0001.MOV.xmp"]["sidecar_for"] == ("phone/IMG_0001.MOV")
 
 
 def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
@@ -1886,39 +1877,39 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     (shared_root / "C0002.MP4").write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+                "groups": {"video": {"output_mode": "video", "tasks": ["archive_video"]}},
             },
             "files": [
                 {
                     "path": "camera/C0001.MP4",
                     "bytes": 5,
-                    "upload_id": "camera-video-1",
+                    "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "camera/C0001M01.XML",
                     "bytes": 12,
-                    "upload_id": "camera-xml-1",
+                    "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "camera/C0002.MP4",
                     "bytes": 5,
-                    "upload_id": "camera-video-2",
+                    "file_upload_id": "camera-video-2",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "camera/C0002M01.XML",
                     "bytes": 12,
-                    "upload_id": "camera-xml-2",
+                    "file_upload_id": "camera-xml-2",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -1928,7 +1919,7 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "sidecars": [
                 {
                     "id": "camera_xml",
@@ -1948,7 +1939,7 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     }
     groups = {
         "video": {
-            "archive_mode": "av1_nvenc",
+            "output_mode": "video",
             "tasks": ["archive_video"],
             "encode_profile": {"archive": {"container": "webm"}},
         }
@@ -1957,10 +1948,10 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     routed = runner.route_completed_input_files(job, upload, groups)
 
     files_by_path = {item["path"]: item for item in routed["files"]}
-    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == "camera-video"
-    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
-    assert "profile_route_id" not in files_by_path["camera/C0002.MP4"]
-    assert "profile_route_action" not in files_by_path["camera/C0002M01.XML"]
+    assert files_by_path["camera/C0001.MP4"]["route_id"] == "camera-video"
+    assert files_by_path["camera/C0001M01.XML"]["route_action"] == "evidence"
+    assert "route_id" not in files_by_path["camera/C0002.MP4"]
+    assert "route_action" not in files_by_path["camera/C0002M01.XML"]
 
     ready = runner.ready_eager_files(
         job,
@@ -1991,25 +1982,25 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     sidecar_file.write_text("<metadata />", encoding="utf-8")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+                "groups": {"video": {"output_mode": "video", "tasks": []}},
             },
             "files": [
                 {
                     "path": "camera/C0001.MP4",
                     "bytes": 5,
-                    "upload_id": "camera-video-1",
+                    "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "camera/C0001M01.XML",
                     "bytes": 12,
-                    "upload_id": "camera-xml-1",
+                    "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -2034,7 +2025,7 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "sidecars": [
                 {
                     "id": "camera_xml",
@@ -2065,13 +2056,13 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     routed = runner.route_completed_input_files(
         job,
         upload,
-        {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+        {"video": {"output_mode": "video", "tasks": []}},
     )
 
     files_by_path = {item["path"]: item for item in routed["files"]}
-    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == "sidecar-camera-video"
-    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
-    assert files_by_path["camera/C0001M01.XML"]["profile_sidecar_id"] == "camera_xml"
+    assert files_by_path["camera/C0001.MP4"]["route_id"] == "sidecar-camera-video"
+    assert files_by_path["camera/C0001M01.XML"]["route_action"] == "evidence"
+    assert files_by_path["camera/C0001M01.XML"]["sidecar_id"] == "camera_xml"
     assert exiftool_calls == [(sidecar_file, ("Make", "Model"))]
 
 
@@ -2089,25 +2080,25 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
     sidecar_file.write_text("<metadata />", encoding="utf-8")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+                "groups": {"video": {"output_mode": "video", "tasks": []}},
             },
             "files": [
                 {
                     "path": "camera/C0001.MP4",
                     "bytes": 5,
-                    "upload_id": "camera-video-1",
+                    "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
                 {
                     "path": "camera/C0001M01.XML",
                     "bytes": 12,
-                    "upload_id": "camera-xml-1",
+                    "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -2133,7 +2124,7 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "extra_exiftool_tags": ["VideoAvgBitrate"],
             "sidecars": [
                 {
@@ -2169,19 +2160,17 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
     routed = runner.route_completed_input_files(
         job,
         upload,
-        {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+        {"video": {"output_mode": "video", "tasks": []}},
     )
 
     files_by_path = {item["path"]: item for item in routed["files"]}
-    assert files_by_path["camera/C0001.MP4"]["profile_route_id"] == (
-        "sidecar-and-bitrate-video"
-    )
-    assert files_by_path["camera/C0001M01.XML"]["profile_route_action"] == "evidence"
+    assert files_by_path["camera/C0001.MP4"]["route_id"] == ("sidecar-and-bitrate-video")
+    assert files_by_path["camera/C0001M01.XML"]["route_action"] == "evidence"
     assert [path for path, _tags in exiftool_calls] == [sidecar_file, video_file]
     assert exiftool_calls[0] == (sidecar_file, ("Make",))
 
 
-def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
+def test_routing_skips_expensive_tools_for_path_only_runner_route(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2193,18 +2182,18 @@ def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
     state_file.write_bytes(b"state")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "structured_routing": True,
-                "groups": {"state": {"archive_mode": "preserve", "tasks": []}},
+                "groups": {"state": {"output_mode": "preserve", "tasks": []}},
             },
             "files": [
                 {
                     "path": "camera/leinfo.sav",
                     "bytes": 5,
-                    "upload_id": "state-1",
+                    "file_upload_id": "state-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 },
@@ -2223,7 +2212,7 @@ def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "routes": [
                 {
                     "id": "device-state",
@@ -2249,16 +2238,16 @@ def test_profile_routing_skips_expensive_tools_for_path_only_runner_route(
         job,
         upload,
         {
-            "state": {"archive_mode": "preserve", "tasks": []},
-            "video": {"archive_mode": "av1_nvenc", "tasks": []},
+            "state": {"output_mode": "preserve", "tasks": []},
+            "video": {"output_mode": "video", "tasks": []},
         },
     )
 
-    assert routed["files"][0]["profile_route_id"] == "device-state"
+    assert routed["files"][0]["route_id"] == "device-state"
     assert routed["files"][0]["resolved_group"] == "state"
 
 
-def test_profile_routing_preflight_uses_submitted_probe_summary(
+def test_routing_preflight_uses_submitted_probe_summary(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2266,7 +2255,7 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [
                 {
@@ -2290,11 +2279,11 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
             ],
             "groups": {
                 "live-photo": {
-                    "archive_mode": "preserve",
+                    "output_mode": "preserve",
                     "tasks": [],
                 }
             },
-            "profile_routing": {
+            "routing": {
                 "routes": [
                     {
                         "id": "iphone-live-photo-sidecar",
@@ -2344,7 +2333,7 @@ def test_profile_routing_preflight_uses_submitted_probe_summary(
     ]
 
 
-def test_profile_routing_preflight_uses_submitted_sidecar_facts(
+def test_routing_preflight_uses_submitted_sidecar_facts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2352,7 +2341,7 @@ def test_profile_routing_preflight_uses_submitted_sidecar_facts(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [
                 {"path": "camera/C0001.MP4", "bytes": 100},
@@ -2365,8 +2354,8 @@ def test_profile_routing_preflight_uses_submitted_sidecar_facts(
                     },
                 },
             ],
-            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
-            "profile_routing": {
+            "groups": {"video": {"output_mode": "video", "tasks": []}},
+            "routing": {
                 "sidecars": [
                     {
                         "id": "camera_xml",
@@ -2409,7 +2398,7 @@ def test_profile_routing_preflight_uses_submitted_sidecar_facts(
     }
 
 
-def test_profile_routing_preflight_reports_missing_sidecar_facts(
+def test_routing_preflight_reports_missing_sidecar_facts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2417,14 +2406,14 @@ def test_profile_routing_preflight_reports_missing_sidecar_facts(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [
                 {"path": "camera/C0001.MP4", "bytes": 100},
                 {"path": "camera/C0001M01.XML", "bytes": 20},
             ],
-            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
-            "profile_routing": {
+            "groups": {"video": {"output_mode": "video", "tasks": []}},
+            "routing": {
                 "sidecars": [
                     {
                         "id": "camera_xml",
@@ -2453,12 +2442,13 @@ def test_profile_routing_preflight_reports_missing_sidecar_facts(
     assert payload["ok"] is False
     assert payload["unmatched"][0]["path"] == "camera/C0001.MP4"
     assert payload["unmatched"][0]["reason"] == "sidecar_facts_failed"
-    assert "configured sidecar facts were not submitted" in (
-        payload["unmatched"][0]["sidecar_facts_error"]
+    assert (
+        "configured sidecar facts were not submitted"
+        in (payload["unmatched"][0]["sidecar_facts_error"])
     )
 
 
-def test_profile_routing_preflight_reports_sidecar_evidence(
+def test_routing_preflight_reports_sidecar_evidence(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2466,7 +2456,7 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [
                 {"path": "phone/IMG_0001.MOV", "bytes": 100},
@@ -2482,7 +2472,7 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
             ],
             "groups": {
                 "video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                     "metadata_projection": {
                         "capture_date_sources": [
@@ -2501,7 +2491,7 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
                     },
                 }
             },
-            "profile_routing": {
+            "routing": {
                 "sidecars": [
                     {
                         "id": "xmp",
@@ -2556,7 +2546,7 @@ def test_profile_routing_preflight_reports_sidecar_evidence(
     }
 
 
-def test_profile_routing_preflight_keeps_metadata_projection_diagnostic_by_default(
+def test_routing_preflight_keeps_metadata_projection_diagnostic_by_default(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2564,12 +2554,12 @@ def test_profile_routing_preflight_keeps_metadata_projection_diagnostic_by_defau
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
             "groups": {
                 "video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                     "metadata_projection": {
                         "gps": {"latitude": 48.9995, "longitude": -122.7404},
@@ -2578,7 +2568,7 @@ def test_profile_routing_preflight_keeps_metadata_projection_diagnostic_by_defau
                     },
                 }
             },
-            "profile_routing": {
+            "routing": {
                 "routes": [
                     {
                         "id": "camera-video",
@@ -2600,7 +2590,7 @@ def test_profile_routing_preflight_keeps_metadata_projection_diagnostic_by_defau
     assert "requires a valid capture date" in projection["error"]
 
 
-def test_profile_routing_preflight_can_enforce_metadata_projection(
+def test_routing_preflight_can_enforce_metadata_projection(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2608,13 +2598,13 @@ def test_profile_routing_preflight_can_enforce_metadata_projection(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "enforce_metadata_projection": True,
             "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
             "groups": {
                 "video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                     "metadata_projection": {
                         "gps": {"latitude": 48.9995, "longitude": -122.7404},
@@ -2623,7 +2613,7 @@ def test_profile_routing_preflight_can_enforce_metadata_projection(
                     },
                 }
             },
-            "profile_routing": {
+            "routing": {
                 "routes": [
                     {
                         "id": "camera-video",
@@ -2648,7 +2638,7 @@ def test_profile_routing_preflight_can_enforce_metadata_projection(
     assert readout_by_path["camera/C0001.MP4"]["metadata_projection"]["ok"] is False
 
 
-def test_profile_routing_preflight_reports_fallthrough(
+def test_routing_preflight_reports_fallthrough(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2656,11 +2646,11 @@ def test_profile_routing_preflight_reports_fallthrough(
     client = TestClient(runner.app)
 
     response = client.post(
-        "/v1/profile-routing/preflight",
+        "/v1/routing/preflight",
         json={
             "files": [{"path": "phone/IMG_0001.HEIC", "bytes": 123}],
-            "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
-            "profile_routing": {
+            "groups": {"video": {"output_mode": "video", "tasks": []}},
+            "routing": {
                 "routes": [
                     {
                         "id": "phone-video",
@@ -2698,14 +2688,14 @@ def test_completed_structured_file_fails_when_no_route_matches(
     shared_file.write_bytes(b"video")
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {"workflow_mode": "collection_archive", "structured_routing": True},
             "files": [
                 {
                     "path": "unknown/clip.mp4",
                     "bytes": 5,
-                    "upload_id": "unknown-clip",
+                    "file_upload_id": "unknown-clip",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 }
@@ -2715,7 +2705,7 @@ def test_completed_structured_file_fails_when_no_route_matches(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "profile_routing": {
+        "routing": {
             "routes": [
                 {
                     "id": "front-door-video",
@@ -2730,7 +2720,7 @@ def test_completed_structured_file_fails_when_no_route_matches(
         runner.route_completed_input_files(
             job,
             upload,
-            {"video": {"archive_mode": "av1_nvenc", "tasks": []}},
+            {"video": {"output_mode": "video", "tasks": []}},
         )
 
 
@@ -2752,7 +2742,7 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
         workflow_mode="collection_archive",
         groups={
             "camera": runner.StorageGroupHint(
-                archive_mode="av1_nvenc",
+                output_mode="video",
                 tasks=["archive_video"],
             )
         },
@@ -2772,8 +2762,8 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     files = [runner.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
     hint = runner.InputUploadStorageHint(
         workflow_mode="collection_archive",
-        archive_mode="audio",
-        groups={"voice": runner.StorageGroupHint(archive_mode="audio")},
+        output_mode="audio",
+        groups={"voice": runner.StorageGroupHint(output_mode="audio")},
     )
 
     assert hint.groups["voice"].tasks == ["archive_audio"]
@@ -2794,18 +2784,18 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     source_data.parent.mkdir(parents=True, exist_ok=True)
     source_data.write_bytes(b"mp3")
     group_config = {
-        "archive_mode": "audio",
+        "output_mode": "audio",
         "tasks": ["archive_audio"],
         "metadata_projection": {"enabled": False},
     }
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "files": [
                 {
                     "path": "voice/R-00001_2606291200_REC.MP3",
                     "bytes": 3,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": upload_id,
                     "filesystem_metadata": {"stat": {"birthtime": "2026-06-29T12:00:00Z"}},
                 }
@@ -2884,7 +2874,7 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         created_at="2026-06-29T00:00:00Z",
     )
     group_config = {
-        "archive_mode": "audio",
+        "output_mode": "audio",
         "tasks": ["archive_audio"],
         "encode_profile": {
             "target": "munchy-audio",
@@ -3016,7 +3006,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
         created_at="2026-06-29T00:00:00Z",
     )
     group_config = {
-        "archive_mode": "audio",
+        "output_mode": "audio",
         "tasks": ["archive_audio"],
         "encode_profile": {
             "target": "munchy-audio",
@@ -3075,12 +3065,12 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     output = output_root / "memo" / "R-00013_2606222246_REC.opus"
     upload = runner.save_input_upload_raw(
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "files": [
                 {
                     "path": "voice/memo/R-00013_2606222246_REC.MP3",
                     "bytes": 3,
-                    "upload_id": "file-voice",
+                    "file_upload_id": "file-voice",
                     "input_upload_id": upload_id,
                     "filesystem_metadata": source_metadata,
                 }
@@ -3249,10 +3239,10 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
             message="Local media preflight failed for camera.",
             device_id="camera",
             workflow_mode="collection_archive",
-            profile_group="camera-video",
+            group="camera-video",
             collection_slug="camera-collection-archive",
             collection_timestamp="20260606T120000Z",
-            upload_id="upload-1",
+            input_upload_id="upload-1",
             job_id="job-1",
             files=2,
             failed_file_count=1,
@@ -3307,11 +3297,11 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
     }
     runner.save_job(job)
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "created_at": "2026-01-01T00:00:00Z",
         "files": [
-            {"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"},
-            {"path": "camera/b.mp4", "bytes": 1, "upload_id": "upload-b"},
+            {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
+            {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
         ],
     }
     progress = {
@@ -3401,7 +3391,7 @@ def test_eager_gpu_transient_failure_does_not_notify(
         lambda job, batch, force=False: submit_calls.append(str(batch["gpu_job_id"])),
     )
     job = {"job_id": "job-1"}
-    upload = {"upload_id": "upload-1"}
+    upload = {"input_upload_id": "upload-1"}
     batch = {
         "batch_id": "batch-1",
         "gpu_job_id": "gpu-1",
@@ -3424,9 +3414,9 @@ def test_load_input_upload_does_not_refresh_state_timestamp(
     runner.init_state_store()
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     before = runner.read_state("input-upload", "upload-1")["updated_at"]
@@ -3445,12 +3435,12 @@ def test_resume_job_clears_failed_runtime_state(
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()
-    cancelled: list[str] = []
+    canceled: list[str] = []
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda _background_tasks: None)
     monkeypatch.setattr(
         runner,
         "cancel_riverhog_upload_session",
-        lambda job, reason: cancelled.append(f"{job['job_id']}:{reason}"),
+        lambda job, reason: canceled.append(f"{job['job_id']}:{reason}"),
     )
     runner.save_job(
         {
@@ -3460,8 +3450,8 @@ def test_resume_job_clears_failed_runtime_state(
             "input_upload_id": "upload-1",
             "error": "old error",
             "finished_at": "2026-01-01T00:00:00Z",
-            "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
-            "profile_routing_result": {"files": 1},
+            "groups": {"camera": {"output_mode": "video", "tasks": ["archive_video"]}},
+            "routing_result": {"files": 1},
             "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
             "riverhog_session_upload": {"collection_id": "collection-1", "files": {}},
             "debug_bundle_dir": "/debug/old",
@@ -3473,16 +3463,14 @@ def test_resume_job_clears_failed_runtime_state(
 
     assert resumed["state"] == "queued"
     assert stored["phase"] == "queued"
-    assert cancelled == ["job-1:job_resume_reset"]
+    assert canceled == ["job-1:job_resume_reset"]
     assert "error" not in stored
     assert "finished_at" not in stored
     assert "eager_archive" not in stored
     assert "riverhog_session_upload" not in stored
-    assert "profile_routing_result" not in stored
+    assert "routing_result" not in stored
     assert "debug_bundle_dir" not in stored
-    assert stored["groups"] == {
-        "camera": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}
-    }
+    assert stored["groups"] == {"camera": {"output_mode": "video", "tasks": ["archive_video"]}}
 
 
 def test_resume_job_preserves_fully_uploaded_riverhog_session(
@@ -3629,9 +3617,9 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -3646,7 +3634,7 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
 
     job = runner.cancel_job("job-1", cleanup=True)
 
-    assert job["state"] == "cancelled"
+    assert job["state"] == "canceled"
     assert job["cleanup_requested"] is True
     assert runner.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
@@ -3669,9 +3657,9 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
     shared_root.mkdir(parents=True)
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -3695,14 +3683,14 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
 
     job = runner.cancel_job("job-1", cleanup=True)
 
-    assert job["state"] == "cancelled"
+    assert job["state"] == "canceled"
     assert runner.read_state("input-upload", "upload-1") is not None
     assert data_path.exists()
     assert shared_root.exists()
     assert "input-upload:upload-1" not in job.get("cleanup_removed", [])
 
 
-def test_finalize_cancelled_job_persists_terminal_state_before_cleanup_failures(
+def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -3721,9 +3709,9 @@ def test_finalize_cancelled_job_persists_terminal_state_before_cleanup_failures(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     job = runner.save_job(
@@ -3748,12 +3736,12 @@ def test_finalize_cancelled_job_persists_terminal_state_before_cleanup_failures(
 
     monkeypatch.setattr(runner, "cancel_riverhog_upload_session", fail_cancel)
 
-    finalized = runner.finalize_cancelled_job(job, reason="test_cancel")
+    finalized = runner.finalize_canceled_job(job, reason="test_cancel")
     stored = runner.load_job("job-1")
 
-    assert finalized["state"] == "cancelled"
-    assert stored["state"] == "cancelled"
-    assert stored["phase"] == "cancelled"
+    assert finalized["state"] == "canceled"
+    assert stored["state"] == "canceled"
+    assert stored["phase"] == "canceled"
     assert "cancel_requested" not in stored
     assert stored["riverhog_cancel_failed_at"]
     assert "riverhog cancel unavailable" in stored["riverhog_cancel_error"]
@@ -3782,9 +3770,9 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -3794,7 +3782,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
             "phase": "gpu",
             "finished_at": "2026-01-01T00:00:00Z",
             "input_upload_id": "upload-1",
-            "input_upload_progress": {"files_total": 1, "files_uploaded": 1},
+            "upload_progress": {"files_total": 1, "files_uploaded": 1},
             "groups": {"camera": {}},
         }
     )
@@ -3809,7 +3797,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     assert "input-upload:upload-1" in job["cleanup_removed"]
     assert job["cleanup_completed_at"]
     assert job["input_upload_deleted_at"]
-    assert "input_upload_progress" not in job
+    assert job["upload_progress"] == {"files_total": 1, "files_uploaded": 1}
 
 
 def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
@@ -3825,7 +3813,7 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
         runner.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
         runner.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
         runner.GPU_RUNTIME_DIR / "jobs" / computed_id,
-        runner.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-old-batch__abcdef0123",
+        runner.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-batch__abcdef0123",
     ]
     for root in roots:
         root.mkdir(parents=True)
@@ -3873,9 +3861,9 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -3917,9 +3905,9 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -3936,9 +3924,9 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
     result = runner.cleanup_once()
     job = runner.load_job("job-1")
 
-    assert result["repaired_cancelled"] == ["job-1"]
-    assert job["state"] == "cancelled"
-    assert job["phase"] == "cancelled"
+    assert result["repaired_canceled"] == ["job-1"]
+    assert job["state"] == "canceled"
+    assert job["phase"] == "canceled"
     assert "cancel_requested" not in job
     assert job["cancel_reason"] == "stale_cancel_requested"
     assert runner.read_state("input-upload", "upload-1") is None
@@ -3967,11 +3955,11 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
     output.write_bytes(b"encoded")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [
-                {"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"},
-                {"path": "camera/b.mp4", "bytes": 1, "upload_id": "upload-b"},
+                {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
+                {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
             ],
         }
     )
@@ -3984,7 +3972,7 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
             "input_upload_id": "upload-1",
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                 }
             },
@@ -4004,10 +3992,10 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
         }
     )
 
-    runner.finalize_cancelled_job(job, reason="test_cancel")
+    runner.finalize_canceled_job(job, reason="test_cancel")
     stored = runner.load_job("job-1")
 
-    assert stored["state"] == "cancelled"
+    assert stored["state"] == "canceled"
     assert stored["encode_progress"]["files_total"] == 2
     assert stored["encode_progress"]["files_encoded"] == 1
     assert stored["upload_progress"]["files_total"] == 2
@@ -4052,8 +4040,8 @@ def test_save_job_preserves_terminal_cleanup_metadata(
     runner.save_job(
         {
             "job_id": "job-1",
-            "state": "cancelled",
-            "phase": "cancelled",
+            "state": "canceled",
+            "phase": "canceled",
             "cleanup_completed_at": "2026-01-01T00:00:00Z",
             "cleanup_removed_count": 25,
             "cleanup_removed_sample": ["job-work:job-1"],
@@ -4064,8 +4052,8 @@ def test_save_job_preserves_terminal_cleanup_metadata(
     runner.save_job(
         {
             "job_id": "job-1",
-            "state": "cancelled",
-            "phase": "cancelled",
+            "state": "canceled",
+            "phase": "canceled",
             "finished_at": "2026-01-01T00:00:01Z",
         }
     )
@@ -4086,8 +4074,8 @@ def test_cleanup_terminal_job_records_empty_cleanup_completion(
     runner.init_state_store()
     job = {
         "job_id": "job-1",
-        "state": "cancelled",
-        "phase": "cancelled",
+        "state": "canceled",
+        "phase": "canceled",
     }
 
     removed = runner.cleanup_terminal_job(job)
@@ -4107,8 +4095,8 @@ def test_cleanup_terminal_job_preserves_repeat_cleanup_summary(
     runner.init_state_store()
     job = {
         "job_id": "job-1",
-        "state": "cancelled",
-        "phase": "cancelled",
+        "state": "canceled",
+        "phase": "canceled",
         "cleanup_removed": [f"/gpu/jobs/job-1-{index}" for index in range(12)],
         "cleanup_completed_at": "2026-01-01T00:00:00Z",
     }
@@ -4139,7 +4127,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
             }
         },
@@ -4274,13 +4262,13 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
         lambda path: (_ for _ in ()).throw(AssertionError("sha256 should not run")),
     )
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
             {
                 "path": "camera/a.mp4",
                 "bytes": 5,
                 "sha256": "0" * 64,
-                "upload_id": "upload-a",
+                "file_upload_id": "upload-a",
             }
         ],
     }
@@ -4293,7 +4281,7 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     assert not data_path.exists()
     marker = root / ".munchy-input-upload.json"
     metadata = json.loads(marker.read_text(encoding="utf-8"))
-    assert metadata["upload_id"] == "upload-1"
+    assert metadata["input_upload_id"] == "upload-1"
     assert metadata["files"] == 1
     monkeypatch.setattr(
         runner,
@@ -4318,18 +4306,18 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     complete_path.write_bytes(b"video-a")
     partial_path.write_bytes(b"vid")
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
             {
                 "path": "camera/a.mp4",
                 "bytes": 7,
-                "upload_id": "upload-a",
+                "file_upload_id": "upload-a",
                 "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
             },
             {
                 "path": "camera/b.mp4",
                 "bytes": 7,
-                "upload_id": "upload-b",
+                "file_upload_id": "upload-b",
                 "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
             },
         ],
@@ -4374,12 +4362,12 @@ def test_get_input_upload_does_not_sync_shared_input_tree(
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
             {
                 "path": "camera/a.mp4",
                 "bytes": 5,
-                "upload_id": "upload-a",
+                "file_upload_id": "upload-a",
             },
         ],
     }
@@ -4408,12 +4396,12 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/a.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                 }
             ],
@@ -4434,7 +4422,7 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
             "input_upload_id": "upload-1",
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                 }
             },
@@ -4456,12 +4444,12 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/photo.jpg",
                     "bytes": 3,
-                    "upload_id": "upload-photo",
+                    "file_upload_id": "upload-photo",
                     "input_upload_id": "upload-1",
                     "resolved_group": "preserve",
                     "resolved_group_rel": "photo.jpg",
@@ -4469,7 +4457,7 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
                 {
                     "path": "camera/video.mp4",
                     "bytes": 5,
-                    "upload_id": "upload-video",
+                    "file_upload_id": "upload-video",
                     "input_upload_id": "upload-1",
                     "resolved_group": "video",
                     "resolved_group_rel": "video.mp4",
@@ -4485,8 +4473,8 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
         {
             "input_upload_id": "upload-1",
             "groups": {
-                "preserve": {"archive_mode": "preserve", "tasks": []},
-                "video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]},
+                "preserve": {"output_mode": "preserve", "tasks": []},
+                "video": {"output_mode": "video", "tasks": ["archive_video"]},
             },
         }
     )
@@ -4508,13 +4496,13 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "storage_hint": {"workflow_mode": "collection_archive", "structured_routing": True},
             "files": [
                 {
                     "path": "front-door/clip.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
                 }
@@ -4529,10 +4517,10 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
             "input_upload_id": "upload-1",
             "groups": {
                 "video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video"],
                 },
-                "preserve": {"archive_mode": "preserve", "tasks": []},
+                "preserve": {"output_mode": "preserve", "tasks": []},
             },
         }
     )
@@ -4553,13 +4541,13 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploaded",
             "files": [
                 {
                     "path": "front-door/clip.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                     "resolved_group": "camera",
                     "resolved_group_rel": "front-door/clip.mp4",
@@ -4573,7 +4561,7 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
         "job_id": "job-1",
         "state": "running",
         "input_upload_id": "upload-1",
-        "profile_routing": {"routes": []},
+        "routing": {"routes": []},
     }
     runner.save_job(job)
 
@@ -4581,12 +4569,12 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
         job,
         "upload-1",
         {"preserve"},
-        {"preserve": {"archive_mode": "preserve", "tasks": []}},
+        {"preserve": {"output_mode": "preserve", "tasks": []}},
     )
 
-    assert upload["upload_id"] == "upload-1"
-    assert job["input_upload_progress"]["files_total"] == 0
-    assert job["input_upload_progress"]["files_uploaded"] == 0
+    assert upload["input_upload_id"] == "upload-1"
+    assert job["upload_progress"]["files_total"] == 0
+    assert job["upload_progress"]["files_uploaded"] == 0
 
 
 def test_non_eager_upload_progress_still_reports_shared_input_tree(
@@ -4598,12 +4586,12 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/a.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                 }
             ],
@@ -4618,7 +4606,7 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
             "input_upload_id": "upload-1",
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                 }
             },
@@ -4644,14 +4632,14 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
         "input-upload",
         upload_id,
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
                     "camera": {
-                        "archive_mode": "av1_nvenc",
+                        "output_mode": "video",
                         "tasks": ["archive_video"],
                     }
                 },
@@ -4664,7 +4652,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": runner.tusd_upload_id_for_target_path(target_path),
                     "upload_url": None,
                 }
             ],
@@ -4718,14 +4706,14 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
         "input-upload",
         upload_id,
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
                     "camera": {
-                        "archive_mode": "av1_nvenc",
+                        "output_mode": "video",
                         "tasks": ["archive_video"],
                     }
                 },
@@ -4738,7 +4726,7 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": runner.tusd_upload_id_for_target_path(target_path),
                     "upload_url": None,
                 }
             ],
@@ -4818,7 +4806,7 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
         "input-upload",
         upload_id,
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
             "files": [
@@ -4829,7 +4817,7 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "upload_id": runner.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": runner.tusd_upload_id_for_target_path(target_path),
                     "upload_url": upload_url,
                 }
             ],
@@ -4879,14 +4867,14 @@ def test_sync_shared_input_file_materializes_only_completed_file(
         "input-upload",
         upload_id,
         {
-            "upload_id": upload_id,
+            "input_upload_id": upload_id,
             "state": "uploading",
             "created_at": runner.now_iso(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
                     "camera": {
-                        "archive_mode": "av1_nvenc",
+                        "output_mode": "video",
                         "tasks": ["archive_video"],
                     }
                 },
@@ -4895,7 +4883,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                 {
                     "path": "camera/a.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "target_path": runner.target_path_for(upload_id, "camera/a.mp4"),
                     "input_upload_id": upload_id,
                     "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
@@ -4903,7 +4891,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                 {
                     "path": "camera/b.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-b",
+                    "file_upload_id": "upload-b",
                     "target_path": runner.target_path_for(upload_id, "camera/b.mp4"),
                     "input_upload_id": upload_id,
                     "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
@@ -4931,18 +4919,18 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
     runner.init_state_store()
     upload = runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/a.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                 },
                 {
                     "path": "camera/b.mp4",
                     "bytes": 7,
-                    "upload_id": "upload-b",
+                    "file_upload_id": "upload-b",
                     "input_upload_id": "upload-1",
                 },
             ],
@@ -4973,19 +4961,19 @@ def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
             {
                 "path": "camera/a.mp4",
                 "bytes": 7,
-                "upload_id": "upload-a",
+                "file_upload_id": "upload-a",
                 "input_upload_id": "upload-1",
                 "consumed_at": "2026-01-01T00:00:00Z",
             },
             {
                 "path": "camera/b.mp4",
                 "bytes": 7,
-                "upload_id": "upload-b",
+                "file_upload_id": "upload-b",
                 "input_upload_id": "upload-1",
             },
         ],
@@ -5049,7 +5037,7 @@ def test_materialize_upload_file_reuses_existing_dest_when_tusd_data_is_gone(
     dest = dest_root / "camera" / "a.mp4"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"video-a")
-    file_state = {"path": "camera/a.mp4", "bytes": 7, "upload_id": "missing-upload"}
+    file_state = {"path": "camera/a.mp4", "bytes": 7, "file_upload_id": "missing-upload"}
 
     runner.materialize_upload_file(file_state, dest_root)
 
@@ -5066,7 +5054,7 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
     file_state = {
         "path": "camera/a.mp4",
         "bytes": 7,
-        "upload_id": "upload-a",
+        "file_upload_id": "upload-a",
         "input_upload_id": upload_id,
     }
     tusd_source = runner.tusd_data_path("upload-a")
@@ -5107,15 +5095,15 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     data_path.write_bytes(b"video")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "review",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
+                "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -5133,7 +5121,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             },
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                     "profile": "profile",
                     "max_parallel_encodes": 4,
@@ -5181,15 +5169,15 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     data_path.write_bytes(b"video")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "review",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
+                "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
     common_job = {
@@ -5199,7 +5187,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
                 "profile": "profile",
             }
@@ -5264,20 +5252,20 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
     data_path.write_bytes(b"video")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video", "qcut_video"],
                 "groups": {
                     "camera": {
-                        "archive_mode": "av1_nvenc",
+                        "output_mode": "video",
                         "tasks": ["archive_video", "qcut_video"],
                     }
                 },
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -5291,7 +5279,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "collection_timestamp": "20260101T000000Z",
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video", "qcut_video"],
                     "profile": "profile",
                     "metadata_projection": {"enabled": False},
@@ -5522,7 +5510,7 @@ def test_expected_riverhog_primary_files_total_counts_archive_outputs(
     assert runner.expected_riverhog_primary_files_total(upload, groups) == 2
 
 
-def test_profile_routed_riverhog_job_plans_path_only_primary_count(
+def test_routed_riverhog_job_plans_path_only_primary_count(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -5531,18 +5519,18 @@ def test_profile_routed_riverhog_job_plans_path_only_primary_count(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "state": "uploading",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "collection_archive_destination": "riverhog",
                 "tasks": ["archive_video"],
                 "structured_routing": True,
-                "groups": {"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
+                "groups": {"video": {"output_mode": "video", "tasks": ["archive_video"]}},
             },
             "files": [
-                {"path": "camera/a.mp4", "bytes": 1, "upload_id": "a"},
-                {"path": "camera/b.mp4", "bytes": 1, "upload_id": "b"},
+                {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "a"},
+                {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "b"},
             ],
         }
     )
@@ -5553,8 +5541,8 @@ def test_profile_routed_riverhog_job_plans_path_only_primary_count(
             collection_slug="camera",
             collection_timestamp="20260101T000000Z",
             tasks=["archive_video"],
-            groups={"video": {"archive_mode": "av1_nvenc", "tasks": ["archive_video"]}},
-            profile_routing={
+            groups={"video": {"output_mode": "video", "tasks": ["archive_video"]}},
+            routing={
                 "routes": [
                     {
                         "id": "camera-video",
@@ -6174,8 +6162,8 @@ def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
     runner.save_job(
         {
             "job_id": "job-1",
-            "state": "cancelled",
-            "phase": "cancelled",
+            "state": "canceled",
+            "phase": "canceled",
             "finished_at": "2026-01-01T00:00:02Z",
         }
     )
@@ -6190,13 +6178,13 @@ def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
         }
     )
 
-    assert saved["state"] == "cancelled"
+    assert saved["state"] == "canceled"
     stored = runner.load_job("job-1")
-    assert stored["state"] == "cancelled"
-    assert stored["phase"] == "cancelled"
+    assert stored["state"] == "canceled"
+    assert stored["phase"] == "canceled"
 
 
-def test_save_job_allows_explicit_resume_from_cancelled_state(
+def test_save_job_allows_explicit_resume_from_canceled_state(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -6206,8 +6194,8 @@ def test_save_job_allows_explicit_resume_from_cancelled_state(
     runner.save_job(
         {
             "job_id": "job-1",
-            "state": "cancelled",
-            "phase": "cancelled",
+            "state": "canceled",
+            "phase": "canceled",
             "finished_at": "2026-01-01T00:00:02Z",
         }
     )
@@ -6301,7 +6289,7 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
                 "id": collection_id,
                 "files": 7,
                 "bytes": 1234,
-                "glacier": {"state": "uploaded", "stored_bytes": 567},
+                "archive": {"state": "uploaded", "stored_bytes": 567},
             }
 
     payload = runner.sync_riverhog_session_from_remote(job, FakeApi())  # type: ignore[arg-type]
@@ -6585,13 +6573,13 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
 
     class FakeRiverhogApi:
         def __init__(self) -> None:
-            self.cancelled: list[str] = []
+            self.canceled: list[str] = []
 
         def close(self) -> None:
             return
 
         def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
-            self.cancelled.append(collection_id)
+            self.canceled.append(collection_id)
             return {
                 "collection_id": collection_id,
                 "state": "canceled",
@@ -6608,10 +6596,10 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
 
     runner.cancel_riverhog_upload_session(job, reason="test")
 
-    assert fake.cancelled == ["2026/20260101T000000Z__camera-archive"]
+    assert fake.canceled == ["2026/20260101T000000Z__camera-archive"]
     stored = runner.load_job("job-1")
     assert stored["riverhog_session_upload"]["state"] == "canceled"
-    assert stored["riverhog_session_upload"]["cancelled_at"]
+    assert stored["riverhog_session_upload"]["canceled_at"]
     assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
 
 
@@ -6624,12 +6612,12 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "collection_archive_destination": "riverhog",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "groups": {},
             },
@@ -6694,12 +6682,12 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
     runner.init_state_store()
     runner.save_input_upload_raw(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "collection_archive_destination": "riverhog",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "groups": {},
             },
@@ -6732,7 +6720,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
             },
         }
     )
-    cancelled: list[str] = []
+    canceled: list[str] = []
     monkeypatch.setattr(runner, "ensure_job_groups", lambda _job, _upload: {})
     monkeypatch.setattr(
         runner,
@@ -6742,7 +6730,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
     monkeypatch.setattr(
         runner,
         "cancel_riverhog_upload_session",
-        lambda _job, *, reason: cancelled.append(reason),
+        lambda _job, *, reason: canceled.append(reason),
     )
     monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: None)
@@ -6751,7 +6739,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
 
     stored = runner.load_job("job-1")
     assert stored["state"] == "failed"
-    assert cancelled == ["job_failed"]
+    assert canceled == ["job_failed"]
     assert "preserved_after_failure_at" not in stored["riverhog_session_upload"]
 
 
@@ -6776,13 +6764,13 @@ def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(
 
     class FakeRiverhogApi:
         def __init__(self) -> None:
-            self.cancelled: list[str] = []
+            self.canceled: list[str] = []
 
         def close(self) -> None:
             return
 
         def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
-            self.cancelled.append(collection_id)
+            self.canceled.append(collection_id)
             return {
                 "collection_id": collection_id,
                 "state": "canceled",
@@ -6799,13 +6787,13 @@ def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(
 
     runner.cancel_riverhog_upload_session(job, reason="test")
 
-    assert fake.cancelled == ["2026/20260101T000000Z__camera-archive"]
+    assert fake.canceled == ["2026/20260101T000000Z__camera-archive"]
     stored = runner.load_job("job-1")
     assert stored["riverhog_session_upload"]["collection_id"] == (
         "2026/20260101T000000Z__camera-archive"
     )
     assert stored["riverhog_session_upload"]["state"] == "canceled"
-    assert stored["riverhog_session_upload"]["cancelled_at"]
+    assert stored["riverhog_session_upload"]["canceled_at"]
     assert stored["riverhog_session_upload"]["cancel_reason"] == "test"
 
 
@@ -6844,7 +6832,7 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
     assert stored["riverhog_session_upload"]["state"] == "canceled"
     assert stored["riverhog_session_upload"]["riverhog_state"] == "absent"
     assert stored["riverhog_session_upload"]["cancel_not_found"] is True
-    assert stored["riverhog_session_upload"]["cancelled_at"]
+    assert stored["riverhog_session_upload"]["canceled_at"]
 
 
 def test_repeated_cleanup_updates_empty_cleanup_summary(
@@ -6859,8 +6847,8 @@ def test_repeated_cleanup_updates_empty_cleanup_summary(
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     job = {
         "job_id": "job-1",
-        "state": "cancelled",
-        "phase": "cancelled",
+        "state": "canceled",
+        "phase": "canceled",
         "cleanup_completed_at": "2026-01-01T00:00:00Z",
         "cleanup_removed": [],
         "cleanup_removed_count": 0,
@@ -6886,15 +6874,15 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
     data_path.write_bytes(b"video")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "review",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
+                "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -6912,7 +6900,7 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             },
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                     "profile": "profile",
                 }
@@ -6964,15 +6952,15 @@ def test_run_job_reuses_stored_shared_review_plan(
     runner.store_shared_review_plan("upload-1", "camera", "qcut_video", plan)
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "review",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
-                "groups": {"camera": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]}},
+                "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "upload_id": "upload-a"}],
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
     runner.save_job(
@@ -6995,7 +6983,7 @@ def test_run_job_reuses_stored_shared_review_plan(
             },
             "groups": {
                 "camera": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                     "profile": "profile",
                 }
@@ -7018,7 +7006,7 @@ def test_run_job_reuses_stored_shared_review_plan(
     runner.run_job("job-2")
 
     assert payloads[0]["review_plans"]["qcut_video"]["kind"] == "munchy.qcut-plan"  # type: ignore[index]
-    assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["upload_id"] == "upload-1"  # type: ignore[index]
+    assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["input_upload_id"] == "upload-1"  # type: ignore[index]
     assert payloads[0]["review_clip_plan"] == {
         "target_seconds": 90,
         "min_seconds": 4,
@@ -7038,15 +7026,15 @@ def test_run_job_runs_review_sweep_as_one_job(
     data_path.write_bytes(b"video")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "storage_hint": {
                 "workflow_mode": "review",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["qcut_video"],
                 "groups": {
-                    "video": {"archive_mode": "av1_nvenc", "tasks": ["qcut_video"]},
-                    "photo": {"archive_mode": "preserve", "tasks": []},
+                    "video": {"output_mode": "video", "tasks": ["qcut_video"]},
+                    "photo": {"output_mode": "preserve", "tasks": []},
                 },
                 "structured_routing": True,
             },
@@ -7054,12 +7042,12 @@ def test_run_job_runs_review_sweep_as_one_job(
                 {
                     "path": "DCIM/a.mp4",
                     "bytes": 5,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "resolved_group": "video",
                     "resolved_group_rel": "a.mp4",
-                    "profile_route_id": "video-4k",
-                    "profile_route_action": "upload",
-                    "profile_routed_at": "2026-01-01T00:00:00Z",
+                    "route_id": "video-4k",
+                    "route_action": "upload",
+                    "routed_at": "2026-01-01T00:00:00Z",
                 }
             ],
         }
@@ -7081,7 +7069,7 @@ def test_run_job_runs_review_sweep_as_one_job(
             },
             "groups": {
                 "video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["qcut_video"],
                     "profile": "profile",
                     "encode_profile": {
@@ -7095,7 +7083,7 @@ def test_run_job_runs_review_sweep_as_one_job(
                         },
                     },
                 },
-                "photo": {"archive_mode": "preserve", "tasks": []},
+                "photo": {"output_mode": "preserve", "tasks": []},
             },
         }
     )
@@ -7212,11 +7200,11 @@ def test_ready_eager_files_skips_claimed_encoding_files(
         },
     }
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
-            {"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"},
-            {"path": "camera/b.mp4", "bytes": 1, "upload_id": "upload-b"},
-            {"path": "camera/c.mp4", "bytes": 1, "upload_id": "upload-c"},
+            {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
+            {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
+            {"path": "camera/c.mp4", "bytes": 1, "file_upload_id": "upload-c"},
         ],
     }
 
@@ -7327,10 +7315,13 @@ def test_eager_archive_pipeline_phase_uses_single_group_limit(
         },
     }
 
-    assert runner.eager_archive_pipeline_phase(
-        job,
-        {"camera": {"eager_pipeline_batches": 1}},
-    ) == "eager_archive:camera:pipeline=1/1"
+    assert (
+        runner.eager_archive_pipeline_phase(
+            job,
+            {"camera": {"eager_pipeline_batches": 1}},
+        )
+        == "eager_archive:camera:pipeline=1/1"
+    )
 
 
 def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
@@ -7366,14 +7357,14 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
         (runner.TUSD_DIR / upload_id).write_bytes(b"x")
     job = {"job_id": "job-1"}
     upload = {
-        "upload_id": "upload-1",
+        "input_upload_id": "upload-1",
         "files": [
-            {"path": "voice/a.mp3", "bytes": 1, "upload_id": "upload-a"},
-            {"path": "voice/b.mp3", "bytes": 1, "upload_id": "upload-b"},
-            {"path": "voice/c.mp3", "bytes": 1, "upload_id": "upload-c"},
+            {"path": "voice/a.mp3", "bytes": 1, "file_upload_id": "upload-a"},
+            {"path": "voice/b.mp3", "bytes": 1, "file_upload_id": "upload-b"},
+            {"path": "voice/c.mp3", "bytes": 1, "file_upload_id": "upload-c"},
         ],
     }
-    groups = {"voice": {"archive_mode": "audio", "tasks": ["archive_audio"]}}
+    groups = {"voice": {"output_mode": "audio", "tasks": ["archive_audio"]}}
 
     ready = runner.ready_eager_files(
         job,
@@ -7392,7 +7383,7 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
     ]
 
 
-def test_claim_running_eager_batch_files_marks_legacy_running_paths(
+def test_claim_running_eager_batch_files_marks_running_batch_paths(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -7416,8 +7407,8 @@ def test_claim_running_eager_batch_files_marks_legacy_running_paths(
         },
     }
     upload = {
-        "upload_id": "upload-1",
-        "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        "input_upload_id": "upload-1",
+        "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
     }
 
     changed = runner.claim_running_eager_batch_files(
@@ -7457,8 +7448,8 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
         },
     }
     upload = {
-        "upload_id": "upload-1",
-        "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+        "input_upload_id": "upload-1",
+        "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
     }
 
     updated_upload, changed = runner.mark_existing_eager_outputs(
@@ -7490,18 +7481,18 @@ def test_job_response_includes_eager_encode_progress(
     active_output.write_bytes(b"active")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/a.mp4",
                     "bytes": 1024,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "consumed_at": "2026-06-05T00:00:00Z",
                 },
                 {
                     "path": "camera/b.mp4",
                     "bytes": 2048,
-                    "upload_id": "upload-b",
+                    "file_upload_id": "upload-b",
                 },
             ],
         }
@@ -7511,7 +7502,7 @@ def test_job_response_includes_eager_encode_progress(
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "eager_pipeline_batches": 1,
             }
@@ -7580,20 +7571,20 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
     encoded_output.write_bytes(b"encoded")
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
+            "input_upload_id": "upload-1",
             "files": [
                 {
                     "path": "camera/a.mp4",
                     "bytes": 1024,
-                    "upload_id": "upload-a",
+                    "file_upload_id": "upload-a",
                     "consumed_at": "2026-06-05T00:00:00Z",
                 },
                 {
                     "path": "camera/a.xml",
                     "bytes": 12,
-                    "upload_id": "upload-a-xml",
-                    "profile_route_action": "evidence",
-                    "profile_sidecar_for": "camera/a.mp4",
+                    "file_upload_id": "upload-a-xml",
+                    "route_action": "evidence",
+                    "sidecar_for": "camera/a.mp4",
                 },
             ],
         }
@@ -7603,7 +7594,7 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
         "input_upload_id": "upload-1",
         "groups": {
             "camera": {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
             }
         },
@@ -7696,8 +7687,8 @@ def test_compact_job_response_keeps_operational_fields_only(
     runner.init_state_store()
     runner.save_input_upload(
         {
-            "upload_id": "upload-1",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "upload_id": "upload-a"}],
+            "input_upload_id": "upload-1",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
     job = {

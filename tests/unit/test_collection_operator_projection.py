@@ -16,7 +16,7 @@ from riverhog_core.catalog_models import (
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyRecord,
+    ImageDiscRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services import collections as collections_service
@@ -68,7 +68,6 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
                     bytes=100,
                     sha256=_sha256(b"a"),
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -76,7 +75,6 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
                     bytes=50,
                     sha256=_sha256(b"b"),
                     hot=False,
-                    archived=True,
                 ),
             ]
         )
@@ -85,11 +83,9 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
     assert row.files == 2
     assert row.bytes == 150
     assert row.hot_bytes == 100
-    assert row.archived_bytes == 50
-    assert row.pending_bytes == 100
-    assert row.protected_bytes == 0
-    assert row.physical_bytes == 0
-    assert row.protection_state == "partially_protected"
+    assert row.disc_redundancy_bytes == 0
+    assert row.disc_coverage_bytes == 0
+    assert row.disc_redundancy_state == "none"
     assert row.has_archive == 0
 
     with session_scope(session_factory) as session:
@@ -115,7 +111,7 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
                 bytes=150,
                 image_root="/tmp/images",
                 target_bytes=50_000_000_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for path in ("a.txt", "b.txt"):
@@ -136,10 +132,10 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
                 )
             )
         session.add(
-            ImageCopyRecord(
+            ImageDiscRecord(
                 image_id="img-001",
-                copy_id="copy-001",
-                label_text="Copy 1",
+                disc_id="disc-001",
+                label_text="Disc 1",
                 location="Shelf A",
                 created_at="2026-06-20T12:00:00Z",
                 state="registered",
@@ -152,17 +148,17 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
     assert row.archive_state == "uploaded"
     assert row.archive_object_path == "archives/docs.tar"
     assert row.manifest_object_path == "archives/docs.manifest.json"
-    assert row.protected_bytes == 0
-    assert row.physical_bytes == 150
+    assert row.disc_redundancy_bytes == 0
+    assert row.disc_coverage_bytes == 150
     assert row.has_registered_image == 1
-    assert row.protection_state == "partially_protected"
+    assert row.disc_redundancy_state == "partial"
 
     with session_scope(session_factory) as session:
         session.add(
-            ImageCopyRecord(
+            ImageDiscRecord(
                 image_id="img-001",
-                copy_id="copy-002",
-                label_text="Copy 2",
+                disc_id="disc-002",
+                label_text="Disc 2",
                 location="Shelf B",
                 created_at="2026-06-20T12:01:00Z",
                 state="registered",
@@ -171,9 +167,9 @@ def test_collection_operator_projection_tracks_collection_summary_changes(
         )
 
     row = _summary_row(sqlite_path, "docs")
-    assert row.protected_bytes == 150
-    assert row.physical_bytes == 150
-    assert row.protection_state == "protected"
+    assert row.disc_redundancy_bytes == 150
+    assert row.disc_coverage_bytes == 150
+    assert row.disc_redundancy_state == "full"
 
 
 def test_collection_list_reads_paged_operator_projection(
@@ -193,7 +189,6 @@ def test_collection_list_reads_paged_operator_projection(
                     bytes=10,
                     sha256=_sha256(b"small"),
                     hot=True,
-                    archived=False,
                 ),
                 CollectionFileRecord(
                     collection_id="large",
@@ -201,18 +196,17 @@ def test_collection_list_reads_paged_operator_projection(
                     bytes=100,
                     sha256=_sha256(b"large"),
                     hot=True,
-                    archived=False,
                 ),
             ]
         )
 
-    def fail_if_old_derive_all_path_is_used(*_args: object, **_kwargs: object) -> object:
+    def require_operator_projection(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("collection list should read the operator projection")
 
     monkeypatch.setattr(
         collections_service,
         "_collection_list_summaries",
-        fail_if_old_derive_all_path_is_used,
+        require_operator_projection,
     )
 
     service = SqlAlchemyCollectionService(_config(sqlite_path), object(), object())  # type: ignore[arg-type]
@@ -220,7 +214,7 @@ def test_collection_list_reads_paged_operator_projection(
         page=1,
         per_page=1,
         q=None,
-        protection_state=None,
+        disc_redundancy_state=None,
         sort="bytes",
         order="desc",
     )
@@ -258,7 +252,6 @@ def test_collection_show_reads_operator_projection_with_bounded_coverage(
                     bytes=10,
                     sha256=_sha256(b"a"),
                     hot=True,
-                    archived=True,
                 ),
                 CollectionFileRecord(
                     collection_id="docs",
@@ -266,7 +259,6 @@ def test_collection_show_reads_operator_projection_with_bounded_coverage(
                     bytes=20,
                     sha256=_sha256(b"b"),
                     hot=False,
-                    archived=True,
                 ),
             ]
         )
@@ -278,7 +270,7 @@ def test_collection_show_reads_operator_projection_with_bounded_coverage(
                 bytes=30,
                 image_root="/tmp/images",
                 target_bytes=50_000_000_000,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for path in ("a.txt", "b.txt"):
@@ -290,10 +282,10 @@ def test_collection_show_reads_operator_projection_with_bounded_coverage(
                 )
             )
         session.add(
-            ImageCopyRecord(
+            ImageDiscRecord(
                 image_id="img-001",
-                copy_id="copy-001",
-                label_text="Copy 1",
+                disc_id="disc-001",
+                label_text="Disc 1",
                 location="Shelf A",
                 created_at="2026-06-20T12:00:00Z",
                 state="registered",
@@ -380,4 +372,4 @@ def test_collection_show_reads_operator_projection_with_bounded_coverage(
     assert len(summary.image_coverage) == 1
     assert summary.image_coverage[0].covered_paths == ["a.txt"]
     assert summary.image_coverage[0].covered_paths_total == 2
-    assert [copy.id for copy in summary.image_coverage[0].copies] == ["copy-001"]
+    assert [disc.disc_id for disc in summary.image_coverage[0].discs] == ["disc-001"]

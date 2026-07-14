@@ -1,8 +1,8 @@
 # Run a guided burn session
 
 The `djdan burn` command walks the current burn backlog from the fullest ready image downward.
-If a finalized image has lost all protected copies, Riverhog tracks that image
-through an `image_rebuild` recovery session instead; `djdan burn` reports
+If a finalized image has lost all usable discs, Riverhog tracks that image
+through a `disc_rebuild` archive restore instead; `djdan burn` reports
 that handoff and does not treat it as ordinary replacement backlog.
 
 ## Host requirements
@@ -26,24 +26,24 @@ that handoff and does not treat it as ordinary replacement backlog.
 2. Finalize it if it is still only a provisional candidate.
 3. Download the ISO into the local staging directory.
 4. Verify the staged ISO before each burn step that still needs it.
-5. Burn one required copy.
+5. Burn one required disc.
 6. Verify the burned media.
 7. Show the exact disc label text and storage guidance.
 8. Wait for explicit confirmation that the disc is labeled.
-9. Record the storage location and register the copy only after that confirmation.
-10. Repeat until every required copy is finished, then move to the next backlog item.
+9. Record the storage location and register the disc only after that confirmation.
+10. Repeat until every required disc is finished, then move to the next backlog item.
 
 If the session stops after a burn or burned-media verification but before label confirmation, a later `djdan burn`
 run first asks whether that unlabeled disc is still available. If it is, the session resumes from the earliest
-unfinished checkpoint for that copy: burned-media verification if the burn was not verified yet, otherwise label
-confirmation. If it is not, `djdan burn` discards that local checkpoint and burns a replacement copy instead.
-Riverhog does not register or count the copy toward coverage until the operator confirms that the disc is labeled.
+unfinished checkpoint for that disc: burned-media verification if the burn was not verified yet, otherwise label
+confirmation. If it is not, `djdan burn` discards that local checkpoint and burns a replacement disc instead.
+Riverhog does not register or count the disc toward coverage until the operator confirms that the disc is labeled.
 
 If burned-media verification fails, treat that physical disc as bad even if the drive might read it later. `djdan`
-tells you to discard or destroy it, clears the local checkpoint for that copy, asks for a new blank disc, and burns
-the same generated copy id again.
+tells you to discard or destroy it, clears the local checkpoint for that disc, asks for a new blank disc, and burns
+the same generated disc id again.
 
-If the staged ISO is missing or no longer matches the last verified staged copy, `djdan burn` downloads the ISO
+If the staged ISO is missing or no longer matches its last verified digest, `djdan burn` downloads the ISO
 again before continuing.
 
 Expected failures include a missing `xorriso` executable, insufficient device permissions, non-blank or incompatible
@@ -102,10 +102,10 @@ djdan burn --simulate --device /dev/disk4 --staging-dir /operator/djdan-staging
 ```
 
 The simulated run stages and verifies the ISO, then invokes
-the platform's non-writing burn command for the next pending copy:
+the platform's non-writing burn command for the next pending disc:
 `hdiutil burn -testburn` on macOS and `xorriso -as cdrecord -dummy`
 elsewhere. If the next burn item is still a ready provisional candidate, the
-command finalizes it first so the normal finalized-image ISO and generated copy
+command finalizes it first so the normal finalized-image ISO and generated disc
 id are used.
 
 macOS native test burns depend on the media family and drive support exposed by
@@ -115,21 +115,21 @@ starting the burn command and the real burn path must be tested with expendable
 media.
 
 Because no bytes are written to disc, simulated burns intentionally stop before
-burned-media verification, label confirmation, copy registration, and copy
-checkpoint updates. A successful simulated burn does not protect the image and
-does not clear burn backlog.
+burned-media verification, label confirmation, disc registration, and disc
+checkpoint updates. A successful simulated burn does not create disc redundancy
+and does not clear burn backlog.
 
-## Recover an image rebuild session
+## Complete a disc rebuild archive restore
 
 Use `djdan disc rebuild` to inspect restore progress when `djdan burn` reports
-that ordinary backlog is clear but image rebuild restore work is still pending.
+that ordinary backlog is clear but disc rebuild restore work is still pending.
 
-1. Run `djdan disc rebuild list` to list the active recovery sessions.
-2. Wait until the session reports `ready`; `djdan disc rebuild show <session-id>`
+1. Run `djdan disc rebuild list` to list the active archive restores.
+2. Wait until the archive restore reports `ready`; `djdan disc rebuild show <restore-id>`
    shows the current restore state and latest operator message.
 3. Once the session is `ready`, run `djdan burn` again. It rebuilds and stages
    the ISO data from restored collection archives, then burns the needed
-   replacement copies.
+   replacement discs.
 4. If that run is interrupted after staging or after partial burn work, run
    `djdan burn` again to resume from the local checkpoints and staged ISO
    artifacts.
@@ -138,6 +138,6 @@ Examples:
 
 ```bash
 djdan disc rebuild list
-djdan disc rebuild show rs-20260420T040001Z-rebuild-1
+djdan disc rebuild show ar-20260420T040001Z-rebuild-1
 djdan burn
 ```

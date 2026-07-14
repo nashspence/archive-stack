@@ -10,25 +10,25 @@ from riverhog_core.catalog_db import initialize_db
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 from riverhog_core.recovery_payloads import CommandAgeBatchpassRecoveryPayloadCodec
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
+from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
+from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.contracts import (
+    ArchiveReportingService,
+    ArchiveRestoreService,
+    ArchiveUploadService,
     CollectionService,
-    CopyService,
+    DiscService,
     FetchService,
     FileService,
-    GlacierReportingService,
-    GlacierUploadService,
     PlanningService,
-    RecoverySessionService,
     SearchService,
 )
-from riverhog_core.services.copies import SqlAlchemyCopyService
+from riverhog_core.services.discs import SqlAlchemyDiscService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
-from riverhog_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
-from riverhog_core.services.glacier_uploads import SqlAlchemyGlacierUploadService
 from riverhog_core.services.planning import SqlAlchemyPlanningService
-from riverhog_core.services.recovery_sessions import SqlAlchemyRecoverySessionService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_hot_store import S3HotStore
@@ -41,10 +41,10 @@ class ServiceContainer:
     collections: CollectionService
     search: SearchService
     planning: PlanningService
-    glacier_uploads: GlacierUploadService
-    glacier_reporting: GlacierReportingService
-    recovery_sessions: RecoverySessionService
-    copies: CopyService
+    archive_uploads: ArchiveUploadService
+    archive_reporting: ArchiveReportingService
+    archive_restores: ArchiveRestoreService
+    discs: DiscService
     fetches: FetchService
     files: FileService
 
@@ -74,7 +74,7 @@ def default_container() -> ServiceContainer:
             archive_store,
             recovery_payload_codec,
         ),
-        glacier_uploads=SqlAlchemyGlacierUploadService(
+        archive_uploads=SqlAlchemyArchiveUploadService(
             config,
             archive_store,
             hot_store,
@@ -82,15 +82,15 @@ def default_container() -> ServiceContainer:
             proof_stamper=proof_stamper,
             recovery_payload_codec=recovery_payload_codec,
         ),
-        glacier_reporting=SqlAlchemyGlacierReportingService(config),
-        recovery_sessions=SqlAlchemyRecoverySessionService(
+        archive_reporting=SqlAlchemyArchiveReportingService(config),
+        archive_restores=SqlAlchemyArchiveRestoreService(
             config,
             archive_store,
             hot_store,
             proof_verifier=proof_verifier,
             recovery_payload_codec=recovery_payload_codec,
         ),
-        copies=SqlAlchemyCopyService(config, hot_store, recovery_payload_codec),
+        discs=SqlAlchemyDiscService(config, hot_store, recovery_payload_codec),
         fetches=SqlAlchemyFetchService(config, hot_store, upload_store, recovery_payload_codec),
         files=SqlAlchemyFileService(config, hot_store),
     )

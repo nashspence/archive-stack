@@ -64,7 +64,7 @@ class RunnerInputFile:
 
 
 @dataclass(frozen=True)
-class RunnerProfileRoutingPreflightFile:
+class RunnerRoutingPreflightFile:
     rel_path: str
     bytes: int
     sha256: str | None = None
@@ -78,7 +78,7 @@ class RunnerProfileRoutingPreflightFile:
 
 @dataclass(frozen=True)
 class RunnerUploadRequest:
-    upload_id: str
+    input_upload_id: str
     job_id: str
     files: tuple[RunnerInputFile, ...]
     storage_hint: dict[str, Any]
@@ -264,8 +264,8 @@ def job_should_stop_upload(job: dict[str, Any]) -> bool:
     phase = str(job.get("phase") or "").lower()
     return (
         bool(job.get("cancel_requested"))
-        or state in {"failed", "cancelled", "canceled", "cancel_requested"}
-        or phase in {"cancelled", "canceled", "cancel_requested"}
+        or state in {"failed", "canceled", "cancel_requested"}
+        or phase in {"canceled", "cancel_requested"}
     )
 
 
@@ -627,14 +627,10 @@ def input_tree_progress(upload_progress: dict[str, Any]) -> dict[str, Any] | Non
     ):
         return None
     files_total = int(
-        upload_progress.get("input_tree_files_total")
-        or upload_progress.get("files_total")
-        or 0
+        upload_progress.get("input_tree_files_total") or upload_progress.get("files_total") or 0
     )
     bytes_total = int(
-        upload_progress.get("input_tree_bytes_total")
-        or upload_progress.get("bytes_total")
-        or 0
+        upload_progress.get("input_tree_bytes_total") or upload_progress.get("bytes_total") or 0
     )
     files_done = min(int(upload_progress.get("input_tree_files_ready") or 0), files_total)
     bytes_done = min(int(upload_progress.get("input_tree_bytes_ready") or 0), bytes_total)
@@ -783,12 +779,7 @@ def format_local_progress(stage: str, progress: dict[str, Any]) -> str:
 
 def job_upload_progress(job: dict[str, Any]) -> dict[str, Any] | None:
     upload_progress = job.get("upload_progress")
-    if isinstance(upload_progress, dict):
-        return upload_progress
-    legacy_progress = job.get("input_upload_progress")
-    if isinstance(legacy_progress, dict):
-        return legacy_progress
-    return None
+    return upload_progress if isinstance(upload_progress, dict) else None
 
 
 def format_progress_status_line(job: dict[str, Any]) -> str:
@@ -1493,12 +1484,9 @@ class MunchyRunnerClient:
     ) -> None:
         self.json("GET", "/health/ready")
         capabilities = self.json("GET", "/v1/capabilities")
-        groups = capabilities.get("profile_groups", {})
-        if (
-            not isinstance(groups, dict)
-            or groups.get("input_path_shape") != "<profile-group>/<file>"
-        ):
-            raise RuntimeError("runner does not advertise profile-group uploads")
+        groups = capabilities.get("groups", {})
+        if not isinstance(groups, dict) or groups.get("input_path_shape") != "<group>/<file>":
+            raise RuntimeError("runner does not advertise group-path uploads")
         if workflow_mode:
             workflow_modes = capabilities.get("workflow_modes", [])
             if workflow_mode not in workflow_modes:
@@ -1535,12 +1523,12 @@ class MunchyRunnerClient:
             )
             return None
 
-    def profile_routing_preflight(
+    def routing_preflight(
         self,
         *,
-        files: tuple[RunnerProfileRoutingPreflightFile, ...],
+        files: tuple[RunnerRoutingPreflightFile, ...],
         groups: dict[str, Any],
-        profile_routing: dict[str, Any],
+        routing: dict[str, Any],
         enforce_metadata_projection: bool = False,
     ) -> dict[str, Any]:
         payload_files = [
@@ -1560,15 +1548,15 @@ class MunchyRunnerClient:
         payload: dict[str, Any] = {
             "files": payload_files,
             "groups": groups,
-            "profile_routing": profile_routing,
+            "routing": routing,
         }
         if enforce_metadata_projection:
             payload["enforce_metadata_projection"] = True
         return self._json_with_transient_retries(
             "POST",
-            "/v1/profile-routing/preflight",
+            "/v1/routing/preflight",
             payload=payload,
-            label="profile routing preflight",
+            label="routing preflight",
             timeout=300.0,
         )
 
@@ -1586,7 +1574,7 @@ class MunchyRunnerClient:
             "POST",
             "/v1/input-uploads",
             payload={
-                "upload_id": request.upload_id,
+                "input_upload_id": request.input_upload_id,
                 "files": files,
                 "storage_hint": request.storage_hint,
             },
@@ -1597,7 +1585,7 @@ class MunchyRunnerClient:
             return cast(dict[str, Any], json.loads(body.decode("utf-8")))
         existing = self._json_with_transient_retries(
             "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
             label="remote upload status",
         )
         self._validate_existing_upload(existing, files, request.storage_hint)
@@ -1626,11 +1614,11 @@ class MunchyRunnerClient:
         }
         if existing != expected:
             raise RuntimeError(
-                f"input upload {upload.get('upload_id')} already exists with different files"
+                f"input upload {upload.get('input_upload_id')} already exists with different files"
             )
         if upload.get("storage_hint") != storage_hint:
             raise RuntimeError(
-                f"input upload {upload.get('upload_id')} already exists with "
+                f"input upload {upload.get('input_upload_id')} already exists with "
                 "a different storage hint"
             )
 
@@ -1719,7 +1707,7 @@ class MunchyRunnerClient:
         retry_reporter = UploadRetryReporter(label="remote upload")
         current_upload = self._json_with_transient_retries(
             "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
             label="remote upload status",
         )
         completed_paths = {
@@ -1771,7 +1759,7 @@ class MunchyRunnerClient:
                     retry_reporter.finish()
         upload = self._json_with_transient_retries(
             "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.upload_id)}",
+            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
             label="remote upload status",
         )
         if upload.get("state") != "uploaded":
@@ -1806,7 +1794,7 @@ class MunchyRunnerClient:
             if stop_event.is_set():
                 raise RuntimeError("upload stopped because runner job reached a terminal state")
             self.upload_file(
-                request.upload_id,
+                request.input_upload_id,
                 item,
                 chunk_bytes=request.upload_chunk_bytes,
                 retry_reporter=retry_reporter,
@@ -1843,7 +1831,7 @@ class MunchyRunnerClient:
         futures = {
             executor.submit(
                 self.upload_file,
-                request.upload_id,
+                request.input_upload_id,
                 item,
                 chunk_bytes=request.upload_chunk_bytes,
                 retry_reporter=retry_reporter,
@@ -1874,7 +1862,7 @@ class MunchyRunnerClient:
 
     def upload_file(
         self,
-        upload_id: str,
+        input_upload_id: str,
         item: RunnerInputFile,
         *,
         chunk_bytes: int,
@@ -1890,7 +1878,7 @@ class MunchyRunnerClient:
                 raise RuntimeError("upload stopped because runner job reached a terminal state")
             try:
                 self._upload_file_once(
-                    upload_id,
+                    input_upload_id,
                     item,
                     chunk_bytes=chunk_bytes,
                     stop_event=stop_event,
@@ -1912,18 +1900,18 @@ class MunchyRunnerClient:
 
     def _upload_file_once(
         self,
-        upload_id: str,
+        input_upload_id: str,
         item: RunnerInputFile,
         *,
         chunk_bytes: int,
         stop_event: Event | None = None,
         progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
     ) -> None:
-        escaped_upload_id = urllib.parse.quote(upload_id)
+        escaped_input_upload_id = urllib.parse.quote(input_upload_id)
         escaped_rel = urllib.parse.quote(item.rel_path, safe="/")
         upload = self.json(
             "POST",
-            f"/v1/input-uploads/{escaped_upload_id}/files/{escaped_rel}/upload",
+            f"/v1/input-uploads/{escaped_input_upload_id}/files/{escaped_rel}/upload",
             expect={201},
         )
         upload_url = str(upload["upload_url"])
@@ -1986,9 +1974,9 @@ class MunchyRunnerClient:
             f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
             label="runner job status",
         )
-        if existing.get("input_upload_id") != request.upload_id:
+        if existing.get("input_upload_id") != request.input_upload_id:
             raise RuntimeError(f"job {request.job_id} already exists for a different upload")
-        if existing.get("state") in {"failed", "cancelled"}:
+        if existing.get("state") in {"failed", "canceled"}:
             return self._json_with_transient_retries(
                 "POST",
                 f"/v1/jobs/{urllib.parse.quote(request.job_id)}/resume",
@@ -1997,10 +1985,10 @@ class MunchyRunnerClient:
             )
         return existing
 
-    def delete_input_upload(self, upload_id: str) -> bool:
+    def delete_input_upload(self, input_upload_id: str) -> bool:
         status, _, _ = self.request(
             "DELETE",
-            f"/v1/input-uploads/{urllib.parse.quote(upload_id)}",
+            f"/v1/input-uploads/{urllib.parse.quote(input_upload_id)}",
             expect={202, 404, 409},
         )
         return status == 202
@@ -2114,7 +2102,7 @@ class MunchyRunnerClient:
                     retry_delay = next_upload_retry_delay(retry_delay)
                     continue
                 state = str(job.get("state") or "")
-                terminal = state in {"succeeded", "failed", "cancelled"}
+                terminal = state in {"succeeded", "failed", "canceled"}
                 riverhog_pending = (
                     wait_for_safe_delete
                     and state == "succeeded"

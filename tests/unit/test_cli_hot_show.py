@@ -34,7 +34,7 @@ class _DoneFetchClient:
             "uploaded_bytes": 30,
             "missing_bytes": 0,
             "upload_state_expires_at": None,
-            "copies": [],
+            "discs": [],
             "entries_limit": 25,
             "entries_returned": 0,
             "entries": [],
@@ -91,8 +91,7 @@ def test_hot_list_passes_page_options_and_emits_paged_json(monkeypatch) -> None:
                         "files": 4,
                         "bytes": 40,
                         "missing_bytes": 40,
-                        "copy_count": 0,
-                        "copies": [],
+                        "discs": [],
                     }
                 ],
             }
@@ -121,20 +120,20 @@ def test_hot_fetch_start_dry_run_renders_plan_without_followup_status(monkeypatc
             self,
             fetch_id: str,
             *,
-            cloud: bool = False,
+            archive: bool = False,
             dry_run: bool = False,
         ) -> dict[str, object]:
-            self.calls.append((fetch_id, {"cloud": cloud, "dry_run": dry_run}))
+            self.calls.append((fetch_id, {"archive": archive, "dry_run": dry_run}))
             return {
                 "dry_run": True,
-                "status": "would_queue_cloud",
+                "status": "would_queue_archive",
                 "id": fetch_id,
                 "name": "Docs",
                 "targets": ["docs/"],
                 "state": "draft",
-                "queued_state": "queued_cloud",
-                "cloud": True,
-                "will_create_recovery_session": True,
+                "queued_state": "queued_archive",
+                "archive": True,
+                "will_create_archive_restore": True,
                 "files": 3,
                 "bytes": 30,
                 "missing_bytes": 20,
@@ -145,7 +144,7 @@ def test_hot_fetch_start_dry_run_renders_plan_without_followup_status(monkeypatc
                 "entries_uploaded": 0,
                 "uploaded_bytes": 0,
                 "upload_state_expires_at": None,
-                "copies": [],
+                "discs": [],
             }
 
         def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
@@ -155,13 +154,13 @@ def test_hot_fetch_start_dry_run_renders_plan_without_followup_status(monkeypatc
     monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1", "--cloud", "--dry-run"])
+    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1", "--archive", "--dry-run"])
 
     assert result.exit_code == 0
-    assert fake.calls == [("fx-1", {"cloud": True, "dry_run": True})]
+    assert fake.calls == [("fx-1", {"archive": True, "dry_run": True})]
     assert "hot fetch start dry-run" in result.stdout
-    assert "status: would_queue_cloud" in result.stdout
-    assert "queued state: queued_cloud" in result.stdout
+    assert "status: would_queue_archive" in result.stdout
+    assert "queued state: queued_archive" in result.stdout
 
 
 def test_hot_evict_dry_run_passes_flag_and_renders_plan(monkeypatch) -> None:

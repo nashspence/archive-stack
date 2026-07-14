@@ -10,7 +10,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    ImageCopyRecord,
+    ImageDiscRecord,
     ImageOperatorSummaryRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
@@ -54,7 +54,7 @@ def _seed_image(sqlite_path: Path) -> None:
                 bytes=100,
                 image_root="/tmp/image",
                 target_bytes=200,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         session.add_all(
@@ -73,19 +73,19 @@ def _seed_image(sqlite_path: Path) -> None:
         )
         session.add_all(
             [
-                ImageCopyRecord(
+                ImageDiscRecord(
                     image_id="20260616T121459Z",
-                    copy_id="copy-1",
-                    label_text="copy-1",
+                    disc_id="disc-1",
+                    label_text="disc-1",
                     location="shelf",
                     created_at="2026-06-16T12:15:00Z",
                     state="registered",
                     verification_state="pending",
                 ),
-                ImageCopyRecord(
+                ImageDiscRecord(
                     image_id="20260616T121459Z",
-                    copy_id="copy-2",
-                    label_text="copy-2",
+                    disc_id="disc-2",
+                    label_text="disc-2",
                     location=None,
                     created_at="2026-06-16T12:16:00Z",
                     state="needed",
@@ -95,7 +95,7 @@ def _seed_image(sqlite_path: Path) -> None:
         )
 
 
-def test_image_operator_projection_tracks_coverage_and_copy_changes(tmp_path: Path) -> None:
+def test_image_operator_projection_tracks_coverage_and_disc_changes(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     _seed_image(sqlite_path)
@@ -106,18 +106,18 @@ def test_image_operator_projection_tracks_coverage_and_copy_changes(tmp_path: Pa
     assert row.files == 2
     assert row.collections == 2
     assert row.collection_ids_text == "docs\nphotos"
-    assert row.physical_protection_state == "partially_protected"
-    assert row.physical_copies_required == 2
-    assert row.physical_copies_registered == 1
-    assert row.physical_copies_verified == 0
-    assert row.physical_copies_missing == 1
+    assert row.disc_redundancy_state == "partial"
+    assert row.discs_required == 2
+    assert row.discs_registered == 1
+    assert row.discs_verified == 0
+    assert row.discs_missing == 1
 
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        copy = session.get(ImageCopyRecord, ("20260616T121459Z", "copy-2"))
-        assert copy is not None
-        copy.state = "verified"
-        copy.verification_state = "verified"
+        disc = session.get(ImageDiscRecord, ("20260616T121459Z", "disc-2"))
+        assert disc is not None
+        disc.state = "verified"
+        disc.verification_state = "verified"
         covered = session.get(
             FinalizedImageCoveredPathRecord,
             ("20260616T121459Z", "photos", "b.jpg"),
@@ -129,10 +129,10 @@ def test_image_operator_projection_tracks_coverage_and_copy_changes(tmp_path: Pa
     assert row.files == 1
     assert row.collections == 1
     assert row.collection_ids_text == "docs"
-    assert row.physical_protection_state == "protected"
-    assert row.physical_copies_registered == 2
-    assert row.physical_copies_verified == 1
-    assert row.physical_copies_missing == 0
+    assert row.disc_redundancy_state == "full"
+    assert row.discs_registered == 2
+    assert row.discs_verified == 1
+    assert row.discs_missing == 0
 
 
 def test_image_list_and_show_read_operator_projection(
@@ -160,7 +160,7 @@ def test_image_list_and_show_read_operator_projection(
         order="desc",
         q="docs",
         collection="docs",
-        has_copies=True,
+        has_discs=True,
     )
     assert page["total"] == 1
     assert page["images"] == [
@@ -175,11 +175,11 @@ def test_image_list_and_show_read_operator_projection(
             "collections": 2,
             "collection_ids": ["docs", "photos"],
             "iso_ready": True,
-            "physical_protection_state": "partially_protected",
-            "physical_copies_required": 2,
-            "physical_copies_registered": 1,
-            "physical_copies_verified": 0,
-            "physical_copies_missing": 1,
+            "disc_redundancy_state": "partial",
+            "discs_required": 2,
+            "discs_registered": 1,
+            "discs_verified": 0,
+            "discs_missing": 1,
         }
     ]
     shown = service.get_image("20260616T121459Z")

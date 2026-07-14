@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.deps import ContainerDep
-from riverhog_api.mappers import map_fetch, map_fetch_list, map_recovery_session_list
+from riverhog_api.mappers import map_archive_restore_list, map_fetch, map_fetch_list
 from riverhog_api.schemas.fetches import (
     CompleteFetchResponse,
     CreateFetchRequest,
@@ -40,8 +40,8 @@ def _fetch_status_payload(
     limit: int,
 ) -> dict[str, object]:
     payload = container.fetches.status(fetch_id, limit=limit)
-    cloud_fetch = map_recovery_session_list(
-        container.recovery_sessions.list_for_fetch(
+    archive_restores = map_archive_restore_list(
+        container.archive_restores.list_for_fetch(
             fetch_id,
             page=1,
             per_page=max(1, min(limit, 100)),
@@ -50,8 +50,8 @@ def _fetch_status_payload(
         )
     )
     if limit <= 0:
-        cloud_fetch["sessions"] = []
-    payload["cloud_fetch"] = cloud_fetch
+        archive_restores["restores"] = []
+    payload["archive_restores"] = archive_restores
     return payload
 
 
@@ -121,11 +121,11 @@ def start_fetch(
     container: ContainerDep,
 ) -> FetchSummaryOut | FetchStartPlanOut:
     if request.dry_run:
-        payload = container.fetches.start_plan(fetch_id, cloud=request.cloud)
+        payload = container.fetches.start_plan(fetch_id, archive=request.archive)
         return FetchStartPlanOut.model_validate(payload)
-    summary = container.fetches.start(fetch_id, cloud=request.cloud)
-    if request.cloud:
-        container.recovery_sessions.create_or_resume_for_fetch(fetch_id)
+    summary = container.fetches.start(fetch_id, archive=request.archive)
+    if request.archive:
+        container.archive_restores.create_or_resume_for_fetch(fetch_id)
         summary = container.fetches.get(fetch_id)
     return FetchSummaryOut.model_validate(map_fetch(summary))
 
@@ -153,8 +153,8 @@ def cancel_fetch(
     limit: Annotated[int, Query(ge=0, le=100)] = 25,
 ) -> FetchStatusResponse:
     summary = container.fetches.get(fetch_id)
-    if summary.state.value in {"queued_cloud", "cloud_fetching"}:
-        container.recovery_sessions.cancel_for_fetch(fetch_id)
+    if summary.state.value in {"queued_archive", "restoring_archive"}:
+        container.archive_restores.cancel_for_fetch(fetch_id)
     else:
         container.fetches.cancel(fetch_id)
     payload = _fetch_status_payload(fetch_id, container, limit=limit)
@@ -168,12 +168,9 @@ def list_fetch_files(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: Literal["target", "collection", "path", "bytes", "hot", "archived", "disc"] = Query(
-        "target"
-    ),
+    sort: Literal["target", "collection", "path", "bytes", "hot", "disc"] = Query("target"),
     order: Literal["asc", "desc"] = Query("asc"),
     hot: bool | None = Query(None),
-    archived: bool | None = Query(None),
     disc_coverage: bool | None = Query(None),
 ) -> FetchFilesResponse:
     payload = container.fetches.files(
@@ -184,7 +181,6 @@ def list_fetch_files(
         sort=sort.casefold(),
         order=order.casefold(),
         hot=hot,
-        archived=archived,
         disc_coverage=disc_coverage,
     )
     return FetchFilesResponse.model_validate(payload)

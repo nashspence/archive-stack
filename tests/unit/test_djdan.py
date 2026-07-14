@@ -35,9 +35,9 @@ def _manifest_for(plaintext: bytes) -> dict[str, object]:
                         "bytes": len(plaintext),
                         "sha256": sha256,
                         "recovery_bytes": len(recovery),
-                        "copies": [
+                        "discs": [
                             {
-                                "copy": "20260420T040001Z-1",
+                                "disc_id": "20260420T040001Z-1",
                                 "location": "vault-a/shelf-01",
                                 "disc_path": "disc/000001.bin",
                                 "recovery_bytes": len(recovery),
@@ -82,7 +82,7 @@ def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
             assert image_id == "20260420T040001Z"
             assert page == 1
             assert per_page == 1
-            assert sort == "id"
+            assert sort == "disc_id"
             assert order == "asc"
             assert query is None
             return {
@@ -96,7 +96,7 @@ def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
                 "image_id": image_id,
                 "discs": [
                     {
-                        "id": "20260420T040001Z-1",
+                        "disc_id": "20260420T040001Z-1",
                         "image_id": "20260420T040001Z",
                         "state": "verified",
                         "verification_state": "verified",
@@ -130,25 +130,23 @@ def test_djdan_disc_list_image_scope_returns_paged_payload(monkeypatch) -> None:
     assert payload["pages"] == 2
     assert payload["discs"] == [
         {
-            "id": "20260420T040001Z-1",
+            "disc_id": "20260420T040001Z-1",
             "image_id": "20260420T040001Z",
             "state": "verified",
             "verification_state": "verified",
             "location": "Shelf B1",
         }
     ]
-    assert "copies" not in payload
 
 
 def test_djdan_disc_show_uses_disc_endpoint(monkeypatch) -> None:
     class FakeClient:
-        def get_disc(self, copy_id: str) -> dict[str, object]:
-            assert copy_id == "20260420T040001Z-1"
+        def get_disc(self, disc_id: str) -> dict[str, object]:
+            assert disc_id == "20260420T040001Z-1"
             return {
-                "id": copy_id,
+                "disc_id": disc_id,
                 "image_id": "20260420T040001Z",
-                "volume_id": "20260420T040001Z",
-                "label_text": copy_id,
+                "label_text": disc_id,
                 "location": "Shelf B1",
                 "created_at": "2026-04-20T04:00:01Z",
                 "state": "registered",
@@ -165,7 +163,7 @@ def test_djdan_disc_show_uses_disc_endpoint(monkeypatch) -> None:
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["id"] == "20260420T040001Z-1"
+    assert payload["disc_id"] == "20260420T040001Z-1"
     assert payload["image_id"] == "20260420T040001Z"
 
 
@@ -173,10 +171,10 @@ def test_terminal_burn_prompts_reprompt_for_label_confirmation(monkeypatch, caps
     responses = iter(["", "labeled"])
     monkeypatch.setattr("builtins.input", lambda: next(responses))
 
-    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="copy-label")
+    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="disc-label")
 
     stderr = capsys.readouterr().err
-    assert 'Type "labeled" after writing "copy-label" on disc 20260531T030858Z-2.' in stderr
+    assert 'Type "labeled" after writing "disc-label" on disc 20260531T030858Z-2.' in stderr
     assert 'label confirmation for 20260531T030858Z-2 is still pending; type "labeled"' in stderr
 
 
@@ -199,7 +197,7 @@ def test_terminal_burn_prompts_accept_quoted_label_confirmation(monkeypatch) -> 
     responses = iter(['"labeled"'])
     monkeypatch.setattr("builtins.input", lambda: next(responses))
 
-    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="copy-label")
+    djdan_main.TerminalBurnPrompts().confirm_label("20260531T030858Z-2", label_text="disc-label")
 
 
 def test_xorriso_optical_reader_reads_from_mounted_media(tmp_path: Path) -> None:
@@ -293,7 +291,7 @@ def test_xorriso_disc_burner_invokes_xorriso_cdrecord(
     djdan_main.XorrisoDiscBurner().burn(
         iso_path,
         device="/dev/sr0",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert commands == [
@@ -326,7 +324,7 @@ def test_xorriso_disc_burner_can_run_dummy_burn(
     djdan_main.XorrisoDiscBurner(dummy=True).burn(
         iso_path,
         device="/dev/sr0",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert commands == [
@@ -372,7 +370,7 @@ def test_hdiutil_disc_burner_validates_macos_device_path_and_runs_test_burn(
     djdan_main.HdiutilDiscBurner(dummy=True).burn(
         iso_path,
         device="/dev/disk4",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert commands == [
@@ -408,7 +406,7 @@ def test_hdiutil_disc_burner_allows_native_hdiutil_target(
     djdan_main.HdiutilDiscBurner(dummy=True).burn(
         iso_path,
         device="hdiutil:IOService:/AppleARMPE/example/IOBDServices",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert commands == [
@@ -457,7 +455,7 @@ def test_hdiutil_disc_burner_uses_native_verify_and_eject_for_real_burn(
     burner.burn(
         iso_path,
         device="/dev/disk4",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert burner.verifies_media is True
@@ -505,7 +503,7 @@ def test_hdiutil_disc_burner_reports_failed_real_verify_as_suspect_media(
         djdan_main.HdiutilDiscBurner().burn(
             iso_path,
             device="/dev/disk4",
-            copy_id="20260420T040001Z-1",
+            disc_id="20260420T040001Z-1",
         )
 
 
@@ -538,7 +536,7 @@ def test_hdiutil_disc_burner_rejects_native_bd_testburn(
         djdan_main.HdiutilDiscBurner(dummy=True).burn(
             iso_path,
             device="/dev/disk4",
-            copy_id="20260420T040001Z-1",
+            disc_id="20260420T040001Z-1",
         )
 
     assert commands == []
@@ -553,7 +551,7 @@ def test_raw_burned_media_verifier_compares_the_iso_prefix(tmp_path: Path) -> No
     djdan_main.RawBurnedMediaVerifier().verify(
         iso_path,
         device=str(device_path),
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     device_path.write_bytes(b"bad-bytes" + b"\0" * 2048)
@@ -561,7 +559,7 @@ def test_raw_burned_media_verifier_compares_the_iso_prefix(tmp_path: Path) -> No
         djdan_main.RawBurnedMediaVerifier().verify(
             iso_path,
             device=str(device_path),
-            copy_id="20260420T040001Z-1",
+            disc_id="20260420T040001Z-1",
         )
 
 
@@ -615,7 +613,7 @@ def test_raw_burned_media_verifier_unmounts_macos_optical_media_before_raw_read(
     djdan_main.RawBurnedMediaVerifier().verify(
         iso_path,
         device="/dev/disk4",
-        copy_id="20260420T040001Z-1",
+        disc_id="20260420T040001Z-1",
     )
 
     assert commands == [
@@ -723,9 +721,9 @@ def test_djdan_fetch_prompts_when_split_file_needs_next_disc(
                                 "bytes": len(part_one_plaintext),
                                 "sha256": hashlib.sha256(part_one_plaintext).hexdigest(),
                                 "recovery_bytes": len(part_one),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040003Z-1",
+                                        "disc_id": "20260420T040003Z-1",
                                         "location": "vault-a/shelf-01",
                                         "disc_path": "disc/000001.bin",
                                         "recovery_bytes": len(part_one),
@@ -738,9 +736,9 @@ def test_djdan_fetch_prompts_when_split_file_needs_next_disc(
                                 "bytes": len(part_two_plaintext),
                                 "sha256": hashlib.sha256(part_two_plaintext).hexdigest(),
                                 "recovery_bytes": len(part_two),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040004Z-1",
+                                        "disc_id": "20260420T040004Z-1",
                                         "location": "vault-a/shelf-02",
                                         "disc_path": "disc/000002.bin",
                                         "recovery_bytes": len(part_two),
@@ -839,9 +837,9 @@ def test_djdan_fetch_prompt_state_spans_manifest_entries(
                                 "bytes": len(first_plaintext),
                                 "sha256": hashlib.sha256(first_plaintext).hexdigest(),
                                 "recovery_bytes": len(first_recovery),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040003Z-1",
+                                        "disc_id": "20260420T040003Z-1",
                                         "location": "vault-a/shelf-01",
                                         "disc_path": "disc/000001.bin",
                                         "recovery_bytes": len(first_recovery),
@@ -866,9 +864,9 @@ def test_djdan_fetch_prompt_state_spans_manifest_entries(
                                 "bytes": len(second_plaintext),
                                 "sha256": hashlib.sha256(second_plaintext).hexdigest(),
                                 "recovery_bytes": len(second_recovery),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040004Z-1",
+                                        "disc_id": "20260420T040004Z-1",
                                         "location": "vault-a/shelf-02",
                                         "disc_path": "disc/000002.bin",
                                         "recovery_bytes": len(second_recovery),
@@ -970,9 +968,9 @@ def test_djdan_fetch_does_not_reprompt_for_same_disc_across_entries(
                                 "bytes": len(first_plaintext),
                                 "sha256": hashlib.sha256(first_plaintext).hexdigest(),
                                 "recovery_bytes": len(first_recovery),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040003Z-1",
+                                        "disc_id": "20260420T040003Z-1",
                                         "location": "vault-a/shelf-01",
                                         "disc_path": "disc/000001.bin",
                                         "recovery_bytes": len(first_recovery),
@@ -997,9 +995,9 @@ def test_djdan_fetch_does_not_reprompt_for_same_disc_across_entries(
                                 "bytes": len(second_plaintext),
                                 "sha256": hashlib.sha256(second_plaintext).hexdigest(),
                                 "recovery_bytes": len(second_recovery),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040003Z-1",
+                                        "disc_id": "20260420T040003Z-1",
                                         "location": "vault-a/shelf-01",
                                         "disc_path": "disc/000002.bin",
                                         "recovery_bytes": len(second_recovery),
@@ -1128,7 +1126,7 @@ def test_djdan_fetch_resets_byte_complete_upload_after_final_verification_failur
     assert result.exit_code == 1
     assert cancelled == [("fx-1", "e1")]
     assert "reset byte-complete upload for docs/tax/2022/invoice-123.pdf" in result.stderr
-    assert "try another registered copy or recovered media" in result.stderr
+    assert "try another registered disc or recovered media" in result.stderr
     assert "error: final fetch verification failed: sha256 did not match" in result.stderr
 
 
@@ -1171,7 +1169,7 @@ def test_djdan_fetch_reports_clean_error_when_optical_read_fails(monkeypatch) ->
     assert "Traceback" not in result.stderr
 
 
-def test_djdan_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> None:
+def test_djdan_fetch_resumes_split_entry_from_restore_offset(monkeypatch) -> None:
     part_one_plaintext = b"invoice fixture "
     part_two_plaintext = b"bytes\n"
     part_one = fixture_encrypt_bytes(part_one_plaintext)
@@ -1200,9 +1198,9 @@ def test_djdan_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> Non
                                 "bytes": len(part_one_plaintext),
                                 "sha256": hashlib.sha256(part_one_plaintext).hexdigest(),
                                 "recovery_bytes": len(part_one),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040003Z-1",
+                                        "disc_id": "20260420T040003Z-1",
                                         "location": "vault-a/shelf-01",
                                         "disc_path": "disc/000001.bin",
                                         "recovery_bytes": len(part_one),
@@ -1215,9 +1213,9 @@ def test_djdan_fetch_resumes_split_entry_from_session_offset(monkeypatch) -> Non
                                 "bytes": len(part_two_plaintext),
                                 "sha256": hashlib.sha256(part_two_plaintext).hexdigest(),
                                 "recovery_bytes": len(part_two),
-                                "copies": [
+                                "discs": [
                                     {
-                                        "copy": "20260420T040004Z-1",
+                                        "disc_id": "20260420T040004Z-1",
                                         "location": "vault-a/shelf-02",
                                         "disc_path": "disc/000002.bin",
                                         "recovery_bytes": len(part_two),
@@ -1316,18 +1314,18 @@ def test_discover_burn_backlog_prefers_fullest_ready_candidate() -> None:
                         "bytes": 25_000_000_000,
                         "target_bytes": 50_000_000_000,
                         "fill": 0.5,
-                        "physical_copies_registered": 1,
-                        "physical_copies_required": 2,
+                        "discs_registered": 1,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040003Z"
             return {
-                "copies": [
-                    {"id": "20260420T040003Z-1", "state": "verified"},
-                    {"id": "20260420T040003Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040003Z-1", "state": "verified"},
+                    {"disc_id": "20260420T040003Z-3", "state": "needed"},
                 ]
             }
 
@@ -1357,19 +1355,19 @@ def test_discover_burn_backlog_skips_images_that_now_require_recovery_flow() -> 
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "discs_registered": 0,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "copies": [
-                    {"id": "20260420T040001Z-1", "state": "lost"},
-                    {"id": "20260420T040001Z-2", "state": "damaged"},
-                    {"id": "20260420T040001Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040001Z-1", "state": "lost"},
+                    {"disc_id": "20260420T040001Z-2", "state": "damaged"},
+                    {"disc_id": "20260420T040001Z-3", "state": "needed"},
                 ]
             }
 
@@ -1387,29 +1385,29 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "discs_registered": 0,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "copies": [
-                    {"id": "20260420T040001Z-1", "state": "lost"},
-                    {"id": "20260420T040001Z-2", "state": "damaged"},
-                    {"id": "20260420T040001Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040001Z-1", "state": "lost"},
+                    {"disc_id": "20260420T040001Z-2", "state": "damaged"},
+                    {"disc_id": "20260420T040001Z-3", "state": "needed"},
                 ]
             }
 
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "id": "rs-20260420T040001Z-1",
-                "state": "restore_requested",
+                "id": "ar-20260420T040001Z-1",
+                "state": "requested",
                 "latest_message": (
-                    "Archive restore requested; wait until the session is ready before "
+                    "Archive restore requested; wait until the restore is ready before "
                     "burning replacement media."
                 ),
             }
@@ -1417,21 +1415,21 @@ def test_discover_recovery_handoffs_for_images_that_require_recovery() -> None:
     assert djdan_main._discover_recovery_handoffs(FakeClient()) == [
         djdan_main.RecoveryHandoff(
             image_id="20260420T040001Z",
-            session_id="rs-20260420T040001Z-1",
-            state="restore_requested",
+            restore_id="ar-20260420T040001Z-1",
+            state="requested",
             latest_message=(
-                "Archive restore requested; wait until the session is ready before "
+                "Archive restore requested; wait until the restore is ready before "
                 "burning replacement media."
             ),
         )
     ]
 
 
-def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
+def test_list_disc_rebuild_restores_delegates_scope_and_paging_to_api() -> None:
     calls: list[dict[str, object]] = []
 
     class FakeClient:
-        def list_recovery_sessions(
+        def list_archive_restores(
             self,
             *,
             page: int,
@@ -1439,7 +1437,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
             sort: str,
             order: str,
             terminal: str,
-            recovery_type: str,
+            restore_type: str,
             state: str | None = None,
         ) -> dict[str, object]:
             calls.append(
@@ -1449,7 +1447,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
                     "sort": sort,
                     "order": order,
                     "terminal": terminal,
-                    "recovery_type": recovery_type,
+                    "restore_type": restore_type,
                     "state": state,
                 }
             )
@@ -1461,12 +1459,12 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
                 "sort": sort,
                 "order": order,
                 "terminal": terminal,
-                "sessions": [
+                "restores": [
                     {
-                        "id": "rs-20260420T040001Z-1",
-                        "state": "restore_requested",
+                        "id": "ar-20260420T040001Z-1",
+                        "state": "requested",
                         "latest_message": (
-                            "Archive restore requested; wait until the session is ready "
+                            "Archive restore requested; wait until the restore is ready "
                             "before burning replacement media."
                         ),
                         "images": [
@@ -1477,7 +1475,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
                 ],
             }
 
-    payload = djdan_main._list_disc_rebuild_sessions(
+    payload = djdan_main._list_disc_rebuild_restores(
         FakeClient(),
         page=1,
         per_page=25,
@@ -1488,12 +1486,12 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
     )
 
     assert payload["total"] == 1
-    assert payload["sessions"] == [
+    assert payload["restores"] == [
         {
-            "id": "rs-20260420T040001Z-1",
-            "state": "restore_requested",
+            "id": "ar-20260420T040001Z-1",
+            "state": "requested",
             "latest_message": (
-                "Archive restore requested; wait until the session is ready "
+                "Archive restore requested; wait until the restore is ready "
                 "before burning replacement media."
             ),
             "images": [
@@ -1509,12 +1507,12 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
             "sort": "created_at",
             "order": "desc",
             "terminal": "active",
-            "recovery_type": "image_rebuild",
+            "restore_type": "disc_rebuild",
             "state": None,
         }
     ]
 
-    djdan_main._list_disc_rebuild_sessions(
+    djdan_main._list_disc_rebuild_restores(
         FakeClient(),
         page=2,
         per_page=10,
@@ -1523,7 +1521,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
         state="failed",
         include_all=False,
     )
-    djdan_main._list_disc_rebuild_sessions(
+    djdan_main._list_disc_rebuild_restores(
         FakeClient(),
         page=3,
         per_page=5,
@@ -1540,7 +1538,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
             "sort": "state",
             "order": "asc",
             "terminal": "all",
-            "recovery_type": "image_rebuild",
+            "restore_type": "disc_rebuild",
             "state": "failed",
         },
         {
@@ -1549,7 +1547,7 @@ def test_list_disc_rebuild_sessions_delegates_scope_and_paging_to_api() -> None:
             "sort": "id",
             "order": "desc",
             "terminal": "all",
-            "recovery_type": "image_rebuild",
+            "restore_type": "disc_rebuild",
             "state": None,
         },
     ]
@@ -1560,18 +1558,18 @@ def test_disc_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
 
     def payload(state: str) -> dict[str, object]:
         return {
-            "id": "rs-20260420T040001Z-rebuild-1",
-            "type": "image_rebuild",
+            "id": "ar-20260420T040001Z-rebuild-1",
+            "type": "disc_rebuild",
             "state": state,
             "created_at": "2026-04-20T04:00:00Z",
-            "restore_requested_at": None,
-            "restore_ready_at": None,
-            "restore_expires_at": None,
+            "requested_at": None,
+            "ready_at": None,
+            "expires_at": None,
             "completed_at": None,
             "canceled_at": None,
             "paused_at": "2026-04-20T04:00:00Z" if state == "paused" else None,
-            "paused_from_state": "restore_requested" if state == "paused" else None,
-            "restore_paths": None,
+            "paused_from_state": "requested" if state == "paused" else None,
+            "paths": None,
             "latest_message": f"session is {state}",
             "warnings": [],
             "notification": {
@@ -1600,32 +1598,32 @@ def test_disc_rebuild_pause_and_resume_commands_emit_json(monkeypatch) -> None:
         }
 
     class FakeClient:
-        def pause_recovery_session(self, session_id: str) -> dict[str, object]:
-            calls.append(("pause", session_id))
+        def pause_archive_restore(self, restore_id: str) -> dict[str, object]:
+            calls.append(("pause", restore_id))
             return payload("paused")
 
-        def resume_recovery_session(self, session_id: str) -> dict[str, object]:
-            calls.append(("resume", session_id))
-            return payload("restore_requested")
+        def resume_archive_restore(self, restore_id: str) -> dict[str, object]:
+            calls.append(("resume", restore_id))
+            return payload("requested")
 
     monkeypatch.setattr(djdan_main, "ApiClient", FakeClient)
 
     paused = runner.invoke(
         djdan_main.app,
-        ["disc", "rebuild", "pause", "rs-20260420T040001Z-rebuild-1", "--json"],
+        ["disc", "rebuild", "pause", "ar-20260420T040001Z-rebuild-1", "--json"],
     )
     resumed = runner.invoke(
         djdan_main.app,
-        ["disc", "rebuild", "resume", "rs-20260420T040001Z-rebuild-1", "--json"],
+        ["disc", "rebuild", "resume", "ar-20260420T040001Z-rebuild-1", "--json"],
     )
 
     assert paused.exit_code == 0
     assert resumed.exit_code == 0
     assert json.loads(paused.stdout)["state"] == "paused"
-    assert json.loads(resumed.stdout)["state"] == "restore_requested"
+    assert json.loads(resumed.stdout)["state"] == "requested"
     assert calls == [
-        ("pause", "rs-20260420T040001Z-rebuild-1"),
-        ("resume", "rs-20260420T040001Z-rebuild-1"),
+        ("pause", "ar-20260420T040001Z-rebuild-1"),
+        ("resume", "ar-20260420T040001Z-rebuild-1"),
     ]
 
 
@@ -1633,10 +1631,10 @@ def test_disc_rebuild_declares_lost_or_damaged_disc(monkeypatch) -> None:
     calls: list[tuple[str, str, str | None]] = []
 
     class FakeClient:
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
@@ -1644,24 +1642,23 @@ def test_disc_rebuild_declares_lost_or_damaged_disc(monkeypatch) -> None:
         ) -> dict[str, object]:
             assert location is None
             assert verification_state is None
-            calls.append((image_id, copy_id, state))
+            calls.append((image_id, disc_id, state))
             return {
-                "copy": {
-                    "id": copy_id,
+                "disc": {
+                    "disc_id": disc_id,
                     "image_id": image_id,
-                    "volume_id": image_id,
-                    "label_text": copy_id,
+                    "label_text": disc_id,
                     "state": state,
                     "verification_state": "pending",
                 }
             }
 
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "id": "rs-20260420T040001Z-rebuild-1",
-                "type": "image_rebuild",
-                "state": "restore_requested",
+                "id": "ar-20260420T040001Z-rebuild-1",
+                "type": "disc_rebuild",
+                "state": "requested",
                 "latest_message": "Archive restore requested.",
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
@@ -1675,27 +1672,27 @@ def test_disc_rebuild_declares_lost_or_damaged_disc(monkeypatch) -> None:
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["copy"]["state"] == "lost"
-    assert payload["recovery_session"]["id"] == "rs-20260420T040001Z-rebuild-1"
+    assert payload["disc"]["state"] == "lost"
+    assert payload["archive_restore"]["id"] == "ar-20260420T040001Z-rebuild-1"
     assert calls == [("20260420T040001Z", "20260420T040001Z-1", "lost")]
 
 
 def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() -> None:
     class FakeClient:
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "id": "rs-20260420T040001Z-1",
+                "id": "ar-20260420T040001Z-1",
                 "state": "ready",
                 "latest_message": "Restored ISO data is ready.",
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "copies": [
-                    {"id": "20260420T040001Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040001Z-3", "state": "needed"},
                 ]
             }
 
@@ -1705,9 +1702,9 @@ def test_all_pending_recovery_seed_slots_do_not_reenter_standard_burn_backlog() 
     )
 
 
-def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
+def test_djdan_recover_lists_active_restores(monkeypatch) -> None:
     class FakeClient:
-        def list_recovery_sessions(
+        def list_archive_restores(
             self,
             *,
             page: int,
@@ -1715,10 +1712,10 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
             sort: str,
             order: str,
             terminal: str,
-            recovery_type: str,
+            restore_type: str,
             state: str | None = None,
         ) -> dict[str, object]:
-            assert recovery_type == "image_rebuild"
+            assert restore_type == "disc_rebuild"
             assert terminal == "active"
             assert state is None
             return {
@@ -1729,12 +1726,12 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
                 "sort": sort,
                 "order": order,
                 "terminal": terminal,
-                "sessions": [
+                "restores": [
                     {
-                        "id": "rs-20260420T040001Z-1",
-                        "state": "restore_requested",
+                        "id": "ar-20260420T040001Z-1",
+                        "state": "requested",
                         "latest_message": (
-                            "Archive restore requested; wait until the session is ready before "
+                            "Archive restore requested; wait until the restore is ready before "
                             "burning replacement media."
                         ),
                         "images": [
@@ -1749,8 +1746,8 @@ def test_djdan_recover_lists_active_sessions(monkeypatch) -> None:
     result = runner.invoke(djdan_main.app, ["disc", "rebuild", "list"])
 
     assert result.exit_code == 0
-    assert "rs-20260420T040001Z-1" in result.stdout
-    assert "restore_requested" in result.stdout
+    assert "ar-20260420T040001Z-1" in result.stdout
+    assert "requested" in result.stdout
     assert "20260420T040001Z" in result.stdout
 
 
@@ -1768,29 +1765,29 @@ def test_djdan_recover_reports_waiting_session(monkeypatch, tmp_path: Path) -> N
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "discs_registered": 0,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "copies": [
-                    {"id": "20260420T040001Z-1", "state": "lost"},
-                    {"id": "20260420T040001Z-2", "state": "damaged"},
-                    {"id": "20260420T040001Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040001Z-1", "state": "lost"},
+                    {"disc_id": "20260420T040001Z-2", "state": "damaged"},
+                    {"disc_id": "20260420T040001Z-3", "state": "needed"},
                 ]
             }
 
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "id": "rs-20260420T040001Z-1",
-                "state": "restore_requested",
+                "id": "ar-20260420T040001Z-1",
+                "state": "requested",
                 "latest_message": (
-                    "Archive restore requested; wait until the session is ready before "
+                    "Archive restore requested; wait until the restore is ready before "
                     "burning replacement media."
                 ),
                 "images": [
@@ -1812,13 +1809,13 @@ def test_djdan_recover_reports_waiting_session(monkeypatch, tmp_path: Path) -> N
 
     assert result.exit_code == 0
     assert "burn backlog already clear" in result.stdout
-    assert "burn backlog is waiting for image rebuild restore work" in result.stdout
-    assert "rs-20260420T040001Z-1" in result.stdout
-    assert "restore_requested" in result.stdout
+    assert "burn backlog is waiting for disc rebuild restore work" in result.stdout
+    assert "ar-20260420T040001Z-1" in result.stdout
+    assert "requested" in result.stdout
     assert "Archive restore requested" in result.stdout
 
 
-def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
+def test_djdan_recover_ready_restore_burns_replacements_and_cleans_staging(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1827,24 +1824,24 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
     class FakeClient:
         def __init__(self) -> None:
             self.iso_bytes = b"fixture-iso\n"
-            self.completed_sessions: list[str] = []
-            self.copy_states = {
+            self.completed_restores: list[str] = []
+            self.disc_states = {
                 f"{image_id}-1": {
-                    "id": f"{image_id}-1",
+                    "disc_id": f"{image_id}-1",
                     "label_text": f"{image_id}-1",
                     "state": "lost",
                     "verification_state": "pending",
                     "location": None,
                 },
                 f"{image_id}-2": {
-                    "id": f"{image_id}-2",
+                    "disc_id": f"{image_id}-2",
                     "label_text": f"{image_id}-2",
                     "state": "damaged",
                     "verification_state": "pending",
                     "location": None,
                 },
                 f"{image_id}-3": {
-                    "id": f"{image_id}-3",
+                    "disc_id": f"{image_id}-3",
                     "label_text": f"{image_id}-3",
                     "state": "needed",
                     "verification_state": "pending",
@@ -1855,14 +1852,14 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
         def _verified_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
-        def _ensure_followup_copy(self) -> None:
-            if self._verified_count() == 1 and f"{image_id}-4" not in self.copy_states:
-                self.copy_states[f"{image_id}-4"] = {
-                    "id": f"{image_id}-4",
+        def _ensure_followup_disc(self) -> None:
+            if self._verified_count() == 1 and f"{image_id}-4" not in self.disc_states:
+                self.disc_states[f"{image_id}-4"] = {
+                    "disc_id": f"{image_id}-4",
                     "label_text": f"{image_id}-4",
                     "state": "needed",
                     "verification_state": "pending",
@@ -1881,80 +1878,80 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
                         "id": image_id,
                         "filename": f"{image_id}.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._verified_count(),
-                        "physical_copies_required": 2,
+                        "discs_registered": self._verified_count(),
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+        def get_archive_restore(self, restore_id: str) -> dict[str, object]:
             return {
-                "id": session_id,
+                "id": restore_id,
                 "state": "ready",
                 "latest_message": "Restored ISO data is ready.",
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
 
-        def get_recovery_session_for_image(self, image_id_arg: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
-            return self.get_recovery_session("rs-20260420T040001Z-1")
+            return self.get_archive_restore("ar-20260420T040001Z-1")
 
-        def list_copies(self, image_id_arg: str) -> dict[str, object]:
+        def list_image_discs(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
-            self._ensure_followup_copy()
-            return {"copies": list(self.copy_states.values())}
+            self._ensure_followup_disc()
+            return {"discs": list(self.disc_states.values())}
 
         def download_recovered_iso(
             self,
-            session_id: str,
+            restore_id: str,
             image_id_arg: str,
             output: Path,
         ) -> bytes:
-            assert session_id == "rs-20260420T040001Z-1"
+            assert restore_id == "ar-20260420T040001Z-1"
             assert image_id_arg == image_id
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(self, image_id_arg: str, location: str, *, copy_id: str | None = None):
+        def register_disc(self, image_id_arg: str, location: str, *, disc_id: str | None = None):
             assert image_id_arg == image_id
-            assert copy_id is not None
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+            assert disc_id is not None
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id_arg: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
             assert image_id_arg == image_id
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
-        def complete_recovery_session(self, session_id: str) -> dict[str, object]:
-            self.completed_sessions.append(session_id)
-            return {"id": session_id, "state": "completed"}
+        def complete_archive_restore(self, restore_id: str) -> dict[str, object]:
+            self.completed_restores.append(restore_id)
+            return {"id": restore_id, "state": "completed"}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakeBurner:
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert iso_path.exists()
 
     class FakeMediaVerifier:
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakePrompts:
@@ -1965,17 +1962,17 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
             }
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert device == "/dev/fake-sr0"
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            assert label_text == copy_id
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            assert label_text == disc_id
 
-        def prompt_location(self, copy_id: str) -> str:
-            return self.locations[copy_id]
+        def prompt_location(self, disc_id: str) -> str:
+            return self.locations[disc_id]
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
             return True
 
     client = FakeClient()
@@ -2000,14 +1997,14 @@ def test_djdan_recover_ready_session_burns_replacements_and_cleans_staging(
     assert "burn backlog cleared" in result.stdout
     assert f"{image_id}-3" in result.stdout
     assert f"{image_id}-4" in result.stdout
-    assert client.completed_sessions == ["rs-20260420T040001Z-1"]
-    assert client.copy_states[f"{image_id}-3"]["state"] == "verified"
-    assert client.copy_states[f"{image_id}-4"]["state"] == "verified"
+    assert client.completed_restores == ["ar-20260420T040001Z-1"]
+    assert client.disc_states[f"{image_id}-3"]["state"] == "verified"
+    assert client.disc_states[f"{image_id}-4"]["state"] == "verified"
     assert not (tmp_path / image_id).exists()
     assert not (tmp_path / "burn-session.json").exists()
 
 
-def test_djdan_recover_can_finish_expired_session_from_local_staging(
+def test_djdan_recover_can_finish_expired_restore_from_local_staging(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2018,24 +2015,24 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
 
     class FakeClient:
         def __init__(self) -> None:
-            self.completed_sessions: list[str] = []
-            self.copy_states = {
+            self.completed_restores: list[str] = []
+            self.disc_states = {
                 f"{image_id}-1": {
-                    "id": f"{image_id}-1",
+                    "disc_id": f"{image_id}-1",
                     "label_text": f"{image_id}-1",
                     "state": "lost",
                     "verification_state": "pending",
                     "location": None,
                 },
                 f"{image_id}-2": {
-                    "id": f"{image_id}-2",
+                    "disc_id": f"{image_id}-2",
                     "label_text": f"{image_id}-2",
                     "state": "damaged",
                     "verification_state": "pending",
                     "location": None,
                 },
                 f"{image_id}-3": {
-                    "id": f"{image_id}-3",
+                    "disc_id": f"{image_id}-3",
                     "label_text": f"{image_id}-3",
                     "state": "needed",
                     "verification_state": "pending",
@@ -2046,8 +2043,8 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
         def _verified_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
         def get_plan(self, *, page: int, per_page: int, sort: str, order: str, iso_ready: bool):
@@ -2062,15 +2059,15 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
                         "id": image_id,
                         "filename": f"{image_id}.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._verified_count(),
-                        "physical_copies_required": 1,
+                        "discs_registered": self._verified_count(),
+                        "discs_required": 1,
                     }
                 ],
             }
 
-        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+        def get_archive_restore(self, restore_id: str) -> dict[str, object]:
             return {
-                "id": session_id,
+                "id": restore_id,
                 "state": "expired",
                 "latest_message": (
                     "Restored ISO data expired and was cleaned up; re-initiate recovery to "
@@ -2079,82 +2076,82 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
                 "images": [{"id": image_id, "filename": f"{image_id}.iso"}],
             }
 
-        def get_recovery_session_for_image(self, image_id_arg: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
-            return self.get_recovery_session("rs-20260420T040001Z-1")
+            return self.get_archive_restore("ar-20260420T040001Z-1")
 
-        def list_copies(self, image_id_arg: str) -> dict[str, object]:
+        def list_image_discs(self, image_id_arg: str) -> dict[str, object]:
             assert image_id_arg == image_id
-            return {"copies": list(self.copy_states.values())}
+            return {"discs": list(self.disc_states.values())}
 
         def download_recovered_iso(
             self,
-            session_id: str,
+            restore_id: str,
             image_id_arg: str,
             output: Path,
         ) -> bytes:
             raise AssertionError("expired-session resume should not re-download ISO data")
 
-        def register_copy(self, image_id_arg: str, location: str, *, copy_id: str | None = None):
+        def register_disc(self, image_id_arg: str, location: str, *, disc_id: str | None = None):
             assert image_id_arg == image_id
-            assert copy_id is not None
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+            assert disc_id is not None
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id_arg: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
             assert image_id_arg == image_id
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
-        def complete_recovery_session(self, session_id: str) -> dict[str, object]:
-            self.completed_sessions.append(session_id)
-            return {"id": session_id, "state": "completed"}
+        def complete_archive_restore(self, restore_id: str) -> dict[str, object]:
+            self.completed_restores.append(restore_id)
+            return {"id": restore_id, "state": "completed"}
 
     class FakeIsoVerifier:
         def verify(self, local_iso_path: Path) -> None:
             assert local_iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakeBurner:
-        def burn(self, local_iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, local_iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert local_iso_path.read_bytes() == b"fixture-iso\n"
-            assert copy_id == f"{image_id}-3"
+            assert disc_id == f"{image_id}-3"
 
     class FakeMediaVerifier:
-        def verify(self, local_iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, local_iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert local_iso_path.read_bytes() == b"fixture-iso\n"
-            assert copy_id == f"{image_id}-3"
+            assert disc_id == f"{image_id}-3"
 
     class FakePrompts:
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
-            assert (copy_id, device) == (f"{image_id}-3", "/dev/fake-sr0")
+            assert (disc_id, device) == (f"{image_id}-3", "/dev/fake-sr0")
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            assert (copy_id, label_text) == (f"{image_id}-3", f"{image_id}-3")
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            assert (disc_id, label_text) == (f"{image_id}-3", f"{image_id}-3")
 
-        def prompt_location(self, copy_id: str) -> str:
-            assert copy_id == f"{image_id}-3"
+        def prompt_location(self, disc_id: str) -> str:
+            assert disc_id == f"{image_id}-3"
             return "vault-a/shelf-02"
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
             return True
 
     client = FakeClient()
@@ -2180,13 +2177,13 @@ def test_djdan_recover_can_finish_expired_session_from_local_staging(
     assert (
         "restore window expired remotely; resuming from local staged ISO artifacts" in result.stderr
     )
-    assert client.completed_sessions == ["rs-20260420T040001Z-1"]
-    assert client.copy_states[f"{image_id}-3"]["state"] == "verified"
+    assert client.completed_restores == ["ar-20260420T040001Z-1"]
+    assert client.disc_states[f"{image_id}-3"]["state"] == "verified"
     assert not (tmp_path / image_id).exists()
     assert not (tmp_path / "burn-session.json").exists()
 
 
-def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
+def test_djdan_recover_stages_all_pending_restore_images_before_first_burn(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2196,10 +2193,10 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
     class FakeClient:
         def __init__(self) -> None:
             self.iso_downloads: list[str] = []
-            self.copy_states = {
+            self.disc_states = {
                 image_one: {
                     f"{image_one}-3": {
-                        "id": f"{image_one}-3",
+                        "disc_id": f"{image_one}-3",
                         "label_text": f"{image_one}-3",
                         "state": "needed",
                         "verification_state": "pending",
@@ -2208,7 +2205,7 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
                 },
                 image_two: {
                     f"{image_two}-3": {
-                        "id": f"{image_two}-3",
+                        "disc_id": f"{image_two}-3",
                         "label_text": f"{image_two}-3",
                         "state": "needed",
                         "verification_state": "pending",
@@ -2229,22 +2226,22 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
                         "id": image_one,
                         "filename": f"{image_one}.iso",
                         "fill": 0.95,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 1,
+                        "discs_registered": 0,
+                        "discs_required": 1,
                     },
                     {
                         "id": image_two,
                         "filename": f"{image_two}.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 1,
+                        "discs_registered": 0,
+                        "discs_required": 1,
                     },
                 ],
             }
 
-        def get_recovery_session(self, session_id: str) -> dict[str, object]:
+        def get_archive_restore(self, restore_id: str) -> dict[str, object]:
             return {
-                "id": session_id,
+                "id": restore_id,
                 "state": "ready",
                 "latest_message": "Restored ISO data is ready.",
                 "images": [
@@ -2253,84 +2250,84 @@ def test_djdan_recover_stages_all_pending_session_images_before_first_burn(
                 ],
             }
 
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id in {image_one, image_two}
-            return self.get_recovery_session("rs-20260420T040001Z-1")
+            return self.get_archive_restore("ar-20260420T040001Z-1")
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
-            return {"copies": list(self.copy_states[image_id].values())}
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
+            return {"discs": list(self.disc_states[image_id].values())}
 
-        def download_recovered_iso(self, session_id: str, image_id: str, output: Path) -> bytes:
-            assert session_id == "rs-20260420T040001Z-1"
+        def download_recovered_iso(self, restore_id: str, image_id: str, output: Path) -> bytes:
+            assert restore_id == "ar-20260420T040001Z-1"
             self.iso_downloads.append(image_id)
             output.write_bytes(f"{image_id}\n".encode())
             return output.read_bytes()
 
-        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
-            assert copy_id is not None
-            copy = self.copy_states[image_id][copy_id]
-            copy["state"] = "registered"
-            copy["location"] = location
-            return {"copy": copy}
+        def register_disc(self, image_id: str, location: str, *, disc_id: str | None = None):
+            assert disc_id is not None
+            disc = self.disc_states[image_id][disc_id]
+            disc["state"] = "registered"
+            disc["location"] = location
+            return {"disc": disc}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
-            copy = self.copy_states[image_id][copy_id]
+            disc = self.disc_states[image_id][disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
             assert iso_path.is_file()
 
     class FakeBurner:
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.is_file()
-            assert copy_id == f"{image_one}-3"
+            assert disc_id == f"{image_one}-3"
 
     class FakeMediaVerifier:
         def __init__(self) -> None:
             self.failed_once = False
 
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.is_file()
             if not self.failed_once:
                 self.failed_once = True
-                raise RuntimeError(f"fixture burned-media verification failed for {copy_id}")
+                raise RuntimeError(f"fixture burned-media verification failed for {disc_id}")
 
     class FakePrompts:
         def __init__(self) -> None:
             self.blank_waits = 0
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
-            assert copy_id == f"{image_one}-3"
+            assert disc_id == f"{image_one}-3"
             self.blank_waits += 1
             if self.blank_waits > 1:
                 raise RuntimeError("fresh blank media required after failed verification")
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
             raise AssertionError("label confirmation should not run after verification failure")
 
-        def prompt_location(self, copy_id: str) -> str:
+        def prompt_location(self, disc_id: str) -> str:
             raise AssertionError("storage prompt should not run after verification failure")
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
             return True
 
     client = FakeClient()
@@ -2377,29 +2374,29 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 0,
-                        "physical_copies_required": 2,
+                        "discs_registered": 0,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "copies": [
-                    {"id": "20260420T040001Z-1", "state": "lost"},
-                    {"id": "20260420T040001Z-2", "state": "damaged"},
-                    {"id": "20260420T040001Z-3", "state": "needed"},
+                "discs": [
+                    {"disc_id": "20260420T040001Z-1", "state": "lost"},
+                    {"disc_id": "20260420T040001Z-2", "state": "damaged"},
+                    {"disc_id": "20260420T040001Z-3", "state": "needed"},
                 ]
             }
 
-        def get_recovery_session_for_image(self, image_id: str) -> dict[str, object]:
+        def get_archive_restore_for_image(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
             return {
-                "id": "rs-20260420T040001Z-1",
-                "state": "restore_requested",
+                "id": "ar-20260420T040001Z-1",
+                "state": "requested",
                 "latest_message": (
-                    "Archive restore requested; wait until the session is ready before "
+                    "Archive restore requested; wait until the restore is ready before "
                     "burning replacement media."
                 ),
             }
@@ -2414,9 +2411,9 @@ def test_djdan_burn_reports_recovery_handoffs_when_no_standard_backlog_exists(
 
     assert result.exit_code == 0
     assert "burn backlog already clear" in result.stdout
-    assert "burn backlog is waiting for image rebuild restore work" in result.stdout
-    assert "rs-20260420T040001Z-1" in result.stdout
-    assert "restore_requested" in result.stdout
+    assert "burn backlog is waiting for disc rebuild restore work" in result.stdout
+    assert "ar-20260420T040001Z-1" in result.stdout
+    assert "requested" in result.stdout
     assert "Archive restore requested" in result.stdout
 
 
@@ -2430,11 +2427,11 @@ def test_djdan_burn_cleans_stale_completed_staging_when_backlog_is_clear(
     (iso_dir / f"{image_id}.iso").write_bytes(b"fixture-iso\n")
 
     state = djdan_main.BurnSessionState.load(djdan_main._burn_state_path(tmp_path))
-    for copy_id, location in {
+    for disc_id, location in {
         f"{image_id}-1": "vault-a/shelf-01",
         f"{image_id}-2": "vault-b/shelf-01",
     }.items():
-        progress = state.copy_progress(image_id, copy_id)
+        progress = state.disc_progress(image_id, disc_id)
         progress.burned = True
         progress.media_verified = True
         progress.label_confirmed = True
@@ -2455,24 +2452,24 @@ def test_djdan_burn_cleans_stale_completed_staging_when_backlog_is_clear(
                         "id": image_id,
                         "filename": f"{image_id}.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 2,
-                        "physical_copies_required": 2,
+                        "discs_registered": 2,
+                        "discs_required": 2,
                     }
                 ],
             }
 
-        def list_copies(self, requested_image_id: str) -> dict[str, object]:
+        def list_image_discs(self, requested_image_id: str) -> dict[str, object]:
             assert requested_image_id == image_id
             return {
-                "copies": [
+                "discs": [
                     {
-                        "id": f"{image_id}-1",
+                        "disc_id": f"{image_id}-1",
                         "state": "verified",
                         "verification_state": "verified",
                         "location": "vault-a/shelf-01",
                     },
                     {
-                        "id": f"{image_id}-2",
+                        "disc_id": f"{image_id}-2",
                         "state": "verified",
                         "verification_state": "verified",
                         "location": "vault-b/shelf-01",
@@ -2571,26 +2568,26 @@ def test_djdan_burn_without_device_uses_platform_default(
     assert "burn backlog cleared" in result.stdout
 
 
-def test_djdan_burn_resumes_registered_copy_verification_update(
+def test_djdan_burn_resumes_registered_disc_verification_update(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     image_id = "20260420T040001Z"
-    copy_id = f"{image_id}-2"
+    disc_id = f"{image_id}-2"
 
     class FakeClient:
         def __init__(self) -> None:
-            self.copy_states = {
+            self.disc_states = {
                 f"{image_id}-1": {
-                    "id": f"{image_id}-1",
+                    "disc_id": f"{image_id}-1",
                     "label_text": f"{image_id}-1",
                     "state": "verified",
                     "verification_state": "verified",
                     "location": "Shelf A",
                 },
-                copy_id: {
-                    "id": copy_id,
-                    "label_text": copy_id,
+                disc_id: {
+                    "disc_id": disc_id,
+                    "label_text": disc_id,
                     "state": "registered",
                     "verification_state": "pending",
                     "location": "Shelf B",
@@ -2603,7 +2600,7 @@ def test_djdan_burn_resumes_registered_copy_verification_update(
 
         def list_images(self, *, page: int, per_page: int, sort: str, order: str):
             verified = sum(
-                1 for copy in self.copy_states.values() if copy["verification_state"] == "verified"
+                1 for disc in self.disc_states.values() if disc["verification_state"] == "verified"
             )
             return {
                 "page": 1,
@@ -2613,40 +2610,40 @@ def test_djdan_burn_resumes_registered_copy_verification_update(
                         "id": image_id,
                         "filename": f"{image_id}.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": 2,
-                        "physical_copies_required": 2,
-                        "physical_copies_verified": verified,
+                        "discs_registered": 2,
+                        "discs_required": 2,
+                        "discs_verified": verified,
                     }
                 ],
             }
 
-        def list_copies(self, requested_image_id: str) -> dict[str, object]:
+        def list_image_discs(self, requested_image_id: str) -> dict[str, object]:
             assert requested_image_id == image_id
-            return {"copies": list(self.copy_states.values())}
+            return {"discs": list(self.disc_states.values())}
 
-        def update_copy(
+        def update_disc(
             self,
             requested_image_id: str,
-            requested_copy_id: str,
+            requested_disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ) -> dict[str, object]:
             self.updated.append(
-                (requested_image_id, requested_copy_id, location, state, verification_state)
+                (requested_image_id, requested_disc_id, location, state, verification_state)
             )
-            copy = self.copy_states[requested_copy_id]
+            disc = self.disc_states[requested_disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return copy
+                disc["verification_state"] = verification_state
+            return disc
 
     state = djdan_main.BurnSessionState.load(djdan_main._burn_state_path(tmp_path))
-    progress = state.copy_progress(image_id, copy_id)
+    progress = state.disc_progress(image_id, disc_id)
     progress.burned = True
     progress.media_verified = True
     progress.label_confirmed = True
@@ -2667,9 +2664,9 @@ def test_djdan_burn_resumes_registered_copy_verification_update(
 
     assert result.exit_code == 0
     assert client.updated == [
-        (image_id, copy_id, "Shelf B", "verified", "verified"),
+        (image_id, disc_id, "Shelf B", "verified", "verified"),
     ]
-    assert copy_id in result.stdout
+    assert disc_id in result.stdout
 
 
 def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
@@ -2677,7 +2674,7 @@ def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
     tmp_path: Path,
 ) -> None:
     image_id = "20260420T040001Z"
-    copy_id = f"{image_id}-1"
+    disc_id = f"{image_id}-1"
 
     class FakeClient:
         def __init__(self) -> None:
@@ -2723,13 +2720,13 @@ def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
             self.finalized = True
             return {"id": image_id, "filename": f"{image_id}.iso"}
 
-        def list_copies(self, current_image_id: str) -> dict[str, object]:
+        def list_image_discs(self, current_image_id: str) -> dict[str, object]:
             assert current_image_id == image_id
             return {
-                "copies": [
+                "discs": [
                     {
-                        "id": copy_id,
-                        "label_text": copy_id,
+                        "disc_id": disc_id,
+                        "label_text": disc_id,
                         "state": "needed",
                         "verification_state": "pending",
                         "location": None,
@@ -2742,18 +2739,18 @@ def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(
+        def register_disc(
             self,
             current_image_id: str,
             location: str,
             *,
-            copy_id: str | None = None,
+            disc_id: str | None = None,
         ):
-            self.register_calls.append(str(copy_id))
-            raise AssertionError("simulated burn must not register copies")
+            self.register_calls.append(str(disc_id))
+            raise AssertionError("simulated burn must not register discs")
 
-        def update_copy(self, *args, **kwargs):
-            raise AssertionError("simulated burn must not update copies")
+        def update_disc(self, *args, **kwargs):
+            raise AssertionError("simulated burn must not update discs")
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
@@ -2779,9 +2776,9 @@ def test_djdan_burn_simulate_uses_dummy_burn_without_registration(
     )
 
     assert result.exit_code == 0
-    assert "simulated burn completed; no copies were registered" in result.stdout
-    assert copy_id in result.stdout
-    assert "simulating burn copy 20260420T040001Z-1" in result.stderr
+    assert "simulated burn completed; no discs were registered" in result.stdout
+    assert disc_id in result.stdout
+    assert "simulating burn disc 20260420T040001Z-1" in result.stderr
     assert "verifying burned media" not in result.stderr
     assert "label text:" not in result.stderr
     assert client.register_calls == []
@@ -2802,25 +2799,25 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    copy_one = "20260420T040001Z-1"
-    copy_two = "20260420T040001Z-2"
+    disc_one = "20260420T040001Z-1"
+    disc_two = "20260420T040001Z-2"
 
     class FakeClient:
         def __init__(self) -> None:
             self.finalized = False
             self.iso_bytes = b"fixture-iso\n"
             self.register_calls: list[str] = []
-            self.copy_states = {
-                copy_one: {
-                    "id": copy_one,
-                    "label_text": copy_one,
+            self.disc_states = {
+                disc_one: {
+                    "disc_id": disc_one,
+                    "label_text": disc_one,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
                 },
-                copy_two: {
-                    "id": copy_two,
-                    "label_text": copy_two,
+                disc_two: {
+                    "disc_id": disc_two,
+                    "label_text": disc_two,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
@@ -2830,8 +2827,8 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
         def _registered_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
         def get_plan(
@@ -2875,8 +2872,8 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._registered_count(),
-                        "physical_copies_required": 2,
+                        "discs_registered": self._registered_count(),
+                        "discs_required": 2,
                     }
                 ],
             }
@@ -2886,41 +2883,41 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
             self.finalized = True
             return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
-            return {"copies": list(self.copy_states.values())}
+            return {"discs": list(self.disc_states.values())}
 
         def download_iso(self, image_id: str, output: Path) -> bytes:
             assert image_id == "20260420T040001Z"
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+        def register_disc(self, image_id: str, location: str, *, disc_id: str | None = None):
             assert image_id == "20260420T040001Z"
-            assert copy_id is not None
-            self.register_calls.append(copy_id)
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+            assert disc_id is not None
+            self.register_calls.append(disc_id)
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
             assert image_id == "20260420T040001Z"
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
@@ -2930,13 +2927,13 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
-            self.calls.append(copy_id)
+            self.calls.append(disc_id)
 
     class FakeMediaVerifier:
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
@@ -2945,25 +2942,25 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
             self.confirmed: set[str] = set()
             self.available: set[str] = set()
             self.locations = {
-                copy_one: "vault-a/shelf-01",
-                copy_two: "vault-b/shelf-01",
+                disc_one: "vault-a/shelf-01",
+                disc_two: "vault-b/shelf-01",
             }
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert device == "/dev/fake-sr0"
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            assert label_text == copy_id
-            if copy_id not in self.confirmed:
-                raise RuntimeError(f"label confirmation required for {copy_id}")
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            assert label_text == disc_id
+            if disc_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {disc_id}")
 
-        def prompt_location(self, copy_id: str) -> str:
-            return self.locations[copy_id]
+        def prompt_location(self, disc_id: str) -> str:
+            return self.locations[disc_id]
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
-            return copy_id in self.available
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
+            return disc_id in self.available
 
     client = FakeClient()
     burner = FakeBurner()
@@ -2981,13 +2978,13 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
     )
 
     assert first.exit_code == 1
-    assert f"error: label confirmation required for {copy_one}" in first.stderr
+    assert f"error: label confirmation required for {disc_one}" in first.stderr
     assert client.register_calls == []
-    assert burner.calls == [copy_one]
-    assert client.copy_states[copy_one]["state"] == "needed"
+    assert burner.calls == [disc_one]
+    assert client.disc_states[disc_one]["state"] == "needed"
 
-    prompts.confirmed.update({copy_one, copy_two})
-    prompts.available.update({copy_one, copy_two})
+    prompts.confirmed.update({disc_one, disc_two})
+    prompts.available.update({disc_one, disc_two})
     second = runner.invoke(
         djdan_main.app,
         ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
@@ -2995,11 +2992,11 @@ def test_djdan_burn_waits_for_label_confirmation_before_registration_and_resumes
 
     assert second.exit_code == 0
     assert "resuming label confirmation for 20260420T040001Z-1" in second.stderr
-    assert "burning copy 20260420T040001Z-1" not in second.stderr
-    assert burner.calls == [copy_one, copy_two]
-    assert client.register_calls == [copy_one, copy_two]
-    assert client.copy_states[copy_one]["state"] == "verified"
-    assert client.copy_states[copy_two]["verification_state"] == "verified"
+    assert "burning disc 20260420T040001Z-1" not in second.stderr
+    assert burner.calls == [disc_one, disc_two]
+    assert client.register_calls == [disc_one, disc_two]
+    assert client.disc_states[disc_one]["state"] == "verified"
+    assert client.disc_states[disc_two]["verification_state"] == "verified"
     assert "cleared staged ISO artifacts for 20260420T040001Z" in second.stderr
     assert not (tmp_path / "20260420T040001Z").exists()
     assert not (tmp_path / "burn-session.json").exists()
@@ -3009,25 +3006,25 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    copy_one = "20260420T040001Z-1"
-    copy_two = "20260420T040001Z-2"
+    disc_one = "20260420T040001Z-1"
+    disc_two = "20260420T040001Z-2"
 
     class FakeClient:
         def __init__(self) -> None:
             self.finalized = False
             self.iso_bytes = b"fixture-iso\n"
             self.register_calls: list[str] = []
-            self.copy_states = {
-                copy_one: {
-                    "id": copy_one,
-                    "label_text": copy_one,
+            self.disc_states = {
+                disc_one: {
+                    "disc_id": disc_one,
+                    "label_text": disc_one,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
                 },
-                copy_two: {
-                    "id": copy_two,
-                    "label_text": copy_two,
+                disc_two: {
+                    "disc_id": disc_two,
+                    "label_text": disc_two,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
@@ -3037,8 +3034,8 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
         def _registered_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
         def get_plan(
@@ -3082,8 +3079,8 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._registered_count(),
-                        "physical_copies_required": 2,
+                        "discs_registered": self._registered_count(),
+                        "discs_required": 2,
                     }
                 ],
             }
@@ -3093,41 +3090,41 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
             self.finalized = True
             return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
-            return {"copies": list(self.copy_states.values())}
+            return {"discs": list(self.disc_states.values())}
 
         def download_iso(self, image_id: str, output: Path) -> bytes:
             assert image_id == "20260420T040001Z"
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+        def register_disc(self, image_id: str, location: str, *, disc_id: str | None = None):
             assert image_id == "20260420T040001Z"
-            assert copy_id is not None
-            self.register_calls.append(copy_id)
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+            assert disc_id is not None
+            self.register_calls.append(disc_id)
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
             assert image_id == "20260420T040001Z"
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
@@ -3137,27 +3134,27 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
         verifies_media = True
 
         def __init__(self) -> None:
-            self.fail_once_copy_ids = {copy_one}
+            self.fail_once_disc_ids = {disc_one}
             self.calls: list[str] = []
 
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
-            self.calls.append(copy_id)
-            if copy_id in self.fail_once_copy_ids:
-                self.fail_once_copy_ids.remove(copy_id)
+            self.calls.append(disc_id)
+            if disc_id in self.fail_once_disc_ids:
+                self.fail_once_disc_ids.remove(disc_id)
                 raise djdan_main.BurnedMediaVerificationError(
-                    f"fixture native verification failed for {copy_id}"
+                    f"fixture native verification failed for {disc_id}"
                 )
 
     class FakeMediaVerifier:
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert device == "/dev/fake-sr0"
             assert iso_path.read_bytes() == b"fixture-iso\n"
-            self.calls.append(copy_id)
+            self.calls.append(disc_id)
 
     class FakePrompts:
         def __init__(self) -> None:
@@ -3165,26 +3162,26 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
             self.available: set[str] = set()
             self.blank_waits: list[str] = []
             self.locations = {
-                copy_one: "vault-a/shelf-01",
-                copy_two: "vault-b/shelf-01",
+                disc_one: "vault-a/shelf-01",
+                disc_two: "vault-b/shelf-01",
             }
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert device == "/dev/fake-sr0"
-            self.blank_waits.append(copy_id)
+            self.blank_waits.append(disc_id)
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            assert label_text == copy_id
-            if copy_id not in self.confirmed:
-                raise RuntimeError(f"label confirmation required for {copy_id}")
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            assert label_text == disc_id
+            if disc_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {disc_id}")
 
-        def prompt_location(self, copy_id: str) -> str:
-            return self.locations[copy_id]
+        def prompt_location(self, disc_id: str) -> str:
+            return self.locations[disc_id]
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
-            return copy_id in self.available
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
+            return disc_id in self.available
 
     client = FakeClient()
     burner = FakeBurner()
@@ -3201,28 +3198,28 @@ def test_djdan_burn_retries_same_run_after_failed_native_media_verification(
     )
     monkeypatch.setattr(djdan_main, "build_burn_prompts", lambda: prompts)
 
-    prompts.confirmed.update({copy_one, copy_two})
+    prompts.confirmed.update({disc_one, disc_two})
     result = runner.invoke(
         djdan_main.app,
         ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
     )
 
     assert result.exit_code == 0
-    assert f"burned media verification failed for {copy_one}" in result.stderr
+    assert f"burned media verification failed for {disc_one}" in result.stderr
     assert "discard or destroy this disc" in result.stderr
-    assert f"Insert a new blank disc to retry burn copy {copy_one}" in result.stderr
-    assert result.stderr.count("burning copy 20260420T040001Z-1") == 2
-    assert prompts.blank_waits == [copy_one, copy_one, copy_two]
-    assert burner.calls == [copy_one, copy_one, copy_two]
+    assert f"Insert a new blank disc to retry burn disc {disc_one}" in result.stderr
+    assert result.stderr.count("burning disc 20260420T040001Z-1") == 2
+    assert prompts.blank_waits == [disc_one, disc_one, disc_two]
+    assert burner.calls == [disc_one, disc_one, disc_two]
     assert media_verifier.calls == []
-    assert client.register_calls == [copy_one, copy_two]
-    assert client.copy_states[copy_one]["state"] == "verified"
-    assert client.copy_states[copy_two]["verification_state"] == "verified"
+    assert client.register_calls == [disc_one, disc_two]
+    assert client.disc_states[disc_one]["state"] == "verified"
+    assert client.disc_states[disc_two]["verification_state"] == "verified"
 
 
 def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) -> None:
-    copy_one = "20260420T040001Z-1"
-    copy_two = "20260420T040001Z-2"
+    disc_one = "20260420T040001Z-1"
+    disc_two = "20260420T040001Z-2"
     events: list[str] = []
 
     class FakeClient:
@@ -3230,17 +3227,17 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
             self.finalized = False
             self.iso_bytes = b"fixture-iso\n"
             self.download_calls = 0
-            self.copy_states = {
-                copy_one: {
-                    "id": copy_one,
-                    "label_text": copy_one,
+            self.disc_states = {
+                disc_one: {
+                    "disc_id": disc_one,
+                    "label_text": disc_one,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
                 },
-                copy_two: {
-                    "id": copy_two,
-                    "label_text": copy_two,
+                disc_two: {
+                    "disc_id": disc_two,
+                    "label_text": disc_two,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
@@ -3250,8 +3247,8 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
         def _registered_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
         def get_plan(
@@ -3295,8 +3292,8 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._registered_count(),
-                        "physical_copies_required": 2,
+                        "discs_registered": self._registered_count(),
+                        "discs_required": 2,
                     }
                 ],
             }
@@ -3306,9 +3303,9 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
             self.finalized = True
             return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
             assert image_id == "20260420T040001Z"
-            return {"copies": list(self.copy_states.values())}
+            return {"discs": list(self.disc_states.values())}
 
         def download_iso(self, image_id: str, output: Path) -> bytes:
             assert image_id == "20260420T040001Z"
@@ -3317,30 +3314,30 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
+        def register_disc(self, image_id: str, location: str, *, disc_id: str | None = None):
             assert image_id == "20260420T040001Z"
-            assert copy_id is not None
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+            assert disc_id is not None
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
@@ -3348,42 +3345,42 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
 
     class FakeBurner:
         def __init__(self) -> None:
-            self.fail_copy_ids = {copy_two}
+            self.fail_disc_ids = {disc_two}
 
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert iso_path.exists()
-            events.append(f"burn:{copy_id}")
-            if copy_id in self.fail_copy_ids:
-                raise RuntimeError(f"fixture burn failed for {copy_id}")
+            events.append(f"burn:{disc_id}")
+            if disc_id in self.fail_disc_ids:
+                raise RuntimeError(f"fixture burn failed for {disc_id}")
 
     class FakeMediaVerifier:
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakePrompts:
         def __init__(self) -> None:
-            self.confirmed = {copy_one}
-            self.available = {copy_two}
+            self.confirmed = {disc_one}
+            self.available = {disc_two}
             self.locations = {
-                copy_one: "vault-a/shelf-01",
-                copy_two: "vault-b/shelf-01",
+                disc_one: "vault-a/shelf-01",
+                disc_two: "vault-b/shelf-01",
             }
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             assert device == "/dev/fake-sr0"
-            events.append(f"blank:{copy_id}")
+            events.append(f"blank:{disc_id}")
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            if copy_id not in self.confirmed:
-                raise RuntimeError(f"label confirmation required for {copy_id}")
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            if disc_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {disc_id}")
 
-        def prompt_location(self, copy_id: str) -> str:
-            return self.locations[copy_id]
+        def prompt_location(self, disc_id: str) -> str:
+            return self.locations[disc_id]
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
-            return copy_id in self.available
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
+            return disc_id in self.available
 
     client = FakeClient()
     burner = FakeBurner()
@@ -3404,18 +3401,18 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
     assert "fixture burn failed for 20260420T040001Z-2" in first.stderr
     assert client.download_calls == 1
     assert events == [
-        f"blank:{copy_one}",
+        f"blank:{disc_one}",
         "download",
-        f"burn:{copy_one}",
-        f"blank:{copy_two}",
-        f"burn:{copy_two}",
+        f"burn:{disc_one}",
+        f"blank:{disc_two}",
+        f"burn:{disc_two}",
     ]
 
     staged_iso = tmp_path / "20260420T040001Z" / "20260420T040001Z.iso"
     staged_iso.write_bytes(b"corrupted-iso\n")
-    burner.fail_copy_ids.clear()
-    prompts.confirmed.add(copy_two)
-    prompts.available.add(copy_two)
+    burner.fail_disc_ids.clear()
+    prompts.confirmed.add(disc_two)
+    prompts.available.add(disc_two)
 
     second = runner.invoke(
         djdan_main.app,
@@ -3426,33 +3423,33 @@ def test_djdan_burn_redownloads_invalid_staged_iso(monkeypatch, tmp_path: Path) 
     assert "staged ISO is invalid" in second.stderr
     assert "re-downloading" in second.stderr
     assert client.download_calls == 2
-    assert events[-3:] == [f"blank:{copy_two}", "download", f"burn:{copy_two}"]
-    assert client.copy_states[copy_two]["state"] == "verified"
+    assert events[-3:] == [f"blank:{disc_two}", "download", f"burn:{disc_two}"]
+    assert client.disc_states[disc_two]["state"] == "verified"
 
 
 def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    copy_one = "20260420T040001Z-1"
-    copy_two = "20260420T040001Z-2"
+    disc_one = "20260420T040001Z-1"
+    disc_two = "20260420T040001Z-2"
 
     class FakeClient:
         def __init__(self) -> None:
             self.finalized = False
             self.iso_bytes = b"fixture-iso\n"
             self.register_calls: list[str] = []
-            self.copy_states = {
-                copy_one: {
-                    "id": copy_one,
-                    "label_text": copy_one,
+            self.disc_states = {
+                disc_one: {
+                    "disc_id": disc_one,
+                    "label_text": disc_one,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
                 },
-                copy_two: {
-                    "id": copy_two,
-                    "label_text": copy_two,
+                disc_two: {
+                    "disc_id": disc_two,
+                    "label_text": disc_two,
                     "state": "needed",
                     "verification_state": "pending",
                     "location": None,
@@ -3462,8 +3459,8 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
         def _registered_count(self) -> int:
             return sum(
                 1
-                for copy in self.copy_states.values()
-                if copy["state"] in {"registered", "verified"}
+                for disc in self.disc_states.values()
+                if disc["state"] in {"registered", "verified"}
             )
 
         def get_plan(
@@ -3507,8 +3504,8 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
                         "id": "20260420T040001Z",
                         "filename": "20260420T040001Z.iso",
                         "fill": 0.9,
-                        "physical_copies_registered": self._registered_count(),
-                        "physical_copies_required": 2,
+                        "discs_registered": self._registered_count(),
+                        "discs_required": 2,
                     }
                 ],
             }
@@ -3517,37 +3514,37 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
             self.finalized = True
             return {"id": "20260420T040001Z", "filename": "20260420T040001Z.iso"}
 
-        def list_copies(self, image_id: str) -> dict[str, object]:
-            return {"copies": list(self.copy_states.values())}
+        def list_image_discs(self, image_id: str) -> dict[str, object]:
+            return {"discs": list(self.disc_states.values())}
 
         def download_iso(self, image_id: str, output: Path) -> bytes:
             output.write_bytes(self.iso_bytes)
             return self.iso_bytes
 
-        def register_copy(self, image_id: str, location: str, *, copy_id: str | None = None):
-            assert copy_id is not None
-            self.register_calls.append(copy_id)
-            self.copy_states[copy_id]["state"] = "registered"
-            self.copy_states[copy_id]["location"] = location
-            return {"copy": self.copy_states[copy_id]}
+        def register_disc(self, image_id: str, location: str, *, disc_id: str | None = None):
+            assert disc_id is not None
+            self.register_calls.append(disc_id)
+            self.disc_states[disc_id]["state"] = "registered"
+            self.disc_states[disc_id]["location"] = location
+            return {"disc": self.disc_states[disc_id]}
 
-        def update_copy(
+        def update_disc(
             self,
             image_id: str,
-            copy_id: str,
+            disc_id: str,
             *,
             location: str | None = None,
             state: str | None = None,
             verification_state: str | None = None,
         ):
-            copy = self.copy_states[copy_id]
+            disc = self.disc_states[disc_id]
             if location is not None:
-                copy["location"] = location
+                disc["location"] = location
             if state is not None:
-                copy["state"] = state
+                disc["state"] = state
             if verification_state is not None:
-                copy["verification_state"] = verification_state
-            return {"copy": copy}
+                disc["verification_state"] = verification_state
+            return {"disc": disc}
 
     class FakeIsoVerifier:
         def verify(self, iso_path: Path) -> None:
@@ -3557,11 +3554,11 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
-            self.calls.append(copy_id)
+        def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
+            self.calls.append(disc_id)
 
     class FakeMediaVerifier:
-        def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+        def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
             assert iso_path.read_bytes() == b"fixture-iso\n"
 
     class FakePrompts:
@@ -3569,24 +3566,24 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
             self.confirmed: set[str] = set()
             self.available: set[str] = set()
             self.locations = {
-                copy_one: "vault-a/shelf-01",
-                copy_two: "vault-b/shelf-01",
+                disc_one: "vault-a/shelf-01",
+                disc_two: "vault-b/shelf-01",
             }
 
         def wait_for_blank_disc(
-            self, copy_id: str, *, device: str, target_bytes: int | None = None
+            self, disc_id: str, *, device: str, target_bytes: int | None = None
         ) -> None:
             return None
 
-        def confirm_label(self, copy_id: str, *, label_text: str) -> None:
-            if copy_id not in self.confirmed:
-                raise RuntimeError(f"label confirmation required for {copy_id}")
+        def confirm_label(self, disc_id: str, *, label_text: str) -> None:
+            if disc_id not in self.confirmed:
+                raise RuntimeError(f"label confirmation required for {disc_id}")
 
-        def prompt_location(self, copy_id: str) -> str:
-            return self.locations[copy_id]
+        def prompt_location(self, disc_id: str) -> str:
+            return self.locations[disc_id]
 
-        def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
-            return copy_id in self.available
+        def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
+            return disc_id in self.available
 
     client = FakeClient()
     burner = FakeBurner()
@@ -3604,10 +3601,10 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
     )
 
     assert first.exit_code == 1
-    assert burner.calls == [copy_one]
+    assert burner.calls == [disc_one]
 
-    prompts.confirmed.update({copy_one, copy_two})
-    prompts.available.add(copy_two)
+    prompts.confirmed.update({disc_one, disc_two})
+    prompts.available.add(disc_two)
     second = runner.invoke(
         djdan_main.app,
         ["burn", "--device", "/dev/fake-sr0", "--staging-dir", str(tmp_path)],
@@ -3615,5 +3612,5 @@ def test_djdan_burn_reburns_when_unlabeled_disc_is_unavailable_on_resume(
 
     assert second.exit_code == 0
     assert "unlabeled disc for 20260420T040001Z-1 is unavailable; restarting burn" in second.stderr
-    assert burner.calls == [copy_one, copy_one, copy_two]
-    assert client.register_calls == [copy_one, copy_two]
+    assert burner.calls == [disc_one, disc_one, disc_two]
+    assert client.register_calls == [disc_one, disc_two]

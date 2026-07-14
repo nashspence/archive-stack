@@ -16,7 +16,7 @@ may provide an explicit timestamp in UTC basic form `YYYYMMDDTHHMMSSZ` to
 preserve an original archival timestamp. The slug remains required either way.
 
 Clients use the returned id for later upload status, file upload, collection,
-planning, copy, and recovery APIs. There is no supported client-supplied
+planning, disc, and recovery APIs. There is no supported client-supplied
 collection-id path for collection upload creation.
 
 ## Reason

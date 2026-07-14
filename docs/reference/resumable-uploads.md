@@ -6,7 +6,7 @@ Riverhog uses the same resumable-upload lifecycle for collection ingest and fetc
 - the returned upload resource uses tus-compatible resumable upload semantics within the contract published for that workflow
 - incomplete bytes stage under `.riverhog/uploads/` rather than appearing immediately as committed hot files
 - Riverhog promotes staged collection bytes to `collections/{collection_id}/{path}`
-  only after file verification and collection Glacier archive verification
+  only after file verification and collection archive verification
 - upload state survives service restart until `INCOMPLETE_UPLOAD_TTL` expires
 - expiry cancels the upload resource, deletes incomplete server-side bytes, and resets the domain resource cleanly
 
@@ -18,7 +18,7 @@ For collection ingest specifically:
 - incremental upload sessions remain `open` after file bytes verify and move to
   `archiving` only when the client explicitly completes the session
 - the collection upload reaches `finalized` only after the whole-collection
-  Glacier archive package uploads and verifies
+  archive package uploads and verifies
 - archival finalization failures leave the collection upload `archiving` with a
   retry phase, keep retrying indefinitely, notify the operator on a paced
   cadence, and keep the collection invisible until retry succeeds
@@ -29,7 +29,7 @@ For collection ingest specifically:
 - staged collection bytes are retained until the finalized collection and
   archive records commit; post-finalization staging cleanup is best-effort, so a
   restart cannot make a retry depend on already-deleted staged bytes
-- the S3 multipart upload used for the collection Glacier object is also
+- the S3 multipart upload used for the collection archive object is also
   restart-resumable while the remote multipart upload still exists
 - once the last resumable collection-file state expires, Riverhog forgets a
   determinate upload session instead of keeping an empty pending record
@@ -121,13 +121,13 @@ are staged. Riverhog creates one deterministic tar archive for the collection
 and stores it with sibling manifest/proof objects at:
 
 ```text
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
-{RIVERHOG_GLACIER_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/archive.tar.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/manifest.yml.age
+{RIVERHOG_ARCHIVE_PREFIX}/archives/{opaque-archive-id}/manifest.yml.ots.age
 ```
 
 The stored objects are standard binary age v1 scrypt files. The encrypted tar
-contains only the logical files and uses the configured Glacier storage class.
+contains only the logical files and uses the configured archive storage class.
 The encrypted collection manifest and OTS proof are separate Standard S3 objects
 under the same opaque archive prefix.
 
@@ -143,7 +143,7 @@ encryption mode and plaintext size/hash so an encrypted object can be validated
 without confusing stored ciphertext bytes with collection bytes.
 
 After successful finalization, Riverhog refreshes two recovery aids under
-`{RIVERHOG_GLACIER_PREFIX}`:
+`{RIVERHOG_ARCHIVE_PREFIX}`:
 
 ```text
 README.md
@@ -172,7 +172,7 @@ continues the same multipart upload. The plaintext age file key is not stored in
 the database.
 
 Multipart archive parts are uploaded with bounded per-collection concurrency,
-configured by `RIVERHOG_GLACIER_MULTIPART_CONCURRENCY`. This is a throughput
+configured by `RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY`. This is a throughput
 tuning knob only; resumability still comes from the persisted S3 multipart
 upload id and recorded part metadata.
 
@@ -184,13 +184,13 @@ resumable upload instead of restamping or remeasuring the archive.
 
 After S3 accepts the completed archive object, Riverhog persists the archive
 receipt on the same upload row before promoting hot files. A restart after
-Glacier completion therefore resumes from the recorded receipt instead of
+archive completion therefore resumes from the recorded receipt instead of
 rebuilding or re-uploading the archive.
 
-After finalization, under-protected files remain hot and are not evictable until
-verified disc coverage exists. Fetches are the operator-facing recovery unit:
-they can be queued to the normal `djdan fetch` flow or started with cloud-fetch
-to create or resume an automatic collection Glacier restore session. Once S3
+After finalization, files without the required disc redundancy remain hot and
+are not evictable. Fetches are the operator-facing recovery unit:
+they can be queued to the normal `djdan fetch` flow or started with fetch materialization
+to create or resume an automatic archive restore for the collection. Once S3
 makes the archive package readable, Riverhog verifies the manifest, proof, and
 selected archive members before writing those files back to hot storage.
 
@@ -207,8 +207,8 @@ When `RIVERHOG_OPERATOR_WEBHOOK_URL` is configured, Riverhog emits best-effort
 milestone notifications across these phases. These notifications are
 intentionally sparse: upload staged, collection finalized, ready disc-image
 candidates, recovery readiness, and persistent failures. The collection
-finalized notification is the reassuring handoff: the archive is safely in
-Glacier, hot-file promotion is complete, and the collection is available through
+finalized notification is the reassuring handoff: the archive is safely stored,
+hot-file promotion is complete, and the collection is available through
 Riverhog/WebDAV. The CLI can therefore exit at the staged handoff while
 operators still receive phone or automation updates for the important handoffs
 without per-part or per-retry noise.
@@ -235,7 +235,7 @@ created before materialization starts with stable candidate ids derived from the
 planned contents and planner sizing config. If the final candidate is below
 `RIVERHOG_PLANNER_MIN_FILL_BYTES` or `RIVERHOG_PLANNER_MIN_FILL_RATIO`, it is
 kept in `waiting` state and no image root is materialized; those files stay
-safe in Glacier and wait for future collections to fill a burnable disc.
+safe in Archive and wait for future collections to fill a burnable disc.
 If waiting candidate bytes exceed `RIVERHOG_PLANNER_UNPLANNED_SATURATION_BYTES`,
 Riverhog may add fair beneficial whole-file voluntary collection splits,
 including for collections that already required splitting, to create enough
@@ -307,7 +307,7 @@ Once the recovery-byte stream reaches full length, the manifest entry becomes `b
 `uploaded` until `POST /v1/fetches/{fetch_id}/complete` verifies and materializes the recovered logical file.
 Split files still use one upload resource per logical file; `djdan` streams parts into that one resource in
 ascending order.
-The server records exact encrypted payload length for every registered disc copy and lazily backfills missing encrypted
+The server records exact encrypted payload length for every registered disc and lazily backfills missing encrypted
 payload SHA-256 metadata before returning a fetch manifest, so cold-only fetches can publish their manifest, resume
 uploads, and complete verification without using hot plaintext as an input.
 
@@ -324,4 +324,4 @@ and tuning guidance.
 When `complete` rejects `byte_complete` recovery bytes, the canonical operator recovery path is an explicit
 `DELETE` of the affected fetch-entry upload resource before retry. `djdan fetch` performs that reset for entries it
 has made byte-complete, reports that the fetch remains active and incomplete, and lets the next attempt start from offset
-`0` with another registered copy or with media restored through the Glacier recovery workflow.
+`0` with another registered disc or with media restored through the archive restore workflow.

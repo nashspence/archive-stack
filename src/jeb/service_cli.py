@@ -6,7 +6,7 @@ import os
 import sys
 
 from jeb.collector import (
-    BATCH_LIST_SORT_FIELDS,
+    ATTEMPT_LIST_SORT_FIELDS,
     Collector,
     UnrecoverableJebError,
     config_from_env,
@@ -15,7 +15,7 @@ from jeb.service_api import JebServiceState, start_jeb_service_server
 from riverhog_cli.output import (
     emit,
     format_jeb_archive_plan,
-    format_jeb_batches,
+    format_jeb_attempts,
     format_jeb_config_check,
     format_jeb_operation,
     format_jeb_status,
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             "  once          discover and process one scheduler pass\n"
             "  archive-now   archive one account immediately\n"
             "  status        show read-only collector status\n"
-            "  batches       list batch attempts\n"
+            "  attempts      list processing attempts\n"
             "  check-config  validate env configuration and initialize state"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -98,42 +98,42 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip source directory eligible-file scans.",
     )
-    batches = sub.add_parser("batches", help="list batch attempts")
-    batches.add_argument("--page", type=positive_int, default=1, help="Page number.")
-    batches.add_argument(
+    attempts = sub.add_parser("attempts", help="list processing attempts")
+    attempts.add_argument("--page", type=positive_int, default=1, help="Page number.")
+    attempts.add_argument(
         "--per-page",
         type=per_page_value,
         default=25,
         help=f"Rows per page, up to {MAX_PER_PAGE}.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--sort",
-        choices=sorted(BATCH_LIST_SORT_FIELDS),
+        choices=sorted(ATTEMPT_LIST_SORT_FIELDS),
         default="updated_at",
         help="Sort field.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--order",
         choices=("asc", "desc"),
         default="desc",
         help="Sort order.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--terminal",
         choices=("active", "terminal", "all"),
         default="active",
         help="Show active, terminal, or all attempts.",
     )
-    batches.add_argument("--state", help="Filter by batch attempt state.")
-    batches.add_argument("--account", help="Filter by account/source slug.")
-    batches.add_argument("--collection", help="Filter by collection id.")
-    batches.add_argument("--target", help="Filter by target name.")
-    batches.add_argument(
+    attempts.add_argument("--state", help="Filter by attempt state.")
+    attempts.add_argument("--account", help="Filter by account slug.")
+    attempts.add_argument("--collection-slug", help="Filter by output collection slug.")
+    attempts.add_argument("--target", help="Filter by target name.")
+    attempts.add_argument(
         "--query",
         "-q",
         help="Search attempt, batch, job, collection, target, state, timestamp, or error.",
     )
-    batches.add_argument("--json", action="store_true", help="Emit JSON.")
+    attempts.add_argument("--json", action="store_true", help="Emit JSON.")
     sub.add_parser(
         "check-config",
         help="validate env configuration and initialize state",
@@ -148,8 +148,8 @@ def main(argv: list[str] | None = None) -> int:
             format_jeb_config_check(
                 {
                     "status": "ok",
-                    "source_count": len(collector.config.sources),
-                    "sources": [source.id for source in collector.config.sources],
+                    "account_count": len(collector.config.accounts),
+                    "accounts": [account.id for account in collector.config.accounts],
                 }
             ),
             json_mode=False,
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             try:
                 payload = collector.archive_plan(
-                    source_id=args.account,
+                    account_id=args.account,
                     process=not args.no_process,
                 )
             except UnrecoverableJebError as exc:
@@ -179,14 +179,14 @@ def main(argv: list[str] | None = None) -> int:
             emit(format_jeb_archive_plan(payload), json_mode=False)
             return 0
         try:
-            batch_id = collector.archive_now(
-                source_id=args.account,
+            attempt_id = collector.archive_now(
+                account_id=args.account,
                 process=not args.no_process,
             )
         except UnrecoverableJebError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        if batch_id is None:
+        if attempt_id is None:
             emit(
                 format_jeb_operation(
                     {"status": "no_eligible_files", "account": args.account},
@@ -195,12 +195,14 @@ def main(argv: list[str] | None = None) -> int:
                 json_mode=False,
             )
             return 1
+        attempt = collector.load_attempt(attempt_id)
         emit(
             format_jeb_operation(
                 {
                     "status": "processed" if not args.no_process else "staged",
                     "account": args.account,
-                    "batch_id": batch_id,
+                    "attempt_id": attempt_id,
+                    "batch_id": str(attempt["batch_id"]),
                 },
                 title="jeb archive",
             ),
@@ -212,9 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         payload = collector.status_summary(include_backlog=not args.no_backlog)
         emit(payload if args.json else format_jeb_status(payload), json_mode=args.json)
         return 0
-    if command == "batches":
+    if command == "attempts":
         collector.init_db()
-        payload = collector.list_batches(
+        payload = collector.list_attempts(
             page=args.page,
             per_page=args.per_page,
             sort=args.sort,
@@ -223,10 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             terminal=args.terminal,
             state=args.state,
             account=args.account,
-            collection=args.collection,
+            collection_slug=args.collection_slug,
             target=args.target,
         )
-        emit(payload if args.json else format_jeb_batches(payload), json_mode=args.json)
+        emit(payload if args.json else format_jeb_attempts(payload), json_mode=args.json)
         return 0
     collector.init_db()
     start_jeb_service_server(

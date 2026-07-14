@@ -33,7 +33,7 @@ IMAGE_ID = "img_2026-04-20_01"
 SECOND_IMAGE_ID = "img_2026-04-20_02"
 TARGET_BYTES = 10_000
 MIN_FILL_BYTES = 7_500
-DEFAULT_COPY_CREATED_AT = "2026-04-20T12:00:00Z"
+DEFAULT_DISC_CREATED_AT = "2026-04-20T12:00:00Z"
 
 FIXTURE_AGE_PREFIX = b"fixture-age-plugin-batchpass/v1\n"
 
@@ -144,7 +144,6 @@ def _collection_proof_bytes(manifest_bytes: bytes) -> bytes:
 def _build_image_files(
     *,
     image_id: str,
-    volume_id: str,
     represented_paths: Mapping[str, tuple[str, ...]],
 ) -> dict[str, bytes]:
     represented_specs = {
@@ -153,7 +152,6 @@ def _build_image_files(
     }
     return _build_image_files_from_specs(
         image_id=image_id,
-        volume_id=volume_id,
         represented_specs=represented_specs,
     )
 
@@ -161,7 +159,6 @@ def _build_image_files(
 def _build_image_files_from_specs(
     *,
     image_id: str,
-    volume_id: str,
     represented_specs: Mapping[str, tuple[ImageFileSpec, ...]],
 ) -> dict[str, bytes]:
     collections_payload: dict[str, list[dict[str, object]]] = {}
@@ -213,7 +210,6 @@ def _build_image_files_from_specs(
         image_id,
         collections_payload,
         path_map,
-        volume_id=volume_id,
         collection_artifact_paths=collection_artifact_paths,
     )
 
@@ -255,7 +251,6 @@ def _build_image_files_from_specs(
 
 IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files(
     image_id="20260420T040001Z",
-    volume_id="20260420T040001Z",
     represented_paths={
         DOCS_COLLECTION_ID: (
             "tax/2022/invoice-123.pdf",
@@ -266,7 +261,6 @@ IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files(
 
 IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files(
     image_id="20260420T040002Z",
-    volume_id="20260420T040002Z",
     represented_paths={PHOTOS_COLLECTION_ID: ("albums/japan/day-01.txt",)},
 )
 
@@ -278,8 +272,8 @@ DOCS_TOTAL_BYTES = total_bytes(DOCS_FILES)
 
 @dataclass(frozen=True, slots=True)
 class ImageFixture:
-    id: str
-    volume_id: str
+    candidate_id: str
+    image_id: str
     filename: str
     files: Mapping[str, bytes]
     bytes: int
@@ -289,8 +283,8 @@ class ImageFixture:
 
 IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ImageFixture(
-        id=IMAGE_ID,
-        volume_id="20260420T040001Z",
+        candidate_id=IMAGE_ID,
+        image_id="20260420T040001Z",
         filename="20260420T040001Z.iso",
         files=IMAGE_ONE_FILES,
         bytes=8_200,
@@ -301,8 +295,8 @@ IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
         ),
     ),
     ImageFixture(
-        id=SECOND_IMAGE_ID,
-        volume_id="20260420T040002Z",
+        candidate_id=SECOND_IMAGE_ID,
+        image_id="20260420T040002Z",
         filename="20260420T040002Z.iso",
         files=IMAGE_TWO_FILES,
         bytes=6_100,
@@ -313,16 +307,15 @@ IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
 
 SPLIT_FILE_RELPATH = "tax/2022/invoice-123.pdf"
 SPLIT_FILE_PARTS = split_fixture_plaintext(DOCS_FILES[SPLIT_FILE_RELPATH], 2)
-SPLIT_COPY_ONE_ID = "20260420T040003Z-1"
-SPLIT_COPY_TWO_ID = "20260420T040004Z-1"
-SPLIT_COPY_ONE_LOCATION = "vault-a/shelf-03"
-SPLIT_COPY_TWO_LOCATION = "vault-a/shelf-04"
+SPLIT_DISC_ONE_ID = "20260420T040003Z-1"
+SPLIT_DISC_TWO_ID = "20260420T040004Z-1"
+SPLIT_DISC_ONE_LOCATION = "vault-a/shelf-03"
+SPLIT_DISC_TWO_LOCATION = "vault-a/shelf-04"
 SPLIT_IMAGE_ONE_ID = "img_2026-04-20_03"
 SPLIT_IMAGE_TWO_ID = "img_2026-04-20_04"
 
 SPLIT_IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files_from_specs(
     image_id="20260420T040003Z",
-    volume_id="20260420T040003Z",
     represented_specs={
         DOCS_COLLECTION_ID: (
             ImageFileSpec(
@@ -336,7 +329,6 @@ SPLIT_IMAGE_ONE_FILES: dict[str, bytes] = _build_image_files_from_specs(
 
 SPLIT_IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files_from_specs(
     image_id="20260420T040004Z",
-    volume_id="20260420T040004Z",
     represented_specs={
         DOCS_COLLECTION_ID: (
             ImageFileSpec(
@@ -350,8 +342,8 @@ SPLIT_IMAGE_TWO_FILES: dict[str, bytes] = _build_image_files_from_specs(
 
 SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
     ImageFixture(
-        id=SPLIT_IMAGE_ONE_ID,
-        volume_id="20260420T040003Z",
+        candidate_id=SPLIT_IMAGE_ONE_ID,
+        image_id="20260420T040003Z",
         filename="20260420T040003Z.iso",
         files=SPLIT_IMAGE_ONE_FILES,
         bytes=5_100,
@@ -359,8 +351,8 @@ SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
         covered_paths=((DOCS_COLLECTION_ID, SPLIT_FILE_RELPATH),),
     ),
     ImageFixture(
-        id=SPLIT_IMAGE_TWO_ID,
-        volume_id="20260420T040004Z",
+        candidate_id=SPLIT_IMAGE_TWO_ID,
+        image_id="20260420T040004Z",
         filename="20260420T040004Z.iso",
         files=SPLIT_IMAGE_TWO_FILES,
         bytes=5_100,
@@ -370,10 +362,10 @@ SPLIT_IMAGE_FIXTURES: tuple[ImageFixture, ...] = (
 )
 
 
-def build_file_copy(
+def build_file_disc(
     *,
-    copy_id: str,
-    volume_id: str,
+    disc_id: str,
+    image_id: str,
     location: str,
     collection_id: str,
     path: str,
@@ -393,13 +385,13 @@ def build_file_copy(
         suffix = f"--part-{part_index + 1}-of-{part_count}"
 
     payload: dict[str, object] = {
-        "id": copy_id,
-        "volume_id": volume_id,
+        "disc_id": disc_id,
+        "image_id": image_id,
         "location": location,
-        "disc_path": f"/copies/{copy_id}/{collection_id}-{normalized}{suffix}.age",
+        "disc_path": f"/discs/{disc_id}/{collection_id}-{normalized}{suffix}.age",
         "enc": {
             "alg": "fixture-age",
-            "fixture_key": f"{copy_id}:{collection_id}:{path}{suffix}",
+            "fixture_key": f"{disc_id}:{collection_id}:{path}{suffix}",
         },
     }
     if part_index is not None and part_count is not None:

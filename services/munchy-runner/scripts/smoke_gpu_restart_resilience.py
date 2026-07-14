@@ -130,7 +130,7 @@ def gpu_group_job_id(job_id: str, group_name: str) -> str:
 def storage_hint_from_job_payload(payload: dict) -> dict:
     groups = {
         name: {
-            "archive_mode": group.get("archive_mode", payload["archive_mode"]),
+            "output_mode": group.get("output_mode", payload["output_mode"]),
             "tasks": list(group.get("tasks") or []),
         }
         for name, group in dict(payload["groups"]).items()
@@ -141,7 +141,7 @@ def storage_hint_from_job_payload(payload: dict) -> dict:
             "destination",
             "riverhog",
         ),
-        "archive_mode": payload["archive_mode"],
+        "output_mode": payload["output_mode"],
         "tasks": payload["tasks"],
         "groups": groups,
     }
@@ -331,7 +331,7 @@ def main() -> int:
         "collection_slug": "gpu-restart-smoke",
         "collection_timestamp": stamp,
         "workflow_mode": "collection_archive",
-        "archive_mode": "av1_nvenc",
+        "output_mode": "video",
         "tasks": ["archive_video"],
         "encode_profile": {
             "schema_version": 1,
@@ -357,7 +357,7 @@ def main() -> int:
         },
         "groups": {
             group_name: {
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video"],
                 "encode_profile": {
                     "schema_version": 1,
@@ -416,7 +416,7 @@ def main() -> int:
         wait_target_ready()
         final = wait_job(
             job_id,
-            lambda job: job.get("state") in {"succeeded", "failed", "cancelled"},
+            lambda job: job.get("state") in {"succeeded", "failed", "canceled"},
             timeout_s=JOB_TIMEOUT_SECONDS,
             label="runner terminal state after GPU target restart",
         )

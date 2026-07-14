@@ -20,7 +20,7 @@ from riverhog_core.finalized_image_coverage import (
     read_finalized_image_coverage_parts,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.glacier_reporting import SqlAlchemyGlacierReportingService
+from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from tests.fixtures.crypto import FixtureRecoveryPayloadCodec
 from tests.fixtures.data import (
     DOCS_COLLECTION_ID,
@@ -63,7 +63,6 @@ def _seed_docs_collection(config: RuntimeConfig) -> None:
                     bytes=len(content),
                     sha256="a" * 64,
                     hot=True,
-                    archived=False,
                 )
             )
 
@@ -88,7 +87,7 @@ def _seed_uploaded_image(
                 bytes=bytes_total,
                 image_root=str(image_root),
                 target_bytes=bytes_total,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for collection_id, path in covered_paths:
@@ -122,7 +121,7 @@ def _seed_uploaded_image(
             )
 
 
-def test_get_report_does_not_count_finalized_images_in_glacier_totals(
+def test_get_report_does_not_count_finalized_images_in_archive_totals(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
@@ -131,14 +130,14 @@ def test_get_report_does_not_count_finalized_images_in_glacier_totals(
     _seed_uploaded_image(
         config,
         image_id="20260420T040001Z",
-        candidate_id=IMAGE_FIXTURES[0].id,
+        candidate_id=IMAGE_FIXTURES[0].candidate_id,
         filename=IMAGE_FIXTURES[0].filename,
         image_root=image_root,
         bytes_total=IMAGE_FIXTURES[0].bytes,
         covered_paths=IMAGE_FIXTURES[0].covered_paths,
     )
 
-    report = SqlAlchemyGlacierReportingService(config).get_report()
+    report = SqlAlchemyArchiveReportingService(config).get_report()
 
     assert report.scope == "all"
     assert report.totals.measured_storage_bytes == 0
@@ -155,14 +154,14 @@ def test_get_report_does_not_derive_collection_usage_from_finalized_image_covera
     _seed_uploaded_image(
         config,
         image_id="20260420T040003Z",
-        candidate_id=SPLIT_IMAGE_FIXTURES[0].id,
+        candidate_id=SPLIT_IMAGE_FIXTURES[0].candidate_id,
         filename=SPLIT_IMAGE_FIXTURES[0].filename,
         image_root=image_root,
         bytes_total=SPLIT_IMAGE_FIXTURES[0].bytes,
         covered_paths=SPLIT_IMAGE_FIXTURES[0].covered_paths,
     )
 
-    report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
+    report = SqlAlchemyArchiveReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
 
     assert report.scope == "collection"
     assert [collection.id for collection in report.collections] == [DOCS_COLLECTION_ID]
@@ -182,7 +181,7 @@ def test_get_report_counts_manifest_and_proof_in_measured_storage(
             CollectionArchiveRecord(
                 collection_id=DOCS_COLLECTION_ID,
                 state="uploaded",
-                object_path=f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/archive.tar.age",
+                object_path=f"archive/archives/opaque-{DOCS_COLLECTION_ID}/archive.tar.age",
                 stored_bytes=1000,
                 sha256="a" * 64,
                 backend="aws",
@@ -190,19 +189,19 @@ def test_get_report_counts_manifest_and_proof_in_measured_storage(
                 archive_format="tar",
                 compression="none",
                 manifest_object_path=(
-                    f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.age"
+                    f"archive/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.age"
                 ),
                 manifest_sha256="b" * 64,
                 manifest_stored_bytes=200,
                 ots_object_path=(
-                    f"glacier/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.ots.age"
+                    f"archive/archives/opaque-{DOCS_COLLECTION_ID}/manifest.yml.ots.age"
                 ),
                 ots_sha256="c" * 64,
                 ots_stored_bytes=20,
             )
         )
 
-    report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
+    report = SqlAlchemyArchiveReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
 
     collection = report.collections[0]
     assert collection.measured_storage_bytes == 1220
@@ -241,7 +240,7 @@ def test_get_report_ignores_terminal_upload_sessions(tmp_path: Path) -> None:
                 )
             )
 
-    report = SqlAlchemyGlacierReportingService(config).get_report()
+    report = SqlAlchemyArchiveReportingService(config).get_report()
 
     assert [str(collection.id) for collection in report.collections] == [
         "2026/20260613T000000Z__uploading-upload"
@@ -261,12 +260,12 @@ def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(
         session.add(
             FinalizedImageRecord(
                 image_id="20260420T040003Z",
-                candidate_id=SPLIT_IMAGE_FIXTURES[0].id,
+                candidate_id=SPLIT_IMAGE_FIXTURES[0].candidate_id,
                 filename=SPLIT_IMAGE_FIXTURES[0].filename,
                 bytes=SPLIT_IMAGE_FIXTURES[0].bytes,
                 image_root=str(image_root),
                 target_bytes=SPLIT_IMAGE_FIXTURES[0].bytes,
-                required_copy_count=2,
+                required_disc_count=2,
             )
         )
         for collection_id, path in SPLIT_IMAGE_FIXTURES[0].covered_paths:
@@ -281,7 +280,7 @@ def test_initialize_db_backfills_coverage_parts_for_existing_finalized_images(
     initialize_db(config.database_url)
     (image_root / "DISC.yml.age").unlink()
 
-    report = SqlAlchemyGlacierReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
+    report = SqlAlchemyArchiveReportingService(config).get_report(collection=DOCS_COLLECTION_ID)
 
     assert report.collections[0].measured_storage_bytes == 0
     assert report.collections[0].images[0].represented_bytes > 0

@@ -2,7 +2,7 @@
 
 The archival service manages content across a hot materialized cache and cold optical media. Users stage a directory
 and close it into a collection. Collections are the user-facing unit, but collections can be large and can span
-multiple images and physical copies.
+multiple images and physical discs.
 
 The main tension is this: users think in collections, while fetch and eviction need to happen at file or subtree
 granularity. Requiring whole-collection recovery is too coarse. Letting users mutate the hot directory tree directly

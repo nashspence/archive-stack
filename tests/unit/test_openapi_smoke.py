@@ -524,19 +524,19 @@ class _StubPlanning:
         )
 
 
-class _StubGlacierUploads:
+class _StubArchiveUploads:
     def requeue_failed_uploads_for_startup(self, *, limit: int) -> int:
         assert limit >= 0
         return 0
 
-    def publish_recovery_catalog(self) -> int:
+    def publish_restore_catalog(self) -> int:
         return 0
 
     def process_due_uploads(self, *, limit: int) -> None:
         assert limit >= 0
 
 
-class _StubGlacierReporting:
+class _StubArchiveReporting:
     def get_report(
         self,
         *,
@@ -547,7 +547,7 @@ class _StubGlacierReporting:
         return {}
 
 
-class _StubRecoverySessions:
+class _StubArchiveRestores:
     def list(
         self,
         *,
@@ -555,7 +555,8 @@ class _StubRecoverySessions:
         per_page: int,
         sort: str,
         order: str,
-        recovery_type: str | None = None,
+        terminal: str = "all",
+        restore_type: str | None = None,
         state: str | None = None,
         collection: str | None = None,
         image: str | None = None,
@@ -567,15 +568,16 @@ class _StubRecoverySessions:
             pages=0,
             sort=sort,
             order=order,
-            type=recovery_type,
+            terminal=terminal,
+            type=restore_type,
             state=state,
             collection=collection,
             image=image,
-            sessions=[],
+            restores=[],
         )
 
-    def get(self, session_id: str) -> dict[str, object]:
-        _ = session_id
+    def get(self, restore_id: str) -> dict[str, object]:
+        _ = restore_id
         return {}
 
     def get_for_collection(self, collection_id: str) -> dict[str, object]:
@@ -595,11 +597,11 @@ class _StubRecoverySessions:
         _ = image_id
         return {}
 
-    def complete(self, session_id: str) -> dict[str, object]:
-        _ = session_id
+    def complete(self, restore_id: str) -> dict[str, object]:
+        _ = restore_id
         return {}
 
-    def process_due_sessions(self, *, limit: int) -> None:
+    def process_due_restores(self, *, limit: int) -> None:
         assert limit >= 0
 
     def repair_missing_fetch_hot_files(self, *, limit: int) -> None:
@@ -609,16 +611,16 @@ class _StubRecoverySessions:
 def _contract_runtime_container(
     *,
     planning: object | None = None,
-    glacier_uploads: object | None = None,
+    archive_uploads: object | None = None,
 ) -> ServiceContainer:
     return ServiceContainer(
         collections=_StubCollectionUploads(),  # type: ignore[arg-type]
         search=SimpleNamespace(),
         planning=planning or _StubPlanning(),  # type: ignore[arg-type]
-        glacier_uploads=glacier_uploads or _StubGlacierUploads(),  # type: ignore[arg-type]
-        glacier_reporting=_StubGlacierReporting(),  # type: ignore[arg-type]
-        recovery_sessions=_StubRecoverySessions(),  # type: ignore[arg-type]
-        copies=SimpleNamespace(),
+        archive_uploads=archive_uploads or _StubArchiveUploads(),  # type: ignore[arg-type]
+        archive_reporting=_StubArchiveReporting(),  # type: ignore[arg-type]
+        archive_restores=_StubArchiveRestores(),  # type: ignore[arg-type]
+        discs=SimpleNamespace(),
         fetches=_StubFetchUploads(),  # type: ignore[arg-type]
         files=_StubFiles(),  # type: ignore[arg-type]
     )
@@ -629,7 +631,7 @@ def _contract_runtime_client() -> TestClient:
     app = create_app(
         container=container,
         upload_expiry_reaper_interval=3600,
-        glacier_upload_reaper_interval=3600,
+        archive_upload_reaper_interval=3600,
     )
     return TestClient(app)
 
@@ -866,8 +868,8 @@ def test_planner_refresh_runs_immediately_on_startup() -> None:
     app = create_app(
         container=_contract_runtime_container(planning=RecordingPlanning()),
         upload_expiry_reaper_interval=3600,
-        glacier_upload_reaper_interval=3600,
-        glacier_recovery_reaper_interval=3600,
+        archive_upload_reaper_interval=3600,
+        archive_restore_reaper_interval=3600,
         planner_refresh_reaper_interval=3600,
     )
 
@@ -879,7 +881,7 @@ def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
     retry_audit_ran = threading.Event()
     catalog_refresh_ran = threading.Event()
 
-    class RecordingGlacierUploads(_StubGlacierUploads):
+    class RecordingArchiveUploads(_StubArchiveUploads):
         def __init__(self) -> None:
             self.retry_audit_calls = 0
             self.catalog_refresh_calls = 0
@@ -890,17 +892,17 @@ def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
             retry_audit_ran.set()
             return 0
 
-        def publish_recovery_catalog(self) -> int:
+        def publish_restore_catalog(self) -> int:
             self.catalog_refresh_calls += 1
             catalog_refresh_ran.set()
             return 0
 
-    glacier_uploads = RecordingGlacierUploads()
+    archive_uploads = RecordingArchiveUploads()
     app = create_app(
-        container=_contract_runtime_container(glacier_uploads=glacier_uploads),
+        container=_contract_runtime_container(archive_uploads=archive_uploads),
         upload_expiry_reaper_interval=3600,
-        glacier_upload_reaper_interval=3600,
-        glacier_recovery_reaper_interval=3600,
+        archive_upload_reaper_interval=3600,
+        archive_restore_reaper_interval=3600,
         planner_refresh_reaper_interval=3600,
     )
 
@@ -908,8 +910,8 @@ def test_failed_archive_retry_audit_runs_immediately_on_startup() -> None:
         assert retry_audit_ran.wait(timeout=2.0)
         assert catalog_refresh_ran.wait(timeout=2.0)
 
-    assert glacier_uploads.retry_audit_calls == 1
-    assert glacier_uploads.catalog_refresh_calls == 1
+    assert archive_uploads.retry_audit_calls == 1
+    assert archive_uploads.catalog_refresh_calls == 1
 
 
 def test_healthz_is_available_and_hidden_from_openapi() -> None:

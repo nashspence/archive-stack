@@ -15,15 +15,15 @@ from fastapi.responses import JSONResponse
 
 from riverhog_api.auth import api_auth_dependencies
 from riverhog_api.deps import ServiceContainer, default_container, get_container
+from riverhog_api.routers.archive import router as archive_router
+from riverhog_api.routers.archive_restores import router as archive_restores_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.fetches import router as fetches_router
 from riverhog_api.routers.files import router as files_router
-from riverhog_api.routers.glacier import router as glacier_router
 from riverhog_api.routers.images import router as images_router
 from riverhog_api.routers.internal import router as internal_router
 from riverhog_api.routers.jeb import router as jeb_router
 from riverhog_api.routers.plan import router as plan_router
-from riverhog_api.routers.recovery_sessions import router as recovery_sessions_router
 from riverhog_api.routers.search import router as search_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 from riverhog_core.domain.errors import RiverhogError
@@ -91,39 +91,39 @@ def _sweep_expired_uploads(container: ServiceContainer) -> None:
     container.fetches.expire_stale_uploads()
 
 
-def _process_glacier_uploads(
+def _process_archive_uploads(
     container: ServiceContainer,
     *,
     startup_failed_retry_audit: bool = False,
-    startup_recovery_catalog_refresh: bool = False,
+    startup_restore_catalog_refresh: bool = False,
 ) -> None:
     if startup_failed_retry_audit:
-        retried = container.glacier_uploads.requeue_failed_uploads_for_startup(limit=100)
+        retried = container.archive_uploads.requeue_failed_uploads_for_startup(limit=100)
         if retried:
             _LOG.info("startup requeued failed collection archive uploads: count=%s", retried)
-    if startup_recovery_catalog_refresh:
-        archive_count = container.glacier_uploads.publish_recovery_catalog()
+    if startup_restore_catalog_refresh:
+        archive_count = container.archive_uploads.publish_restore_catalog()
         _LOG.info(
-            "startup refreshed encrypted archive recovery catalog: archives=%s",
+            "startup refreshed encrypted archive restore catalog: archives=%s",
             archive_count,
         )
-    container.glacier_uploads.process_due_uploads(limit=1)
+    container.archive_uploads.process_due_uploads(limit=1)
 
 
-def _process_glacier_recovery_sessions(
+def _process_archive_restores(
     container: ServiceContainer,
     *,
     startup_hot_repair_audit: bool = False,
 ) -> None:
-    container.recovery_sessions.repair_missing_fetch_hot_files(
+    container.archive_restores.repair_missing_fetch_hot_files(
         limit=10_000 if startup_hot_repair_audit else 100
     )
     container.fetches.deliver_due_queued_notifications(limit=100)
-    container.recovery_sessions.process_due_sessions(limit=10)
+    container.archive_restores.process_due_restores(limit=10)
 
 
 def _process_planner_refresh(container: ServiceContainer) -> None:
-    container.recovery_sessions.repair_missing_fetch_hot_files(limit=100)
+    container.archive_restores.repair_missing_fetch_hot_files(limit=100)
     container.fetches.deliver_due_queued_notifications(limit=100)
     container.planning.process_due_refresh(limit=1)
 
@@ -152,7 +152,7 @@ async def _run_upload_expiry_reaper(
             _LOG.exception("upload expiry reaper sweep failed")
 
 
-async def _run_glacier_upload_reaper(
+async def _run_archive_upload_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
@@ -177,18 +177,18 @@ async def _run_glacier_upload_reaper(
                     "API startup is not blocked"
                 )
             await asyncio.to_thread(
-                _process_glacier_uploads,
+                _process_archive_uploads,
                 container,
                 startup_failed_retry_audit=current_startup_failed_retry_audit,
-                startup_recovery_catalog_refresh=current_startup_failed_retry_audit,
+                startup_restore_catalog_refresh=current_startup_failed_retry_audit,
             )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("glacier upload reaper sweep failed")
+            _LOG.exception("archive upload reaper sweep failed")
 
 
-async def _run_glacier_recovery_reaper(
+async def _run_archive_restore_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
@@ -211,14 +211,14 @@ async def _run_glacier_recovery_reaper(
                     "startup fetch hot-file audit queued in background; API startup is not blocked"
                 )
             await asyncio.to_thread(
-                _process_glacier_recovery_sessions,
+                _process_archive_restores,
                 container,
                 startup_hot_repair_audit=current_startup_hot_repair_audit,
             )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("glacier recovery reaper sweep failed")
+            _LOG.exception("archive restore reaper sweep failed")
 
 
 async def _run_planner_refresh_reaper(
@@ -255,8 +255,8 @@ def create_app(
     container: ServiceContainer | None = None,
     container_provider: Callable[[], ServiceContainer] | None = None,
     upload_expiry_reaper_interval: float | None = None,
-    glacier_upload_reaper_interval: float | None = None,
-    glacier_recovery_reaper_interval: float | None = None,
+    archive_upload_reaper_interval: float | None = None,
+    archive_restore_reaper_interval: float | None = None,
     planner_refresh_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
@@ -271,15 +271,15 @@ def create_app(
         if upload_expiry_reaper_interval is not None
         else config.upload_expiry_sweep_interval
     )
-    glacier_sweep_interval = (
-        timedelta(seconds=glacier_upload_reaper_interval)
-        if glacier_upload_reaper_interval is not None
-        else config.glacier_upload_sweep_interval
+    archive_sweep_interval = (
+        timedelta(seconds=archive_upload_reaper_interval)
+        if archive_upload_reaper_interval is not None
+        else config.archive_upload_sweep_interval
     )
-    glacier_recovery_sweep_interval = (
-        timedelta(seconds=glacier_recovery_reaper_interval)
-        if glacier_recovery_reaper_interval is not None
-        else config.glacier_recovery_sweep_interval
+    archive_restore_sweep_interval = (
+        timedelta(seconds=archive_restore_reaper_interval)
+        if archive_restore_reaper_interval is not None
+        else config.archive_restore_sweep_interval
     )
     planner_refresh_sweep_interval = (
         timedelta(seconds=planner_refresh_reaper_interval)
@@ -307,16 +307,16 @@ def create_app(
                 sweep_interval=sweep_interval,
             )
         )
-        glacier_task = asyncio.create_task(
-            _run_glacier_upload_reaper(
+        archive_task = asyncio.create_task(
+            _run_archive_upload_reaper(
                 get_or_create_container,
-                sweep_interval=glacier_sweep_interval,
+                sweep_interval=archive_sweep_interval,
             )
         )
-        glacier_recovery_task = asyncio.create_task(
-            _run_glacier_recovery_reaper(
+        archive_restore_task = asyncio.create_task(
+            _run_archive_restore_reaper(
                 get_or_create_container,
-                sweep_interval=glacier_recovery_sweep_interval,
+                sweep_interval=archive_restore_sweep_interval,
             )
         )
         planner_refresh_task = asyncio.create_task(
@@ -329,15 +329,15 @@ def create_app(
             yield
         finally:
             upload_task.cancel()
-            glacier_task.cancel()
-            glacier_recovery_task.cancel()
+            archive_task.cancel()
+            archive_restore_task.cancel()
             planner_refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
-                await glacier_task
+                await archive_task
             with contextlib.suppress(asyncio.CancelledError):
-                await glacier_recovery_task
+                await archive_restore_task
             with contextlib.suppress(asyncio.CancelledError):
                 await planner_refresh_task
 
@@ -377,12 +377,12 @@ def create_app(
     auth_deps = list(api_auth_dependencies())
     app.include_router(internal_router)
     app.include_router(files_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(recovery_sessions_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(archive_restores_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(plan_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(images_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(glacier_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(archive_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(fetches_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(jeb_router, prefix="/v1", dependencies=auth_deps)
     return app

@@ -150,7 +150,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
         image_lookup=lambda image_id: record if image_id == "img_001" else None,
         list_lookup=lambda **kwargs: {"images": [], **kwargs},
         plan_lookup=lambda **kwargs: {"ready": True, **kwargs},
-        finalize_lookup=lambda image_id: {"id": image_id, "volume_id": record.volume_id},
+        finalize_lookup=lambda image_id: {"id": image_id, "image_id": record.image_id},
     )
 
     monkeypatch.setattr(
@@ -183,7 +183,7 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
         order="desc",
         q=None,
         collection=None,
-        has_copies=None,
+        has_discs=None,
     ) == {
         "images": [],
         "page": 1,
@@ -192,10 +192,10 @@ def test_image_root_planning_service_delegates_lookups_and_stream_creation(
         "order": "desc",
         "q": None,
         "collection": None,
-        "has_copies": None,
+        "has_discs": None,
     }
     assert service.get_image("img_001") is record
-    assert service.finalize_image("img_001") == {"id": "img_001", "volume_id": record.volume_id}
+    assert service.finalize_image("img_001") == {"id": "img_001", "image_id": record.image_id}
     assert asyncio.run(service.get_iso_stream("img_001")) == {"filename": "img_001.iso"}
     assert calls == [(record.image_root, record.volume_id, record.filename, 12345)]
 
@@ -270,7 +270,7 @@ def test_image_root_planning_service_requires_list_lookup_when_listing_images() 
             order="desc",
             q=None,
             collection=None,
-            has_copies=None,
+            has_discs=None,
         )
 
 

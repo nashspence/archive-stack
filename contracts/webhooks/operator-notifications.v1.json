@@ -344,9 +344,9 @@
     },
     {
       "event": "jeb.issue",
-      "category": "jeb_batch",
-      "source": "services.jeb",
-      "purpose": "Jeb encountered an operator-visible batch, routing, custody, or target issue.",
+      "category": "jeb_issue",
+      "source": "jeb",
+      "purpose": "Jeb encountered an operator-visible routing, custody, attempt, or target issue.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Jeb issue details",
       "delivery": {
@@ -367,8 +367,7 @@
         "type",
         "source",
         "actor",
-        "batch_id",
-        "source_id",
+        "account_id",
         "target_name",
         "target_type",
         "delivered_at",
@@ -380,6 +379,8 @@
         "notification"
       ],
       "optional_payload_fields": [
+        "attempt_id",
+        "batch_id",
         "collection_slug",
         "collection_timestamp",
         "recipient",
@@ -392,7 +393,7 @@
       "event": "collections.upload_staged",
       "category": "collection_lifecycle",
       "source": "riverhog_core.services.collections",
-      "purpose": "All source files for a collection reached server custody and verified; Glacier archival continues in the background.",
+      "purpose": "All source files for a collection reached server custody and verified; archiving continues in the background.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
       "delivery": {
@@ -403,7 +404,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink oink, this upload is safely staged; Glacier archiving is underway."
+        "body_template": "Oink oink, this upload is safely staged; archiving is underway."
       },
       "required_payload_fields": [
         "event",
@@ -426,7 +427,7 @@
     {
       "event": "collections.finalized",
       "category": "collection_lifecycle",
-      "source": "riverhog_core.services.glacier_uploads",
+      "source": "riverhog_core.services.archive_uploads",
       "purpose": "Collection archive and proof data are stored, verified, promoted, and available to Riverhog/WebDAV.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
@@ -463,8 +464,8 @@
     {
       "event": "collections.archive_retrying",
       "category": "collection_lifecycle",
-      "source": "riverhog_core.services.glacier_uploads",
-      "purpose": "Glacier archive upload encountered a recoverable failure and Riverhog will keep retrying.",
+      "source": "riverhog_core.services.archive_uploads",
+      "purpose": "archive upload encountered a recoverable failure and Riverhog will keep retrying.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait unless failures persist beyond normal connectivity trouble",
       "delivery": {
@@ -501,7 +502,7 @@
     {
       "event": "collections.planner_failed",
       "category": "collection_lifecycle",
-      "source": "riverhog_core.services.glacier_uploads",
+      "source": "riverhog_core.services.archive_uploads",
       "purpose": "The collection finalized, but provisional planner refresh failed.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Riverhog planner logs and state",
@@ -535,7 +536,7 @@
     {
       "event": "collections.archive_failed",
       "category": "collection_lifecycle",
-      "source": "riverhog_core.services.glacier_uploads",
+      "source": "riverhog_core.services.archive_uploads",
       "purpose": "Collection archive finalization encountered a non-retryable packaging, validation, or data-integrity failure.",
       "operator_urgency": "critical",
       "operator_action": "inspect Riverhog archive logs and collection upload state",
@@ -547,7 +548,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink! Archive finalizing stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+        "body_template": "Oink! Archiving stopped: {error_80}. Please inspect Riverhog; I will not retry this."
       },
       "required_payload_fields": [
         "event",
@@ -639,9 +640,9 @@
       ]
     },
     {
-      "event": "images.copy_label_needed",
-      "category": "disc_copy",
-      "source": "riverhog_core.services.copies",
+      "event": "images.disc_label_needed",
+      "category": "disc",
+      "source": "riverhog_core.services.discs",
       "purpose": "A burned and verified disc needs its physical label applied before djdan registers the storage location.",
       "operator_urgency": "time_sensitive",
       "operator_action": "label the physical disc exactly as label_text",
@@ -659,7 +660,7 @@
         "event",
         "type",
         "image_id",
-        "copy_id",
+        "disc_id",
         "label_text",
         "delivered_at",
         "operator_urgency",
@@ -698,7 +699,7 @@
         "reminder_interval_seconds",
         "files",
         "bytes",
-        "copies",
+        "discs",
         "operator_urgency",
         "operator_action",
         "operator_message"
@@ -738,7 +739,7 @@
         "reminder_interval_seconds",
         "files",
         "bytes",
-        "copies",
+        "discs",
         "operator_urgency",
         "operator_action",
         "operator_message"
@@ -749,10 +750,10 @@
       ]
     },
     {
-      "event": "glacier_recovery.started",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Riverhog requested Glacier restore for image rebuild or missing fetch-file recovery.",
+      "event": "archive_restore.started",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Riverhog requested an archive restore for disc rebuild or missing fetch-file recovery.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait for recovery progress",
       "delivery": {
@@ -764,12 +765,12 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, Glacier recovery is underway. This may take a long while; the archived data is safe."
+        "body_template": "Oink, an archive restore is underway. This may take a long while; the archived data is safe."
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -780,20 +781,20 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.ready",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Temporary restored Glacier data is available for image rebuild or cloud-fetch materialization.",
+      "event": "archive_restore.ready",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Temporarily restored archive data is available for disc rebuild or fetch materialization.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic cloud-fetch materialization",
+      "operator_action": "depends on type: disc_rebuild requires rebuild/burn; fetch_materialization is automatic fetch materialization",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -802,25 +803,25 @@
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Glacier data is cued up! Run `djdan burn` before the restore window closes."
+          "body_template": "Archived data is ready! Run `djdan burn` before the restore window closes."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, Glacier data is ready. I'm cloud-fetching the missing fetch files now."
+          "body_template": "Oink, archived data is ready. I'm materializing the missing fetch files now."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
-        "restore_expires_at",
+        "expires_at",
         "reminder_count",
         "reminder_interval_seconds",
         "operator_urgency",
@@ -828,21 +829,21 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.ready.reminder",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Reminder that temporary restored Glacier data is still available and the recovery session is incomplete.",
+      "event": "archive_restore.ready.reminder",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Reminder that temporarily restored archive data is still available and the archive restore is incomplete.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "depends on type: image_rebuild requires rebuild/burn; collection_restore is automatic cloud-fetch materialization",
-      "reminder_of": "glacier_recovery.ready",
+      "operator_action": "depends on type: disc_rebuild requires rebuild/burn; fetch_materialization is automatic fetch materialization",
+      "reminder_of": "archive_restore.ready",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -851,25 +852,25 @@
         "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL"
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
           "body_template": "Recovery data is still on deck. Run `djdan burn` before it expires."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, I'm still cloud-fetching fetch files from recovered Glacier data."
+          "body_template": "Oink, I'm still materializing fetch files from restored archive data."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
-        "restore_expires_at",
+        "expires_at",
         "reminder_count",
         "reminder_interval_seconds",
         "operator_urgency",
@@ -877,18 +878,18 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.completed",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Glacier recovery finished verification/materialization and cleanup.",
+      "event": "archive_restore.completed",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Archive restore finished verification, materialization, and cleanup.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
       "delivery": {
@@ -898,21 +899,21 @@
         "reminder": false
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, Glacier recovery is done, and the temporary restored data is cleaned up."
+          "body_template": "Oink, Archive restore is done, and the temporary restored data is cleaned up."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, cloud-fetch recovery is done, and the missing fetch files are hot again."
+          "body_template": "Oink, fetch materialization is complete, and the missing fetch files are hot again."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -921,18 +922,18 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.retrying",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Glacier recovery encountered a recoverable restore, polling, cleanup, or materialization failure and Riverhog will keep retrying.",
+      "event": "archive_restore.retrying",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Archive restore encountered a recoverable restore, polling, cleanup, or materialization failure and Riverhog will keep retrying.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait unless failures persist beyond normal connectivity trouble",
       "delivery": {
@@ -944,21 +945,21 @@
         "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
           "body_template": "Recovery restore hit a retryable issue: {error_80}. Next retry: {next_retry_at}; no action yet."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, cloud-fetch materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
+          "body_template": "Oink, fetch materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -972,18 +973,18 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.failed",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Glacier recovery encountered a non-retryable validation, catalog, or data-integrity failure.",
+      "event": "archive_restore.failed",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Archive restore encountered a non-retryable validation, catalog, or data-integrity failure.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Riverhog recovery logs and session state",
       "delivery": {
@@ -992,21 +993,21 @@
         "reminder": false
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Image rebuild recovery stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+          "body_template": "Disc rebuild stopped: {error_80}. Please inspect Riverhog; I will not retry this."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink! Cloud-fetch recovery stopped: {error_80}. Please inspect Riverhog; I will not retry this."
+          "body_template": "Oink! Fetch materialization stopped: {error_80}. Please inspect Riverhog; I will not retry this."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -1018,21 +1019,21 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     },
     {
-      "event": "glacier_recovery.paused.reminder",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "Daily reminder that an image rebuild recovery session is paused and should be resumed when the operator is ready to restore disc coverage.",
+      "event": "archive_restore.paused.reminder",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "Daily reminder that a disc rebuild archive restore is paused and should be resumed when the operator is ready to restore disc coverage.",
       "operator_urgency": "time_sensitive",
-      "operator_action": "run `djdan disc rebuild resume <session_id>` when ready",
-      "reminder_of": "image rebuild pause",
+      "operator_action": "run `djdan disc rebuild resume <restore_id>` when ready",
+      "reminder_of": "disc rebuild pause",
       "delivery": {
         "mode": "durable",
         "retry": true,
@@ -1043,16 +1044,16 @@
         "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "djdan",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Image rebuild is paused. Resume when ready to rebuild the image and restore disc coverage."
+          "body_template": "Disc rebuild is paused. Resume when ready to rebuild the image and restore disc coverage."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -1063,17 +1064,17 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild"
+        "disc_rebuild"
       ]
     },
     {
-      "event": "glacier_recovery.canceled",
-      "category": "glacier_recovery",
-      "source": "riverhog_core.services.recovery_sessions",
-      "purpose": "The operator canceled active cloud-fetch recovery.",
+      "event": "archive_restore.canceled",
+      "category": "archive_restore",
+      "source": "riverhog_core.services.archive_restores",
+      "purpose": "The operator canceled active fetch materialization.",
       "operator_urgency": "passive",
       "operator_action": "none",
       "delivery": {
@@ -1083,21 +1084,21 @@
         "reminder": false
       },
       "canonical_notification_by_type": {
-        "image_rebuild": {
+        "disc_rebuild": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
           "body_template": "Oink, recovery was canceled by the operator."
         },
-        "collection_restore": {
+        "fetch_materialization": {
           "actor": "riverhog",
           "title_template": "{emoji} {subject_40}",
-          "body_template": "Oink, cloud-fetch recovery was canceled by the operator."
+          "body_template": "Oink, fetch materialization was canceled by the operator."
         }
       },
       "required_payload_fields": [
         "event",
         "type",
-        "session_id",
+        "restore_id",
         "delivered_at",
         "images",
         "collections",
@@ -1106,11 +1107,11 @@
         "operator_message"
       ],
       "optional_payload_fields": [
-        "session_url"
+        "restore_url"
       ],
       "type_values": [
-        "image_rebuild",
-        "collection_restore"
+        "disc_rebuild",
+        "fetch_materialization"
       ]
     }
   ]

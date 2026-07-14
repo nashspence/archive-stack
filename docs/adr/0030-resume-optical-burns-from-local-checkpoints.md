@@ -3,7 +3,7 @@
 ## Decision
 
 The optical burn workflow resumes from staged ISO, burned-media verification, or label-confirmation checkpoints when possible.
-Simulated non-writing burns do not create copy checkpoints because no physical media has been written.
+Simulated non-writing burns do not create disc checkpoints because no physical media has been written.
 
 ## Reason
 

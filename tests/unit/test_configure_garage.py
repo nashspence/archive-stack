@@ -43,21 +43,21 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
 
 
 def test_lifecycle_targets_uses_archive_bucket_when_distinct(tmp_path: Path) -> None:
-    config = _config(tmp_path, glacier_bucket="riverhog-archive")
+    config = _config(tmp_path, archive_bucket="riverhog-archive")
     hot_client = _FakeS3Client()
     archive_client = _FakeS3Client()
 
     original_hot = configure_garage.create_s3_client
-    original_archive = configure_garage.create_glacier_s3_client
+    original_archive = configure_garage.create_archive_s3_client
     configure_garage.create_s3_client = lambda current: hot_client  # type: ignore[assignment]
-    configure_garage.create_glacier_s3_client = (  # type: ignore[assignment]
+    configure_garage.create_archive_s3_client = (  # type: ignore[assignment]
         lambda current: archive_client
     )
     try:
         targets = configure_garage._lifecycle_targets(config)
     finally:
         configure_garage.create_s3_client = original_hot  # type: ignore[assignment]
-        configure_garage.create_glacier_s3_client = original_archive  # type: ignore[assignment]
+        configure_garage.create_archive_s3_client = original_archive  # type: ignore[assignment]
 
     assert targets == [
         (hot_client, "riverhog"),

@@ -44,7 +44,7 @@ def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
             "groups": {
                 "video": {
                     "profile": "camera",
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "metadata_projection": {"tags": ["device/example-camera"]},
                 }
             },
@@ -52,12 +52,10 @@ def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
     )
 
     assert defaults["workflow_mode"] == "collection_archive"
-    assert defaults["profile_routing"]["routes"][0]["id"] == "camera-video"
+    assert defaults["routing"]["routes"][0]["id"] == "camera-video"
     assert defaults["groups"]["video"]["tasks"] == ["archive_video", "qcut_video", "audio_review"]
     assert defaults["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
-    assert defaults["groups"]["video"]["metadata_projection"] == {
-        "tags": ["device/example-camera"]
-    }
+    assert defaults["groups"]["video"]["metadata_projection"] == {"tags": ["device/example-camera"]}
 
 
 def test_munchy_job_config_loads_device_profile_by_relative_path(tmp_path: Path) -> None:
@@ -72,9 +70,9 @@ parameters:
   device_id:
     required: true
 section:
-  upload_prefix: '{device_id}-media'
-  profile_group: video
-  archive_mode: av1_nvenc
+  destination_prefix: '{device_id}-media'
+  group: video
+  output_mode: video
   encode_profile:
     schema_version: 1
     target: munchy-av1-nvenc
@@ -128,12 +126,12 @@ job:
     config = load_munchy_job_config(path)
     defaults = munchy_job_defaults_from_config(config)
 
-    assert defaults["upload_prefix"] == "patio-camera-media"
-    assert defaults["profile_routing"]["gates"]["patio-camera-native"] == {
+    assert defaults["destination_prefix"] == "patio-camera-media"
+    assert defaults["routing"]["gates"]["patio-camera-native"] == {
         "path": {"basename_regex": r"^CLIP[0-9]{6}\.MP4$"}
     }
-    assert defaults["profile_routing"]["sidecars"][0]["path"] == "{parent}/{stem}.xmp"
-    assert defaults["profile_routing"]["routes"][0]["id"] == "video"
+    assert defaults["routing"]["sidecars"][0]["path"] == "{parent}/{stem}.xmp"
+    assert defaults["routing"]["routes"][0]["id"] == "video"
     assert defaults["groups"]["video"]["max_parallel_encodes"] == 2
     assert defaults["groups"]["video"]["encode_profile"]["archive"]["quality"] == 36
 
@@ -205,7 +203,7 @@ job:
       upload_session_on_failure: cancel
 groups:
   video:
-    archive_mode: av1_nvenc
+    output_mode: video
 """.strip(),
         encoding="utf-8",
     )
@@ -228,7 +226,7 @@ def test_build_runner_upload_request_from_files_normalizes_review_sweep() -> Non
             "job": {
                 "workflow_mode": "review",
                 "run_id": "20260712T120000Z",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video", "qcut_video"],
                 "review": {
                     "device_id": "example-camera",
@@ -252,7 +250,7 @@ def test_build_runner_upload_request_from_files_normalizes_review_sweep() -> Non
             },
             "groups": {
                 "camera-video": {
-                    "archive_mode": "av1_nvenc",
+                    "output_mode": "video",
                     "tasks": ["archive_video", "qcut_video"],
                     "encode_profile": {
                         "schema_version": 1,
@@ -269,14 +267,14 @@ def test_build_runner_upload_request_from_files_normalizes_review_sweep() -> Non
         },
         collection_timestamp="20260712T120000Z",
         job_id="review-job",
-        upload_id="review-upload",
+        input_upload_id="review-upload",
         group="camera-video",
         workflow_mode="review",
         collection_archive_destination="target",
     )
 
     assert request.job_id == "review-job"
-    assert request.upload_id == "review-upload"
+    assert request.input_upload_id == "review-upload"
     assert request.storage_hint["collection_archive_destination"] == "target"
     assert request.job_payload["tasks"] == ["qcut_video"]
     assert request.job_payload["review"]["sweep"]["variants"][0]["profile_id"] == "webm-q36"
@@ -332,10 +330,10 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
         "groups": {
             "video": {
                 "profile": "video",
-                "archive_mode": "av1_nvenc",
+                "output_mode": "video",
                 "tasks": ["archive_video", "qcut_video"],
             },
-            "preserve": {"archive_mode": "preserve", "tasks": []},
+            "preserve": {"output_mode": "preserve", "tasks": []},
         },
     }
 

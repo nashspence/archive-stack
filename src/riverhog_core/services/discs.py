@@ -7,32 +7,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select
 from sqlalchemy.orm import Session
 
-from riverhog_core.archive_compliance import (
-    copy_counts_toward_protection,
-    normalize_copy_state,
-    normalize_required_copy_count,
-    normalize_verification_state,
-)
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionFileRecord,
+    ArchiveRestoreImageRecord,
+    ArchiveRestoreRecord,
     DiscOperatorSummaryRecord,
-    FileCopyRecord,
+    FileDiscRecord,
     FinalizedImageCoveragePartRecord,
     FinalizedImageCoveredPathRecord,
     FinalizedImageRecord,
-    GlacierRecoverySessionImageRecord,
-    GlacierRecoverySessionRecord,
-    ImageCopyEventRecord,
-    ImageCopyRecord,
+    ImageDiscEventRecord,
+    ImageDiscRecord,
 )
-from riverhog_core.domain.enums import CopyState, VerificationState
+from riverhog_core.domain.enums import DiscState, VerificationState
 from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
-from riverhog_core.domain.models import CopyHistoryEntry, CopySummary
-from riverhog_core.domain.types import CopyId
+from riverhog_core.domain.models import DiscHistoryEntry, DiscSummary
+from riverhog_core.domain.types import DiscId
+from riverhog_core.durability import (
+    disc_counts_toward_redundancy,
+    normalize_disc_state,
+    normalize_required_disc_count,
+    normalize_verification_state,
+)
 from riverhog_core.finalized_image_coverage import group_disc_manifest_entries
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.recovery_payloads import (
@@ -40,20 +39,20 @@ from riverhog_core.recovery_payloads import (
     RecoveryPayloadCodec,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.recovery_sessions import ensure_glacier_recovery_session_for_image
+from riverhog_core.services.archive_restores import ensure_archive_restore_for_image
 from riverhog_core.webhooks import (
     WebhookConfig,
-    build_copy_label_needed_payload,
+    build_disc_label_needed_payload,
     post_webhook,
     utcnow,
 )
 
-_REGISTERABLE_STATES = {CopyState.NEEDED, CopyState.BURNING}
+_REGISTERABLE_STATES = {DiscState.NEEDED, DiscState.BURNING}
 _BATCH_SIZE = 1_000
 _LOG = logging.getLogger(__name__)
 
 
-class SqlAlchemyCopyService:
+class SqlAlchemyDiscService:
     def __init__(
         self,
         config: RuntimeConfig,
@@ -78,27 +77,27 @@ class SqlAlchemyCopyService:
         image_id: str,
         location: str,
         *,
-        copy_id: str | None = None,
-    ) -> CopySummary:
+        disc_id: str | None = None,
+    ) -> DiscSummary:
         with session_scope(self._session_factory) as session:
             image = self._require_image(session, image_id)
-            copies = self._ensure_required_copy_slots(session, image)
-            target = self._resolve_registration_target(copies, requested_copy_id=copy_id)
+            discs = self._ensure_required_disc_slots(session, image)
+            target = self._resolve_registration_target(discs, requested_disc_id=disc_id)
             target.location = location
-            target.state = CopyState.REGISTERED.value
+            target.state = DiscState.REGISTERED.value
             if target.verification_state is None:
                 target.verification_state = VerificationState.PENDING.value
-            self._sync_file_copy_rows(session, image, target)
+            self._sync_file_disc_rows(session, image, target)
             self._append_history(session, target, event="registered")
             session.flush()
-            return self._copy_summary(session, target)
+            return self._disc_summary(session, target)
 
-    def list_for_image(self, image_id: str) -> list[CopySummary]:
+    def list_for_image(self, image_id: str) -> list[DiscSummary]:
         with session_scope(self._session_factory) as session:
             image = self._require_image(session, image_id)
-            copies = self._ensure_required_copy_slots(session, image)
+            discs = self._ensure_required_disc_slots(session, image)
             session.flush()
-            return [self._copy_summary(session, copy) for copy in copies]
+            return [self._disc_summary(session, disc) for disc in discs]
 
     def list_discs(
         self,
@@ -115,7 +114,7 @@ class SqlAlchemyCopyService:
         with session_scope(self._session_factory) as session:
             if image_id is not None:
                 image = self._require_image(session, image_id)
-                self._ensure_required_copy_slots(session, image)
+                self._ensure_required_disc_slots(session, image)
                 session.flush()
 
             stmt = select(DiscOperatorSummaryRecord)
@@ -126,7 +125,7 @@ class SqlAlchemyCopyService:
                 needle = q.casefold()
                 filters.append(
                     or_(
-                        func.lower(DiscOperatorSummaryRecord.copy_id).contains(needle),
+                        func.lower(DiscOperatorSummaryRecord.disc_id).contains(needle),
                         func.lower(DiscOperatorSummaryRecord.image_id).contains(needle),
                         func.lower(DiscOperatorSummaryRecord.state).contains(needle),
                         func.lower(DiscOperatorSummaryRecord.verification_state).contains(needle),
@@ -160,37 +159,37 @@ class SqlAlchemyCopyService:
             payload["image_id"] = image_id
         return payload
 
-    def get_disc(self, copy_id: str) -> dict[str, object]:
+    def get_disc(self, disc_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             rows = session.scalars(
                 select(DiscOperatorSummaryRecord)
-                .where(DiscOperatorSummaryRecord.copy_id == copy_id)
+                .where(DiscOperatorSummaryRecord.disc_id == disc_id)
                 .order_by(DiscOperatorSummaryRecord.image_id.asc())
                 .limit(2)
             ).all()
             if not rows:
-                raise NotFound(f"disc not found: {copy_id}")
+                raise NotFound(f"disc not found: {disc_id}")
             if len(rows) > 1:
-                raise BadRequest(f"disc id is ambiguous: {copy_id}")
+                raise BadRequest(f"disc id is ambiguous: {disc_id}")
             row = rows[0]
             history_rows = session.scalars(
-                select(ImageCopyEventRecord)
+                select(ImageDiscEventRecord)
                 .where(
-                    ImageCopyEventRecord.image_id == row.image_id,
-                    ImageCopyEventRecord.copy_id == row.copy_id,
+                    ImageDiscEventRecord.image_id == row.image_id,
+                    ImageDiscEventRecord.disc_id == row.disc_id,
                 )
-                .order_by(ImageCopyEventRecord.id)
+                .order_by(ImageDiscEventRecord.id)
             ).all()
             return _disc_summary_payload(row, history_rows=history_rows)
 
-    def notify_label_needed(self, image_id: str, copy_id: str) -> CopySummary:
+    def notify_label_needed(self, image_id: str, disc_id: str) -> DiscSummary:
         with session_scope(self._session_factory) as session:
             image = self._require_image(session, image_id)
-            self._ensure_required_copy_slots(session, image)
-            target = session.get(ImageCopyRecord, {"image_id": image_id, "copy_id": copy_id})
+            self._ensure_required_disc_slots(session, image)
+            target = session.get(ImageDiscRecord, {"image_id": image_id, "disc_id": disc_id})
             if target is None:
-                raise NotFound(f"copy not found for image: {copy_id}")
-            summary = self._copy_summary(session, target)
+                raise NotFound(f"disc not found for image: {disc_id}")
+            summary = self._disc_summary(session, target)
 
         if self._config.operator_webhook_url:
             try:
@@ -201,18 +200,18 @@ class SqlAlchemyCopyService:
                 )
                 post_webhook(
                     config=webhook_config,
-                    payload=build_copy_label_needed_payload(
+                    payload=build_disc_label_needed_payload(
                         config=webhook_config,
                         image_id=image_id,
-                        copy_id=copy_id,
+                        disc_id=disc_id,
                         label_text=summary.label_text,
                         delivered_at=utcnow(),
                     ),
                 )
             except Exception:
                 _LOG.warning(
-                    "failed to deliver copy label-needed webhook for %s",
-                    copy_id,
+                    "failed to deliver disc label-needed webhook for %s",
+                    disc_id,
                     exc_info=True,
                 )
         return summary
@@ -220,20 +219,20 @@ class SqlAlchemyCopyService:
     def update(
         self,
         image_id: str,
-        copy_id: str,
+        disc_id: str,
         *,
         location: str | None = None,
         state: str | None = None,
         verification_state: str | None = None,
-    ) -> CopySummary:
+    ) -> DiscSummary:
         with session_scope(self._session_factory) as session:
             image = self._require_image(session, image_id)
-            self._ensure_required_copy_slots(session, image)
-            target = session.get(ImageCopyRecord, {"image_id": image_id, "copy_id": copy_id})
+            self._ensure_required_disc_slots(session, image)
+            target = session.get(ImageDiscRecord, {"image_id": image_id, "disc_id": disc_id})
             if target is None:
-                raise NotFound(f"copy not found for image: {copy_id}")
+                raise NotFound(f"disc not found for image: {disc_id}")
 
-            previous_state = normalize_copy_state(target.state)
+            previous_state = normalize_disc_state(target.state)
             location_changed = location is not None and location != target.location
             state_changed = False
             verification_changed = False
@@ -242,8 +241,8 @@ class SqlAlchemyCopyService:
                 target.location = location
 
             if state is not None:
-                normalized_state = _parse_copy_state(state)
-                state_changed = normalized_state.value != normalize_copy_state(target.state).value
+                normalized_state = _parse_disc_state(state)
+                state_changed = normalized_state.value != normalize_disc_state(target.state).value
                 target.state = normalized_state.value
 
             if verification_state is not None:
@@ -254,10 +253,10 @@ class SqlAlchemyCopyService:
                 )
                 target.verification_state = normalized_verification_state.value
 
-            previous_protected = copy_counts_toward_protection(previous_state.value)
-            next_protected = copy_counts_toward_protection(target.state)
-            if location_changed or previous_protected != next_protected:
-                self._sync_file_copy_rows(session, image, target)
+            previous_counted = disc_counts_toward_redundancy(previous_state.value)
+            next_counted = disc_counts_toward_redundancy(target.state)
+            if location_changed or previous_counted != next_counted:
+                self._sync_file_disc_rows(session, image, target)
             if location_changed or state_changed or verification_changed:
                 self._append_history(
                     session,
@@ -272,18 +271,18 @@ class SqlAlchemyCopyService:
                 previous_state=previous_state,
                 next_state=target.state,
             ):
-                self._ensure_required_copy_slots(session, image)
+                self._ensure_required_disc_slots(session, image)
             session.flush()
-            if copy_counts_toward_protection(previous_state.value) and target.state in {
-                CopyState.LOST.value,
-                CopyState.DAMAGED.value,
+            if disc_counts_toward_redundancy(previous_state.value) and target.state in {
+                DiscState.LOST.value,
+                DiscState.DAMAGED.value,
             }:
-                ensure_glacier_recovery_session_for_image(
+                ensure_archive_restore_for_image(
                     session,
                     config=self._config,
                     image_id=image_id,
                 )
-            return self._copy_summary(session, target)
+            return self._disc_summary(session, target)
 
     def _require_image(self, session: Session, image_id: str) -> FinalizedImageRecord:
         image = cast(FinalizedImageRecord | None, session.get(FinalizedImageRecord, image_id))
@@ -291,97 +290,97 @@ class SqlAlchemyCopyService:
             raise NotFound(f"image not found: {image_id}")
         return image
 
-    def _ensure_required_copy_slots(
+    def _ensure_required_disc_slots(
         self,
         session: Session,
         image: FinalizedImageRecord,
-    ) -> list[ImageCopyRecord]:
-        copies = list(
+    ) -> list[ImageDiscRecord]:
+        discs = list(
             session.scalars(
-                select(ImageCopyRecord)
-                .where(ImageCopyRecord.image_id == image.image_id)
-                .order_by(ImageCopyRecord.copy_id)
+                select(ImageDiscRecord)
+                .where(ImageDiscRecord.image_id == image.image_id)
+                .order_by(ImageDiscRecord.disc_id)
             ).all()
         )
-        required_copy_count = normalize_required_copy_count(image.required_copy_count)
-        used_ids = {copy.copy_id for copy in copies}
+        required_disc_count = normalize_required_disc_count(image.required_disc_count)
+        used_ids = {disc.disc_id for disc in discs}
 
-        if not copies:
-            while len(copies) < required_copy_count:
-                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
-            return sorted(copies, key=lambda current: current.copy_id)
+        if not discs:
+            while len(discs) < required_disc_count:
+                discs.append(self._create_generated_disc_slot(session, image, used_ids=used_ids))
+            return sorted(discs, key=lambda current: current.disc_id)
 
-        active_slot_count = sum(1 for copy in copies if _copy_counts_toward_slot_pool(copy.state))
-        protected_copy_count = sum(
-            1 for copy in copies if copy_counts_toward_protection(copy.state)
+        active_slot_count = sum(1 for disc in discs if _disc_counts_toward_slot_pool(disc.state))
+        disc_redundancy_count = sum(
+            1 for disc in discs if disc_counts_toward_redundancy(disc.state)
         )
-        if protected_copy_count > 0:
-            while active_slot_count < required_copy_count:
-                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
+        if disc_redundancy_count > 0:
+            while active_slot_count < required_disc_count:
+                discs.append(self._create_generated_disc_slot(session, image, used_ids=used_ids))
                 active_slot_count += 1
         elif _has_recoverable_session(session, image.image_id):
             while active_slot_count < 1:
-                copies.append(self._create_generated_copy_slot(session, image, used_ids=used_ids))
+                discs.append(self._create_generated_disc_slot(session, image, used_ids=used_ids))
                 active_slot_count += 1
-        return sorted(copies, key=lambda current: current.copy_id)
+        return sorted(discs, key=lambda current: current.disc_id)
 
-    def _create_generated_copy_slot(
+    def _create_generated_disc_slot(
         self,
         session: Session,
         image: FinalizedImageRecord,
         *,
         used_ids: set[str],
-    ) -> ImageCopyRecord:
+    ) -> ImageDiscRecord:
         ordinal = 1
         while True:
-            candidate_id = _generated_copy_id(image.image_id, ordinal)
+            candidate_id = _generated_disc_id(image.image_id, ordinal)
             ordinal += 1
             if candidate_id in used_ids:
                 continue
             created_at = _utc_now()
-            copy = ImageCopyRecord(
+            disc = ImageDiscRecord(
                 image_id=image.image_id,
-                copy_id=candidate_id,
+                disc_id=candidate_id,
                 label_text=_label_text(candidate_id),
                 location=None,
                 created_at=created_at,
-                state=CopyState.NEEDED.value,
+                state=DiscState.NEEDED.value,
                 verification_state=VerificationState.PENDING.value,
             )
-            session.add(copy)
+            session.add(disc)
             session.flush()
-            self._append_history(session, copy, event="created")
+            self._append_history(session, disc, event="created")
             used_ids.add(candidate_id)
-            return copy
+            return disc
 
     def _resolve_registration_target(
         self,
-        copies: list[ImageCopyRecord],
+        discs: list[ImageDiscRecord],
         *,
-        requested_copy_id: str | None,
-    ) -> ImageCopyRecord:
-        if requested_copy_id is None:
-            for copy in copies:
-                if normalize_copy_state(copy.state) in _REGISTERABLE_STATES:
-                    return copy
-            raise Conflict("all required copy slots are already registered")
+        requested_disc_id: str | None,
+    ) -> ImageDiscRecord:
+        if requested_disc_id is None:
+            for disc in discs:
+                if normalize_disc_state(disc.state) in _REGISTERABLE_STATES:
+                    return disc
+            raise Conflict("all required disc slots are already registered")
 
-        for copy in copies:
-            if copy.copy_id != requested_copy_id:
+        for disc in discs:
+            if disc.disc_id != requested_disc_id:
                 continue
-            if normalize_copy_state(copy.state) not in _REGISTERABLE_STATES:
-                raise Conflict(f"copy is not available for registration: {requested_copy_id}")
-            return copy
-        raise NotFound(f"copy not found for image: {requested_copy_id}")
+            if normalize_disc_state(disc.state) not in _REGISTERABLE_STATES:
+                raise Conflict(f"disc is not available for registration: {requested_disc_id}")
+            return disc
+        raise NotFound(f"disc not found for image: {requested_disc_id}")
 
-    def _sync_file_copy_rows(
+    def _sync_file_disc_rows(
         self,
         session: Session,
         image: FinalizedImageRecord,
-        copy: ImageCopyRecord,
+        disc: ImageDiscRecord,
     ) -> None:
-        if not copy_counts_toward_protection(copy.state) or not copy.location:
-            self._remove_file_copy_rows(session, image.image_id, copy.copy_id)
+        if not disc_counts_toward_redundancy(disc.state) or not disc.location:
+            self._remove_file_disc_rows(session, image.image_id, disc.disc_id)
             return
 
         covered = session.scalars(
@@ -410,15 +409,15 @@ class SqlAlchemyCopyService:
             for disc_path, part_index, part_count in expected_entries:
                 recovery_bytes = recovery_bytes_by_disc_path.get(disc_path)
                 if recovery_bytes is None:
-                    recovery_bytes = _copy_recovery_bytes(image, disc_path)
+                    recovery_bytes = _disc_recovery_bytes(image, disc_path)
                     recovery_bytes_by_disc_path[disc_path] = recovery_bytes
                 rows.append(
                     {
                         "collection_id": covered_path.collection_id,
                         "path": covered_path.path,
-                        "copy_id": copy.copy_id,
-                        "volume_id": image.image_id,
-                        "location": copy.location,
+                        "disc_id": disc.disc_id,
+                        "image_id": image.image_id,
+                        "location": disc.location,
                         "disc_path": disc_path,
                         "enc_json": enc_json,
                         "part_index": part_index,
@@ -430,96 +429,64 @@ class SqlAlchemyCopyService:
                     }
                 )
 
-        for collection_id, paths in covered_paths_by_collection.items():
-            for path_batch in _batches(paths, _BATCH_SIZE):
-                session.execute(
-                    update(CollectionFileRecord)
-                    .where(
-                        CollectionFileRecord.collection_id == collection_id,
-                        CollectionFileRecord.path.in_(path_batch),
-                    )
-                    .values(archived=True)
-                )
         session.execute(
-            delete(FileCopyRecord).where(
-                FileCopyRecord.volume_id == image.image_id,
-                FileCopyRecord.copy_id == copy.copy_id,
+            delete(FileDiscRecord).where(
+                FileDiscRecord.image_id == image.image_id,
+                FileDiscRecord.disc_id == disc.disc_id,
             )
         )
         for row_batch in _batches(rows, _BATCH_SIZE):
-            session.execute(insert(FileCopyRecord), row_batch)
+            session.execute(insert(FileDiscRecord), row_batch)
 
-    def _remove_file_copy_rows(self, session: Session, image_id: str, copy_id: str) -> None:
-        impacted_rows = session.scalars(
-            select(FileCopyRecord).where(
-                FileCopyRecord.volume_id == image_id,
-                FileCopyRecord.copy_id == copy_id,
-            )
-        ).all()
-        impacted_files = {(row.collection_id, row.path) for row in impacted_rows}
+    def _remove_file_disc_rows(self, session: Session, image_id: str, disc_id: str) -> None:
         session.execute(
-            delete(FileCopyRecord).where(
-                FileCopyRecord.volume_id == image_id,
-                FileCopyRecord.copy_id == copy_id,
+            delete(FileDiscRecord).where(
+                FileDiscRecord.image_id == image_id,
+                FileDiscRecord.disc_id == disc_id,
             )
         )
-        for collection_id, path in impacted_files:
-            file_record = session.get(
-                CollectionFileRecord, {"collection_id": collection_id, "path": path}
-            )
-            if file_record is None:
-                continue
-            remaining = session.scalar(
-                select(FileCopyRecord.id)
-                .where(
-                    FileCopyRecord.collection_id == collection_id,
-                    FileCopyRecord.path == path,
-                )
-                .limit(1)
-            )
-            file_record.archived = remaining is not None
 
     def _append_history(
         self,
         session: Session,
-        copy: ImageCopyRecord,
+        disc: ImageDiscRecord,
         *,
         event: str,
     ) -> None:
         session.add(
-            ImageCopyEventRecord(
-                image_id=copy.image_id,
-                copy_id=copy.copy_id,
+            ImageDiscEventRecord(
+                image_id=disc.image_id,
+                disc_id=disc.disc_id,
                 occurred_at=_utc_now(),
                 event=event,
-                state=normalize_copy_state(copy.state).value,
-                verification_state=normalize_verification_state(copy.verification_state).value,
-                location=copy.location,
+                state=normalize_disc_state(disc.state).value,
+                verification_state=normalize_verification_state(disc.verification_state).value,
+                location=disc.location,
             )
         )
 
-    def _copy_summary(self, session: Session, copy: ImageCopyRecord) -> CopySummary:
+    def _disc_summary(self, session: Session, disc: ImageDiscRecord) -> DiscSummary:
         history_rows = session.scalars(
-            select(ImageCopyEventRecord)
+            select(ImageDiscEventRecord)
             .where(
-                ImageCopyEventRecord.image_id == copy.image_id,
-                ImageCopyEventRecord.copy_id == copy.copy_id,
+                ImageDiscEventRecord.image_id == disc.image_id,
+                ImageDiscEventRecord.disc_id == disc.disc_id,
             )
-            .order_by(ImageCopyEventRecord.id)
+            .order_by(ImageDiscEventRecord.id)
         ).all()
-        return CopySummary(
-            id=CopyId(copy.copy_id),
-            volume_id=copy.image_id,
-            label_text=copy.label_text,
-            location=copy.location,
-            created_at=copy.created_at,
-            state=normalize_copy_state(copy.state),
-            verification_state=normalize_verification_state(copy.verification_state),
+        return DiscSummary(
+            disc_id=DiscId(disc.disc_id),
+            image_id=disc.image_id,
+            label_text=disc.label_text,
+            location=disc.location,
+            created_at=disc.created_at,
+            state=normalize_disc_state(disc.state),
+            verification_state=normalize_verification_state(disc.verification_state),
             history=tuple(
-                CopyHistoryEntry(
+                DiscHistoryEntry(
                     at=row.occurred_at,
                     event=row.event,
-                    state=normalize_copy_state(row.state),
+                    state=normalize_disc_state(row.state),
                     verification_state=normalize_verification_state(row.verification_state),
                     location=row.location,
                 )
@@ -528,30 +495,30 @@ class SqlAlchemyCopyService:
         )
 
 
-def _generated_copy_id(image_id: str, ordinal: int) -> str:
+def _generated_disc_id(image_id: str, ordinal: int) -> str:
     return f"{image_id}-{ordinal}"
 
 
 def _has_recoverable_session(session: Session, image_id: str) -> bool:
-    recoverable_states = {"restore_requested", "ready", "expired"}
-    session_id = session.scalar(
-        select(GlacierRecoverySessionRecord.session_id)
+    recoverable_states = {"requested", "ready", "expired"}
+    restore_id = session.scalar(
+        select(ArchiveRestoreRecord.restore_id)
         .join(
-            GlacierRecoverySessionImageRecord,
-            GlacierRecoverySessionImageRecord.session_id == GlacierRecoverySessionRecord.session_id,
+            ArchiveRestoreImageRecord,
+            ArchiveRestoreImageRecord.restore_id == ArchiveRestoreRecord.restore_id,
         )
         .where(
-            GlacierRecoverySessionImageRecord.image_id == image_id,
-            GlacierRecoverySessionRecord.state.in_(recoverable_states),
+            ArchiveRestoreImageRecord.image_id == image_id,
+            ArchiveRestoreRecord.state.in_(recoverable_states),
         )
-        .order_by(GlacierRecoverySessionRecord.created_at.desc())
+        .order_by(ArchiveRestoreRecord.created_at.desc())
         .limit(1)
     )
-    return session_id is not None
+    return restore_id is not None
 
 
-def _label_text(copy_id: str) -> str:
-    return copy_id
+def _label_text(disc_id: str) -> str:
+    return disc_id
 
 
 def _utc_now() -> str:
@@ -576,9 +543,9 @@ def _history_event_name(
     return "updated"
 
 
-def _copy_counts_toward_slot_pool(state: str | None) -> bool:
-    normalized = normalize_copy_state(state)
-    return normalized in _REGISTERABLE_STATES or copy_counts_toward_protection(normalized.value)
+def _disc_counts_toward_slot_pool(state: str | None) -> bool:
+    normalized = normalize_disc_state(state)
+    return normalized in _REGISTERABLE_STATES or disc_counts_toward_redundancy(normalized.value)
 
 
 def _batches[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
@@ -586,20 +553,20 @@ def _batches[T](items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
         yield items[start : start + size]
 
 
-def _should_top_up_replacement_slots(*, previous_state: CopyState, next_state: str | None) -> bool:
-    return copy_counts_toward_protection(previous_state.value) and normalize_copy_state(
+def _should_top_up_replacement_slots(*, previous_state: DiscState, next_state: str | None) -> bool:
+    return disc_counts_toward_redundancy(previous_state.value) and normalize_disc_state(
         next_state
     ) in {
-        CopyState.LOST,
-        CopyState.DAMAGED,
+        DiscState.LOST,
+        DiscState.DAMAGED,
     }
 
 
-def _parse_copy_state(raw_state: str) -> CopyState:
+def _parse_disc_state(raw_state: str) -> DiscState:
     try:
-        return CopyState(raw_state)
+        return DiscState(raw_state)
     except ValueError as exc:
-        raise BadRequest(f"invalid copy state: {raw_state}") from exc
+        raise BadRequest(f"invalid disc state: {raw_state}") from exc
 
 
 def _parse_verification_state(raw_state: str) -> VerificationState:
@@ -628,7 +595,7 @@ def _disc_entries_from_coverage_parts(
     return result
 
 
-def _copy_recovery_bytes(
+def _disc_recovery_bytes(
     image: FinalizedImageRecord,
     disc_path: str,
 ) -> int:
@@ -653,14 +620,14 @@ def _normalize_disc_order(order: str) -> str:
 
 
 _DISC_SORT_COLUMNS = {
-    "id": (DiscOperatorSummaryRecord.copy_id, DiscOperatorSummaryRecord.image_id),
-    "image_id": (DiscOperatorSummaryRecord.image_id, DiscOperatorSummaryRecord.copy_id),
-    "state": (DiscOperatorSummaryRecord.state, DiscOperatorSummaryRecord.copy_id),
+    "disc_id": (DiscOperatorSummaryRecord.disc_id, DiscOperatorSummaryRecord.image_id),
+    "image_id": (DiscOperatorSummaryRecord.image_id, DiscOperatorSummaryRecord.disc_id),
+    "state": (DiscOperatorSummaryRecord.state, DiscOperatorSummaryRecord.disc_id),
     "verification_state": (
         DiscOperatorSummaryRecord.verification_state,
-        DiscOperatorSummaryRecord.copy_id,
+        DiscOperatorSummaryRecord.disc_id,
     ),
-    "location": (DiscOperatorSummaryRecord.location, DiscOperatorSummaryRecord.copy_id),
+    "location": (DiscOperatorSummaryRecord.location, DiscOperatorSummaryRecord.disc_id),
 }
 
 
@@ -674,23 +641,22 @@ def _disc_summary_order(*, sort: str, order: str) -> list[Any]:
 def _disc_summary_payload(
     row: DiscOperatorSummaryRecord,
     *,
-    history_rows: Sequence[ImageCopyEventRecord] = (),
+    history_rows: Sequence[ImageDiscEventRecord] = (),
 ) -> dict[str, object]:
     return {
-        "id": row.copy_id,
+        "disc_id": row.disc_id,
         "image_id": row.image_id,
-        "volume_id": row.image_id,
         "filename": row.filename,
         "label_text": row.label_text,
         "location": row.location,
         "created_at": row.created_at,
-        "state": normalize_copy_state(row.state).value,
+        "state": normalize_disc_state(row.state).value,
         "verification_state": normalize_verification_state(row.verification_state).value,
         "history": [
             {
                 "at": history.occurred_at,
                 "event": history.event,
-                "state": normalize_copy_state(history.state).value,
+                "state": normalize_disc_state(history.state).value,
                 "verification_state": normalize_verification_state(
                     history.verification_state
                 ).value,

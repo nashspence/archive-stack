@@ -15,7 +15,7 @@ The `djdan` CLI is the recovery client for a machine with an optical drive.
 
 1. Read the fetch manifest.
 2. Determine which disc to insert next from the manifest's part-level recovery hints.
-3. Read the raw encrypted payload-object bytes from each required optical copy.
+3. Read the raw encrypted payload-object bytes from each required optical disc.
 4. Stream those recovery bytes directly into the entry upload resource, continuing in ascending part order when the
    logical file spans multiple discs.
 5. Let the server handle any required decryption and final file validation for each manifest entry.
@@ -26,25 +26,25 @@ If recovery is interrupted after upload has started, the server-side manifest ke
 data is discarded and the manifest returns to `queued_djdan`.
 
 If final server verification rejects a `byte_complete` entry, `djdan fetch` cancels that entry upload resource before
-exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. Try another registered copy
-for that entry when one is available. If every registered copy fails, report the
-damaged copies and complete an image rebuild session before running
+exiting. The manifest stays active and incomplete with the rejected entry back at offset `0`. Try another registered disc
+for that entry when one is available. If every registered disc fails, report the
+damaged discs and complete a disc rebuild archive restore before running
 `djdan fetch` again from recovered media.
 
 Fetch fulfillment is intentionally prompt-based because a fetch can span several
 files, collections, and discs. Each manifest entry carries both `collection_id`
 and `path`, and `djdan` uses that full logical path in progress output. `djdan`
-prints the exact copy id and stored location before reading from a new disc. It
+prints the exact disc id and stored location before reading from a new disc. It
 does not prompt again while consecutive manifest work stays on that same disc,
 and it prompts again when a later split-file part or later manifest entry needs
-a different copy.
+a different disc.
 
 During fulfillment, `djdan` should show:
 
 - current file progress
 - whole-manifest progress
 - current transfer speed
-- which disc or copy is needed next
+- which disc is needed next
 
 CLI example:
 

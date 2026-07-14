@@ -20,7 +20,7 @@ class InputFileSpec(BaseModel):
 
     @field_validator("path")
     @classmethod
-    def _validate_profile_group_path(cls, value: str) -> str:
+    def _validate_group_path(cls, value: str) -> str:
         path = value.strip()
         if not path:
             raise ValueError("input path must not be blank")
@@ -31,13 +31,13 @@ class InputFileSpec(BaseModel):
             raise ValueError("input path must be relative")
         parts = parsed.parts
         if len(parts) < 2:
-            raise ValueError("input path must be shaped as <profile-group>/<file>")
+            raise ValueError("input path must be shaped as <group>/<file>")
         if any(part in {"", ".", ".."} for part in parts):
             raise ValueError("input path must not contain empty, '.', or '..' segments")
         return parsed.as_posix()
 
     @property
-    def profile_group(self) -> str:
+    def group(self) -> str:
         return PurePosixPath(self.path).parts[0]
 
 
@@ -53,22 +53,22 @@ class MunchyJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     job_id: str = Field(min_length=1)
-    upload_id: str = Field(min_length=1)
+    input_upload_id: str = Field(min_length=1)
     workflow_mode: WorkflowMode
     collection_archive_destination: CollectionArchiveDestination = "riverhog"
     collection_slug: str = Field(min_length=1)
     collection_timestamp: str = Field(min_length=1)
     files: tuple[InputFileSpec, ...] = Field(min_length=1)
-    profile_groups: dict[str, EncodeProfile]
+    groups: dict[str, EncodeProfile]
     storage_hint: StorageHint
 
     @model_validator(mode="after")
-    def _all_file_groups_have_profiles(self) -> Self:
-        missing = sorted(profile_groups_for_files(self.files) - set(self.profile_groups))
+    def _all_file_groups_are_configured(self) -> Self:
+        missing = sorted(groups_for_files(self.files) - set(self.groups))
         if missing:
-            raise ValueError("missing encode profile group(s): " + ", ".join(missing))
+            raise ValueError("undefined group(s): " + ", ".join(missing))
         return self
 
 
-def profile_groups_for_files(files: tuple[InputFileSpec, ...]) -> set[str]:
-    return {item.profile_group for item in files}
+def groups_for_files(files: tuple[InputFileSpec, ...]) -> set[str]:
+    return {item.group for item in files}

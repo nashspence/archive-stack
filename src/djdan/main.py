@@ -22,13 +22,13 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
+    format_archive_restore,
+    format_archive_restores,
     format_disc,
     format_discs,
     format_image,
     format_images,
     format_plan,
-    format_recovery_session,
-    format_recovery_sessions,
 )
 from riverhog_core.domain.errors import HashMismatch, NotFound, RiverhogError
 
@@ -206,8 +206,8 @@ class XorrisoOpticalReader:
 
 
 @dataclass(frozen=True, slots=True)
-class RecoveryCopyHint:
-    copy_id: str
+class RecoveryDiscHint:
+    disc_id: str
     location: str
     disc_path: str
     recovery_bytes: int
@@ -219,7 +219,7 @@ class RecoveryPartHint:
     index: int
     bytes: int
     recovery_bytes: int
-    copies: tuple[RecoveryCopyHint, ...]
+    discs: tuple[RecoveryDiscHint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,43 +254,43 @@ class BurnBacklogItem:
     fill: float
     expected_bytes: int | None = None
     target_bytes: int | None = None
-    recovery_session_id: str | None = None
+    archive_restore_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RecoveryHandoff:
     image_id: str
-    session_id: str
+    restore_id: str
     state: str
     latest_message: str | None
 
 
 @dataclass(frozen=True, slots=True)
-class RecoverySessionImageHint:
+class ArchiveRestoreImageHint:
     image_id: str
     filename: str
 
 
 @dataclass(frozen=True, slots=True)
-class RecoverySessionHint:
-    session_id: str
+class ArchiveRestoreHint:
+    restore_id: str
     type: str
     state: str
     latest_message: str | None
-    images: tuple[RecoverySessionImageHint, ...]
+    images: tuple[ArchiveRestoreImageHint, ...]
 
 
 @dataclass(slots=True)
 class DiscPromptState:
-    ready_copy_id: str | None = None
+    ready_disc_id: str | None = None
 
 
 _PENDING_BURN_STATES = {"needed", "burning"}
-_PROTECTED_COPY_STATES = {"registered", "verified"}
+_REDUNDANCY_DISC_STATES = {"registered", "verified"}
 
 
 @dataclass(slots=True)
-class BurnCopyProgress:
+class BurnDiscProgress:
     burned: bool = False
     media_verified: bool = False
     label_confirmed: bool = False
@@ -307,7 +307,7 @@ class BurnCopyProgress:
         }
 
     @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> BurnCopyProgress:
+    def from_payload(cls, payload: dict[str, object]) -> BurnDiscProgress:
         return cls(
             burned=bool(payload.get("burned", False)),
             media_verified=bool(payload.get("media_verified", False)),
@@ -320,28 +320,28 @@ class BurnCopyProgress:
 @dataclass(slots=True)
 class BurnImageProgress:
     verified_sha256: str | None = None
-    copies: dict[str, BurnCopyProgress] = field(default_factory=dict)
+    discs: dict[str, BurnDiscProgress] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, object]:
         return {
             "verified_sha256": self.verified_sha256,
-            "copies": {copy_id: progress.to_payload() for copy_id, progress in self.copies.items()},
+            "discs": {disc_id: progress.to_payload() for disc_id, progress in self.discs.items()},
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> BurnImageProgress:
-        copies_raw = payload.get("copies", {})
-        if not isinstance(copies_raw, dict):
-            copies_raw = {}
-        copies = {
-            str(copy_id): BurnCopyProgress.from_payload(copy_payload)
-            for copy_id, copy_payload in copies_raw.items()
-            if isinstance(copy_payload, dict)
+        discs_raw = payload.get("discs", {})
+        if not isinstance(discs_raw, dict):
+            discs_raw = {}
+        discs = {
+            str(disc_id): BurnDiscProgress.from_payload(disc_payload)
+            for disc_id, disc_payload in discs_raw.items()
+            if isinstance(disc_payload, dict)
         }
         verified_sha256 = (
             str(payload["verified_sha256"]) if payload.get("verified_sha256") is not None else None
         )
-        return cls(verified_sha256=verified_sha256, copies=copies)
+        return cls(verified_sha256=verified_sha256, discs=discs)
 
 
 @dataclass(slots=True)
@@ -378,12 +378,12 @@ class BurnSessionState:
             self.images[image_id] = progress
         return progress
 
-    def copy_progress(self, image_id: str, copy_id: str) -> BurnCopyProgress:
+    def disc_progress(self, image_id: str, disc_id: str) -> BurnDiscProgress:
         image = self.image_progress(image_id)
-        progress = image.copies.get(copy_id)
+        progress = image.discs.get(disc_id)
         if progress is None:
-            progress = BurnCopyProgress()
-            image.copies[copy_id] = progress
+            progress = BurnDiscProgress()
+            image.discs[disc_id] = progress
         return progress
 
 
@@ -433,9 +433,9 @@ class XorrisoDiscBurner:
     def __init__(self, *, dummy: bool = False) -> None:
         self._dummy = dummy
 
-    def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+    def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
         if not iso_path.is_file():
-            raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
+            raise RuntimeError(f"staged ISO is missing for {disc_id}: {iso_path}")
         xorriso = _require_tool("xorriso")
         command = [
             xorriso,
@@ -453,7 +453,7 @@ class XorrisoDiscBurner:
         )
         _run_checked(
             command,
-            action=f"burning {copy_id} to {device}",
+            action=f"burning {disc_id} to {device}",
         )
 
 
@@ -563,9 +563,9 @@ class HdiutilDiscBurner:
     def preflight(self, *, device: str) -> None:
         self._resolve_device_args(device)
 
-    def burn(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+    def burn(self, iso_path: Path, *, device: str, disc_id: str) -> None:
         if not iso_path.is_file():
-            raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
+            raise RuntimeError(f"staged ISO is missing for {disc_id}: {iso_path}")
         hdiutil = _require_tool("hdiutil")
         device_args = self._resolve_device_args(device)
         command = [
@@ -583,20 +583,20 @@ class HdiutilDiscBurner:
         try:
             _run_passthrough_checked(
                 command,
-                action=f"burning {copy_id} to {device}",
+                action=f"burning {disc_id} to {device}",
             )
         except RuntimeError as exc:
             if self._dummy:
                 raise
             raise BurnedMediaVerificationError(
-                f"hdiutil did not complete a verified burn for {copy_id}"
+                f"hdiutil did not complete a verified burn for {disc_id}"
             ) from exc
 
 
 class RawBurnedMediaVerifier:
-    def verify(self, iso_path: Path, *, device: str, copy_id: str) -> None:
+    def verify(self, iso_path: Path, *, device: str, disc_id: str) -> None:
         if not iso_path.is_file():
-            raise RuntimeError(f"staged ISO is missing for {copy_id}: {iso_path}")
+            raise RuntimeError(f"staged ISO is missing for {disc_id}: {iso_path}")
         read_device = _macos_raw_read_device(device)
         expected_size = iso_path.stat().st_size
         expected_digest = hashlib.sha256()
@@ -610,11 +610,11 @@ class RawBurnedMediaVerifier:
                 while remaining > 0:
                     expected_chunk = expected.read(min(_DISC_IO_CHUNK_BYTES, remaining))
                     if not expected_chunk:
-                        raise RuntimeError(f"staged ISO ended unexpectedly for {copy_id}")
+                        raise RuntimeError(f"staged ISO ended unexpectedly for {disc_id}")
                     actual_chunk = actual.read(len(expected_chunk))
                     if len(actual_chunk) != len(expected_chunk):
                         raise RuntimeError(
-                            f"burned media for {copy_id} ended before {expected_size} "
+                            f"burned media for {disc_id} ended before {expected_size} "
                             "ISO bytes could be read"
                         )
                     expected_digest.update(expected_chunk)
@@ -624,7 +624,7 @@ class RawBurnedMediaVerifier:
                     now = time.monotonic()
                     if now - last_report_at >= _VERIFY_PROGRESS_INTERVAL_SECONDS or remaining == 0:
                         _print_progress(
-                            label=f"verify {copy_id}",
+                            label=f"verify {disc_id}",
                             completed=verified,
                             total=expected_size,
                             started_at=started_at,
@@ -632,14 +632,14 @@ class RawBurnedMediaVerifier:
                         last_report_at = now
         except OSError as exc:
             raise RuntimeError(
-                f"could not read burned media for {copy_id} from {read_device}"
+                f"could not read burned media for {disc_id} from {read_device}"
             ) from exc
 
         expected_sha256 = expected_digest.hexdigest()
         actual_sha256 = actual_digest.hexdigest()
         if actual_sha256 != expected_sha256:
             raise RuntimeError(
-                f"burned media verification failed for {copy_id}: "
+                f"burned media verification failed for {disc_id}: "
                 f"expected sha256 {expected_sha256}, read {actual_sha256}"
             )
 
@@ -647,7 +647,7 @@ class RawBurnedMediaVerifier:
 class TerminalBurnPrompts:
     def wait_for_blank_disc(
         self,
-        copy_id: str,
+        disc_id: str,
         *,
         device: str,
         target_bytes: int | None = None,
@@ -659,7 +659,7 @@ class TerminalBurnPrompts:
         )
         typer.echo(
             (
-                f"Insert blank media{media_text} for {copy_id} into {device}, "
+                f"Insert blank media{media_text} for {disc_id} into {device}, "
                 "then press Enter to continue."
             ),
             err=True,
@@ -669,9 +669,9 @@ class TerminalBurnPrompts:
         except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
             raise RuntimeError("stdin closed while waiting for blank media") from exc
 
-    def confirm_label(self, copy_id: str, *, label_text: str) -> None:
+    def confirm_label(self, disc_id: str, *, label_text: str) -> None:
         typer.echo(
-            f'Type "labeled" after writing "{label_text}" on disc {copy_id}.',
+            f'Type "labeled" after writing "{label_text}" on disc {disc_id}.',
             err=True,
         )
         while True:
@@ -683,23 +683,23 @@ class TerminalBurnPrompts:
             if normalized == "labeled":
                 return
             typer.echo(
-                f'label confirmation for {copy_id} is still pending; type "labeled" to continue.',
+                f'label confirmation for {disc_id} is still pending; type "labeled" to continue.',
                 err=True,
             )
 
-    def prompt_location(self, copy_id: str) -> str:
-        typer.echo(f"Enter the storage location for {copy_id}.", err=True)
+    def prompt_location(self, disc_id: str) -> str:
+        typer.echo(f"Enter the storage location for {disc_id}.", err=True)
         try:
             response = input().strip()
         except EOFError as exc:  # pragma: no cover - exercised via subprocess acceptance tests
             raise RuntimeError("stdin closed while waiting for storage location") from exc
         if not response:
-            raise RuntimeError(f"storage location required for {copy_id}")
+            raise RuntimeError(f"storage location required for {disc_id}")
         return response
 
-    def confirm_unlabeled_copy_available(self, copy_id: str) -> bool:
+    def confirm_unlabeled_disc_available(self, disc_id: str) -> bool:
         typer.echo(
-            f"Is the already-burned unlabeled disc for {copy_id} still available? [y/N]",
+            f"Is the already-burned unlabeled disc for {disc_id} still available? [y/N]",
             err=True,
         )
         try:
@@ -750,9 +750,9 @@ def _default_staging_dir() -> Path:
     return Path(configured) if configured else Path(".djdan-staging")
 
 
-def _copy_from_manifest(payload: dict[str, Any]) -> RecoveryCopyHint:
-    return RecoveryCopyHint(
-        copy_id=str(payload["copy"]),
+def _disc_from_manifest(payload: dict[str, Any]) -> RecoveryDiscHint:
+    return RecoveryDiscHint(
+        disc_id=str(payload["disc_id"]),
         location=str(payload["location"]),
         disc_path=str(payload["disc_path"]),
         recovery_bytes=int(payload.get("recovery_bytes", payload.get("bytes", 0))),
@@ -761,14 +761,14 @@ def _copy_from_manifest(payload: dict[str, Any]) -> RecoveryCopyHint:
 
 
 def _part_from_manifest(payload: dict[str, Any]) -> RecoveryPartHint:
-    copies = tuple(_copy_from_manifest(copy) for copy in payload.get("copies", []))
-    if not copies:
-        raise RuntimeError("fetch manifest part is missing copy hints")
+    discs = tuple(_disc_from_manifest(disc) for disc in payload.get("discs", []))
+    if not discs:
+        raise RuntimeError("fetch manifest part is missing disc hints")
     return RecoveryPartHint(
         index=int(payload["index"]),
         bytes=int(payload["bytes"]),
         recovery_bytes=int(payload.get("recovery_bytes", payload["bytes"])),
-        copies=copies,
+        discs=discs,
     )
 
 
@@ -780,15 +780,15 @@ def _entry_from_manifest(payload: dict[str, Any]) -> RecoveryEntry:
             for part in sorted(manifest_parts, key=lambda item: int(item["index"]))
         )
     else:
-        copies = tuple(_copy_from_manifest(copy) for copy in payload.get("copies", []))
-        if not copies:
-            raise RuntimeError(f"fetch manifest entry is missing copy hints: {payload['id']}")
+        discs = tuple(_disc_from_manifest(disc) for disc in payload.get("discs", []))
+        if not discs:
+            raise RuntimeError(f"fetch manifest entry is missing disc hints: {payload['id']}")
         parts = (
             RecoveryPartHint(
                 index=0,
                 bytes=int(payload["bytes"]),
                 recovery_bytes=int(payload.get("recovery_bytes", payload["bytes"])),
-                copies=copies,
+                discs=discs,
             ),
         )
     return RecoveryEntry(
@@ -825,10 +825,10 @@ def _upload_session_from_payload(entry: RecoveryEntry, payload: dict[str, Any]) 
     )
 
 
-def _prompt_for_disc(copy: RecoveryCopyHint, *, device: str) -> None:
+def _prompt_for_disc(disc: RecoveryDiscHint, *, device: str) -> None:
     typer.echo(
         (
-            f"Insert disc {copy.copy_id} from {copy.location} into {device}, "
+            f"Insert disc {disc.disc_id} from {disc.location} into {device}, "
             "then press Enter to continue."
         ),
         err=True,
@@ -955,11 +955,11 @@ def _staged_iso_path(staging_dir: Path, *, image_id: str, filename: str) -> Path
     return staging_dir / image_id / filename
 
 
-def _storage_guidance(copy_id: str) -> str:
-    ordinal = copy_id.rsplit("-", 1)[-1]
+def _storage_guidance(disc_id: str) -> str:
+    ordinal = disc_id.rsplit("-", 1)[-1]
     if ordinal == "1":
-        return "Store this first copy in your primary archive location."
-    return "Store this copy in a different physical location from the first copy."
+        return "Store this first disc in your primary archive location."
+    return "Store this disc in a different physical location from the first disc."
 
 
 def _default_burn_device() -> str:
@@ -968,9 +968,9 @@ def _default_burn_device() -> str:
     return "/dev/sr0"
 
 
-def _copy_label(copy_payload: dict[str, Any]) -> str:
-    label = copy_payload.get("label_text")
-    return str(label if label is not None else copy_payload.get("id"))
+def _disc_label(disc_payload: dict[str, Any]) -> str:
+    label = disc_payload.get("label_text")
+    return str(label if label is not None else disc_payload.get("disc_id"))
 
 
 def _iter_paged_payloads(fetch_page: Any) -> list[dict[str, Any]]:
@@ -984,7 +984,7 @@ def _iter_paged_payloads(fetch_page: Any) -> list[dict[str, Any]]:
     return results
 
 
-def _images_missing_copy_coverage(
+def _images_missing_disc_coverage(
     client: ApiClient,
     session_state: BurnSessionState | None = None,
 ) -> list[dict[str, Any]]:
@@ -995,9 +995,9 @@ def _images_missing_copy_coverage(
         for image in payload.get("images", []):
             if not isinstance(image, dict):
                 continue
-            registered = int(image.get("physical_copies_registered", 0))
-            required = int(image.get("physical_copies_required", 0))
-            if registered < required or _image_has_resumable_copy_verification(
+            registered = int(image.get("discs_registered", 0))
+            required = int(image.get("discs_required", 0))
+            if registered < required or _image_has_resumable_disc_verification(
                 client,
                 str(image.get("id")),
                 session_state,
@@ -1006,40 +1006,40 @@ def _images_missing_copy_coverage(
     return images
 
 
-def _image_has_resumable_copy_verification(
+def _image_has_resumable_disc_verification(
     client: ApiClient,
     image_id: str,
     session_state: BurnSessionState | None,
 ) -> bool:
     if session_state is None:
         return False
-    copies = client.list_copies(image_id).get("copies", [])
-    if not isinstance(copies, list):
+    discs = client.list_image_discs(image_id).get("discs", [])
+    if not isinstance(discs, list):
         return False
     return any(
-        isinstance(copy, dict)
-        and _can_mark_copy_verified_from_checkpoint(
+        isinstance(disc, dict)
+        and _can_mark_disc_verified_from_checkpoint(
             session_state,
             image_id,
-            copy,
+            disc,
         )
-        for copy in copies
+        for disc in discs
     )
 
 
-def _copy_states_for_image(client: ApiClient, image_id: str) -> set[str]:
-    copies = client.list_copies(image_id).get("copies", [])
-    if not isinstance(copies, list):
+def _disc_states_for_image(client: ApiClient, image_id: str) -> set[str]:
+    discs = client.list_image_discs(image_id).get("discs", [])
+    if not isinstance(discs, list):
         return set()
     return {
-        str(copy.get("state"))
-        for copy in copies
-        if isinstance(copy, dict) and copy.get("state") is not None
+        str(disc.get("state"))
+        for disc in discs
+        if isinstance(disc, dict) and disc.get("state") is not None
     }
 
 
 def _image_needs_recovery_iso_source(client: ApiClient, image_id: str) -> bool:
-    states = _copy_states_for_image(client, image_id)
+    states = _disc_states_for_image(client, image_id)
     if not states:
         return False
     has_pending = bool(states & _PENDING_BURN_STATES)
@@ -1047,46 +1047,46 @@ def _image_needs_recovery_iso_source(client: ApiClient, image_id: str) -> bool:
 
 
 def _is_standard_burn_backlog_image(client: ApiClient, image_id: str) -> bool:
-    states = _copy_states_for_image(client, image_id)
+    states = _disc_states_for_image(client, image_id)
     if not states:
         return False
 
     has_pending = bool(states & _PENDING_BURN_STATES)
-    has_protected = bool(states & _PROTECTED_COPY_STATES)
+    has_redundancy = bool(states & _REDUNDANCY_DISC_STATES)
     all_pending = bool(states) and states <= _PENDING_BURN_STATES
     if not has_pending:
         return False
-    if hasattr(client, "get_recovery_session_for_image"):
+    if hasattr(client, "get_archive_restore_for_image"):
         try:
-            payload = client.get_recovery_session_for_image(image_id)
+            payload = client.get_archive_restore_for_image(image_id)
         except NotFound:
             pass
         else:
-            if str(payload.get("state")) in {"restore_requested", "ready", "paused", "expired"}:
+            if str(payload.get("state")) in {"requested", "ready", "paused", "expired"}:
                 return False
-    if all_pending and not has_protected:
+    if all_pending and not has_redundancy:
         return True
     if all_pending:
         return True
-    if has_protected:
+    if has_redundancy:
         return True
     return False
 
 
-def _get_image_recovery_session(
+def _get_image_archive_restore(
     client: ApiClient,
     image_id: str,
 ) -> dict[str, Any] | None:
-    get_recovery_session = getattr(client, "get_recovery_session_for_image", None)
-    if get_recovery_session is None:
+    get_archive_restore = getattr(client, "get_archive_restore_for_image", None)
+    if get_archive_restore is None:
         return None
     try:
-        return cast(dict[str, Any], get_recovery_session(image_id))
+        return cast(dict[str, Any], get_archive_restore(image_id))
     except NotFound:
         return None
 
 
-def _recovery_session_filename(
+def _archive_restore_filename(
     payload: dict[str, Any],
     image_id: str,
     fallback: str,
@@ -1111,15 +1111,15 @@ def _recovery_burn_backlog_item(
     image_id = str(image["id"])
     if not _image_needs_recovery_iso_source(client, image_id):
         return None
-    payload = _get_image_recovery_session(client, image_id)
+    payload = _get_image_archive_restore(client, image_id)
     if payload is None:
         return None
     state = str(payload.get("state"))
-    if state == "restore_requested":
+    if state == "requested":
         return None
-    hint = _recovery_session_hint_from_payload(payload)
+    hint = _archive_restore_hint_from_payload(payload)
     if state == "expired":
-        if staging_dir is None or not _can_resume_expired_recovery_session(
+        if staging_dir is None or not _can_resume_expired_archive_restore(
             hint,
             client=client,
             staging_dir=staging_dir,
@@ -1130,11 +1130,11 @@ def _recovery_burn_backlog_item(
     return BurnBacklogItem(
         image_id=image_id,
         candidate_id=None,
-        filename=_recovery_session_filename(payload, image_id, str(image["filename"])),
+        filename=_archive_restore_filename(payload, image_id, str(image["filename"])),
         fill=float(image.get("fill", 0)),
         expected_bytes=_optional_int(image.get("bytes")),
         target_bytes=_optional_int(image.get("target_bytes")),
-        recovery_session_id=hint.session_id,
+        archive_restore_id=hint.restore_id,
     )
 
 
@@ -1172,7 +1172,7 @@ def _discover_burn_backlog(
                 )
             )
 
-    for image in _images_missing_copy_coverage(client, session_state):
+    for image in _images_missing_disc_coverage(client, session_state):
         image_id = str(image["id"])
         recovery_item = _recovery_burn_backlog_item(
             client,
@@ -1182,7 +1182,7 @@ def _discover_burn_backlog(
         if recovery_item is not None:
             items.append(recovery_item)
             continue
-        if not _image_has_resumable_copy_verification(
+        if not _image_has_resumable_disc_verification(
             client,
             image_id,
             session_state,
@@ -1208,12 +1208,12 @@ def _discover_burn_backlog(
 
 def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
     handoffs: list[RecoveryHandoff] = []
-    for image in _images_missing_copy_coverage(client):
+    for image in _images_missing_disc_coverage(client):
         image_id = str(image["id"])
         if _is_standard_burn_backlog_image(client, image_id):
             continue
         try:
-            payload = client.get_recovery_session_for_image(image_id)
+            payload = client.get_archive_restore_for_image(image_id)
         except NotFound:
             continue
         state = str(payload.get("state"))
@@ -1222,7 +1222,7 @@ def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
         handoffs.append(
             RecoveryHandoff(
                 image_id=image_id,
-                session_id=str(payload["id"]),
+                restore_id=str(payload["id"]),
                 state=state,
                 latest_message=(
                     str(payload["latest_message"])
@@ -1237,26 +1237,26 @@ def _discover_recovery_handoffs(client: ApiClient) -> list[RecoveryHandoff]:
 def _report_recovery_handoffs(handoffs: list[RecoveryHandoff]) -> None:
     if not handoffs:
         return
-    typer.echo("burn backlog is waiting for image rebuild restore work")
+    typer.echo("burn backlog is waiting for disc rebuild restore work")
     for handoff in handoffs:
-        typer.echo(f"{handoff.image_id}: recovery session {handoff.session_id} is {handoff.state}")
+        typer.echo(f"{handoff.image_id}: archive restore {handoff.restore_id} is {handoff.state}")
         if handoff.latest_message:
             typer.echo(handoff.latest_message)
 
 
-def _recovery_session_hint_from_payload(payload: dict[str, Any]) -> RecoverySessionHint:
+def _archive_restore_hint_from_payload(payload: dict[str, Any]) -> ArchiveRestoreHint:
     images_payload = payload.get("images", [])
     images = tuple(
-        RecoverySessionImageHint(
+        ArchiveRestoreImageHint(
             image_id=str(image["id"]),
             filename=str(image["filename"]),
         )
         for image in images_payload
         if isinstance(image, dict)
     )
-    return RecoverySessionHint(
-        session_id=str(payload["id"]),
-        type=str(payload.get("type", "image_rebuild")),
+    return ArchiveRestoreHint(
+        restore_id=str(payload["id"]),
+        type=str(payload.get("type", "disc_rebuild")),
         state=str(payload["state"]),
         latest_message=(
             str(payload["latest_message"]) if payload.get("latest_message") is not None else None
@@ -1269,7 +1269,7 @@ def _clear_recovery_artifacts(
     session_state: BurnSessionState,
     *,
     staging_dir: Path,
-    images: tuple[RecoverySessionImageHint, ...],
+    images: tuple[ArchiveRestoreImageHint, ...],
 ) -> None:
     mutated = False
     for image in images:
@@ -1288,7 +1288,7 @@ def _clear_recovery_artifacts(
         session_state.path.unlink()
 
 
-def _save_or_remove_burn_session_state(session_state: BurnSessionState) -> None:
+def _save_or_remove_burn_restore_state(session_state: BurnSessionState) -> None:
     if session_state.images:
         session_state.save()
         return
@@ -1305,15 +1305,15 @@ def _clear_burn_artifacts_if_complete(
 ) -> None:
     if image_id not in session_state.images:
         return
-    copies = client.list_copies(image_id).get("copies", [])
-    if not isinstance(copies, list):
+    discs = client.list_image_discs(image_id).get("discs", [])
+    if not isinstance(discs, list):
         return
-    for copy_payload in copies:
-        if not isinstance(copy_payload, dict):
+    for disc_payload in discs:
+        if not isinstance(disc_payload, dict):
             continue
-        if str(copy_payload.get("state")) in _PENDING_BURN_STATES:
+        if str(disc_payload.get("state")) in _PENDING_BURN_STATES:
             return
-        if _can_mark_copy_verified_from_checkpoint(session_state, image_id, copy_payload):
+        if _can_mark_disc_verified_from_checkpoint(session_state, image_id, disc_payload):
             return
 
     staging_root = staging_dir / image_id
@@ -1321,7 +1321,7 @@ def _clear_burn_artifacts_if_complete(
         shutil.rmtree(staging_root)
         typer.echo(f"cleared staged ISO artifacts for {image_id}", err=True)
     del session_state.images[image_id]
-    _save_or_remove_burn_session_state(session_state)
+    _save_or_remove_burn_restore_state(session_state)
 
 
 def _clear_completed_burn_artifacts(
@@ -1339,15 +1339,15 @@ def _clear_completed_burn_artifacts(
         )
 
 
-def _maybe_complete_recovery_session_after_burn(
+def _maybe_complete_archive_restore_after_burn(
     client: ApiClient,
-    session_id: str,
+    restore_id: str,
     *,
     session_state: BurnSessionState,
     staging_dir: Path,
 ) -> None:
     try:
-        payload = client.get_recovery_session(session_id)
+        payload = client.get_archive_restore(restore_id)
     except NotFound:
         return
     state = str(payload.get("state"))
@@ -1355,17 +1355,17 @@ def _maybe_complete_recovery_session_after_burn(
         return
     if state not in {"ready", "expired"}:
         return
-    hint = _recovery_session_hint_from_payload(payload)
+    hint = _archive_restore_hint_from_payload(payload)
     for image in hint.images:
         if _image_requires_recovery_burn(client, image.image_id):
             return
-        if _image_has_resumable_copy_verification(
+        if _image_has_resumable_disc_verification(
             client,
             image.image_id,
             session_state,
         ):
             return
-    client.complete_recovery_session(session_id)
+    client.complete_archive_restore(restore_id)
     _clear_recovery_artifacts(
         session_state,
         staging_dir=staging_dir,
@@ -1374,10 +1374,10 @@ def _maybe_complete_recovery_session_after_burn(
 
 
 def _image_requires_recovery_burn(client: ApiClient, image_id: str) -> bool:
-    copies_payload = client.list_copies(image_id)
+    discs_payload = client.list_image_discs(image_id)
     return any(
-        isinstance(copy_payload, dict) and str(copy_payload.get("state")) in _PENDING_BURN_STATES
-        for copy_payload in copies_payload.get("copies", [])
+        isinstance(disc_payload, dict) and str(disc_payload.get("state")) in _PENDING_BURN_STATES
+        for disc_payload in discs_payload.get("discs", [])
     )
 
 
@@ -1395,13 +1395,13 @@ def _image_target_bytes(client: ApiClient, image_id: str) -> int | None:
         return None
 
 
-def _can_resume_expired_recovery_session(
-    recovery_session: RecoverySessionHint,
+def _can_resume_expired_archive_restore(
+    archive_restore: ArchiveRestoreHint,
     *,
     client: ApiClient,
     staging_dir: Path,
 ) -> bool:
-    for image in recovery_session.images:
+    for image in archive_restore.images:
         if not _image_requires_recovery_burn(client, image.image_id):
             continue
         iso_path = _staged_iso_path(
@@ -1422,7 +1422,7 @@ def _ensure_staged_iso(
     staging_dir: Path,
     verifier: Any,
     session_state: BurnSessionState,
-    recovery_session_id: str | None = None,
+    archive_restore_id: str | None = None,
     expected_total_bytes: int | None = None,
 ) -> Path:
     image_progress = session_state.image_progress(image_id)
@@ -1443,7 +1443,7 @@ def _ensure_staged_iso(
     else:
         typer.echo(f"staged ISO is missing at {iso_path}; re-downloading", err=True)
 
-    if recovery_session_id is None:
+    if archive_restore_id is None:
         typer.echo(f"downloading ISO {image_id} to {iso_path}", err=True)
         typer.echo(
             "server may spend a few minutes preparing ISO metadata before download progress begins",
@@ -1466,7 +1466,7 @@ def _ensure_staged_iso(
         )
         _call_download_with_optional_progress(
             client.download_recovered_iso,
-            recovery_session_id,
+            archive_restore_id,
             image_id,
             iso_path,
             progress=_download_progress_logger(
@@ -1481,21 +1481,21 @@ def _ensure_staged_iso(
     return iso_path
 
 
-def _stage_recovery_session_images(
+def _stage_archive_restore_images(
     client: ApiClient,
-    recovery_session_id: str,
+    archive_restore_id: str,
     *,
     staging_dir: Path,
     session_state: BurnSessionState,
     iso_verifier: Any,
-) -> RecoverySessionHint:
-    payload = client.get_recovery_session(recovery_session_id)
+) -> ArchiveRestoreHint:
+    payload = client.get_archive_restore(archive_restore_id)
     if str(payload.get("state")) == "expired":
         typer.echo(
             "restore window expired remotely; resuming from local staged ISO artifacts",
             err=True,
         )
-    hint = _recovery_session_hint_from_payload(payload)
+    hint = _archive_restore_hint_from_payload(payload)
     for image in hint.images:
         if not _image_requires_recovery_burn(client, image.image_id):
             continue
@@ -1506,23 +1506,23 @@ def _stage_recovery_session_images(
             staging_dir=staging_dir,
             verifier=iso_verifier,
             session_state=session_state,
-            recovery_session_id=recovery_session_id,
+            archive_restore_id=archive_restore_id,
             expected_total_bytes=_image_target_bytes(client, image.image_id),
         )
     return hint
 
 
-def _register_burned_copy(
+def _register_burned_disc(
     client: ApiClient,
     image_id: str,
-    copy_id: str,
+    disc_id: str,
     *,
     location: str,
     file_count: int | None,
 ) -> None:
     typer.echo(
         (
-            f"registering copy {copy_id}; Riverhog is recording this physical disc "
+            f"registering disc {disc_id}; Riverhog is recording this physical disc "
             f"and indexing {_file_entry_text(file_count)} for recovery"
         ),
         err=True,
@@ -1532,47 +1532,47 @@ def _register_burned_copy(
         err=True,
     )
     started_at = time.monotonic()
-    client.register_copy(image_id, location, copy_id=copy_id)
-    typer.echo(f"copy {copy_id} registered and indexed in {_elapsed_text(started_at)}", err=True)
-    _mark_copy_verified(client, image_id, copy_id, location=location)
+    client.register_disc(image_id, location, disc_id=disc_id)
+    typer.echo(f"disc {disc_id} registered and indexed in {_elapsed_text(started_at)}", err=True)
+    _mark_disc_verified(client, image_id, disc_id, location=location)
 
 
-def _mark_copy_verified(
+def _mark_disc_verified(
     client: ApiClient,
     image_id: str,
-    copy_id: str,
+    disc_id: str,
     *,
     location: str,
 ) -> None:
-    typer.echo(f"marking copy {copy_id} verified", err=True)
+    typer.echo(f"marking disc {disc_id} verified", err=True)
     started_at = time.monotonic()
-    client.update_copy(
+    client.update_disc(
         image_id,
-        copy_id,
+        disc_id,
         location=location,
         state="verified",
         verification_state="verified",
     )
-    typer.echo(f"copy {copy_id} verified in {_elapsed_text(started_at)}", err=True)
+    typer.echo(f"disc {disc_id} verified in {_elapsed_text(started_at)}", err=True)
 
 
 def _notify_label_needed(
     client: ApiClient,
     image_id: str,
-    copy_id: str,
-    progress: BurnCopyProgress,
+    disc_id: str,
+    progress: BurnDiscProgress,
     session_state: BurnSessionState,
 ) -> None:
     if progress.label_notification_sent:
         return
-    notify = getattr(client, "notify_copy_label_needed", None)
+    notify = getattr(client, "notify_disc_label_needed", None)
     if notify is None:
         return
     try:
-        notify(image_id, copy_id)
+        notify(image_id, disc_id)
     except Exception as exc:
         typer.echo(
-            f"warning: failed to notify operator that {copy_id} needs labeling: {exc}",
+            f"warning: failed to notify operator that {disc_id} needs labeling: {exc}",
             err=True,
         )
         return
@@ -1583,23 +1583,23 @@ def _notify_label_needed(
 def _reset_failed_burn_checkpoint(
     session_state: BurnSessionState,
     image_id: str,
-    copy_id: str,
-) -> BurnCopyProgress:
-    progress = BurnCopyProgress()
-    session_state.image_progress(image_id).copies[copy_id] = progress
+    disc_id: str,
+) -> BurnDiscProgress:
+    progress = BurnDiscProgress()
+    session_state.image_progress(image_id).discs[disc_id] = progress
     session_state.save()
     return progress
 
 
-def _verification_failed_message(copy_id: str) -> str:
+def _verification_failed_message(disc_id: str) -> str:
     return (
-        f"burned media verification failed for {copy_id}; discard or destroy this disc. "
-        "Do not label it, keep it, or count it as protected."
+        f"burned media verification failed for {disc_id}; discard or destroy this disc. "
+        "Do not label it, keep it, or count it toward disc redundancy."
     )
 
 
-def _burn_pending_copy(
-    copy_payload: dict[str, Any],
+def _burn_pending_disc(
+    disc_payload: dict[str, Any],
     *,
     client: ApiClient,
     image_id: str,
@@ -1612,30 +1612,30 @@ def _burn_pending_copy(
     media_verifier: Any,
     prompts: Any,
     device: str,
-    recovery_session_id: str | None = None,
+    archive_restore_id: str | None = None,
     expected_total_bytes: int | None = None,
     target_bytes: int | None = None,
 ) -> str:
-    copy_id = str(copy_payload["id"])
-    progress = session_state.copy_progress(image_id, copy_id)
+    disc_id = str(disc_payload["disc_id"])
+    progress = session_state.disc_progress(image_id, disc_id)
 
     if progress.burned and not progress.label_confirmed:
         typer.echo(
-            f"checking whether the unlabeled disc for {copy_id} is still available",
+            f"checking whether the unlabeled disc for {disc_id} is still available",
             err=True,
         )
-        if not prompts.confirm_unlabeled_copy_available(copy_id):
+        if not prompts.confirm_unlabeled_disc_available(disc_id):
             typer.echo(
-                f"unlabeled disc for {copy_id} is unavailable; restarting burn",
+                f"unlabeled disc for {disc_id} is unavailable; restarting burn",
                 err=True,
             )
-            progress = BurnCopyProgress()
-            session_state.image_progress(image_id).copies[copy_id] = progress
+            progress = BurnDiscProgress()
+            session_state.image_progress(image_id).discs[disc_id] = progress
             session_state.save()
 
     blank_media_ready = False
     if not progress.burned:
-        prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
+        prompts.wait_for_blank_disc(disc_id, device=device, target_bytes=target_bytes)
         blank_media_ready = True
         preflight = getattr(burner, "preflight", None)
         if callable(preflight):
@@ -1648,7 +1648,7 @@ def _burn_pending_copy(
         staging_dir=staging_dir,
         verifier=iso_verifier,
         session_state=session_state,
-        recovery_session_id=recovery_session_id,
+        archive_restore_id=archive_restore_id,
         expected_total_bytes=expected_total_bytes,
     )
 
@@ -1656,24 +1656,24 @@ def _burn_pending_copy(
         if not progress.burned:
             if not blank_media_ready:
                 typer.echo(
-                    f"Insert a new blank disc to retry burn copy {copy_id}.",
+                    f"Insert a new blank disc to retry burn disc {disc_id}.",
                     err=True,
                 )
-                prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
+                prompts.wait_for_blank_disc(disc_id, device=device, target_bytes=target_bytes)
                 preflight = getattr(burner, "preflight", None)
                 if callable(preflight):
                     preflight(device=device)
                 blank_media_ready = True
-            typer.echo(f"burning copy {copy_id} from {iso_path}", err=True)
+            typer.echo(f"burning disc {disc_id} from {iso_path}", err=True)
             try:
-                burner.burn(iso_path, device=device, copy_id=copy_id)
+                burner.burn(iso_path, device=device, disc_id=disc_id)
             except BurnedMediaVerificationError as exc:
                 typer.echo(
                     f"{exc}; treating this disc as suspect and rejecting it",
                     err=True,
                 )
-                typer.echo(_verification_failed_message(copy_id), err=True)
-                progress = _reset_failed_burn_checkpoint(session_state, image_id, copy_id)
+                typer.echo(_verification_failed_message(disc_id), err=True)
+                progress = _reset_failed_burn_checkpoint(session_state, image_id, disc_id)
                 blank_media_ready = False
                 continue
             else:
@@ -1685,56 +1685,56 @@ def _burn_pending_copy(
         if progress.media_verified:
             break
 
-        typer.echo(f"verifying burned media for {copy_id}", err=True)
+        typer.echo(f"verifying burned media for {disc_id}", err=True)
         try:
-            media_verifier.verify(iso_path, device=device, copy_id=copy_id)
+            media_verifier.verify(iso_path, device=device, disc_id=disc_id)
         except Exception:
-            typer.echo(_verification_failed_message(copy_id), err=True)
-            progress = _reset_failed_burn_checkpoint(session_state, image_id, copy_id)
+            typer.echo(_verification_failed_message(disc_id), err=True)
+            progress = _reset_failed_burn_checkpoint(session_state, image_id, disc_id)
             blank_media_ready = False
             continue
         progress.media_verified = True
         session_state.save()
 
-    _notify_label_needed(client, image_id, copy_id, progress, session_state)
+    _notify_label_needed(client, image_id, disc_id, progress, session_state)
 
     if progress.label_confirmed:
-        typer.echo(f"resuming label confirmation for {copy_id}", err=True)
+        typer.echo(f"resuming label confirmation for {disc_id}", err=True)
     else:
         if progress.burned and progress.media_verified:
-            typer.echo(f"resuming label confirmation for {copy_id}", err=True)
+            typer.echo(f"resuming label confirmation for {disc_id}", err=True)
         else:
-            typer.echo(f"awaiting label confirmation for {copy_id}", err=True)
-        typer.echo(f"label text: {_copy_label(copy_payload)}", err=True)
-        typer.echo(f"storage guidance: {_storage_guidance(copy_id)}", err=True)
-        prompts.confirm_label(copy_id, label_text=_copy_label(copy_payload))
+            typer.echo(f"awaiting label confirmation for {disc_id}", err=True)
+        typer.echo(f"label text: {_disc_label(disc_payload)}", err=True)
+        typer.echo(f"storage guidance: {_storage_guidance(disc_id)}", err=True)
+        prompts.confirm_label(disc_id, label_text=_disc_label(disc_payload))
         progress.label_confirmed = True
-        progress.location = prompts.prompt_location(copy_id)
+        progress.location = prompts.prompt_location(disc_id)
         session_state.save()
 
     if progress.location is None:
-        raise RuntimeError(f"storage location required for {copy_id}")
-    _register_burned_copy(
+        raise RuntimeError(f"storage location required for {disc_id}")
+    _register_burned_disc(
         client,
         image_id,
-        copy_id,
+        disc_id,
         location=progress.location,
         file_count=file_count,
     )
-    return copy_id
+    return disc_id
 
 
-def _can_mark_copy_verified_from_checkpoint(
+def _can_mark_disc_verified_from_checkpoint(
     session_state: BurnSessionState,
     image_id: str,
-    copy_payload: dict[str, Any],
+    disc_payload: dict[str, Any],
 ) -> bool:
-    if str(copy_payload.get("state")) not in _PROTECTED_COPY_STATES:
+    if str(disc_payload.get("state")) not in _REDUNDANCY_DISC_STATES:
         return False
-    if str(copy_payload.get("verification_state")) == "verified":
+    if str(disc_payload.get("verification_state")) == "verified":
         return False
-    copy_id = str(copy_payload.get("id"))
-    progress = session_state.images.get(image_id, BurnImageProgress()).copies.get(copy_id)
+    disc_id = str(disc_payload.get("disc_id"))
+    progress = session_state.images.get(image_id, BurnImageProgress()).discs.get(disc_id)
     if progress is None:
         return False
     return bool(
@@ -1745,23 +1745,23 @@ def _can_mark_copy_verified_from_checkpoint(
     )
 
 
-def _mark_checkpointed_copy_verified(
-    copy_payload: dict[str, Any],
+def _mark_checkpointed_disc_verified(
+    disc_payload: dict[str, Any],
     *,
     client: ApiClient,
     image_id: str,
     session_state: BurnSessionState,
 ) -> str:
-    copy_id = str(copy_payload["id"])
-    progress = session_state.images[image_id].copies[copy_id]
+    disc_id = str(disc_payload["disc_id"])
+    progress = session_state.images[image_id].discs[disc_id]
     assert progress.location is not None
-    typer.echo(f"resuming verification update for {copy_id}", err=True)
-    _mark_copy_verified(client, image_id, copy_id, location=progress.location)
-    return copy_id
+    typer.echo(f"resuming verification update for {disc_id}", err=True)
+    _mark_disc_verified(client, image_id, disc_id, location=progress.location)
+    return disc_id
 
 
-def _simulate_pending_copy(
-    copy_payload: dict[str, Any],
+def _simulate_pending_disc(
+    disc_payload: dict[str, Any],
     *,
     client: ApiClient,
     image_id: str,
@@ -1772,12 +1772,12 @@ def _simulate_pending_copy(
     burner: Any,
     prompts: Any,
     device: str,
-    recovery_session_id: str | None = None,
+    archive_restore_id: str | None = None,
     expected_total_bytes: int | None = None,
     target_bytes: int | None = None,
 ) -> str:
-    copy_id = str(copy_payload["id"])
-    prompts.wait_for_blank_disc(copy_id, device=device, target_bytes=target_bytes)
+    disc_id = str(disc_payload["disc_id"])
+    prompts.wait_for_blank_disc(disc_id, device=device, target_bytes=target_bytes)
     preflight = getattr(burner, "preflight", None)
     if callable(preflight):
         preflight(device=device)
@@ -1788,19 +1788,19 @@ def _simulate_pending_copy(
         staging_dir=staging_dir,
         verifier=iso_verifier,
         session_state=session_state,
-        recovery_session_id=recovery_session_id,
+        archive_restore_id=archive_restore_id,
         expected_total_bytes=expected_total_bytes,
     )
-    typer.echo(f"simulating burn copy {copy_id} from {iso_path}", err=True)
-    burner.burn(iso_path, device=device, copy_id=copy_id)
+    typer.echo(f"simulating burn disc {disc_id} from {iso_path}", err=True)
+    burner.burn(iso_path, device=device, disc_id=disc_id)
     typer.echo(
         (
-            f"simulated burn completed for {copy_id}; "
-            "no media verification, label confirmation, or copy registration was performed"
+            f"simulated burn completed for {disc_id}; "
+            "no media verification, label confirmation, or disc registration was performed"
         ),
         err=True,
     )
-    return copy_id
+    return disc_id
 
 
 def _process_burn_backlog_item(
@@ -1847,42 +1847,42 @@ def _process_burn_backlog_item(
         typer.echo(
             (
                 f"selected recovered image {image_id} ({summary})"
-                if item.recovery_session_id is not None
+                if item.archive_restore_id is not None
                 else f"selected image {image_id} ({summary})"
             ),
             err=True,
         )
 
-    if item.recovery_session_id is not None:
-        _stage_recovery_session_images(
+    if item.archive_restore_id is not None:
+        _stage_archive_restore_images(
             client,
-            item.recovery_session_id,
+            item.archive_restore_id,
             staging_dir=staging_dir,
             session_state=session_state,
             iso_verifier=iso_verifier,
         )
 
-    payload = client.list_copies(image_id)
+    payload = client.list_image_discs(image_id)
     completed: list[str] = []
-    for copy_payload in payload.get("copies", []):
-        if not isinstance(copy_payload, dict):
+    for disc_payload in payload.get("discs", []):
+        if not isinstance(disc_payload, dict):
             continue
-        if _can_mark_copy_verified_from_checkpoint(session_state, image_id, copy_payload):
+        if _can_mark_disc_verified_from_checkpoint(session_state, image_id, disc_payload):
             completed.append(
-                _mark_checkpointed_copy_verified(
-                    copy_payload,
+                _mark_checkpointed_disc_verified(
+                    disc_payload,
                     client=client,
                     image_id=image_id,
                     session_state=session_state,
                 )
             )
             continue
-        if str(copy_payload.get("state")) not in _PENDING_BURN_STATES:
+        if str(disc_payload.get("state")) not in _PENDING_BURN_STATES:
             continue
         if simulate:
             return [
-                _simulate_pending_copy(
-                    copy_payload,
+                _simulate_pending_disc(
+                    disc_payload,
                     client=client,
                     image_id=image_id,
                     filename=filename,
@@ -1892,14 +1892,14 @@ def _process_burn_backlog_item(
                     burner=burner,
                     prompts=prompts,
                     device=device,
-                    recovery_session_id=item.recovery_session_id,
+                    archive_restore_id=item.archive_restore_id,
                     expected_total_bytes=expected_total_bytes,
                     target_bytes=target_bytes,
                 )
             ]
         completed.append(
-            _burn_pending_copy(
-                copy_payload,
+            _burn_pending_disc(
+                disc_payload,
                 client=client,
                 image_id=image_id,
                 filename=filename,
@@ -1911,7 +1911,7 @@ def _process_burn_backlog_item(
                 media_verifier=media_verifier,
                 prompts=prompts,
                 device=device,
-                recovery_session_id=item.recovery_session_id,
+                archive_restore_id=item.archive_restore_id,
                 expected_total_bytes=expected_total_bytes,
                 target_bytes=target_bytes,
             )
@@ -1923,10 +1923,10 @@ def _process_burn_backlog_item(
             staging_dir=staging_dir,
             image_id=image_id,
         )
-        if item.recovery_session_id is not None:
-            _maybe_complete_recovery_session_after_burn(
+        if item.archive_restore_id is not None:
+            _maybe_complete_archive_restore_after_burn(
                 client,
-                item.recovery_session_id,
+                item.archive_restore_id,
                 session_state=session_state,
                 staging_dir=staging_dir,
             )
@@ -1981,11 +1981,11 @@ class ProgressReporter:
         )
 
 
-def _iter_recovered_chunks(reader: Any, copy: RecoveryCopyHint, *, device: str) -> Iterator[bytes]:
+def _iter_recovered_chunks(reader: Any, disc: RecoveryDiscHint, *, device: str) -> Iterator[bytes]:
     if hasattr(reader, "read_iter"):
-        yield from reader.read_iter(copy.disc_path, device=device)
+        yield from reader.read_iter(disc.disc_path, device=device)
         return
-    yield reader.read(copy.disc_path, device=device)
+    yield reader.read(disc.disc_path, device=device)
 
 
 def _skip_uploaded_prefix(chunks: Iterator[bytes], *, skip_bytes: int) -> Iterator[bytes]:
@@ -2021,13 +2021,13 @@ def _upload_entry_from_disc(
             part_start = part_end
             continue
 
-        copy = part.copies[0]
-        if copy.copy_id != prompt_state.ready_copy_id:
-            _prompt_for_disc(copy, device=device)
-            prompt_state.ready_copy_id = copy.copy_id
+        disc = part.discs[0]
+        if disc.disc_id != prompt_state.ready_disc_id:
+            _prompt_for_disc(disc, device=device)
+            prompt_state.ready_disc_id = disc.disc_id
         resume_within_part = max(offset - part_start, 0)
         recovered_chunks = _skip_uploaded_prefix(
-            _iter_recovered_chunks(reader, copy, device=device),
+            _iter_recovered_chunks(reader, disc, device=device),
             skip_bytes=resume_within_part,
         )
         for chunk in recovered_chunks:
@@ -2070,15 +2070,15 @@ def _reset_byte_complete_uploads(
         typer.echo(
             (
                 f"reset byte-complete upload for {_entry_label(entry)}; "
-                "try another registered copy or recovered media"
+                "try another registered disc or recovered media"
             ),
             err=True,
         )
     if reset_entries:
         typer.echo(
             (
-                "fetch remains active and incomplete; if every registered copy fails, "
-                "report the damaged copies and use the Glacier recovery session before retrying"
+                "fetch remains active and incomplete; if every registered disc fails, "
+                "report the damaged discs and use the archive restore before retrying"
             ),
             err=True,
         )
@@ -2089,7 +2089,7 @@ IMAGE_PLAN_QUERY_HELP = (
     "Substring match over candidate id, collection ids, and represented projected file paths"
 )
 IMAGE_QUERY_HELP = "Substring match over id, filename, and collection ids"
-_DISC_SORT_FIELDS = {"id", "image_id", "state", "verification_state", "location"}
+_DISC_SORT_FIELDS = {"disc_id", "image_id", "state", "verification_state", "location"}
 
 
 @image_app.command("list")
@@ -2105,7 +2105,7 @@ def image_list_cmd(
     collection: Annotated[
         str | None, typer.Option("--collection", help="Filter by exact contained collection id")
     ] = None,
-    has_copies: Annotated[
+    has_discs: Annotated[
         bool | None,
         typer.Option(
             "--has-discs/--no-discs", help="Filter by whether the image has registered discs"
@@ -2122,7 +2122,7 @@ def image_list_cmd(
         order=order,
         query=query,
         collection=collection,
-        has_copies=has_copies,
+        has_discs=has_discs,
     )
     emit(payload if json_mode else format_images(payload), json_mode=json_mode)
 
@@ -2210,10 +2210,10 @@ def image_download_cmd(
     typer.echo(f"wrote {downloaded_bytes} bytes to {output}")
 
 
-def _image_id_from_copy_id(copy_id: str) -> str:
-    if "-" not in copy_id:
+def _image_id_from_disc_id(disc_id: str) -> str:
+    if "-" not in disc_id:
         raise typer.BadParameter("disc id must include an image id prefix, like 20260420T040001Z-1")
-    return copy_id.rsplit("-", 1)[0]
+    return disc_id.rsplit("-", 1)[0]
 
 
 def _emit_disc_payload(payload: dict[str, Any], *, image_id: str, json_mode: bool) -> None:
@@ -2228,10 +2228,10 @@ def _disc_payload_with_recovery_status(
     image_id: str,
 ) -> dict[str, Any]:
     try:
-        recovery_session = client.get_recovery_session_for_image(image_id)
+        archive_restore = client.get_archive_restore_for_image(image_id)
     except NotFound:
         return payload
-    return {**payload, "recovery_session": recovery_session}
+    return {**payload, "archive_restore": archive_restore}
 
 
 def _validate_disc_sort(sort: str) -> None:
@@ -2274,7 +2274,7 @@ def disc_list_cmd(
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "disc_id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
@@ -2299,31 +2299,31 @@ def disc_list_cmd(
 
 @disc_app.command("show")
 def disc_show_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    disc_id: Annotated[str, typer.Argument(help="Generated disc/disc id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Show burned disc details."""
 
-    copy = ApiClient().get_disc(copy_id)
-    emit(copy if json_mode else format_disc(copy), json_mode=json_mode)
+    disc = ApiClient().get_disc(disc_id)
+    emit(disc if json_mode else format_disc(disc), json_mode=json_mode)
 
 
 @disc_app.command("location")
 def disc_location_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    disc_id: Annotated[str, typer.Argument(help="Generated disc/disc id")],
     to: Annotated[str, typer.Option("--to", help="New physical location label")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Update a disc location label."""
 
-    image_id = _image_id_from_copy_id(copy_id)
-    payload = ApiClient().update_copy(image_id, copy_id, location=to)
+    image_id = _image_id_from_disc_id(disc_id)
+    payload = ApiClient().update_disc(image_id, disc_id, location=to)
     _emit_disc_payload(payload, image_id=image_id, json_mode=json_mode)
 
 
 @disc_rebuild_app.command("start")
 def disc_rebuild_start_cmd(
-    copy_id: Annotated[str, typer.Argument(help="Generated disc/copy id")],
+    disc_id: Annotated[str, typer.Argument(help="Generated disc/disc id")],
     reason: Annotated[
         str,
         typer.Option("--reason", help="Why this disc needs rebuild: lost or damaged"),
@@ -2337,11 +2337,11 @@ def disc_rebuild_start_cmd(
         if normalized_reason not in _DISC_REBUILD_REASONS:
             raise RuntimeError("--reason must be lost or damaged")
 
-        image_id = _image_id_from_copy_id(copy_id)
+        image_id = _image_id_from_disc_id(disc_id)
         client = ApiClient()
         payload = _disc_payload_with_recovery_status(
             client,
-            client.update_copy(image_id, copy_id, state=normalized_reason),
+            client.update_disc(image_id, disc_id, state=normalized_reason),
             image_id=image_id,
         )
     except (RiverhogError, RuntimeError) as exc:
@@ -2361,22 +2361,19 @@ def disc_rebuild_list_cmd(
         str | None,
         typer.Option(
             "--state",
-            help=(
-                "Filter by restore_requested, ready, paused, expired, completed, "
-                "failed, or canceled"
-            ),
+            help=("Filter by requested, ready, paused, expired, completed, failed, or canceled"),
         ),
     ] = None,
     include_all: Annotated[
         bool,
-        typer.Option("--all", help="Include completed and expired rebuild sessions"),
+        typer.Option("--all", help="Include completed and expired disc rebuild archive restores"),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List disc rebuild sessions."""
+    """List disc rebuild archive restores."""
 
     try:
-        payload = _list_disc_rebuild_sessions(
+        payload = _list_disc_rebuild_restores(
             ApiClient(),
             page=page,
             per_page=per_page,
@@ -2389,64 +2386,64 @@ def disc_rebuild_list_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     emit(
-        payload if json_mode else format_recovery_sessions(_disc_rebuild_human_payload(payload)),
+        payload if json_mode else format_archive_restores(_disc_rebuild_human_payload(payload)),
         json_mode=json_mode,
     )
 
 
 @disc_rebuild_app.command("show")
 def disc_rebuild_show_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    restore_id: Annotated[str, typer.Argument(help="Archive restore id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show a disc rebuild session."""
+    """Show a disc rebuild archive restore."""
 
     try:
-        payload = ApiClient().get_recovery_session(session_id)
-        _require_disc_rebuild_session(payload)
+        payload = ApiClient().get_archive_restore(restore_id)
+        _require_disc_rebuild_restore(payload)
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     emit(
-        payload if json_mode else format_recovery_session(_disc_rebuild_human_payload(payload)),
+        payload if json_mode else format_archive_restore(_disc_rebuild_human_payload(payload)),
         json_mode=json_mode,
     )
 
 
 @disc_rebuild_app.command("pause")
 def disc_rebuild_pause_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    restore_id: Annotated[str, typer.Argument(help="Archive restore id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Pause an active disc rebuild session."""
+    """Pause an active disc rebuild archive restore."""
 
     try:
-        payload = ApiClient().pause_recovery_session(session_id)
-        _require_disc_rebuild_session(payload)
+        payload = ApiClient().pause_archive_restore(restore_id)
+        _require_disc_rebuild_restore(payload)
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     emit(
-        payload if json_mode else format_recovery_session(_disc_rebuild_human_payload(payload)),
+        payload if json_mode else format_archive_restore(_disc_rebuild_human_payload(payload)),
         json_mode=json_mode,
     )
 
 
 @disc_rebuild_app.command("resume")
 def disc_rebuild_resume_cmd(
-    session_id: Annotated[str, typer.Argument(help="Recovery session id")],
+    restore_id: Annotated[str, typer.Argument(help="Archive restore id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Resume a paused disc rebuild session."""
+    """Resume a paused disc rebuild archive restore."""
 
     try:
-        payload = ApiClient().resume_recovery_session(session_id)
-        _require_disc_rebuild_session(payload)
+        payload = ApiClient().resume_archive_restore(restore_id)
+        _require_disc_rebuild_restore(payload)
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     emit(
-        payload if json_mode else format_recovery_session(_disc_rebuild_human_payload(payload)),
+        payload if json_mode else format_archive_restore(_disc_rebuild_human_payload(payload)),
         json_mode=json_mode,
     )
 
@@ -2556,7 +2553,7 @@ def burn_cmd(
             "--simulate",
             help=(
                 "Use native non-writing burn mode and exit without media "
-                "verification or copy registration"
+                "verification or disc registration"
             ),
         ),
     ] = False,
@@ -2572,8 +2569,8 @@ def burn_cmd(
         resolved_staging_dir = (staging_dir or _default_staging_dir()).expanduser()
         resolved_device = device or _default_burn_device()
         session_state = BurnSessionState.load(_burn_state_path(resolved_staging_dir))
-        completed_copy_ids: list[str] = []
-        simulated_copy_ids: list[str] = []
+        completed_disc_ids: list[str] = []
+        simulated_disc_ids: list[str] = []
 
         while True:
             backlog = _discover_burn_backlog(
@@ -2583,7 +2580,7 @@ def burn_cmd(
             )
             if not backlog:
                 break
-            copy_ids = _process_burn_backlog_item(
+            disc_ids = _process_burn_backlog_item(
                 backlog[0],
                 client=client,
                 staging_dir=resolved_staging_dir,
@@ -2596,19 +2593,19 @@ def burn_cmd(
                 simulate=simulate,
             )
             if simulate:
-                simulated_copy_ids.extend(copy_ids)
+                simulated_disc_ids.extend(disc_ids)
                 break
-            completed_copy_ids.extend(copy_ids)
+            completed_disc_ids.extend(disc_ids)
 
     except (RiverhogError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     if simulate:
-        if simulated_copy_ids:
-            typer.echo("simulated burn completed; no copies were registered")
-            for copy_id in simulated_copy_ids:
-                typer.echo(copy_id)
+        if simulated_disc_ids:
+            typer.echo("simulated burn completed; no discs were registered")
+            for disc_id in simulated_disc_ids:
+                typer.echo(disc_id)
             return
         recovery_handoffs = _discover_recovery_handoffs(client)
         typer.echo("burn backlog already clear")
@@ -2620,17 +2617,17 @@ def burn_cmd(
         staging_dir=resolved_staging_dir,
     )
     recovery_handoffs = _discover_recovery_handoffs(client)
-    if completed_copy_ids:
+    if completed_disc_ids:
         typer.echo("burn backlog cleared")
-        for copy_id in completed_copy_ids:
-            typer.echo(copy_id)
+        for disc_id in completed_disc_ids:
+            typer.echo(disc_id)
         _report_recovery_handoffs(recovery_handoffs)
         return
     typer.echo("burn backlog already clear")
     _report_recovery_handoffs(recovery_handoffs)
 
 
-def _list_disc_rebuild_sessions(
+def _list_disc_rebuild_restores(
     client: ApiClient,
     *,
     page: int,
@@ -2640,37 +2637,37 @@ def _list_disc_rebuild_sessions(
     state: str | None,
     include_all: bool,
 ) -> dict[str, Any]:
-    return client.list_recovery_sessions(
+    return client.list_archive_restores(
         page=page,
         per_page=per_page,
         sort=sort,
         order=order,
         terminal="all" if state is not None or include_all else "active",
-        recovery_type="image_rebuild",
+        restore_type="disc_rebuild",
         state=state,
     )
 
 
-def _require_disc_rebuild_session(payload: dict[str, Any]) -> None:
-    if str(payload.get("type", "image_rebuild")) != "image_rebuild":
-        raise RuntimeError("djdan disc rebuild only handles image_rebuild recovery sessions")
+def _require_disc_rebuild_restore(payload: dict[str, Any]) -> None:
+    if str(payload.get("type", "disc_rebuild")) != "disc_rebuild":
+        raise RuntimeError("djdan disc rebuild only handles disc_rebuild archive restores")
 
 
 def _disc_rebuild_human_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    def convert_session(session: dict[str, Any]) -> dict[str, Any]:
-        converted = dict(session)
-        if str(converted.get("type", "image_rebuild")) == "image_rebuild":
+    def convert_restore(restore: dict[str, Any]) -> dict[str, Any]:
+        converted = dict(restore)
+        if str(converted.get("type", "disc_rebuild")) == "disc_rebuild":
             converted["type"] = "disc rebuild"
         return converted
 
     converted = dict(payload)
-    if str(converted.get("type", "image_rebuild")) == "image_rebuild":
+    if str(converted.get("type", "disc_rebuild")) == "disc_rebuild":
         converted["type"] = "disc rebuild"
-    sessions = converted.get("sessions")
-    if isinstance(sessions, list):
-        converted["sessions"] = [
-            convert_session(session) if isinstance(session, dict) else session
-            for session in sessions
+    restores = converted.get("restores")
+    if isinstance(restores, list):
+        converted["restores"] = [
+            convert_restore(restore) if isinstance(restore, dict) else restore
+            for restore in restores
         ]
     return converted
 

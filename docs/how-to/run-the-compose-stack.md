@@ -41,7 +41,7 @@ for authoritative catalog state, `tusd` for resumable staging uploads, and
 The `tusd` and `app` services share the `upload-staging` volume at `/uploads`.
 That volume is temporary ingest custody: upload chunks land there first for
 maximum local write throughput, then `riverhog-app` streams the verified staged
-files into Glacier-compatible archive storage and committed Garage hot storage.
+files into archive-compatible storage and committed Garage hot storage.
 
 ## Run the Checked-In Tests
 
@@ -86,7 +86,7 @@ first, then regenerate the runtime and service requirements exports from that
 lockfile. The unit suite checks that shared exported packages do not drift and
 that generated requirements keep hash-pinned entries.
 
-If `RIVERHOG_GLACIER_BUCKET` differs from `RIVERHOG_S3_BUCKET`, the Garage
+If `RIVERHOG_ARCHIVE_BUCKET` differs from `RIVERHOG_S3_BUCKET`, the Garage
 bootstrap applies and verifies the same lifecycle rule on both buckets.
 
 ## Tear the Stack Down

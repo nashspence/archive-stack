@@ -5,10 +5,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
 COMPOSE_FILE = REPO_ROOT / "compose.yml"
+COMPOSE_ENV_EXAMPLE = REPO_ROOT / ".env.compose.example"
 
 
 def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
@@ -116,6 +118,43 @@ def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> Non
     assert '- "-dir"' not in compose_text
 
 
+def test_compose_services_publish_the_archive_runtime_configuration() -> None:
+    required = {
+        "RIVERHOG_ARCHIVE_ENDPOINT_URL",
+        "RIVERHOG_ARCHIVE_REGION",
+        "RIVERHOG_ARCHIVE_BUCKET",
+        "RIVERHOG_ARCHIVE_ACCESS_KEY_ID",
+        "RIVERHOG_ARCHIVE_SECRET_ACCESS_KEY",
+        "RIVERHOG_ARCHIVE_FORCE_PATH_STYLE",
+        "RIVERHOG_ARCHIVE_PREFIX",
+        "RIVERHOG_ARCHIVE_BACKEND",
+        "RIVERHOG_ARCHIVE_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
+        "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
+        "RIVERHOG_ARCHIVE_ENCRYPTION",
+        "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE",
+        "RIVERHOG_ARCHIVE_PASSPHRASE",
+        "RIVERHOG_ARCHIVE_WORK_FACTOR",
+        "RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY",
+        "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
+        "RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL",
+        "RIVERHOG_ARCHIVE_RESTORE_LATENCY",
+        "RIVERHOG_ARCHIVE_RESTORE_READY_TTL",
+        "RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
+        "RIVERHOG_ARCHIVE_RESTORE_MODE",
+    }
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    for service in ("app", "test"):
+        assert required <= set(compose["services"][service]["environment"])
+
+    example_names = {
+        line.split("=", 1)[0]
+        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
+    assert required <= example_names
+
+
 @pytest.mark.parametrize(
     ("target", "extra_args", "expected_command"),
     [
@@ -130,8 +169,8 @@ def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> Non
         ),
         (
             "spec",
-            ("args=-k glacier",),
-            "python -m pytest -q tests/harness/test_spec_harness.py -k glacier",
+            ("args=-k archive",),
+            "python -m pytest -q tests/harness/test_spec_harness.py -k archive",
         ),
         (
             "spec",
@@ -264,15 +303,15 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert app_dockerfile.index(
         "pip install --no-cache-dir --require-hashes -r requirements-runtime.txt"
     ) < app_dockerfile.index("COPY config ./config")
-    assert test_dockerfile.index(
-        "COPY pyproject.toml uv.lock ./"
-    ) < test_dockerfile.index("COPY src ./src")
+    assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
+        "COPY src ./src"
+    )
     assert test_dockerfile.index(
         "uv sync --locked --no-default-groups --group dev --extra db --extra planner "
         "--no-install-project"
     ) < test_dockerfile.index("COPY src ./src")
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
-    assert "ENTRYPOINT [\"/app/.venv/bin/python\", \"-m\", \"pytest\"]" in test_dockerfile
+    assert 'ENTRYPOINT ["/app/.venv/bin/python", "-m", "pytest"]' in test_dockerfile
     assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
         "COPY tests ./tests"
     )

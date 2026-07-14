@@ -13,9 +13,8 @@ _PARAMETER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 _JOB_SECTION_KEYS = {
     "collection_slug",
-    "upload_prefix",
-    "target_prefix",
-    "archive_mode",
+    "destination_prefix",
+    "output_mode",
     "tasks",
     "notify",
 }
@@ -48,8 +47,7 @@ def render_profile_value(value: Any, *, parameters: Mapping[str, object], label:
         return _render_string(value, parameters=parameters, label=label)
     if isinstance(value, list):
         return [
-            render_profile_value(item, parameters=parameters, label=f"{label}[]")
-            for item in value
+            render_profile_value(item, parameters=parameters, label=f"{label}[]") for item in value
         ]
     if isinstance(value, Mapping):
         rendered: dict[str, Any] = {}
@@ -161,11 +159,11 @@ def instantiate_device_profile_ref(
 
 
 def _default_group_from_section(section: Mapping[str, Any]) -> dict[str, Any]:
-    group_name = str(section.get("profile_group") or "").strip()
+    group_name = str(section.get("group") or "").strip()
     if not group_name:
         return {}
     group: dict[str, Any] = {}
-    for key in ("archive_mode", "tasks", "metadata_projection"):
+    for key in ("output_mode", "tasks", "metadata_projection"):
         if key in section:
             group[key] = deepcopy(section[key])
     encode_profile = section.get("encode_profile")
@@ -191,15 +189,15 @@ def apply_device_profile_to_munchy_config(
     expanded = deepcopy(dict(config))
     expanded.pop("device_profile", None)
 
-    profile_groups = _default_group_from_section(section)
+    groups = _default_group_from_section(section)
     raw_section_groups = section.get("groups")
     if isinstance(raw_section_groups, Mapping):
-        profile_groups = deep_merge(profile_groups, raw_section_groups)
+        groups = deep_merge(groups, raw_section_groups)
     raw_config_groups = expanded.get("groups")
     if isinstance(raw_config_groups, Mapping):
-        profile_groups = deep_merge(profile_groups, raw_config_groups)
-    if profile_groups:
-        expanded["groups"] = profile_groups
+        groups = deep_merge(groups, raw_config_groups)
+    if groups:
+        expanded["groups"] = groups
 
     raw_section_profiles = section.get("profiles")
     raw_config_profiles = expanded.get("profiles")

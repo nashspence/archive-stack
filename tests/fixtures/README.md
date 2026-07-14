@@ -9,7 +9,7 @@ The acceptance suite assumes three fixture families:
 
 2. planner and image fixtures
    - fixture_planned_image_img_2026_04_20_01
-   - fixture_registered_copy_br_021_a
+   - fixture_registered_disc_br_021_a
 
 3. fetch and optical fixtures
    - fixture_fetch_fx_1_single_file
@@ -32,4 +32,4 @@ Spec harness synchronization:
 - `tests/fixtures/acceptance.py` runs one live FastAPI server, background reapers, and subprocess-driven CLI commands against shared in-memory `AcceptanceState`.
 - Public fixture service methods exposed through `ServiceContainer` must use `_with_state_lock`; `tests/unit/test_acceptance_fixture_sync.py` enforces this for the protocol-backed service surface.
 - Direct `AcceptanceSystem` helper access to `AcceptanceState` should hold `state.lock` only around the in-memory read or write. Do not hold it across HTTP requests or CLI subprocess calls. The direct-helper allowlist and synchronization classification also live in `tests/unit/test_acceptance_fixture_sync.py`.
-- Private helper methods may assume their public caller already holds the lock, but reaper-facing entry points such as upload expiry, Glacier upload processing, and recovery-session processing must be explicitly locked.
+- Private helper methods may assume their public caller already holds the lock, but reaper-facing entry points such as upload expiry, archive upload processing, and archive-restore processing must be explicitly locked.

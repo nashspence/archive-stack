@@ -20,7 +20,7 @@ def test_inspect_fixture_image_root_reads_fixture_tree_without_xorriso(tmp_path:
     image_root = write_tree(tmp_path / "image-root", fixture.files)
 
     inspected = inspect_fixture_image_root(
-        image_id=fixture.volume_id,
+        image_id=fixture.image_id,
         image_root=image_root,
         iso_bytes=b"fixture iso bytes",
         workspace=tmp_path,
@@ -31,6 +31,6 @@ def test_inspect_fixture_image_root_reads_fixture_tree_without_xorriso(tmp_path:
     assert inspected.files == _relative_files(image_root)
     assert inspected.directories == _relative_dirs(image_root)
     assert inspected.readme == (image_root / README_FILENAME).read_text(encoding="utf-8")
-    assert inspected.disc_manifest["image"]["id"] == fixture.volume_id
+    assert inspected.disc_manifest["image"]["id"] == fixture.image_id
     assert (inspected.extract_root / README_FILENAME).is_file()
     assert (inspected.extract_root / MANIFEST_FILENAME).is_file()

@@ -17,5 +17,5 @@ membership and operator recovery intent must remain unambiguous.
 Derived hot availability lets Riverhog answer operator list/show/search
 commands quickly without scanning unbounded file history. It also lets recovery
 workers repair missing hot files from the right source: queued `djdan fetch`
-work when verified physical copies exist, or cloud-fetch materialization when
-the selected bytes must come from Glacier.
+work when verified discs exist, or fetch fetch materialization when
+the selected bytes must come from the archive.

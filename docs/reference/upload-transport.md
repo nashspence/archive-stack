@@ -60,7 +60,7 @@ outages should not force the operator to restart a long upload.
 Riverhog passes tusd a deterministic staging file id through its pre-create
 hook. The checked-in deployment uses tusd filesystem storage on a shared local
 mount, so upload chunks land on disk first instead of passing through Garage.
-Riverhog later streams those staged files into the encrypted Glacier archive and
+Riverhog later streams those staged files into the encrypted archive and
 then into committed hot storage for planning. The target path metadata sent to
 tusd is itself base64 text, not the raw path, so upload metadata remains safe
 for paths with literal spaces or other punctuation.
@@ -71,7 +71,7 @@ sockets with queued send data can make an otherwise stable profile look broken.
 
 After the final file chunk is accepted, the default `--wait finalized` mode
 remains attached until Riverhog uploads and verifies the collection-native
-Glacier archive package. Use `--wait staged` when the CLI should exit once
+archive package. Use `--wait staged` when the CLI should exit once
 server custody has begun and background archival continues through operator
 notifications and the API. `RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS=0` means
 no CLI-side deadline for that finalized handoff.

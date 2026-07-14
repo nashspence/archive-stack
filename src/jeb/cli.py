@@ -5,7 +5,7 @@ import sys
 
 import httpx
 
-from jeb.collector import BATCH_LIST_SORT_FIELDS
+from jeb.collector import ATTEMPT_LIST_SORT_FIELDS
 from jeb.service_cli import (
     MAX_PER_PAGE,
     per_page_value,
@@ -15,7 +15,7 @@ from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
     format_jeb_archive_plan,
-    format_jeb_batches,
+    format_jeb_attempts,
     format_jeb_config_check,
     format_jeb_operation,
     format_jeb_status,
@@ -33,8 +33,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_batches(args: argparse.Namespace) -> int:
-    payload = client().list_jeb_batches(
+def cmd_attempts(args: argparse.Namespace) -> int:
+    payload = client().list_jeb_attempts(
         page=args.page,
         per_page=args.per_page,
         sort=args.sort,
@@ -42,11 +42,11 @@ def cmd_batches(args: argparse.Namespace) -> int:
         terminal=args.terminal,
         state=args.state,
         account=args.account,
-        collection=args.collection,
+        collection_slug=args.collection_slug,
         target=args.target,
         query=args.query,
     )
-    emit(payload if args.json else format_jeb_batches(payload), json_mode=args.json)
+    emit(payload if args.json else format_jeb_attempts(payload), json_mode=args.json)
     return 0
 
 
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "commands:\n"
             "  status        show read-only collector status\n"
-            "  batches       list batch attempts\n"
+            "  attempts      list processing attempts\n"
             "  check-config  validate deployed Jeb configuration\n"
             "  once          request one scheduler pass\n"
             "  archive-now   archive one account immediately"
@@ -109,43 +109,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
-    batches = sub.add_parser("batches", help="list batch attempts")
-    batches.add_argument("--page", type=positive_int, default=1, help="Page number.")
-    batches.add_argument(
+    attempts = sub.add_parser("attempts", help="list processing attempts")
+    attempts.add_argument("--page", type=positive_int, default=1, help="Page number.")
+    attempts.add_argument(
         "--per-page",
         type=per_page_value,
         default=25,
         help=f"Rows per page, up to {MAX_PER_PAGE}.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--sort",
-        choices=sorted(BATCH_LIST_SORT_FIELDS),
+        choices=sorted(ATTEMPT_LIST_SORT_FIELDS),
         default="updated_at",
         help="Sort field.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--order",
         choices=("asc", "desc"),
         default="desc",
         help="Sort order.",
     )
-    batches.add_argument(
+    attempts.add_argument(
         "--terminal",
         choices=("active", "terminal", "all"),
         default="active",
         help="Show active, terminal, or all attempts.",
     )
-    batches.add_argument("--state", help="Filter by batch attempt state.")
-    batches.add_argument("--account", help="Filter by account/source slug.")
-    batches.add_argument("--collection", help="Filter by collection id.")
-    batches.add_argument("--target", help="Filter by target name.")
-    batches.add_argument(
+    attempts.add_argument("--state", help="Filter by attempt state.")
+    attempts.add_argument("--account", help="Filter by account slug.")
+    attempts.add_argument("--collection-slug", help="Filter by output collection slug.")
+    attempts.add_argument("--target", help="Filter by target name.")
+    attempts.add_argument(
         "--query",
         "-q",
         help="Search attempt, batch, job, collection, target, state, timestamp, or error.",
     )
-    batches.add_argument("--json", action="store_true", help="Emit JSON.")
-    batches.set_defaults(func=cmd_batches)
+    attempts.add_argument("--json", action="store_true", help="Emit JSON.")
+    attempts.set_defaults(func=cmd_attempts)
 
     check_config = sub.add_parser("check-config", help="validate deployed Jeb configuration")
     check_config.add_argument("--json", action="store_true", help="Emit JSON.")

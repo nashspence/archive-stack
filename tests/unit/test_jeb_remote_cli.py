@@ -13,16 +13,15 @@ class FakeJebApi:
     def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
         self.calls.append(("status", {"include_backlog": include_backlog}))
         return {
-            "sources": [],
-            "collections": [],
+            "accounts": [],
             "batches": {"total": 0, "active": 0, "terminal": 0, "states": {}},
-            "active_attempts": {"batches": [], "total": 0},
-            "recent_failures": {"batches": [], "total": 0},
+            "active_attempts": {"attempts": [], "total": 0},
+            "recent_failures": {"attempts": [], "total": 0},
             "routing_preflight_failures": {"total": 0, "failures": []},
         }
 
-    def list_jeb_batches(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("batches", kwargs))
+    def list_jeb_attempts(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("attempts", kwargs))
         return {
             "page": kwargs["page"],
             "pages": 0,
@@ -32,12 +31,12 @@ class FakeJebApi:
             "order": kwargs["order"],
             "terminal": kwargs["terminal"],
             "filters": {"account": kwargs.get("account")},
-            "batches": [],
+            "attempts": [],
         }
 
     def check_jeb_config(self) -> dict[str, Any]:
         self.calls.append(("check-config", {}))
-        return {"status": "ok", "source_count": 2, "sources": ["a", "b"]}
+        return {"status": "ok", "account_count": 2, "accounts": ["a", "b"]}
 
     def run_jeb_once(self) -> dict[str, Any]:
         self.calls.append(("once", {}))
@@ -57,7 +56,7 @@ class FakeJebApi:
             return {
                 "status": "would_process" if process else "would_stage",
                 "account": account,
-                "collection_id": account,
+                "account_id": account,
                 "target_name": "munchy",
                 "upload_root": account,
                 "file_count": 1,
@@ -94,19 +93,19 @@ def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # ty
     assert payload["batches"]["total"] == 0
 
 
-def test_jeb_remote_cli_calls_api_for_batches(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    assert jeb_cli.main(["batches", "--terminal", "all", "--account", "camera"]) == 0
+    assert jeb_cli.main(["attempts", "--terminal", "all", "--account", "camera"]) == 0
 
     assert fake.calls == [
         (
-            "batches",
+            "attempts",
             {
                 "account": "camera",
-                "collection": None,
+                "collection_slug": None,
                 "order": "desc",
                 "page": 1,
                 "per_page": 25,
@@ -118,7 +117,7 @@ def test_jeb_remote_cli_calls_api_for_batches(capsys, monkeypatch) -> None:  # t
             },
         )
     ]
-    assert "jeb batches: page 1/0" in capsys.readouterr().out
+    assert "jeb attempts: page 1/0" in capsys.readouterr().out
 
 
 def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -137,7 +136,7 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
     ]
     output = capsys.readouterr().out
     assert "jeb config" in output
-    assert "sources: 2" in output
+    assert "accounts: 2" in output
     assert "jeb scheduler pass" in output
     assert "operation id: op-once" in output
     assert "jeb archive" in output

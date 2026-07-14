@@ -32,7 +32,7 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.stores.s3_support import create_glacier_s3_client
+from riverhog_core.stores.s3_support import create_archive_s3_client
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
 COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
@@ -219,12 +219,12 @@ def _validate_recorded_parts_exist_remotely(
 class S3ArchiveStore:
     def __init__(self, config: RuntimeConfig) -> None:
         self._config = config
-        self._bucket = config.glacier_bucket
-        self._client = create_glacier_s3_client(config)
+        self._bucket = config.archive_bucket
+        self._client = create_archive_s3_client(config)
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
-        return f"{self._config.glacier_prefix}/archives/{archive_id}"
+        return f"{self._config.archive_prefix}/archives/{archive_id}"
 
     def _collection_object_keys(
         self,
@@ -282,7 +282,7 @@ class S3ArchiveStore:
         return ArchiveUploadReceipt(
             object_path=object_key,
             stored_bytes=int(head.get("ContentLength", 0)),
-            backend=self._config.glacier_backend,
+            backend=self._config.archive_backend,
             storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
             or _format_s3_timestamp(
@@ -345,14 +345,14 @@ class S3ArchiveStore:
             compression=package.compression,
         )
 
-    def publish_recovery_catalog(
+    def publish_restore_catalog(
         self,
         *,
         entries: Sequence[dict[str, object]],
         generated_at: str,
     ) -> None:
         self._put_bucket_readme()
-        catalog_key = f"{self._config.glacier_prefix}/catalog/collections.yml.age"
+        catalog_key = f"{self._config.archive_prefix}/catalog/collections.yml.age"
         catalog_bytes = yaml.safe_dump(
             {
                 "format": "encrypted-archive-catalog-v1",
@@ -363,7 +363,7 @@ class S3ArchiveStore:
                         for key, value in {
                             **entry,
                             "archive_id": archive_id_from_storage_prefix(
-                                glacier_prefix=self._config.glacier_prefix,
+                                archive_prefix=self._config.archive_prefix,
                                 storage_prefix=cast(
                                     str | None,
                                     entry.get("archive_storage_prefix"),
@@ -380,8 +380,8 @@ class S3ArchiveStore:
         ).encode("utf-8")
         ciphertext = encrypt_age_scrypt(
             catalog_bytes,
-            self._config.glacier_archive_passphrase,
-            log_n=self._config.glacier_archive_work_factor,
+            self._config.archive_passphrase,
+            log_n=self._config.archive_work_factor,
         )
         self._client.put_object(
             Bucket=self._bucket,
@@ -400,7 +400,7 @@ class S3ArchiveStore:
         content = _bucket_recovery_readme().encode("utf-8")
         self._client.put_object(
             Bucket=self._bucket,
-            Key=f"{self._config.glacier_prefix}/README.md",
+            Key=f"{self._config.archive_prefix}/README.md",
             Body=content,
             ContentLength=len(content),
             Metadata={"archive-readme-format": "encrypted-archive-readme-v1"},
@@ -422,7 +422,7 @@ class S3ArchiveStore:
         logical_sha256 = sha256
         encryption = AGE_SCRYPT_ENCRYPTION
         storage_class = _collection_object_storage_class(
-            archive_storage_class=self._config.glacier_storage_class,
+            archive_storage_class=self._config.archive_storage_class,
             kind=kind,
         )
         existing = self._head_object(object_key=object_key)
@@ -438,8 +438,8 @@ class S3ArchiveStore:
         age_session: ResumableAgeScryptSession | None = None
         if kind == "archive":
             age_session = ResumableAgeScryptSession.create(
-                self._config.glacier_archive_passphrase,
-                log_n=self._config.glacier_archive_work_factor,
+                self._config.archive_passphrase,
+                log_n=self._config.archive_work_factor,
                 plaintext_size=package.archive_size,
             )
             content_length = age_ciphertext_len_for_plaintext_len(
@@ -451,8 +451,8 @@ class S3ArchiveStore:
             plaintext = _single_put_body(content)
             content = encrypt_age_scrypt(
                 plaintext,
-                self._config.glacier_archive_passphrase,
-                log_n=self._config.glacier_archive_work_factor,
+                self._config.archive_passphrase,
+                log_n=self._config.archive_work_factor,
             )
             content_length = len(content)
             sha256 = hashlib.sha256(content).hexdigest()
@@ -460,7 +460,7 @@ class S3ArchiveStore:
         uploaded_at = _utc_now()
         extra_args: dict[str, Any] = {
             "Metadata": {
-                "riverhog-backend": self._config.glacier_backend,
+                "riverhog-backend": self._config.archive_backend,
                 "riverhog-storage-class": _configured_s3_storage_class(storage_class),
                 "riverhog-object-kind": f"collection-{kind}",
                 "riverhog-collection-sha256": hashlib.sha256(
@@ -549,9 +549,9 @@ class S3ArchiveStore:
         buffer = bytearray()
         part_size = _multipart_part_size(
             content_length,
-            self._config.glacier_multipart_part_bytes,
+            self._config.archive_multipart_part_bytes,
         )
-        multipart_concurrency = self._config.glacier_multipart_concurrency
+        multipart_concurrency = self._config.archive_multipart_concurrency
         expected_part_count = (content_length + part_size - 1) // part_size
         uploaded_bytes = 0
         size = 0
@@ -828,7 +828,7 @@ class S3ArchiveStore:
         upload_state: ArchiveMultipartUploadState | None = None
         part_size = _multipart_part_size(
             content_length,
-            self._config.glacier_multipart_part_bytes,
+            self._config.archive_multipart_part_bytes,
         )
         chunks_per_part = _age_chunks_per_s3_part(part_size)
         session = initial_session
@@ -858,7 +858,7 @@ class S3ArchiveStore:
                     upload_state = None
                 else:
                     session = ResumableAgeScryptSession.from_state(
-                        self._config.glacier_archive_passphrase,
+                        self._config.archive_passphrase,
                         upload_state.encryption_state_json,
                     )
                     plans = session.s3_part_plans(
@@ -1133,13 +1133,13 @@ class S3ArchiveStore:
                 requested_at=requested_at,
                 estimated_ready_at=estimated_ready_at,
             )
-            for current_object_path in _collection_restore_paths(
+            for current_object_path in _fetch_materialization_paths(
                 object_path=object_path,
                 manifest_object_path=manifest_object_path,
                 proof_object_path=proof_object_path,
             )
         ]
-        return _combine_collection_restore_statuses(statuses)
+        return _combine_fetch_materialization_statuses(statuses)
 
     def _request_collection_object_restore(
         self,
@@ -1152,7 +1152,7 @@ class S3ArchiveStore:
     ) -> ArchiveRestoreStatus:
         head = self._head_object(object_key=object_path)
         if head is None:
-            raise RuntimeError(f"Glacier object is missing: {object_path}")
+            raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
         if _is_immediately_readable_storage_class(head):
             return ArchiveRestoreStatus(
@@ -1162,8 +1162,8 @@ class S3ArchiveStore:
             )
         if self._restore_mode() == "auto" and not self._is_aws_restore_backend():
             raise RuntimeError(
-                "real Glacier restore requires an AWS S3 archive backend or "
-                "RIVERHOG_GLACIER_RECOVERY_RESTORE_MODE=aws"
+                "real archive restore requires an AWS S3 archive backend or "
+                "RIVERHOG_ARCHIVE_RESTORE_MODE=aws"
             )
         try:
             self._client.restore_object(
@@ -1171,7 +1171,7 @@ class S3ArchiveStore:
                 Key=object_path,
                 RestoreRequest={
                     "Days": hold_days,
-                    "GlacierJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
+                    "ArchiveJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
                 },
             )
         except Exception as exc:
@@ -1209,13 +1209,13 @@ class S3ArchiveStore:
                 estimated_ready_at=estimated_ready_at,
                 estimated_expires_at=estimated_expires_at,
             )
-            for current_object_path in _collection_restore_paths(
+            for current_object_path in _fetch_materialization_paths(
                 object_path=object_path,
                 manifest_object_path=manifest_object_path,
                 proof_object_path=proof_object_path,
             )
         ]
-        return _combine_collection_restore_statuses(statuses)
+        return _combine_fetch_materialization_statuses(statuses)
 
     def _collection_object_restore_status(
         self,
@@ -1227,7 +1227,7 @@ class S3ArchiveStore:
     ) -> ArchiveRestoreStatus:
         head = self._head_object(object_key=object_path)
         if head is None:
-            raise RuntimeError(f"Glacier object is missing: {object_path}")
+            raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
         restore = _parse_restore_header(head.get("Restore"))
         if restore is None:
@@ -1265,7 +1265,7 @@ class S3ArchiveStore:
     ) -> Iterator[bytes]:
         head = self._head_object(object_key=object_path)
         if head is None:
-            raise RuntimeError(f"Glacier object is missing: {object_path}")
+            raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
         status = self.get_collection_archive_restore_status(
             collection_id=collection_id,
@@ -1275,14 +1275,14 @@ class S3ArchiveStore:
             estimated_expires_at=None,
         )
         if status.state != "ready":
-            raise RuntimeError(f"Glacier object is not restored yet: {object_path}")
+            raise RuntimeError(f"Archive object is not restored yet: {object_path}")
         response = self._client.get_object(Bucket=self._bucket, Key=object_path)
         body = response["Body"]
         try:
             chunks = body.iter_chunks(chunk_size=1024 * 1024)
             yield from iter_decrypt_age_scrypt(
                 chunks,
-                self._config.glacier_archive_passphrase,
+                self._config.archive_passphrase,
             )
         finally:
             close = getattr(body, "close", None)
@@ -1319,7 +1319,7 @@ class S3ArchiveStore:
     ) -> bytes:
         head = self._head_object(object_key=object_path)
         if head is None:
-            raise RuntimeError(f"Glacier object is missing: {object_path}")
+            raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
         status = self.get_collection_archive_restore_status(
             collection_id=collection_id,
@@ -1329,7 +1329,7 @@ class S3ArchiveStore:
             estimated_expires_at=None,
         )
         if status.state != "ready":
-            raise RuntimeError(f"Glacier object is not restored yet: {object_path}")
+            raise RuntimeError(f"Archive object is not restored yet: {object_path}")
         response = self._client.get_object(Bucket=self._bucket, Key=object_path)
         body = response["Body"]
         try:
@@ -1338,7 +1338,7 @@ class S3ArchiveStore:
             close = getattr(body, "close", None)
             if callable(close):
                 close()
-        return decrypt_age_scrypt(content, self._config.glacier_archive_passphrase)
+        return decrypt_age_scrypt(content, self._config.archive_passphrase)
 
     def cleanup_collection_archive_restore(
         self,
@@ -1351,17 +1351,17 @@ class S3ArchiveStore:
         return
 
     def _restore_mode(self) -> str:
-        mode = self._config.glacier_recovery_restore_mode
+        mode = self._config.archive_restore_mode
         if mode != "auto":
             return mode
         return "auto"
 
     def _is_aws_restore_backend(self) -> bool:
-        endpoint = self._config.glacier_endpoint_url.casefold()
-        return self._config.glacier_backend.casefold() == "aws" or "amazonaws.com" in endpoint
+        endpoint = self._config.archive_endpoint_url.casefold()
+        return self._config.archive_backend.casefold() == "aws" or "amazonaws.com" in endpoint
 
 
-def _collection_restore_paths(
+def _fetch_materialization_paths(
     *,
     object_path: str,
     manifest_object_path: str | None,
@@ -1375,7 +1375,7 @@ def _collection_restore_paths(
     return tuple(paths)
 
 
-def _combine_collection_restore_statuses(
+def _combine_fetch_materialization_statuses(
     statuses: list[ArchiveRestoreStatus],
 ) -> ArchiveRestoreStatus:
     if any(status.state == "expired" for status in statuses):
@@ -1417,7 +1417,7 @@ variables such as `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 Do not put the archive passphrase directly in shell commands. The `age`
 commands below will prompt for it.
 
-## Find an Archive
+## Find an archive
 
 If `catalog/collections.yml.age` is present, download and decrypt it to map
 private collection labels to opaque archive IDs:
@@ -1459,14 +1459,14 @@ ots verify manifest.yml.ots -f manifest.yml
 
 ## Restore and Extract the Archive
 
-`archive.tar.age` may be in Glacier Deep Archive or another cold S3 storage
+`archive.tar.age` may be in S3 Glacier Deep Archive or another cold S3 storage
 class. If the object is not immediately readable, request a restore first:
 
 ```sh
 aws s3api restore-object \\
   --bucket BUCKET \\
   --key PREFIX/archives/ARCHIVE_ID/archive.tar.age \\
-  --restore-request '{"Days":7,"GlacierJobParameters":{"Tier":"Bulk"}}'
+  --restore-request '{"Days":7,"ArchiveJobParameters":{"Tier":"Bulk"}}'
 ```
 
 After the restore is complete, download, decrypt, and extract:
@@ -1515,23 +1515,23 @@ def _validate_uploaded_collection_metadata(
     metadata_sha256 = metadata.get(COLLECTION_SHA256_METADATA)
     if metadata_bytes is None or metadata_sha256 is None:
         raise RuntimeError(
-            f"Glacier object is missing collection validation metadata: {object_key}"
+            f"Archive object is missing collection validation metadata: {object_key}"
         )
     try:
         collection_bytes = int(metadata_bytes)
     except ValueError as exc:
         raise RuntimeError(
-            f"Glacier object has invalid collection byte metadata: {object_key}"
+            f"Archive object has invalid collection byte metadata: {object_key}"
         ) from exc
     if expected_bytes is not None and collection_bytes != expected_bytes:
         raise RuntimeError(
-            f"Glacier object size does not match collection package member: {object_key}"
+            f"Archive object size does not match collection package member: {object_key}"
         )
     if not _SHA256_RE.fullmatch(metadata_sha256):
-        raise RuntimeError(f"Glacier object has invalid collection sha256 metadata: {object_key}")
+        raise RuntimeError(f"Archive object has invalid collection sha256 metadata: {object_key}")
     if expected_sha256 is not None and metadata_sha256 != expected_sha256:
         raise RuntimeError(
-            f"Glacier object sha256 does not match collection package member: {object_key}"
+            f"Archive object sha256 does not match collection package member: {object_key}"
         )
 
 
@@ -1606,7 +1606,7 @@ def _validate_aws_storage_class(
     raise RuntimeError(
         "existing AWS archive-store object storage class does not match Riverhog's "
         f"expected class for {object_key}: expected {expected}, got {actual}. "
-        "Delete the stale object or choose a fresh RIVERHOG_GLACIER_PREFIX before rerunning."
+        "Delete the stale object or choose a fresh RIVERHOG_ARCHIVE_PREFIX before rerunning."
     )
 
 

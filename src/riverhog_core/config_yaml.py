@@ -134,11 +134,9 @@ def normalize_munchy_job_authoring(
     label: str,
 ) -> dict[str, Any]:
     job = deepcopy(dict(raw))
-    routing = job.pop("routing", None)
+    routing = job.get("routing")
     if routing is not None:
         if not isinstance(routing, Mapping):
             raise ConfigError(f"{label}.routing must be a mapping")
-        if "profile_routing" in job:
-            raise ConfigError(f"{label} must use routing, not profile_routing")
-        job["profile_routing"] = normalize_authoring_routing(routing, label=f"{label}.routing")
+        job["routing"] = normalize_authoring_routing(routing, label=f"{label}.routing")
     return job
