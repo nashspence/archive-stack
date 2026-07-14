@@ -563,6 +563,44 @@ def format_fetch(summary: Mapping[str, Any], manifest: Mapping[str, Any]) -> Any
     return RichGroup(*renderables)
 
 
+def format_fetch_start_plan(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return "\n".join(
+            [
+                "hot fetch start dry-run",
+                f"status: {payload.get('status', 'unknown')}",
+                f"fetch: {payload.get('id', 'unknown')}",
+                f"name: {payload.get('name', 'unknown')}",
+                f"current state: {payload.get('state', 'unknown')}",
+                f"queued state: {payload.get('queued_state', 'unknown')}",
+                f"cloud: {str(bool(payload.get('cloud'))).lower()}",
+                "recovery session: "
+                f"{str(bool(payload.get('will_create_recovery_session'))).lower()}",
+                f"files: {payload.get('files', 0)}",
+                f"bytes: {_bytes_text(payload.get('bytes', 0))}",
+                f"missing bytes: {_bytes_text(payload.get('missing_bytes', 0))}",
+                f"targets: {', '.join(_string_items(payload.get('targets')))}",
+            ]
+        )
+
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    table.add_row("fetch", _entity_text(payload.get("id", "unknown")))
+    table.add_row("name", str(payload.get("name", "unknown")))
+    table.add_row("current state", str(payload.get("state", "unknown")))
+    table.add_row("queued state", str(payload.get("queued_state", "unknown")))
+    table.add_row("cloud", str(bool(payload.get("cloud"))).lower())
+    table.add_row(
+        "recovery session",
+        str(bool(payload.get("will_create_recovery_session"))).lower(),
+    )
+    table.add_row("files", str(payload.get("files", 0)))
+    table.add_row("bytes", _bytes_text(payload.get("bytes", 0)))
+    table.add_row("missing bytes", _bytes_text(payload.get("missing_bytes", 0)))
+    table.add_row("targets", _targets_lines(payload.get("targets")))
+    return RichGroup(RichText("hot fetch start dry-run", style="bold"), table)
+
+
 def _fetch_cloud_payload(summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
     payload = summary.get("cloud_fetch")
     if not isinstance(payload, Mapping):
@@ -1561,13 +1599,17 @@ def format_jeb_archive_plan(payload: Mapping[str, Any]) -> Any:
 
 
 def _format_hot_evict_plain(payload: Mapping[str, Any]) -> str:
+    dry_run = bool(payload.get("dry_run"))
+    action_label = "would evict" if dry_run else "evicted"
     return "\n".join(
         [
+            "hot evict dry-run" if dry_run else "hot evict",
+            f"status: {payload.get('status', 'unknown')}",
             f"targets: {', '.join(_string_items(payload.get('targets')))}",
             f"selected: {payload.get('files', 0)} files {payload.get('bytes', 0)} bytes",
-            "evicted: "
-            f"{payload.get('evicted_files', 0)} files "
-            f"{payload.get('evicted_bytes', 0)} bytes",
+            f"{action_label}: "
+            f"{payload.get('would_evict_files' if dry_run else 'evicted_files', 0)} files "
+            f"{payload.get('would_evict_bytes' if dry_run else 'evicted_bytes', 0)} bytes",
         ]
     )
 
@@ -1575,13 +1617,21 @@ def _format_hot_evict_plain(payload: Mapping[str, Any]) -> str:
 def format_hot_evict(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return _format_hot_evict_plain(payload)
+    dry_run = bool(payload.get("dry_run"))
     table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
     table.add_row("targets", _targets_lines(payload.get("targets")))
     table.add_row("selected files", str(payload.get("files", 0)))
     table.add_row("selected bytes", _bytes_text(payload.get("bytes", 0)))
-    table.add_row("evicted files", str(payload.get("evicted_files", 0)))
-    table.add_row("evicted bytes", _bytes_text(payload.get("evicted_bytes", 0)))
-    return RichGroup(RichText("hot evict", style="bold"), table)
+    table.add_row(
+        "would evict files" if dry_run else "evicted files",
+        str(payload.get("would_evict_files" if dry_run else "evicted_files", 0)),
+    )
+    table.add_row(
+        "would evict bytes" if dry_run else "evicted bytes",
+        _bytes_text(payload.get("would_evict_bytes" if dry_run else "evicted_bytes", 0)),
+    )
+    return RichGroup(RichText("hot evict dry-run" if dry_run else "hot evict", style="bold"), table)
 
 
 def _format_images_plain(payload: Mapping[str, Any]) -> str:
@@ -2380,6 +2430,64 @@ def _upload_ratio_with_suffix(numerator: object, denominator: object, suffix: st
         value.append(suffix)
         return value
     return f"{value}{suffix}"
+
+
+def format_collection_upload_plan(payload: Mapping[str, Any]) -> Any:
+    raw_files_preview = payload.get("files_preview")
+    files_preview = [
+        item
+        for item in (raw_files_preview if isinstance(raw_files_preview, Sequence) else [])
+        if isinstance(item, Mapping)
+    ]
+    if not _rich_enabled():
+        lines = [
+            "collection upload dry-run",
+            f"status: {payload.get('status', 'unknown')}",
+            f"root: {payload.get('root', 'unknown')}",
+            f"slug: {payload.get('slug', 'unknown')}",
+            f"normalized slug: {payload.get('normalized_slug', 'unknown')}",
+            f"collection: {payload.get('collection_id') or 'server-assigned'}",
+            f"timestamp: {payload.get('upload_timestamp') or 'server-assigned'}",
+            f"files: {payload.get('files_total', 0)}",
+            f"bytes: {_bytes_text(payload.get('bytes_total', 0))}",
+            f"mode: {'session' if payload.get('session') else 'manifest'}",
+            f"wait: {payload.get('wait_mode', 'unknown')}",
+            f"server validation: {payload.get('server_validation', 'not_run')}",
+        ]
+        if files_preview:
+            lines.append("files preview:")
+            for item in files_preview[:5]:
+                lines.append(f"- {item.get('path', 'unknown')} {_bytes_text(item.get('bytes', 0))}")
+            remaining = _int_value(payload.get("files_total", 0)) - len(files_preview[:5])
+            if remaining > 0:
+                lines.append(f"... {remaining} more")
+        return "\n".join(lines)
+
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    table.add_row("root", str(payload.get("root", "unknown")))
+    table.add_row("slug", str(payload.get("slug", "unknown")))
+    table.add_row("normalized slug", str(payload.get("normalized_slug", "unknown")))
+    table.add_row("collection", str(payload.get("collection_id") or "server-assigned"))
+    table.add_row("timestamp", str(payload.get("upload_timestamp") or "server-assigned"))
+    table.add_row("files", str(payload.get("files_total", 0)))
+    table.add_row("bytes", _bytes_text(payload.get("bytes_total", 0)))
+    table.add_row("mode", "session" if payload.get("session") else "manifest")
+    table.add_row("wait", str(payload.get("wait_mode", "unknown")))
+    table.add_row("server validation", str(payload.get("server_validation", "not_run")))
+    renderables: list[Any] = [RichText("collection upload dry-run", style="bold"), table]
+    if files_preview:
+        preview_table = _quiet_table("Path", "Bytes")
+        for item in files_preview[:5]:
+            preview_table.add_row(
+                str(item.get("path", "unknown")),
+                _bytes_text(item.get("bytes", 0)),
+            )
+        remaining = _int_value(payload.get("files_total", 0)) - len(files_preview[:5])
+        if remaining > 0:
+            preview_table.add_row(f"... {remaining} more", "")
+        renderables.extend([RichText("files preview", style="bold"), preview_table])
+    return RichGroup(*renderables)
 
 
 def format_collection_upload(payload: Mapping[str, Any]) -> Any:

@@ -3768,6 +3768,28 @@ class AcceptanceCopyService:
                 if updated_existing and summary.location:
                     record.archived = True
 
+def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "name": summary.name,
+        "targets": [str(target) for target in summary.targets],
+        "state": summary.state.value,
+        "files": summary.files,
+        "bytes": summary.bytes,
+        "entries_total": summary.entries_total,
+        "entries_pending": summary.entries_pending,
+        "entries_partial": summary.entries_partial,
+        "entries_byte_complete": summary.entries_byte_complete,
+        "entries_uploaded": summary.entries_uploaded,
+        "uploaded_bytes": summary.uploaded_bytes,
+        "missing_bytes": summary.missing_bytes,
+        "upload_state_expires_at": summary.upload_state_expires_at,
+        "copies": [
+            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+            for copy in summary.copies
+        ],
+    }
+
 
 class AcceptanceFetchService:
     def __init__(self, state: AcceptanceState) -> None:
@@ -3882,6 +3904,34 @@ class AcceptanceFetchService:
         return record.summary
 
     @_with_state_lock
+    def start_plan(self, fetch_id: str, *, cloud: bool = False) -> dict[str, object]:
+        record = self._record(fetch_id)
+        if record.summary.state == FetchState.DONE:
+            raise InvalidState("fetch is already complete")
+        if record.summary.state in {
+            FetchState.QUEUED_DJDAN,
+            FetchState.UPLOADING,
+            FetchState.VERIFYING,
+            FetchState.QUEUED_CLOUD,
+            FetchState.CLOUD_FETCHING,
+        }:
+            raise InvalidState("fetch is already started")
+        if record.summary.state != FetchState.DRAFT:
+            raise InvalidState(f"fetch cannot be started from state {record.summary.state.value}")
+        if not record.summary.targets:
+            raise InvalidState("fetch has no targets")
+        return {
+            **_fetch_summary_payload(record.summary),
+            "dry_run": True,
+            "status": "would_queue_cloud" if cloud else "would_queue_djdan",
+            "cloud": cloud,
+            "queued_state": (
+                FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+            ),
+            "will_create_recovery_session": cloud,
+        }
+
+    @_with_state_lock
     def cancel(self, fetch_id: str) -> FetchSummary:
         record = self._record(fetch_id)
         if record.summary.state in {
@@ -3901,7 +3951,7 @@ class AcceptanceFetchService:
         return record.summary
 
     @_with_state_lock
-    def evict(self, targets: list[str]) -> dict[str, object]:
+    def evict(self, targets: list[str], *, dry_run: bool = False) -> dict[str, object]:
         canonical_targets = self._canonical_targets(targets)
         if not canonical_targets:
             raise BadRequest("at least one target is required")
@@ -3915,6 +3965,20 @@ class AcceptanceFetchService:
                 "cannot evict hot file without verified disc protection: "
                 f"{first.collection_id}/{first.path}"
             )
+        would_evict_files = sum(1 for record in selected if record.hot)
+        would_evict_bytes = sum(record.bytes for record in selected if record.hot)
+        if dry_run:
+            return {
+                "targets": canonical_targets,
+                "dry_run": True,
+                "status": "would_evict",
+                "files": len(selected),
+                "bytes": sum(record.bytes for record in selected),
+                "evicted_files": 0,
+                "evicted_bytes": 0,
+                "would_evict_files": would_evict_files,
+                "would_evict_bytes": would_evict_bytes,
+            }
         evicted_files = 0
         evicted_bytes = 0
         for record in selected:
@@ -3925,10 +3989,14 @@ class AcceptanceFetchService:
             evicted_bytes += record.bytes
         return {
             "targets": canonical_targets,
+            "dry_run": False,
+            "status": "evicted",
             "files": len(selected),
             "bytes": sum(record.bytes for record in selected),
             "evicted_files": evicted_files,
             "evicted_bytes": evicted_bytes,
+            "would_evict_files": would_evict_files,
+            "would_evict_bytes": would_evict_bytes,
         }
 
     @_with_state_lock

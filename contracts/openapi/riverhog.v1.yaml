@@ -1123,7 +1123,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FetchSummary"
+                anyOf:
+                  - $ref: "#/components/schemas/FetchSummary"
+                  - $ref: "#/components/schemas/FetchStartPlanOut"
         default:
           $ref: "#/components/responses/Error"
   /fetches/{fetch_id}:
@@ -2665,6 +2667,20 @@ components:
         cloud:
           type: boolean
           default: false
+        dry_run:
+          type: boolean
+          default: false
+    FetchStartPlanOut:
+      allOf:
+        - $ref: "#/components/schemas/FetchSummary"
+        - type: object
+          required: [dry_run, status, cloud, queued_state, will_create_recovery_session]
+          properties:
+            dry_run: { type: boolean }
+            status: { type: string }
+            cloud: { type: boolean }
+            queued_state: { type: string }
+            will_create_recovery_session: { type: boolean }
     HotEvictRequest:
       type: object
       required: [targets]
@@ -2673,18 +2689,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Target"
+        dry_run:
+          type: boolean
+          default: false
     HotEvictResponse:
       type: object
-      required: [targets, files, bytes, evicted_files, evicted_bytes]
+      required:
+        [targets, dry_run, status, files, bytes, evicted_files, evicted_bytes, would_evict_files, would_evict_bytes]
       properties:
         targets:
           type: array
           items:
             $ref: "#/components/schemas/Target"
+        dry_run: { type: boolean }
+        status: { type: string }
         files: { type: integer }
         bytes: { type: integer }
         evicted_files: { type: integer }
         evicted_bytes: { type: integer }
+        would_evict_files: { type: integer }
+        would_evict_bytes: { type: integer }
     FetchesResponse:
       type: object
       required: [page, per_page, total, pages, fetches]

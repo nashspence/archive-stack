@@ -433,6 +433,89 @@ def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:
     return RichGroup(title, table)
 
 
+def _job_start_plan_payload(
+    request: RunnerUploadRequest,
+    *,
+    runner_url: str,
+    runner_ready: bool,
+) -> dict[str, Any]:
+    job_payload = request.job_payload
+    return {
+        "dry_run": True,
+        "status": "would_start",
+        "runner_url": runner_url,
+        "runner_ready": runner_ready,
+        "job_id": request.job_id,
+        "input_upload_id": request.upload_id,
+        "files_total": len(request.files),
+        "bytes_total": sum(item.bytes for item in request.files),
+        "workflow_mode": job_payload.get("workflow_mode"),
+        "collection_slug": job_payload.get("collection_slug"),
+        "collection_timestamp": job_payload.get("collection_timestamp"),
+        "collection_archive_destination": _mapping(
+            job_payload.get("collection_archive"), label="collection_archive"
+        ).get("destination"),
+        "archive_mode": job_payload.get("archive_mode"),
+        "tasks": list(job_payload.get("tasks") or []),
+        "groups": sorted(
+            str(group) for group in _mapping(job_payload.get("groups"), label="groups")
+        ),
+        "requested_archive_containers": requested_archive_containers(request),
+        "upload_workers": request.upload_workers,
+        "upload_chunk_mib": request.upload_chunk_mib,
+    }
+
+
+def format_job_start_plan(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        lines = [
+            "job start dry-run",
+            f"status: {payload.get('status', 'unknown')}",
+            f"runner: {payload.get('runner_url', 'unknown')}",
+            f"runner ready: {str(bool(payload.get('runner_ready'))).lower()}",
+            f"job: {payload.get('job_id', 'unknown')}",
+            f"input upload: {payload.get('input_upload_id', 'unknown')}",
+            f"workflow: {payload.get('workflow_mode', 'unknown')}",
+            f"collection: {payload.get('collection_slug') or 'n/a'}",
+            f"destination: {payload.get('collection_archive_destination') or 'n/a'}",
+            f"archive mode: {payload.get('archive_mode', 'unknown')}",
+            f"files: {payload.get('files_total', 0)}",
+            f"bytes: {format_bytes(int(payload.get('bytes_total', 0) or 0))}",
+            f"tasks: {', '.join(str(task) for task in _sequence(payload.get('tasks'))) or 'none'}",
+            "groups: "
+            f"{', '.join(str(group) for group in _sequence(payload.get('groups'))) or 'none'}",
+        ]
+        containers = _sequence(payload.get("requested_archive_containers"))
+        if containers:
+            lines.append("containers: " + ", ".join(str(item) for item in containers))
+        return "\n".join(lines)
+
+    table = _detail_table()
+    table.add_row("status", _attention_text(payload.get("status", "unknown")))
+    table.add_row("runner", str(payload.get("runner_url", "unknown")))
+    table.add_row("runner ready", str(bool(payload.get("runner_ready"))).lower())
+    table.add_row("job", _entity_text(payload.get("job_id", "unknown")))
+    table.add_row("input upload", str(payload.get("input_upload_id", "unknown")))
+    table.add_row("workflow", str(payload.get("workflow_mode", "unknown")))
+    table.add_row("collection", str(payload.get("collection_slug") or "n/a"))
+    table.add_row("destination", str(payload.get("collection_archive_destination") or "n/a"))
+    table.add_row("archive mode", str(payload.get("archive_mode", "unknown")))
+    table.add_row("files", str(payload.get("files_total", 0)))
+    table.add_row("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0)))
+    table.add_row(
+        "tasks",
+        ", ".join(str(task) for task in _sequence(payload.get("tasks"))) or "none",
+    )
+    table.add_row(
+        "groups",
+        ", ".join(str(group) for group in _sequence(payload.get("groups"))) or "none",
+    )
+    containers = _sequence(payload.get("requested_archive_containers"))
+    if containers:
+        table.add_row("containers", ", ".join(str(item) for item in containers))
+    return RichGroup(RichText("job start dry-run", style="bold"), table)
+
+
 def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
     state = "ok" if plan.get("ok") else "failed"
     lines = [
@@ -696,6 +779,13 @@ def start_job(
         bool,
         typer.Option("--wait/--no-wait", help="Wait until the job reaches safe completion"),
     ] = True,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Preview upload and job without creating runner state or uploading files",
+        ),
+    ] = False,
     interval: Annotated[float, typer.Option("--interval", min=0.5)] = 10.0,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -725,12 +815,21 @@ def start_job(
             )
         except (ConfigError, MunchyJobAuthoringError) as exc:
             raise typer.BadParameter(str(exc)) from exc
-        client = MunchyRunnerClient(runner_url_setting(runner_url))
+        resolved_runner_url = runner_url_setting(runner_url)
+        client = MunchyRunnerClient(resolved_runner_url)
         try:
             client.check_ready(
                 str(request.job_payload.get("workflow_mode") or "collection_archive"),
                 requested_containers=requested_archive_containers(request),
             )
+            if dry_run:
+                plan = _job_start_plan_payload(
+                    request,
+                    runner_url=resolved_runner_url,
+                    runner_ready=True,
+                )
+                emit(plan if json_mode else format_job_start_plan(plan), json_mode=json_mode)
+                return
             client.create_or_get_input_upload(request)
             job = client.create_job(request)
             if not json_mode:

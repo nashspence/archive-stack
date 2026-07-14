@@ -644,18 +644,33 @@ class ApiClient:
             json={"targets": list(targets)},
         )
 
-    def start_fetch(self, fetch_id: str, *, cloud: bool = False) -> dict[str, Any]:
+    def start_fetch(
+        self,
+        fetch_id: str,
+        *,
+        cloud: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
-            json={"cloud": cloud},
+            json={"cloud": cloud, "dry_run": dry_run},
         )
 
     def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cancel")
 
-    def evict_hot_targets(self, targets: Sequence[str]) -> dict[str, Any]:
-        return self._json("POST", "/v1/hot/evict", json={"targets": list(targets)})
+    def evict_hot_targets(
+        self,
+        targets: Sequence[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/v1/hot/evict",
+            json={"targets": list(targets), "dry_run": dry_run},
+        )
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}")

@@ -57,18 +57,32 @@ class FetchTargetsRequest(RiverhogModel):
 
 class StartFetchRequest(RiverhogModel):
     cloud: bool = False
+    dry_run: bool = False
+
+
+class FetchStartPlanOut(FetchSummaryOut):
+    dry_run: bool
+    status: str
+    cloud: bool
+    queued_state: str
+    will_create_recovery_session: bool
 
 
 class HotEvictRequest(RiverhogModel):
     targets: list[str]
+    dry_run: bool = False
 
 
 class HotEvictResponse(RiverhogModel):
     targets: list[str]
+    dry_run: bool = False
+    status: str
     files: int
     bytes: int
     evicted_files: int
     evicted_bytes: int
+    would_evict_files: int
+    would_evict_bytes: int
 
 
 class FetchStatusEntryOut(RiverhogModel):

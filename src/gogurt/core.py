@@ -70,6 +70,11 @@ def _validate_gogurt_route(route_name: str) -> None:
         raise ConfigError(f"invalid gogurt route: {route_name!r}")
 
 
+def _validate_gogurt_marker_name(marker_name: str) -> None:
+    if not marker_name or "/" in marker_name or marker_name in {".", ".."}:
+        raise ConfigError(f"invalid gogurt marker name: {marker_name!r}")
+
+
 def _route_args(route_name: str, route: Mapping[str, Any]) -> tuple[str, ...]:
     raw_args = route.get("args", [])
     if raw_args is None:
@@ -224,15 +229,15 @@ def route_for_gogurt_marker(config_file: PathInput, route_name: str) -> str:
         ) from exc
 
 
-def write_gogurt_marker(
+def plan_gogurt_marker(
     config_file: PathInput,
     route_name: str,
     mount_point: PathInput,
     *,
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     force: bool = False,
-) -> Path:
-    _validate_gogurt_route(marker_name)
+) -> dict[str, object]:
+    _validate_gogurt_marker_name(marker_name)
     marker_route = route_for_gogurt_marker(config_file, route_name)
     root = Path(mount_point).expanduser().resolve()
     if not root.is_dir():
@@ -243,5 +248,41 @@ def write_gogurt_marker(
     current = marker.read_text(encoding="utf-8", errors="replace") if marker.exists() else None
     if current is not None and current != text and not force:
         raise FileExistsError(f"gogurt marker already exists with different content: {marker}")
+    if current == text:
+        status = "would_keep"
+    elif current is not None:
+        status = "would_replace"
+    else:
+        status = "would_write"
+    return {
+        "dry_run": True,
+        "status": status,
+        "route": marker_route,
+        "mount_point": str(root),
+        "marker": str(marker),
+        "marker_name": marker_name,
+        "content": text,
+        "force": force,
+        "exists": current is not None,
+    }
+
+
+def write_gogurt_marker(
+    config_file: PathInput,
+    route_name: str,
+    mount_point: PathInput,
+    *,
+    marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
+    force: bool = False,
+) -> Path:
+    plan = plan_gogurt_marker(
+        config_file,
+        route_name,
+        mount_point,
+        marker_name=marker_name,
+        force=force,
+    )
+    marker = Path(str(plan["marker"]))
+    text = str(plan["content"])
     marker.write_text(text, encoding="utf-8")
     return marker

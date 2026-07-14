@@ -506,6 +506,11 @@ munchy job start ./incoming/camera \
   --riverhog-upload-session-on-failure cancel
 ```
 
+Use `munchy job start --dry-run` to run the same local job authoring,
+configured route expansion, runner readiness check, file discovery, hashing,
+and request rendering without creating runner upload state, runner jobs, or
+uploading source bytes.
+
 Without that runtime option, a failed job may preserve a fully uploaded open
 Riverhog session for an explicit `munchy job resume`.
 

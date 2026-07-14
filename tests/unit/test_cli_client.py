@@ -272,6 +272,8 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
         collection="tax/2022 reports",
     )
     client.start_fetch("fx-1", cloud=True)
+    client.start_fetch("fx-2", dry_run=True)
+    client.evict_hot_targets(["docs/"], dry_run=True)
     client.cancel_fetch("fx-1")
     client.get_recovery_session("rs-docs-restore-1")
     client.complete_recovery_session("rs-docs-restore-1")
@@ -287,34 +289,44 @@ def test_recovery_session_client_methods_use_canonical_endpoints(monkeypatch) ->
     assert captured[1] == (
         "POST",
         "https://api.test/v1/fetches/fx-1/start",
-        '{"cloud":true}',
+        '{"cloud":true,"dry_run":false}',
     )
     assert captured[2] == (
+        "POST",
+        "https://api.test/v1/fetches/fx-2/start",
+        '{"cloud":false,"dry_run":true}',
+    )
+    assert captured[3] == (
+        "POST",
+        "https://api.test/v1/hot/evict",
+        '{"targets":["docs/"],"dry_run":true}',
+    )
+    assert captured[4] == (
         "POST",
         "https://api.test/v1/fetches/fx-1/cancel",
         "",
     )
-    assert captured[3] == (
+    assert captured[5] == (
         "GET",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1",
         "",
     )
-    assert captured[4] == (
+    assert captured[6] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1/complete",
         "",
     )
-    assert captured[5] == (
+    assert captured[7] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-docs-restore-1/cancel",
         "",
     )
-    assert captured[6] == (
+    assert captured[8] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/pause",
         "",
     )
-    assert captured[7] == (
+    assert captured[9] == (
         "POST",
         "https://api.test/v1/recovery-sessions/rs-20260420T040001Z-rebuild-1/resume",
         "",

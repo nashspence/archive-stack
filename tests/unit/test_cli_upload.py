@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from riverhog_cli import main as riverhog_main
 from riverhog_cli.upload_progress import (
@@ -14,6 +16,8 @@ from riverhog_cli.upload_progress import (
     UploadProgressRenderer,
 )
 from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
+
+RUNNER = CliRunner()
 
 
 def test_local_collection_manifest_streams_file_hashes(
@@ -40,6 +44,68 @@ def test_local_collection_manifest_streams_file_hashes(
             "sha256": hashlib.sha256(content).hexdigest(),
         }
     ]
+
+
+def test_collection_upload_dry_run_hashes_manifest_without_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "clip.bin").write_bytes(b"video")
+
+    def forbidden_client() -> object:
+        raise AssertionError("dry-run must not create an API client")
+
+    monkeypatch.setattr(riverhog_main, "client", forbidden_client)
+
+    result = RUNNER.invoke(
+        riverhog_main.app,
+        [
+            "collection",
+            "upload",
+            "My Trip",
+            str(root),
+            "--timestamp",
+            "20260713T120000Z",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["status"] == "would_upload"
+    assert payload["normalized_slug"] == "my-trip"
+    assert payload["collection_id"] == "20260713T120000Z__my-trip"
+    assert payload["files_total"] == 1
+    assert payload["bytes_total"] == 5
+    assert payload["server_validation"] == "not_run"
+
+
+def test_collection_upload_dry_run_human_output_marks_server_assigned_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "clip.bin").write_bytes(b"video")
+
+    def forbidden_client() -> object:
+        raise AssertionError("dry-run must not create an API client")
+
+    monkeypatch.setattr(riverhog_main, "client", forbidden_client)
+
+    result = RUNNER.invoke(
+        riverhog_main.app,
+        ["collection", "upload", "My Trip", str(root), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert "collection upload dry-run" in result.stdout
+    assert "server-assigned" in result.stdout
+    assert "None" not in result.stdout
 
 
 def test_upload_collection_file_streams_chunks_from_resume_offset(

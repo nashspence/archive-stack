@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, cast
 
@@ -19,15 +20,22 @@ from riverhog_cli.output import (
     emit,
     format_collection_summary,
     format_collection_upload,
+    format_collection_upload_plan,
     format_collections,
     format_fetch,
     format_fetch_files,
+    format_fetch_start_plan,
     format_fetches,
     format_find,
     format_hot_evict,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
+from riverhog_core.fs_paths import (
+    PathNormalizationError,
+    normalize_upload_slug,
+    normalize_upload_timestamp,
+)
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
@@ -384,6 +392,44 @@ def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     if not files:
         raise typer.BadParameter("collection source must contain at least one file")
     return files
+
+
+def _collection_upload_dry_run_plan(
+    *,
+    slug: str,
+    root: Path,
+    manifest: list[CollectionManifestEntry],
+    upload_timestamp: str | None,
+    wait_mode: UploadWaitMode,
+    session_mode: bool,
+) -> dict[str, object]:
+    try:
+        normalized_slug = normalize_upload_slug(slug)
+        normalized_timestamp = (
+            normalize_upload_timestamp(upload_timestamp) if upload_timestamp is not None else None
+        )
+    except PathNormalizationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    collection_id = (
+        f"{normalized_timestamp}__{normalized_slug}" if normalized_timestamp is not None else None
+    )
+    return {
+        "dry_run": True,
+        "status": "would_upload",
+        "slug": slug,
+        "normalized_slug": normalized_slug,
+        "upload_timestamp": normalized_timestamp,
+        "collection_id": collection_id,
+        "root": str(root),
+        "ingest_source": str(root),
+        "files_total": len(manifest),
+        "bytes_total": sum(item["bytes"] for item in manifest),
+        "wait_mode": wait_mode,
+        "session": session_mode,
+        "server_validation": "not_run",
+        "created_at": datetime.now(UTC).isoformat(),
+        "files_preview": manifest[:5],
+    }
 
 
 def _iter_local_collection_paths(root: Path) -> Iterator[Path]:
@@ -1130,6 +1176,13 @@ def upload_cmd(
             help="Register and upload files incrementally before explicitly completing",
         ),
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Hash and preview without creating a session or uploading bytes",
+        ),
+    ] = False,
 ) -> None:
     """Upload a local directory as a collection."""
 
@@ -1137,6 +1190,27 @@ def upload_cmd(
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
         raise typer.BadParameter("collection source must be a directory")
+
+    if dry_run:
+        _log_upload(f"Hashing collection manifest from {resolved_root}")
+        manifest_started_at = time.monotonic()
+        manifest = _local_collection_manifest(resolved_root)
+        manifest_bytes = sum(item["bytes"] for item in manifest)
+        _log_upload(
+            "Manifest hashed: "
+            f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
+            f"in {time.monotonic() - manifest_started_at:.1f}s"
+        )
+        payload = _collection_upload_dry_run_plan(
+            slug=slug,
+            root=resolved_root,
+            manifest=manifest,
+            upload_timestamp=upload_timestamp,
+            wait_mode=wait_mode,
+            session_mode=session_mode,
+        )
+        emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
+        return
 
     api = client()
     if session_mode:
@@ -1366,11 +1440,15 @@ def fetch_create_cmd(
 @hot_app.command("evict")
 def hot_evict_cmd(
     targets: Annotated[list[str], typer.Argument(help="Target selectors to evict")],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview selected hot files without deleting them"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Evict compliant hot files by selector."""
 
-    payload = client().evict_hot_targets(targets)
+    payload = client().evict_hot_targets(targets, dry_run=dry_run)
     emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
 
 
@@ -1503,14 +1581,21 @@ def fetch_start_cmd(
     cloud: Annotated[
         bool, typer.Option("--cloud", help="Queue for cloud archive recovery")
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the queued fetch action without changing state"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Queue a fetch for djdan, or for cloud recovery with --cloud."""
 
     api = client()
-    payload = api.start_fetch(fetch_id, cloud=cloud)
+    payload = api.start_fetch(fetch_id, cloud=cloud, dry_run=dry_run)
     if json_mode:
         emit(payload, json_mode=True)
+        return
+    if dry_run:
+        emit(format_fetch_start_plan(payload), json_mode=False)
         return
     status = api.get_fetch_status(fetch_id)
     emit(format_fetch(status, {"entries": status.get("entries", [])}), json_mode=False)

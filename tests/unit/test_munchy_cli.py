@@ -414,6 +414,66 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     assert json.loads(result.stdout)["state"] == "succeeded"
 
 
+def test_munchy_job_start_dry_run_does_not_create_runner_state(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def check_ready(
+            self,
+            workflow_mode: str | None = None,
+            *,
+            requested_containers: list[str] | None = None,
+        ) -> None:
+            seen["workflow_mode"] = workflow_mode
+            seen["requested_containers"] = requested_containers
+
+        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            raise AssertionError("dry-run must not create input uploads")
+
+        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            raise AssertionError("dry-run must not create jobs")
+
+        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            raise AssertionError("dry-run must not upload files")
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "start",
+            str(source),
+            "--runner-url",
+            "http://runner",
+            "--collection",
+            "camera",
+            "--timestamp",
+            "20260621T120000Z",
+            "--group",
+            "video",
+            "--no-hash-cache",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["status"] == "would_start"
+    assert payload["job_id"] == "camera-20260621T120000Z"
+    assert payload["input_upload_id"] == "camera-20260621T120000Z"
+    assert payload["files_total"] == 1
+    assert payload["bytes_total"] == 5
+    assert seen["workflow_mode"] == "collection_archive"
+
+
 def test_munchy_job_start_skips_platform_cruft_before_upload(
     monkeypatch,
     tmp_path,

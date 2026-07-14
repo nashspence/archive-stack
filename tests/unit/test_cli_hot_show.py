@@ -110,3 +110,91 @@ def test_hot_list_passes_page_options_and_emits_paged_json(monkeypatch) -> None:
     assert payload["per_page"] == 1
     assert payload["total"] == 2
     assert payload["fetches"][0]["id"] == "fx-2"
+
+
+def test_hot_fetch_start_dry_run_renders_plan_without_followup_status(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def start_fetch(
+            self,
+            fetch_id: str,
+            *,
+            cloud: bool = False,
+            dry_run: bool = False,
+        ) -> dict[str, object]:
+            self.calls.append((fetch_id, {"cloud": cloud, "dry_run": dry_run}))
+            return {
+                "dry_run": True,
+                "status": "would_queue_cloud",
+                "id": fetch_id,
+                "name": "Docs",
+                "targets": ["docs/"],
+                "state": "draft",
+                "queued_state": "queued_cloud",
+                "cloud": True,
+                "will_create_recovery_session": True,
+                "files": 3,
+                "bytes": 30,
+                "missing_bytes": 20,
+                "entries_total": 0,
+                "entries_pending": 0,
+                "entries_partial": 0,
+                "entries_byte_complete": 0,
+                "entries_uploaded": 0,
+                "uploaded_bytes": 0,
+                "upload_state_expires_at": None,
+                "copies": [],
+            }
+
+        def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
+            raise AssertionError(f"dry-run should not request follow-up status: {fetch_id}")
+
+    fake = FakeClient()
+    monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1", "--cloud", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert fake.calls == [("fx-1", {"cloud": True, "dry_run": True})]
+    assert "hot fetch start dry-run" in result.stdout
+    assert "status: would_queue_cloud" in result.stdout
+    assert "queued state: queued_cloud" in result.stdout
+
+
+def test_hot_evict_dry_run_passes_flag_and_renders_plan(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[str], bool]] = []
+
+        def evict_hot_targets(
+            self,
+            targets: list[str],
+            *,
+            dry_run: bool = False,
+        ) -> dict[str, object]:
+            self.calls.append((targets, dry_run))
+            return {
+                "targets": targets,
+                "dry_run": dry_run,
+                "status": "would_evict",
+                "files": 2,
+                "bytes": 33,
+                "evicted_files": 0,
+                "evicted_bytes": 0,
+                "would_evict_files": 1,
+                "would_evict_bytes": 12,
+            }
+
+    fake = FakeClient()
+    monkeypatch.setattr(riverhog_cli.main, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    result = runner.invoke(app, ["hot", "evict", "docs/", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert fake.calls == [(["docs/"], True)]
+    assert "hot evict dry-run" in result.stdout
+    assert "would evict: 1 files 12 bytes" in result.stdout

@@ -13,6 +13,7 @@ from riverhog_api.schemas.fetches import (
     FetchesResponse,
     FetchFilesResponse,
     FetchManifestResponse,
+    FetchStartPlanOut,
     FetchStatusResponse,
     FetchSummaryOut,
     FetchTargetsRequest,
@@ -59,7 +60,7 @@ def evict_hot_targets(
     request: HotEvictRequest,
     container: ContainerDep,
 ) -> HotEvictResponse:
-    payload = container.fetches.evict(request.targets)
+    payload = container.fetches.evict(request.targets, dry_run=request.dry_run)
     return HotEvictResponse.model_validate(payload)
 
 
@@ -113,12 +114,15 @@ def remove_fetch_targets(
     return FetchSummaryOut.model_validate(map_fetch(summary))
 
 
-@router.post("/fetches/{fetch_id}/start", response_model=FetchSummaryOut)
+@router.post("/fetches/{fetch_id}/start", response_model=FetchSummaryOut | FetchStartPlanOut)
 def start_fetch(
     fetch_id: str,
     request: StartFetchRequest,
     container: ContainerDep,
-) -> FetchSummaryOut:
+) -> FetchSummaryOut | FetchStartPlanOut:
+    if request.dry_run:
+        payload = container.fetches.start_plan(fetch_id, cloud=request.cloud)
+        return FetchStartPlanOut.model_validate(payload)
     summary = container.fetches.start(fetch_id, cloud=request.cloud)
     if request.cloud:
         container.recovery_sessions.create_or_resume_for_fetch(fetch_id)

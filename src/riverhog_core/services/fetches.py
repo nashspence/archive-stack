@@ -258,6 +258,27 @@ class SqlAlchemyFetchService:
                 prefer_entries=True,
             )
 
+    def start_plan(self, fetch_id: str, *, cloud: bool = False) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            fetch_record = _get_fetch_record(session, fetch_id)
+            _require_startable_fetch(fetch_record)
+            if not _fetch_selectors(session, fetch_id):
+                raise InvalidState("fetch has no targets")
+            summary = fetch_summary_from_projection(
+                _get_fetch_projection(session, fetch_record.fetch_id),
+                prefer_entries=True,
+            )
+            return {
+                **_fetch_summary_plan_payload(summary),
+                "dry_run": True,
+                "status": "would_queue_cloud" if cloud else "would_queue_djdan",
+                "cloud": cloud,
+                "queued_state": (
+                    FetchState.QUEUED_CLOUD.value if cloud else FetchState.QUEUED_DJDAN.value
+                ),
+                "will_create_recovery_session": cloud,
+            }
+
     def cancel(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             fetch_record = _get_fetch_record(session, fetch_id)
@@ -279,7 +300,7 @@ class SqlAlchemyFetchService:
                 prefer_entries=True,
             )
 
-    def evict(self, targets: Sequence[str]) -> dict[str, object]:
+    def evict(self, targets: Sequence[str], *, dry_run: bool = False) -> dict[str, object]:
         canonical_targets = _canonical_targets(targets)
         if not canonical_targets:
             raise BadRequest("at least one target is required")
@@ -309,6 +330,20 @@ class SqlAlchemyFetchService:
                     "cannot evict hot file without verified disc protection: "
                     f"{first.collection_id}/{first.path}"
                 )
+            would_evict_files = sum(1 for record in selected if record.hot)
+            would_evict_bytes = sum(int(record.bytes) for record in selected if record.hot)
+            if dry_run:
+                return {
+                    "targets": canonical_targets,
+                    "dry_run": True,
+                    "status": "would_evict",
+                    "files": len(selected),
+                    "bytes": sum(int(record.bytes) for record in selected),
+                    "evicted_files": 0,
+                    "evicted_bytes": 0,
+                    "would_evict_files": would_evict_files,
+                    "would_evict_bytes": would_evict_bytes,
+                }
             evicted_files = 0
             evicted_bytes = 0
             for record in selected:
@@ -323,10 +358,14 @@ class SqlAlchemyFetchService:
                 evicted_bytes += int(record.bytes)
             return {
                 "targets": canonical_targets,
+                "dry_run": False,
+                "status": "evicted",
                 "files": len(selected),
                 "bytes": sum(int(record.bytes) for record in selected),
                 "evicted_files": evicted_files,
                 "evicted_bytes": evicted_bytes,
+                "would_evict_files": would_evict_files,
+                "would_evict_bytes": would_evict_bytes,
             }
 
     def get(self, fetch_id: str) -> FetchSummary:
@@ -1101,6 +1140,29 @@ def _discard_existing_fetch_uploads(
             upload_store.cancel_upload(entry.tus_url)
         upload_store.delete_target(target_path)
     session.execute(delete(FetchEntryRecord).where(FetchEntryRecord.fetch_id == fetch_id))
+
+
+def _fetch_summary_plan_payload(summary: FetchSummary) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "name": summary.name,
+        "targets": [str(target) for target in summary.targets],
+        "state": summary.state.value,
+        "files": summary.files,
+        "bytes": summary.bytes,
+        "entries_total": summary.entries_total,
+        "entries_pending": summary.entries_pending,
+        "entries_partial": summary.entries_partial,
+        "entries_byte_complete": summary.entries_byte_complete,
+        "entries_uploaded": summary.entries_uploaded,
+        "uploaded_bytes": summary.uploaded_bytes,
+        "missing_bytes": summary.missing_bytes,
+        "upload_state_expires_at": summary.upload_state_expires_at,
+        "copies": [
+            {"id": str(copy.id), "volume_id": copy.volume_id, "location": copy.location}
+            for copy in summary.copies
+        ],
+    }
 
 
 def _fetch_status_payload(

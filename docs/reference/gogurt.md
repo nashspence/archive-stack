@@ -91,5 +91,8 @@ gogurt write example-camera-card /Volumes/CAMERA \
   --config gogurt-routes.yaml
 ```
 
+Use `gogurt write --dry-run` to validate the route, mount point, marker name,
+and marker conflict behavior without writing to the mounted volume.
+
 The macOS listener reads `GOGURT_MARKER_NAME` and `GOGURT_TRIGGERS_DIR`. If they
 are unset it uses the public defaults above.

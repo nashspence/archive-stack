@@ -11,6 +11,7 @@ from gogurt.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,
     DEFAULT_GOGURT_MARKER_NAME,
     load_gogurt_actions,
+    plan_gogurt_marker,
     render_gogurt_triggers,
     write_gogurt_marker,
 )
@@ -89,11 +90,33 @@ def write_cmd(
         bool,
         typer.Option("--force", help="Replace a different marker value."),
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the marker write without changing the volume."),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Write a Gogurt marker file to a mounted volume."""
 
+    if dry_run:
+        plan = plan_gogurt_marker(
+            config,
+            route,
+            mount_point,
+            marker_name=marker_name,
+            force=force,
+        )
+        if json_mode:
+            emit(plan, json_mode=True)
+            return
+        typer.echo("gogurt write dry-run")
+        typer.echo(f"status: {plan.get('status', 'unknown')}")
+        typer.echo(f"route: {plan.get('route', 'unknown')}")
+        typer.echo(f"marker: {plan.get('marker', 'unknown')}")
+        typer.echo(f"content: {str(plan.get('content', '')).rstrip()}")
+        return
     marker = write_gogurt_marker(config, route, mount_point, marker_name=marker_name, force=force)
-    typer.echo(marker)
+    emit({"marker": str(marker)} if json_mode else str(marker), json_mode=json_mode)
 
 
 def _json_requested(argv: list[str]) -> bool:

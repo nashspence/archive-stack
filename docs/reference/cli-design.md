@@ -62,3 +62,37 @@ Visual emphasis should be sparse and role-based:
   payloads.
 - Keep progress, prompts, and warnings on stderr.
 - Do not include Rich formatting, table labels, or human summary text.
+
+## Dry Runs
+
+Mutating commands must provide `--dry-run` when the action is bulk,
+destructive, expensive, asynchronous, externally side-effecting, selector-based,
+or selected by config/route logic rather than by one exact object id. This
+includes uploads, evictions, cleanup, queued background work, runner/device/cloud
+fanout, and commands whose target set is discovered from selectors or local
+filesystem scans.
+
+Small direct state changes do not need ceremonial dry-runs when a clear
+`show`/`status`/`list` command already answers the operator question. Examples
+include one-id pause/resume/cancel operations and simple metadata edits. If a
+state change has fanout, cleanup, deletion, expensive transfer, or non-obvious
+selection, it crosses the threshold and needs a dry-run.
+
+The dry-run contract is:
+
+- The CLI flag is named `--dry-run`.
+- Public API operations expose `dry_run: true` on the same operation endpoint
+  when the operation is server-owned and that is practical. Local-only previews
+  may remain CLI-side when the first mutation is a CLI-controlled local write or
+  upload start.
+- Dry-runs run the same validation and planning path as the real operation as
+  far as possible without mutation.
+- Dry-runs must not write durable state, upload, delete, enqueue jobs, acquire
+  durable leases, send notifications, or persist preflight failures.
+- Human output uses explicit `dry-run` or `would_*` language and includes the
+  selected ids/files/bytes, destination or queued state, skipped or blocked
+  reasons, and any would-be ids that can be computed without mutation.
+- JSON output includes `dry_run: true` and a `status` such as `would_upload`,
+  `would_evict`, `would_queue`, or `would_start`.
+- Tests for dry-run behavior must prove the durable state that the real command
+  would mutate is unchanged.

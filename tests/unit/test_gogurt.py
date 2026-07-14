@@ -13,6 +13,7 @@ from gogurt.core import (
     GENERATED_HEADER,
     GOGURT_EMOJI,
     load_gogurt_actions,
+    plan_gogurt_marker,
     render_gogurt_triggers,
     route_for_gogurt_marker,
     write_gogurt_marker,
@@ -98,6 +99,25 @@ def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) 
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
 
 
+def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
+    plan = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+
+    assert plan["dry_run"] is True
+    assert plan["status"] == "would_write"
+    assert plan["route"] == "example-camera-card"
+    assert not (tmp_path / DEFAULT_GOGURT_MARKER_NAME).exists()
+
+
+def test_plan_gogurt_marker_reports_invalid_marker_name(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="invalid gogurt marker name"):
+        plan_gogurt_marker(
+            EXAMPLE_CONFIG,
+            "example-camera-card",
+            tmp_path,
+            marker_name="nested/.gogurt",
+        )
+
+
 def test_missing_gogurt_route_reports_available_routes() -> None:
     with pytest.raises(ConfigError, match="available: example-camera-card"):
         route_for_gogurt_marker(EXAMPLE_CONFIG, "missing")
@@ -139,3 +159,22 @@ def test_gogurt_cli_lists_renders_and_writes(tmp_path: Path) -> None:
     assert (tmp_path / DEFAULT_GOGURT_MARKER_NAME).read_text(encoding="utf-8") == (
         "example-camera-card\n"
     )
+
+
+def test_gogurt_cli_write_dry_run_does_not_create_marker(tmp_path: Path) -> None:
+    result = RUNNER.invoke(
+        app,
+        [
+            "write",
+            "example-camera-card",
+            str(tmp_path),
+            "--config",
+            str(EXAMPLE_CONFIG),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "gogurt write dry-run" in result.stdout
+    assert "status: would_write" in result.stdout
+    assert not (tmp_path / DEFAULT_GOGURT_MARKER_NAME).exists()

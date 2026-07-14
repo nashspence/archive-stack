@@ -221,6 +221,29 @@ def test_evicting_one_file_removes_only_that_file(tmp_path: Path) -> None:
     }
 
 
+def test_evicting_dry_run_reports_without_removing_hot_files(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+    hot_store = _FakeHotStore()
+    _seed_hot_docs(sqlite_path, hot_store)
+    _mark_docs_fully_compliant(sqlite_path)
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
+
+    payload = service.evict(["docs/tax/"], dry_run=True)
+
+    assert payload["dry_run"] is True
+    assert payload["status"] == "would_evict"
+    assert payload["files"] == 2
+    assert payload["would_evict_files"] == 2
+    assert payload["evicted_files"] == 0
+    assert hot_store.deleted == []
+    assert _hot_paths(sqlite_path) == {
+        "tax/2022/invoice-123.pdf",
+        "tax/2022/receipt-456.pdf",
+        "letters/cover.txt",
+    }
+
+
 def test_evicting_broad_target_removes_all_selected_hot_files(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
@@ -299,3 +322,20 @@ def test_listing_fetches_reports_aggregate_stats_from_projection(tmp_path: Path)
     assert fetch.bytes == len(b"invoice") + len(b"receipt")
     assert fetch.missing_bytes == len(b"receipt")
     assert fetch.copies == []
+
+
+def test_start_plan_reports_queue_without_changing_fetch_state(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+    hot_store = _FakeHotStore()
+    _seed_hot_docs(sqlite_path, hot_store)
+    service = SqlAlchemyFetchService(_config(sqlite_path), hot_store, _FakeUploadStore())
+    fetch = service.create(name="Tax docs", targets=["docs/tax/"])
+
+    payload = service.start_plan(str(fetch.id), cloud=True)
+
+    assert payload["dry_run"] is True
+    assert payload["status"] == "would_queue_cloud"
+    assert payload["queued_state"] == "queued_cloud"
+    assert payload["will_create_recovery_session"] is True
+    assert service.get(str(fetch.id)).state.value == "draft"

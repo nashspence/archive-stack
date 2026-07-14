@@ -877,17 +877,17 @@ The `riverhog` CLI is collection-first and should provide:
 - `riverhog collection list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--protection STATE]`
 - `riverhog collection show COLLECTION`
 - `riverhog find [QUERY] [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--collection ID] [--hot|--not-hot] [--archived|--not-archived]`
-- `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged]`
+- `riverhog collection upload SLUG ROOT [--timestamp YYYYMMDDTHHMMSSZ] [--wait finalized|staged] [--dry-run]`
 - `riverhog collection watch COLLECTION_UPLOAD_ID`
 - `riverhog collection cancel COLLECTION_UPLOAD_ID`
-- `riverhog hot evict TARGET...`
+- `riverhog hot evict TARGET... [--dry-run]`
 - `riverhog hot fetch list [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--state STATE] [--query TEXT]`
 - `riverhog hot fetch create --name NAME [TARGET...]`
 - `riverhog hot fetch add FETCH_ID TARGET...`
 - `riverhog hot fetch remove FETCH_ID TARGET...`
 - `riverhog hot fetch show FETCH_ID`
 - `riverhog hot fetch files FETCH_ID [--page N] [--per-page N] [--sort FIELD] [--order asc|desc] [--query TEXT] [--hot|--not-hot] [--archived|--not-archived] [--disc|--no-disc]`
-- `riverhog hot fetch start FETCH_ID [--cloud]`
+- `riverhog hot fetch start FETCH_ID [--cloud] [--dry-run]`
 - `riverhog hot fetch cancel FETCH_ID`
 
 `riverhog collection upload` streams files in bounded tus-compatible chunks. The default
@@ -930,6 +930,10 @@ Server-side upload expiry sweeps do not poll tusd offsets for live,
 non-expired uploads because tusd interrupts an active PATCH when another
 request, including HEAD, targets the same upload resource.
 
+Use `riverhog collection upload --dry-run` to hash the local manifest and
+preview the normalized collection id, file count, byte count, wait mode, and
+source preview without creating an API session or uploading bytes.
+
 `riverhog collection upload` defaults to `--wait finalized`: it exits successfully after
 every source file is verified and staged on the server and the background
 archive finalization has completed. Use `riverhog collection upload --wait staged`
@@ -938,6 +942,11 @@ upload, hot-file promotion, and planner refresh continue in the background.
 Operators should track those longer phases with the configured operator webhook
 or `riverhog collection show`. `RIVERHOG_UPLOAD_WAIT` may be set to `staged`
 or `finalized` to change the default.
+
+Use `riverhog hot evict --dry-run` to preview the selected hot files and bytes
+without deleting them. Use `riverhog hot fetch start --dry-run` to validate a
+draft fetch and preview the queued local or cloud recovery action without
+changing fetch state or creating recovery sessions.
 
 Glacier recovery notifications are deliberately explicit because bulk restores
 are rare and slow. `glacier_recovery.started` confirms Riverhog has requested a
