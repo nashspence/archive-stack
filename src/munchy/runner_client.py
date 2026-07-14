@@ -29,6 +29,9 @@ DEFAULT_UPLOAD_WORKERS = 12
 UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RETRY_MAX_DELAY_SECONDS = 60.0
 UPLOAD_RETRY_NOTICE_SECONDS = 60.0
+UPLOAD_PROGRESS_LIVE_RENDER_INTERVAL_SECONDS = 1.0
+UPLOAD_PROGRESS_TEXT_RENDER_INTERVAL_SECONDS = 15.0
+UPLOAD_JOB_STATUS_INTERVAL_SECONDS = 5.0
 TRANSIENT_ISSUE_RECOVERY_DISPLAY_SECONDS = 8.0
 CLEANUP_REQUEST_TIMEOUT_SECONDS = 900.0
 TRANSIENT_UPLOAD_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 507}
@@ -1269,7 +1272,27 @@ class UploadProgress:
         self.last_remote_uploaded_bytes: int | None = None
         self.last_remote_rate_at: float | None = None
         self.last_job_checked_at = 0.0
+        self.rendered_any = False
+        self.inflight_uploaded_bytes: dict[str, int] = {}
         self.stop_event = stop_event
+
+    def current_uploaded_bytes(self) -> int:
+        return min(
+            self.completed_bytes + sum(self.inflight_uploaded_bytes.values()),
+            self.total_bytes,
+        )
+
+    def local_upload_progress(self, *, now: float) -> dict[str, Any]:
+        uploaded_bytes = self.current_uploaded_bytes()
+        elapsed = max(now - self.started_at, 0.001)
+        session_uploaded_bytes = max(uploaded_bytes - self.initial_completed_bytes, 0)
+        return {
+            "files_uploaded": self.completed_files,
+            "files_total": self.total_files,
+            "uploaded_bytes": uploaded_bytes,
+            "bytes_total": self.total_bytes,
+            "rate_bytes_per_second": int(session_uploaded_bytes / elapsed),
+        }
 
     def remote_upload_progress_with_rate(
         self,
@@ -1297,12 +1320,13 @@ class UploadProgress:
             remote_uploaded_bytes = 0
         previous_files = self.last_remote_uploaded_files
         previous_bytes = self.last_remote_uploaded_bytes
+        local_uploaded_bytes = self.current_uploaded_bytes()
         uploaded_files = min(
             max(remote_files, self.completed_files, previous_files or 0),
             files_total,
         )
         uploaded_bytes = min(
-            max(remote_uploaded_bytes, self.completed_bytes, previous_bytes or 0),
+            max(remote_uploaded_bytes, local_uploaded_bytes, previous_bytes or 0),
             bytes_total,
         )
         merged["files_uploaded"] = uploaded_files
@@ -1328,68 +1352,78 @@ class UploadProgress:
             self.last_remote_uploaded_files = uploaded_files
         return merged
 
+    def mark_uploaded(self, item: RunnerInputFile, uploaded_bytes: int) -> None:
+        with self.lock:
+            clamped = max(0, min(int(uploaded_bytes), item.bytes))
+            if clamped > 0:
+                self.inflight_uploaded_bytes[item.rel_path] = clamped
+            else:
+                self.inflight_uploaded_bytes.pop(item.rel_path, None)
+            self._maybe_render(now=time.monotonic(), force=False)
+
     def mark_complete(self, item: RunnerInputFile) -> None:
         with self.lock:
+            self.inflight_uploaded_bytes.pop(item.rel_path, None)
             self.completed_files += 1
             self.completed_bytes += item.bytes
             now = time.monotonic()
-            should_print = (
-                self.completed_files == self.total_files or now - self.last_printed_at >= 15
-            )
-            job_status_provider = self.job_status_provider
-            should_check_job = job_status_provider is not None and (
-                should_print or now - self.last_job_checked_at >= 5
-            )
-            remote_job: dict[str, Any] | None = None
-            if should_check_job:
-                assert job_status_provider is not None
-                self.last_job_checked_at = now
-                try:
-                    maybe_job = job_status_provider()
-                except Exception:
-                    maybe_job = None
-                if isinstance(maybe_job, dict):
-                    remote_job = maybe_job
-                    if job_should_stop_upload(remote_job):
-                        if self.stop_event is not None:
-                            self.stop_event.set()
-                        self.renderer.update(remote_job, force=True)
-                        raise RunnerJobTerminalDuringUpload(remote_job)
-            if not should_print:
-                return
-            elapsed = max(now - self.started_at, 0.001)
-            session_uploaded_bytes = max(self.completed_bytes - self.initial_completed_bytes, 0)
-            upload_progress = {
-                "files_uploaded": self.completed_files,
-                "files_total": self.total_files,
-                "uploaded_bytes": self.completed_bytes,
-                "bytes_total": self.total_bytes,
-                "rate_bytes_per_second": int(session_uploaded_bytes / elapsed),
-            }
-            job: dict[str, Any] = {"upload_progress": upload_progress}
-            if remote_job is not None:
-                remote_upload_progress = job_upload_progress(remote_job)
-                if remote_upload_progress is not None:
-                    job["upload_progress"] = self.remote_upload_progress_with_rate(
-                        remote_upload_progress,
-                        now=now,
-                    )
-                encode_progress = remote_job.get("encode_progress")
-                if isinstance(encode_progress, dict):
-                    job["encode_progress"] = encode_progress
-                riverhog_progress = remote_job.get("riverhog_upload_progress")
-                if isinstance(riverhog_progress, dict):
-                    job["riverhog_upload_progress"] = riverhog_progress
-            else:
+            self._maybe_render(now=now, force=self.completed_files == self.total_files)
+
+    def _render_interval_seconds(self) -> float:
+        if getattr(self.renderer, "is_live", False):
+            return UPLOAD_PROGRESS_LIVE_RENDER_INTERVAL_SECONDS
+        return UPLOAD_PROGRESS_TEXT_RENDER_INTERVAL_SECONDS
+
+    def _maybe_render(self, *, now: float, force: bool) -> None:
+        should_print = (
+            force
+            or not self.rendered_any
+            or now - self.last_printed_at >= self._render_interval_seconds()
+        )
+        job_status_provider = self.job_status_provider
+        should_check_job = job_status_provider is not None and (
+            force or now - self.last_job_checked_at >= UPLOAD_JOB_STATUS_INTERVAL_SECONDS
+        )
+        remote_job: dict[str, Any] | None = None
+        if should_check_job:
+            assert job_status_provider is not None
+            self.last_job_checked_at = now
+            try:
+                maybe_job = job_status_provider()
+            except Exception:
+                maybe_job = None
+            if isinstance(maybe_job, dict):
+                remote_job = maybe_job
+                if job_should_stop_upload(remote_job):
+                    if self.stop_event is not None:
+                        self.stop_event.set()
+                    self.renderer.update(remote_job, force=True)
+                    raise RunnerJobTerminalDuringUpload(remote_job)
+        if not should_print:
+            return
+        upload_progress = self.local_upload_progress(now=now)
+        job: dict[str, Any] = {"upload_progress": upload_progress}
+        if remote_job is not None:
+            remote_upload_progress = job_upload_progress(remote_job)
+            if remote_upload_progress is not None:
                 job["upload_progress"] = self.remote_upload_progress_with_rate(
-                    upload_progress,
+                    remote_upload_progress,
                     now=now,
                 )
-            self.renderer.update(
-                job,
-                force=self.completed_files == self.total_files,
+            encode_progress = remote_job.get("encode_progress")
+            if isinstance(encode_progress, dict):
+                job["encode_progress"] = encode_progress
+            riverhog_progress = remote_job.get("riverhog_upload_progress")
+            if isinstance(riverhog_progress, dict):
+                job["riverhog_upload_progress"] = riverhog_progress
+        else:
+            job["upload_progress"] = self.remote_upload_progress_with_rate(
+                upload_progress,
+                now=now,
             )
-            self.last_printed_at = now
+        self.renderer.update(job, force=force)
+        self.last_printed_at = now
+        self.rendered_any = True
 
 
 class MunchyRunnerClient:
@@ -1777,6 +1811,7 @@ class MunchyRunnerClient:
                 chunk_bytes=request.upload_chunk_bytes,
                 retry_reporter=retry_reporter,
                 stop_event=stop_event,
+                progress_callback=progress.mark_uploaded,
             )
             progress.mark_complete(item)
 
@@ -1813,6 +1848,7 @@ class MunchyRunnerClient:
                 chunk_bytes=request.upload_chunk_bytes,
                 retry_reporter=retry_reporter,
                 stop_event=stop_event,
+                progress_callback=progress.mark_uploaded,
             ): item
             for item in files
         }
@@ -1844,6 +1880,7 @@ class MunchyRunnerClient:
         chunk_bytes: int,
         retry_reporter: UploadRetryReporter | None = None,
         stop_event: Event | None = None,
+        progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
     ) -> None:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
         retry_count = 0
@@ -1857,6 +1894,7 @@ class MunchyRunnerClient:
                     item,
                     chunk_bytes=chunk_bytes,
                     stop_event=stop_event,
+                    progress_callback=progress_callback,
                 )
                 return
             except Exception as exc:
@@ -1879,6 +1917,7 @@ class MunchyRunnerClient:
         *,
         chunk_bytes: int,
         stop_event: Event | None = None,
+        progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
     ) -> None:
         escaped_upload_id = urllib.parse.quote(upload_id)
         escaped_rel = urllib.parse.quote(item.rel_path, safe="/")
@@ -1900,6 +1939,8 @@ class MunchyRunnerClient:
             raise RuntimeError(f"runner upload offset is past EOF for {item.rel_path}: {offset}")
         if offset == item.bytes:
             return
+        if offset > 0 and progress_callback is not None:
+            progress_callback(item, offset)
 
         with item.source.open("rb") as fh:
             fh.seek(offset)
@@ -1923,6 +1964,8 @@ class MunchyRunnerClient:
                 )
                 next_offset = response.headers.get("Upload-Offset")
                 offset = int(next_offset) if next_offset else offset + len(chunk)
+                if progress_callback is not None:
+                    progress_callback(item, offset)
         if offset != item.bytes:
             raise RuntimeError(f"incomplete upload for {item.rel_path}: {offset} of {item.bytes}")
 

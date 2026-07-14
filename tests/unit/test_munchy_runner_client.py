@@ -1323,6 +1323,59 @@ def test_upload_file_does_not_retry_non_transient_http_error(tmp_path: Path) -> 
         client.upload_file("upload", item, chunk_bytes=1024)
 
 
+def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"abcdefgh")
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+    client = MunchyRunnerClient("http://runner")
+    offsets: list[int] = []
+
+    class Response:
+        def __init__(self, offset: int) -> None:
+            self.headers = {"Upload-Offset": str(offset)}
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        assert method == "POST"
+        assert path == "/v1/input-uploads/upload/files/video/clip.mp4/upload"
+        return {
+            "upload_url": "http://uploads.test/file",
+            "offset": 0,
+            "length": item.bytes,
+        }
+
+    def fake_request(
+        method: str,
+        path_or_url: str,
+        *,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        assert method == "PATCH"
+        assert path_or_url == "http://uploads.test/file"
+        assert data is not None
+        assert headers is not None
+        next_offset = int(headers["Upload-Offset"]) + len(data)
+        return 204, b"", Response(next_offset)
+
+    client.json = fake_json  # type: ignore[method-assign]
+    client.request = fake_request  # type: ignore[method-assign]
+
+    client.upload_file(
+        "upload",
+        item,
+        chunk_bytes=4,
+        progress_callback=lambda uploaded_item, offset: offsets.append(offset),
+    )
+
+    assert offsets == [4, 8]
+
+
 def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     files = []
     for index in range(3):
@@ -1356,6 +1409,7 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
         chunk_bytes: int,
         retry_reporter: object | None = None,
         stop_event: object | None = None,
+        progress_callback: object | None = None,
     ) -> None:
         uploaded.append(item.rel_path)
 
@@ -1415,6 +1469,7 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
         chunk_bytes: int,
         retry_reporter: object | None = None,
         stop_event: object | None = None,
+        progress_callback: object | None = None,
     ) -> None:
         uploaded.append(item.rel_path)
 
@@ -1480,6 +1535,87 @@ def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:
     assert renderer_jobs
     assert "upload_progress" in renderer_jobs[0]
     assert "encode_progress" in renderer_jobs[0]
+
+
+def test_upload_progress_renders_accepted_chunk_bytes_before_file_completion() -> None:
+    item = RunnerInputFile(
+        source=Path("clip.mp4"),
+        rel_path="video/clip.mp4",
+        bytes=100,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    progress = UploadProgress(
+        total_files=1,
+        total_bytes=100,
+        renderer=Renderer(),  # type: ignore[arg-type]
+        job_status_provider=lambda: {
+            "upload_progress": {
+                "files_uploaded": 0,
+                "files_total": 1,
+                "uploaded_bytes": 0,
+                "bytes_total": 100,
+            },
+        },
+    )
+
+    progress.mark_uploaded(item, 25)
+
+    upload = renderer_jobs[0]["upload_progress"]
+    assert upload["files_uploaded"] == 0  # type: ignore[index]
+    assert upload["files_total"] == 1  # type: ignore[index]
+    assert upload["uploaded_bytes"] == 25  # type: ignore[index]
+    assert upload["bytes_total"] == 100  # type: ignore[index]
+
+
+def test_live_upload_progress_does_not_poll_remote_status_at_render_rate() -> None:
+    item = RunnerInputFile(
+        source=Path("clip.mp4"),
+        rel_path="video/clip.mp4",
+        bytes=100,
+        sha256="0" * 64,
+    )
+    renderer_jobs: list[dict[str, object]] = []
+
+    class Renderer:
+        is_live = True
+
+        def update(self, job: dict[str, object], *, force: bool = False) -> None:
+            renderer_jobs.append(job)
+
+    provider_calls = 0
+
+    def job_status_provider() -> dict[str, object]:
+        nonlocal provider_calls
+        provider_calls += 1
+        return {
+            "upload_progress": {
+                "files_uploaded": 0,
+                "files_total": 1,
+                "uploaded_bytes": 0,
+                "bytes_total": 100,
+            },
+        }
+
+    ticks = iter([100.0, 100.1, 101.2])
+    with patch("munchy.runner_client.time.monotonic", side_effect=lambda: next(ticks)):
+        progress = UploadProgress(
+            total_files=1,
+            total_bytes=100,
+            renderer=Renderer(),  # type: ignore[arg-type]
+            job_status_provider=job_status_provider,
+        )
+        progress.mark_uploaded(item, 10)
+        progress.mark_uploaded(item, 20)
+
+    assert len(renderer_jobs) == 2
+    assert provider_calls == 1
+    assert renderer_jobs[-1]["upload_progress"]["uploaded_bytes"] == 20  # type: ignore[index]
 
 
 def test_upload_progress_uses_one_remote_sample_per_tick_for_rate() -> None:
