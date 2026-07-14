@@ -1,73 +1,37 @@
 {
   "schema_version": 1,
   "surface": "riverhog.operator_webhook",
-  "description": "Machine-readable contract for Riverhog operator-facing webhook notifications.",
-  "endpoint_config": {
-    "url_env": "RIVERHOG_OPERATOR_WEBHOOK_URL",
-    "timeout_env": "RIVERHOG_OPERATOR_WEBHOOK_TIMEOUT",
-    "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-    "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-    "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-    "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE",
-    "public_base_url_env": "RIVERHOG_PUBLIC_BASE_URL"
+  "payload": {
+    "required_fields": [
+      "event",
+      "delivered_at",
+      "notification"
+    ],
+    "notification_required_fields": [
+      "title",
+      "body"
+    ],
+    "operator_urgency_values": [
+      "passive",
+      "time_sensitive",
+      "critical"
+    ]
   },
   "receiver_rendering": {
-    "title": "payload.notification.title",
-    "message": "payload.notification.body",
-    "notes": "Riverhog renders the canonical_notification template for each event into payload.notification. Receivers may use those strings directly, or render their own presentation from the same machine-readable event data.",
     "title_max_chars": 48,
     "subject_max_chars": 40,
     "body_max_chars": 150,
-    "title_template_tokens": [
-      "emoji",
-      "subject_40"
-    ],
-    "body_template_tokens": [
-      "subject",
-      "subject_40",
-      "any required_payload_fields or optional_payload_fields rendered as strings",
-      "field_40",
-      "field_80",
-      "field_120"
-    ],
     "actors": {
       "riverhog": "🐷",
       "munchy": "🤤",
       "jeb": "🤖"
-    },
-    "interruption_level_template": "critical when operator_urgency is critical; otherwise time-sensitive"
-  },
-  "common_payload_fields": {
-    "event": "string event id matching one event below",
-    "delivered_at": "UTC ISO-8601 timestamp with Z suffix",
-    "notification": {
-      "title": "canonical title rendered from this contract",
-      "body": "canonical body rendered from this contract"
     }
-  },
-  "urgency_levels": {
-    "passive": "Informational and does not imply immediate operator action.",
-    "time_sensitive": "Useful to surface promptly; safe archived data is not implied lost.",
-    "critical": "Reserved for imminent data loss, imminent money loss, or an irreversible custody failure that should bypass normal quieting."
-  },
-  "operator_notification_policy": {
-    "default_issue_urgency": "time_sensitive",
-    "critical_only_when": "Use critical only for imminent money loss, imminent data loss, or irreversible custody failure. Durable operator issues and reminders should be time_sensitive by default.",
-    "reminder_policy": "All Riverhog-family durable reminders use RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL and may snap to RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME in RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE."
   },
   "events": [
     {
       "event": "job.received",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy accepted an ingest or conversion job.",
       "operator_urgency": "passive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -85,27 +49,12 @@
         "state",
         "phase",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "message",
-        "severity"
       ]
     },
     {
       "event": "review.handoff",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy completed review output and is handing it to the configured review destination.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -123,27 +72,12 @@
         "state",
         "phase",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "message",
-        "severity"
       ]
     },
     {
       "event": "archive.handoff",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy completed a collection archive and is handing it directly to Riverhog archival custody.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -161,27 +95,12 @@
         "state",
         "phase",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "message",
-        "severity"
       ]
     },
     {
       "event": "collection_archive.handoff",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy completed a collection archive and is handing it to the configured target destination.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -199,30 +118,12 @@
         "state",
         "phase",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "message",
-        "severity"
       ]
     },
     {
       "event": "job.issue",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy encountered an operator-visible issue, such as a local preflight failure or a retrying handoff.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Munchy job details when convenient",
-      "delivery": {
-        "mode": "paced_best_effort",
-        "retry": false,
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -242,34 +143,12 @@
         "severity",
         "message",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "component",
-        "error",
-        "device_id",
-        "workflow_mode",
-        "failed_file_count"
       ]
     },
     {
       "event": "job.upload_waiting.reminder",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Reminder that a Munchy job is still waiting for more client-uploaded input files.",
       "operator_urgency": "time_sensitive",
       "operator_action": "resume upload or cancel the Munchy job",
-      "reminder_of": "job.received",
-      "delivery": {
-        "mode": "paced_best_effort",
-        "retry": false,
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -292,29 +171,12 @@
         "upload_progress",
         "reminder_count",
         "reminder_interval_seconds"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "encode_progress",
-        "last_upload_activity_at",
-        "stalled_seconds",
-        "upload_id"
       ]
     },
     {
       "event": "job.succeeded",
-      "category": "munchy_job",
-      "source": "services.munchy-runner",
-      "purpose": "Munchy completed a job successfully.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "munchy",
         "title_template": "{emoji} {subject_40}",
@@ -332,29 +194,15 @@
         "state",
         "phase",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "message",
-        "severity"
       ]
     },
     {
       "event": "jeb.issue",
-      "category": "jeb_issue",
-      "source": "jeb",
-      "purpose": "Jeb encountered an operator-visible routing, custody, attempt, or target issue.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Jeb issue details",
-      "delivery": {
-        "mode": "paced_best_effort",
-        "retry": false,
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
+      "operator_action_by_component": {
+        "routing": "fix Munchy routing, then run Jeb archive-now for the account",
+        "munchy_preflight": "repair Munchy routing preflight, then run Jeb archive-now for the account"
       },
       "canonical_notification": {
         "actor": "jeb",
@@ -376,30 +224,12 @@
         "severity",
         "message",
         "notification"
-      ],
-      "optional_payload_fields": [
-        "attempt_id",
-        "batch_id",
-        "collection_slug",
-        "collection_timestamp",
-        "recipient",
-        "component",
-        "error",
-        "detailed_message"
       ]
     },
     {
       "event": "collections.upload_staged",
-      "category": "collection_lifecycle",
-      "source": "riverhog_core.services.collections",
-      "purpose": "All source files for a collection reached server custody and verified; archiving continues in the background.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
@@ -417,24 +247,12 @@
         "files_uploaded",
         "bytes_total",
         "uploaded_bytes"
-      ],
-      "optional_payload_fields": [
-        "collection_url",
-        "upload_url"
       ]
     },
     {
       "event": "collections.finalized",
-      "category": "collection_lifecycle",
-      "source": "riverhog_core.services.archive_uploads",
-      "purpose": "Collection archive and proof data are stored, verified, promoted, and available to Riverhog/WebDAV.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
@@ -454,27 +272,12 @@
         "archive_object_path",
         "archive_total_bytes",
         "archive_sha256"
-      ],
-      "optional_payload_fields": [
-        "collection_url",
-        "upload_url"
       ]
     },
     {
       "event": "collections.archive_retrying",
-      "category": "collection_lifecycle",
-      "source": "riverhog_core.services.archive_uploads",
-      "purpose": "archive upload encountered a recoverable failure and Riverhog will keep retrying.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait unless failures persist beyond normal connectivity trouble",
-      "delivery": {
-        "mode": "paced_best_effort",
-        "retry": false,
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
-      },
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
@@ -492,24 +295,12 @@
         "next_retry_at",
         "retry_delay_seconds",
         "error"
-      ],
-      "optional_payload_fields": [
-        "collection_url",
-        "upload_url"
       ]
     },
     {
       "event": "collections.archive_failed",
-      "category": "collection_lifecycle",
-      "source": "riverhog_core.services.archive_uploads",
-      "purpose": "Collection archive finalization encountered a non-retryable packaging, validation, or data-integrity failure.",
       "operator_urgency": "critical",
       "operator_action": "inspect Riverhog archive logs and collection upload state",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
@@ -525,25 +316,12 @@
         "attempts",
         "failed_at",
         "error"
-      ],
-      "optional_payload_fields": [
-        "collection_url",
-        "upload_url"
       ]
     },
     {
       "event": "archive_restore.started",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Riverhog requested remote archive retrieval for selected collection files.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait for automatic materialization",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": false
-      },
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
@@ -561,24 +339,18 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
       ]
     },
     {
       "event": "archive_restore.ready",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Retrieved archive data is ready for verified materialization into hot storage.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait for automatic materialization",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive retrieval is ready. I'm verifying and materializing the selected files now."
       },
       "required_payload_fields": [
         "event",
@@ -591,30 +363,18 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
-      ],
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive retrieval is ready. I'm verifying and materializing the selected files now."
-      }
+      ]
     },
     {
       "event": "archive_restore.completed",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Selected archive files were verified, materialized, and temporary retrieval state was cleaned up.",
       "operator_urgency": "time_sensitive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": false
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization is complete and the selected files are hot."
       },
       "required_payload_fields": [
         "event",
@@ -626,32 +386,18 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
-      ],
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive materialization is complete and the selected files are hot."
-      }
+      ]
     },
     {
       "event": "archive_restore.retrying",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Archive retrieval or materialization encountered a retryable failure.",
       "operator_urgency": "time_sensitive",
       "operator_action": "wait unless failures persist",
-      "delivery": {
-        "mode": "paced_best_effort",
-        "retry": false,
-        "reminder": true,
-        "reminder_interval_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
-        "reminder_time_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-        "reminder_timezone_env": "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE"
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
       },
       "required_payload_fields": [
         "event",
@@ -668,29 +414,18 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
-      ],
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive materialization hit a retryable issue: {error_80}. Next retry: {next_retry_at}."
-      }
+      ]
     },
     {
       "event": "archive_restore.failed",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "Archive retrieval or materialization encountered a non-retryable integrity or catalog failure.",
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Riverhog archive retrieval logs",
-      "delivery": {
-        "mode": "best_effort",
-        "retry": false,
-        "reminder": false
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink! Archive materialization stopped: {error_80}. Please inspect Riverhog."
       },
       "required_payload_fields": [
         "event",
@@ -705,30 +440,18 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
-      ],
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink! Archive materialization stopped: {error_80}. Please inspect Riverhog."
-      }
+      ]
     },
     {
       "event": "archive_restore.canceled",
-      "category": "archive_restore",
-      "source": "riverhog_core.services.archive_restores",
-      "purpose": "The operator canceled active archive materialization.",
       "operator_urgency": "passive",
       "operator_action": "none",
-      "delivery": {
-        "mode": "durable",
-        "retry": true,
-        "retry_delay_env": "RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY",
-        "reminder": false
+      "canonical_notification": {
+        "actor": "riverhog",
+        "title_template": "{emoji} {subject_40}",
+        "body_template": "Oink, archive materialization was canceled."
       },
       "required_payload_fields": [
         "event",
@@ -740,17 +463,9 @@
         "operator_action",
         "operator_message"
       ],
-      "optional_payload_fields": [
-        "restore_url"
-      ],
       "type_values": [
         "archive_restore"
-      ],
-      "canonical_notification": {
-        "actor": "riverhog",
-        "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive materialization was canceled."
-      }
+      ]
     }
   ]
 }

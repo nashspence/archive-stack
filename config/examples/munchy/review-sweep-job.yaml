@@ -7,7 +7,7 @@ job:
     target:
       enabled: true
       method: rclone
-      destination: "clover:munchy/reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
+      destination: "review-remote:munchy/reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
     clip_plan:
       target_seconds: 90
     sweep:

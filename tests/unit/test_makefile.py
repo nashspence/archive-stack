@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from yaml.nodes import MappingNode, Node, SequenceNode
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -117,6 +118,47 @@ def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> Non
 
     assert '- "-upload-dir"' in compose_text
     assert '- "-dir"' not in compose_text
+
+
+def _assert_unique_yaml_mapping_keys(node: Node) -> None:
+    if isinstance(node, MappingNode):
+        keys = [key.value for key, _value in node.value]
+        assert len(keys) == len(set(keys))
+        for key, value in node.value:
+            _assert_unique_yaml_mapping_keys(key)
+            _assert_unique_yaml_mapping_keys(value)
+    elif isinstance(node, SequenceNode):
+        for value in node.value:
+            _assert_unique_yaml_mapping_keys(value)
+
+
+def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    compose_node = yaml.compose(compose_text)
+    assert compose_node is not None
+    _assert_unique_yaml_mapping_keys(compose_node)
+
+    compose = yaml.safe_load(compose_text)
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for package in (REPO_ROOT / "src/riverhog_core", REPO_ROOT / "src/riverhog_api")
+        for path in package.rglob("*.py")
+    )
+    configured_names = {
+        name
+        for name in compose["services"]["app"]["environment"]
+        if name.startswith("RIVERHOG_")
+        or name in {"INCOMPLETE_UPLOAD_TTL", "UPLOAD_EXPIRY_SWEEP_INTERVAL"}
+    }
+    assert all(name in runtime_source for name in configured_names)
+
+    example_names = {
+        line.split("=", 1)[0]
+        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
+    compose_owned_names = {"COMPOSE_PROJECT_NAME"}
+    assert all(name in compose_text or name in compose_owned_names for name in example_names)
 
 
 def test_compose_services_publish_the_archive_runtime_configuration() -> None:

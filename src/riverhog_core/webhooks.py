@@ -14,11 +14,6 @@ import httpx
 from riverhog_core.operator_reminders import next_operator_reminder_at
 
 _OPERATOR_CONTRACT_PATH = Path("contracts/webhooks/operator-notifications.v1.json")
-_FALLBACK_NOTIFICATION_TEMPLATE: dict[str, str] = {
-    "actor": "riverhog",
-    "title_template": "{emoji} {subject_40}",
-    "body_template": "Riverhog has an operator notification.",
-}
 
 
 @dataclass(frozen=True)
@@ -108,7 +103,7 @@ def build_archive_restore_ready_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_archive_restore_started_payload(
@@ -141,7 +136,7 @@ def build_archive_restore_started_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_archive_restore_completed_payload(
@@ -160,7 +155,7 @@ def build_archive_restore_completed_payload(
     )
     payload.update(
         {
-            "operator_urgency": "passive",
+            "operator_urgency": "time_sensitive",
             "operator_action": "none",
             "operator_message": "Selected files are verified and available in hot storage.",
             "notification": _archive_restore_notification(
@@ -170,7 +165,7 @@ def build_archive_restore_completed_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_archive_restore_canceled_payload(
@@ -199,7 +194,7 @@ def build_archive_restore_canceled_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_archive_restore_retrying_payload(
@@ -245,7 +240,7 @@ def build_archive_restore_retrying_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_archive_restore_failed_payload(
@@ -281,7 +276,7 @@ def build_archive_restore_failed_payload(
             ),
         }
     )
-    return payload
+    return validate_operator_payload(payload)
 
 
 def _base_archive_restore_payload(
@@ -324,7 +319,9 @@ def _operator_notification_contract() -> dict[str, Any]:
     for path in _operator_notification_contract_paths():
         if path.exists():
             payload = json.loads(path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else {}
+            if not isinstance(payload, dict):
+                raise RuntimeError("operator notification contract must be a JSON object")
+            return payload
     try:
         resource = resources.files("riverhog_core").joinpath(
             "contracts",
@@ -332,9 +329,11 @@ def _operator_notification_contract() -> dict[str, Any]:
             "operator-notifications.v1.json",
         )
         payload = json.loads(resource.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError):
-        return {}
+    except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError) as exc:
+        raise RuntimeError("operator notification contract is unavailable") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("operator notification contract must be a JSON object")
+    return payload
 
 
 def _operator_notification_contract_paths() -> list[Path]:
@@ -349,27 +348,127 @@ def _operator_notification_contract_paths() -> list[Path]:
 def _operator_notification_events() -> dict[str, Mapping[str, Any]]:
     events = _operator_notification_contract().get("events", [])
     if not isinstance(events, list):
-        return {}
-    return {
-        str(event["event"]): event
-        for event in events
-        if isinstance(event, dict) and isinstance(event.get("event"), str)
-    }
+        raise RuntimeError("operator notification contract events must be an array")
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for event in events:
+        if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+            raise RuntimeError("operator notification contract events must be named objects")
+        event_name = str(event["event"])
+        if event_name in indexed:
+            raise RuntimeError(f"duplicate operator notification event: {event_name}")
+        indexed[event_name] = event
+    return indexed
+
+
+def _contract_strings(value: object, *, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError(f"operator notification contract {label} must be a string array")
+    return tuple(str(item) for item in value)
+
+
+def validate_operator_payload(payload: dict[str, object]) -> dict[str, object]:
+    event = payload.get("event")
+    if not isinstance(event, str) or event not in _operator_notification_events():
+        raise ValueError(f"unsupported operator notification event: {event!r}")
+    event_contract = _operator_notification_events()[event]
+    payload_contract = _operator_notification_contract().get("payload")
+    if not isinstance(payload_contract, dict):
+        raise RuntimeError("operator notification contract payload rules are missing")
+
+    required_fields = set(
+        _contract_strings(payload_contract.get("required_fields"), label="payload.required_fields")
+    )
+    required_fields.update(
+        _contract_strings(
+            event_contract.get("required_payload_fields"),
+            label=f"events.{event}.required_payload_fields",
+        )
+    )
+    missing = sorted(required_fields - payload.keys())
+    if missing:
+        raise ValueError(f"operator notification {event} is missing: {', '.join(missing)}")
+
+    delivered_at = payload.get("delivered_at")
+    if not isinstance(delivered_at, str) or not delivered_at.endswith("Z"):
+        raise ValueError(f"operator notification {event} delivered_at must be UTC ISO-8601")
+    try:
+        datetime.fromisoformat(delivered_at)
+    except ValueError as exc:
+        raise ValueError(
+            f"operator notification {event} delivered_at must be UTC ISO-8601"
+        ) from exc
+
+    notification = payload.get("notification")
+    if not isinstance(notification, Mapping):
+        raise ValueError(f"operator notification {event} notification must be an object")
+    notification_fields = _contract_strings(
+        payload_contract.get("notification_required_fields"),
+        label="payload.notification_required_fields",
+    )
+    missing_notification = [field for field in notification_fields if field not in notification]
+    if missing_notification:
+        raise ValueError(
+            f"operator notification {event} notification is missing: "
+            + ", ".join(missing_notification)
+        )
+    for field in notification_fields:
+        if not isinstance(notification[field], str):
+            raise ValueError(
+                f"operator notification {event} notification.{field} must be a string"
+            )
+    for field, limit_field in (("title", "title_max_chars"), ("body", "body_max_chars")):
+        if len(str(notification[field])) > _notification_int(limit_field):
+            raise ValueError(f"operator notification {event} notification.{field} is too long")
+
+    urgency = payload.get("operator_urgency")
+    urgency_values = _contract_strings(
+        payload_contract.get("operator_urgency_values"),
+        label="payload.operator_urgency_values",
+    )
+    if urgency not in urgency_values:
+        raise ValueError(f"operator notification {event} has invalid operator_urgency")
+    if payload.get("operator_urgency") != event_contract.get("operator_urgency"):
+        raise ValueError(
+            f"operator notification {event} operator_urgency does not match its contract"
+        )
+    operator_action = event_contract.get("operator_action")
+    if not isinstance(operator_action, str):
+        raise RuntimeError(f"operator notification {event} operator_action must be a string")
+    operator_actions = {operator_action}
+    actions_by_component = event_contract.get("operator_action_by_component")
+    if isinstance(actions_by_component, Mapping):
+        if not all(isinstance(action, str) for action in actions_by_component.values()):
+            raise RuntimeError(
+                f"operator notification {event} component actions must be strings"
+            )
+        operator_actions.update(actions_by_component.values())
+    if payload.get("operator_action") not in operator_actions:
+        raise ValueError(
+            f"operator notification {event} operator_action does not match its contract"
+        )
+
+    if "type_values" in event_contract:
+        type_values = _contract_strings(
+            event_contract.get("type_values"),
+            label=f"events.{event}.type_values",
+        )
+        if payload.get("type") not in type_values:
+            raise ValueError(f"operator notification {event} has invalid type")
+    return payload
 
 
 def _canonical_notification_from_contract(
     *,
     event: str,
     subject: str,
-    notification_type: str | None = None,
     values: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
-    template = _notification_template(event=event, notification_type=notification_type)
-    actor = str(template.get("actor", _FALLBACK_NOTIFICATION_TEMPLATE["actor"]))
+    template = _notification_template(event=event)
+    actor = str(template["actor"])
     emoji = _notification_emoji(actor)
-    title_limit = _notification_int("title_max_chars", default=48)
-    subject_limit = _notification_int("subject_max_chars", default=40)
-    body_limit = _notification_int("body_max_chars", default=150)
+    title_limit = _notification_int("title_max_chars")
+    subject_limit = _notification_int("subject_max_chars")
+    body_limit = _notification_int("body_max_chars")
     normalized_subject = _normalize_space(subject)
     render_values = {
         "emoji": emoji,
@@ -384,11 +483,11 @@ def _canonical_notification_from_contract(
             render_values[f"{key}_80"] = _truncate(text, 80)
             render_values[f"{key}_120"] = _truncate(text, 120)
     title = _render_template(
-        str(template.get("title_template", _FALLBACK_NOTIFICATION_TEMPLATE["title_template"])),
+        str(template["title_template"]),
         render_values,
     ).strip()
     body = _render_template(
-        str(template.get("body_template", _FALLBACK_NOTIFICATION_TEMPLATE["body_template"])),
+        str(template["body_template"]),
         render_values,
     )
     return {
@@ -397,24 +496,27 @@ def _canonical_notification_from_contract(
     }
 
 
-def _notification_template(*, event: str, notification_type: str | None) -> Mapping[str, Any]:
-    event_contract = _operator_notification_events().get(event, {})
-    type_templates = event_contract.get("canonical_notification_by_type")
-    if notification_type and isinstance(type_templates, dict):
-        template = type_templates.get(notification_type)
-        if isinstance(template, dict):
-            return template
+def _notification_template(*, event: str) -> Mapping[str, Any]:
+    event_contract = _operator_notification_events().get(event)
+    if event_contract is None:
+        raise ValueError(f"unsupported operator notification event: {event!r}")
     template = event_contract.get("canonical_notification")
-    if isinstance(template, dict):
-        return template
-    return _FALLBACK_NOTIFICATION_TEMPLATE
+    if not isinstance(template, dict):
+        raise RuntimeError(f"operator notification {event} template is missing")
+    for field in ("actor", "title_template", "body_template"):
+        if not isinstance(template.get(field), str):
+            raise RuntimeError(f"operator notification {event} template.{field} must be a string")
+    return template
 
 
-def _operator_event_field(*, event: str, field: str, default: str = "") -> str:
-    value = _operator_notification_events().get(event, {}).get(field)
+def _operator_event_field(*, event: str, field: str) -> str:
+    event_contract = _operator_notification_events().get(event)
+    if event_contract is None:
+        raise ValueError(f"unsupported operator notification event: {event!r}")
+    value = event_contract.get(field)
     if isinstance(value, str):
         return value
-    return default
+    raise RuntimeError(f"operator notification {event} {field} must be a string")
 
 
 def _notification_emoji(actor: str) -> str:
@@ -422,23 +524,20 @@ def _notification_emoji(actor: str) -> str:
     actors = rendering.get("actors") if isinstance(rendering, dict) else None
     if isinstance(actors, dict) and isinstance(actors.get(actor), str):
         return str(actors[actor])
-    return {"riverhog": "🐷"}.get(actor, actor)
+    raise RuntimeError(f"operator notification actor is not configured: {actor}")
 
 
-def _notification_int(key: str, *, default: int) -> int:
+def _notification_int(key: str) -> int:
     rendering = _operator_notification_contract().get("receiver_rendering", {})
     if isinstance(rendering, dict):
         value = rendering.get(key)
         if isinstance(value, int) and value > 0:
             return value
-    return default
+    raise RuntimeError(f"operator notification receiver_rendering.{key} must be positive")
 
 
 def _render_template(template: str, values: Mapping[str, str]) -> str:
-    try:
-        return template.format(**values)
-    except (KeyError, ValueError):
-        return template
+    return template.format(**values)
 
 
 def _normalize_space(value: str) -> str:
@@ -514,31 +613,14 @@ def _jeb_issue_subject(context: Mapping[str, object]) -> str:
     return "Jeb issue"
 
 
-def _munchy_operator_urgency(*, event: str, severity: str) -> str:
-    if event == "job.issue":
-        if severity in {"critical", "error", "warning"}:
-            return "time_sensitive"
-    return _operator_event_field(event=event, field="operator_urgency", default="passive")
-
-
-def _munchy_operator_action(*, event: str, severity: str) -> str:
-    return _operator_event_field(event=event, field="operator_action")
-
-
-def _jeb_operator_urgency(*, event: str, severity: str) -> str:
-    if event == "jeb.issue":
-        if severity in {"critical", "error", "warning"}:
-            return "time_sensitive"
-    return _operator_event_field(event=event, field="operator_urgency", default="passive")
-
-
-def _jeb_operator_action(*, event: str, severity: str, component: str = "") -> str:
-    if event == "jeb.issue" and component == "routing":
-        return "fix Munchy routing, then run Jeb archive-now for the account"
-    if event == "jeb.issue" and component == "munchy_preflight":
-        return "repair Munchy routing preflight, then run Jeb archive-now for the account"
-    if event == "jeb.issue" and severity in {"critical", "error", "warning"}:
-        return "inspect Jeb issue details"
+def _jeb_operator_action(*, event: str, component: str = "") -> str:
+    actions_by_component = _operator_notification_events().get(event, {}).get(
+        "operator_action_by_component"
+    )
+    if isinstance(actions_by_component, Mapping) and isinstance(
+        actions_by_component.get(component), str
+    ):
+        return str(actions_by_component[component])
     return _operator_event_field(event=event, field="operator_action")
 
 
@@ -599,7 +681,6 @@ def _archive_restore_notification(
     return _canonical_notification_from_contract(
         event=event,
         subject=subject,
-        notification_type="archive_restore",
         values=values,
     )
 
@@ -631,7 +712,7 @@ def build_collection_lifecycle_payload(
         payload["upload_url"] = collection_upload_url(config.base_url, collection_id)
     if details:
         payload.update(details)
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_munchy_job_payload(
@@ -662,8 +743,8 @@ def build_munchy_job_payload(
         "source": "munchy",
         "actor": "munchy",
         "delivered_at": isoformat_z(delivered_at),
-        "operator_urgency": _munchy_operator_urgency(event=event, severity=severity),
-        "operator_action": _munchy_operator_action(event=event, severity=severity),
+        "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
+        "operator_action": _operator_event_field(event=event, field="operator_action"),
         "severity": severity,
         "message": message,
         "job_id": str(job.get("job_id") or ""),
@@ -681,7 +762,7 @@ def build_munchy_job_payload(
         payload["recipient"] = recipient
     if details:
         payload.update(details)
-    return payload
+    return validate_operator_payload(payload)
 
 
 def build_jeb_event_payload(
@@ -712,10 +793,9 @@ def build_jeb_event_payload(
         "source": "jeb",
         "actor": "jeb",
         "delivered_at": isoformat_z(delivered_at),
-        "operator_urgency": _jeb_operator_urgency(event=event, severity=severity),
+        "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
         "operator_action": _jeb_operator_action(
             event=event,
-            severity=severity,
             component=component,
         ),
         "severity": severity,
@@ -741,7 +821,7 @@ def build_jeb_event_payload(
         payload.update(details)
         payload["message"] = notification_summary
         payload["detailed_message"] = message
-    return payload
+    return validate_operator_payload(payload)
 
 
 def post_webhook(*, config: WebhookConfig, payload: dict[str, object]) -> None:
