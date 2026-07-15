@@ -14,10 +14,22 @@ from riverhog_core.catalog_models import (
     FetchSelectorRecord,
 )
 from riverhog_core.domain.enums import ArchiveState, FetchState
-from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
+from riverhog_core.domain.errors import (
+    BadRequest,
+    Conflict,
+    InvalidState,
+    NotFound,
+    ServiceUnavailable,
+)
 from riverhog_core.domain.models import FetchListPage, FetchSummary
 from riverhog_core.domain.selectors import parse_target
 from riverhog_core.domain.types import FetchId, TargetStr
+from riverhog_core.ports.archive_store import (
+    ArchiveObjectIdentity,
+    ArchivePackageVerificationError,
+    ArchiveStore,
+    CollectionArchivePackageIdentity,
+)
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import require_collection_not_deleting
@@ -28,7 +40,13 @@ _FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
 
 
 class SqlAlchemyFetchService:
-    def __init__(self, config: RuntimeConfig, hot_store: HotStore) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        archive_store: ArchiveStore,
+        hot_store: HotStore,
+    ) -> None:
+        self._archive_store = archive_store
         self._hot_store = hot_store
         self._session_factory = make_session_factory(config.database_url)
 
@@ -180,17 +198,15 @@ class SqlAlchemyFetchService:
             selected = [selected_by_key[key] for key in sorted(selected_by_key)]
             if not selected:
                 raise NotFound("target selectors matched no files")
-            unsafe = [
-                record
-                for record in selected
-                if not _collection_archive_is_verified(session, record.collection_id)
-            ]
-            if unsafe:
-                first = unsafe[0]
-                raise Conflict(
-                    "cannot evict hot file before its collection archive is verified: "
-                    f"{first.collection_id}/{first.path}"
-                )
+            packages: dict[str, CollectionArchivePackageIdentity] = {}
+            for collection_id in sorted({record.collection_id for record in selected}):
+                package = _collection_archive_package_identity(session, collection_id)
+                if package is None:
+                    raise Conflict(
+                        "cannot evict hot files before their collection archive upload "
+                        f"is complete: {collection_id}"
+                    )
+                packages[collection_id] = package
             would_evict = [record for record in selected if record.hot]
             if dry_run:
                 return _eviction_payload(
@@ -199,6 +215,22 @@ class SqlAlchemyFetchService:
                     affected=would_evict,
                     dry_run=True,
                 )
+            for collection_id, package in packages.items():
+                try:
+                    self._archive_store.verify_collection_archive_package(
+                        collection_id=collection_id,
+                        package=package,
+                    )
+                except ArchivePackageVerificationError as exc:
+                    raise Conflict(
+                        "cannot evict hot files because the remote collection archive "
+                        f"does not match its upload record: {collection_id}"
+                    ) from exc
+                except Exception as exc:
+                    raise ServiceUnavailable(
+                        "cannot confirm the remote collection archive before hot eviction: "
+                        f"{collection_id}"
+                    ) from exc
             affected: list[CollectionFileRecord] = []
             for record in would_evict:
                 try:
@@ -309,14 +341,42 @@ def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
     return fetch
 
 
-def _collection_archive_is_verified(session: Session, collection_id: str) -> bool:
+def _collection_archive_package_identity(
+    session: Session,
+    collection_id: str,
+) -> CollectionArchivePackageIdentity | None:
     archive = session.get(CollectionArchiveRecord, collection_id)
-    return bool(
-        archive is not None
-        and archive.state == ArchiveState.UPLOADED.value
-        and archive.object_path
-        and archive.sha256
-        and archive.last_verified_at
+    if (
+        archive is None
+        or archive.state != ArchiveState.UPLOADED.value
+        or not archive.object_path
+        or archive.stored_bytes is None
+        or not archive.sha256
+        or not archive.manifest_object_path
+        or archive.manifest_stored_bytes is None
+        or not archive.manifest_sha256
+        or not archive.ots_object_path
+        or archive.ots_stored_bytes is None
+        or not archive.ots_sha256
+        or not archive.last_verified_at
+    ):
+        return None
+    return CollectionArchivePackageIdentity(
+        archive=ArchiveObjectIdentity(
+            object_path=archive.object_path,
+            stored_bytes=archive.stored_bytes,
+            sha256=archive.sha256,
+        ),
+        manifest=ArchiveObjectIdentity(
+            object_path=archive.manifest_object_path,
+            stored_bytes=archive.manifest_stored_bytes,
+            sha256=archive.manifest_sha256,
+        ),
+        proof=ArchiveObjectIdentity(
+            object_path=archive.ots_object_path,
+            stored_bytes=archive.ots_stored_bytes,
+            sha256=archive.ots_sha256,
+        ),
     )
 
 

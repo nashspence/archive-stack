@@ -30,6 +30,24 @@ class CollectionArchiveUploadReceipt:
 
 
 @dataclass(frozen=True)
+class ArchiveObjectIdentity:
+    object_path: str
+    stored_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class CollectionArchivePackageIdentity:
+    archive: ArchiveObjectIdentity
+    manifest: ArchiveObjectIdentity
+    proof: ArchiveObjectIdentity
+
+
+class ArchivePackageVerificationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
 class ArchiveMultipartUploadedPart:
     part_number: int
     etag: str
@@ -102,6 +120,13 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt: ...
+
+    def verify_collection_archive_package(
+        self,
+        *,
+        collection_id: str,
+        package: CollectionArchivePackageIdentity,
+    ) -> None: ...
 
     def delete_collection_archive_package(
         self,

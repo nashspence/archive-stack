@@ -20,6 +20,10 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
+    ArchiveObjectIdentity,
+    ArchivePackageVerificationError,
+    CollectionArchivePackageIdentity,
+    CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_archive_store import (
@@ -64,6 +68,7 @@ class _FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
+        self.head_object_keys: list[str] = []
         self.put_object_keys: list[str] = []
         self.uploaded_part_sizes: list[int] = []
         self.aborted_uploads: list[str] = []
@@ -75,6 +80,7 @@ class _FakeS3Client:
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         _ = Bucket
+        self.head_object_keys.append(Key)
         try:
             return {key: value for key, value in self.objects[Key].items() if key != "Body"}
         except KeyError as exc:
@@ -318,6 +324,28 @@ def _store_with_client(
     return S3ArchiveStore(_config(tmp_path, **config_overrides))
 
 
+def _package_identity(
+    receipt: CollectionArchiveUploadReceipt,
+) -> CollectionArchivePackageIdentity:
+    return CollectionArchivePackageIdentity(
+        archive=ArchiveObjectIdentity(
+            object_path=receipt.archive.object_path,
+            stored_bytes=receipt.archive.stored_bytes,
+            sha256=receipt.archive_sha256,
+        ),
+        manifest=ArchiveObjectIdentity(
+            object_path=receipt.manifest.object_path,
+            stored_bytes=receipt.manifest.stored_bytes,
+            sha256=receipt.manifest_sha256,
+        ),
+        proof=ArchiveObjectIdentity(
+            object_path=receipt.proof.object_path,
+            stored_bytes=receipt.proof.stored_bytes,
+            sha256=receipt.proof_sha256,
+        ),
+    )
+
+
 def test_upload_collection_archive_package_uploads_encrypted_manifest_and_proof_objects(
     monkeypatch,
     tmp_path: Path,
@@ -375,6 +403,91 @@ def test_upload_collection_archive_package_uploads_encrypted_manifest_and_proof_
     assert archive_metadata["riverhog-storage-class"] == "DEEP_ARCHIVE"
     assert manifest_head["Metadata"]["riverhog-storage-class"] == "STANDARD"
     assert proof_head["Metadata"]["riverhog-storage-class"] == "STANDARD"
+
+
+def test_verify_collection_archive_package_checks_each_remote_object(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_backend="aws",
+        archive_endpoint_url="https://s3.us-west-2.amazonaws.com",
+        archive_storage_class="DEEP_ARCHIVE",
+        archive_work_factor=12,
+    )
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=_package(),
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
+    client.head_object_keys.clear()
+
+    store.verify_collection_archive_package(
+        collection_id="docs",
+        package=_package_identity(receipt),
+    )
+
+    assert client.head_object_keys == [
+        receipt.archive.object_path,
+        receipt.manifest.object_path,
+        receipt.proof.object_path,
+    ]
+
+
+def test_verify_collection_archive_package_rejects_changed_checksum(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_work_factor=12,
+    )
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=_package(),
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
+    client.objects[receipt.manifest.object_path]["Metadata"][COLLECTION_SHA256_METADATA] = (
+        "0" * 64
+    )
+
+    with pytest.raises(ArchivePackageVerificationError, match="manifest object does not match"):
+        store.verify_collection_archive_package(
+            collection_id="docs",
+            package=_package_identity(receipt),
+        )
+
+
+def test_verify_collection_archive_package_requires_recovery_proof(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_work_factor=12,
+    )
+    receipt = store.upload_collection_archive_package(
+        collection_id="docs",
+        package=_package(),
+        archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
+    )
+    client.objects.pop(receipt.proof.object_path)
+
+    with pytest.raises(ArchivePackageVerificationError, match="manifest-proof object is missing"):
+        store.verify_collection_archive_package(
+            collection_id="docs",
+            package=_package_identity(receipt),
+        )
 
 
 def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_plaintext(

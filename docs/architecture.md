@@ -25,8 +25,9 @@ archive root without exposing collection identity.
 A target selector names one logical file or a projected directory prefix. A fetch records
 an intended selector set. Missing selected files cause Riverhog to retrieve their
 collection archives, verify encrypted and logical bytes, and publish only the requested
-files into hot storage. Eviction removes hot materialization only after verified archive
-coverage is established.
+files into hot storage. Eviction deletes files from hot storage. Before doing so, Riverhog
+confirms that each affected collection's encrypted archive is still present in remote
+storage and matches its recorded checksum.
 
 ## Component boundaries
 

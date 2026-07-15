@@ -176,7 +176,11 @@ def _services(
             cast(Any, hot_store),
             cast(Any, FakeUploadStore()),
         ),
-        SqlAlchemyFetchService(config, cast(Any, hot_store)),
+        SqlAlchemyFetchService(
+            config,
+            cast(Any, archive_store),
+            cast(Any, hot_store),
+        ),
         SqlAlchemyArchiveRestoreService(
             config,
             cast(Any, archive_store),

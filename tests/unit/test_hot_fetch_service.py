@@ -15,6 +15,10 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.domain.errors import Conflict
+from riverhog_core.ports.archive_store import (
+    ArchivePackageVerificationError,
+    CollectionArchivePackageIdentity,
+)
 from riverhog_core.ports.hot_store import HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.fetches import SqlAlchemyFetchService
@@ -78,6 +82,22 @@ class FakeHotStore:
         ]
 
 
+class FakeArchiveStore:
+    def __init__(self) -> None:
+        self.checks: list[tuple[str, CollectionArchivePackageIdentity]] = []
+        self.failure: Exception | None = None
+
+    def verify_collection_archive_package(
+        self,
+        *,
+        collection_id: str,
+        package: CollectionArchivePackageIdentity,
+    ) -> None:
+        self.checks.append((collection_id, package))
+        if self.failure is not None:
+            raise self.failure
+
+
 def _seed(path: Path, hot_store: FakeHotStore, *, archived: bool = True) -> None:
     contents = {"a.txt": b"alpha", "b.txt": b"bravo"}
     factory = make_session_factory(sqlite_url(path))
@@ -100,14 +120,29 @@ def _seed(path: Path, hot_store: FakeHotStore, *, archived: bool = True) -> None
                     collection_id="docs",
                     state="uploaded",
                     object_path="collections/docs/archive.tar.age",
+                    stored_bytes=100,
                     sha256="a" * 64,
+                    manifest_object_path="collections/docs/manifest.yml.age",
+                    manifest_stored_bytes=20,
+                    manifest_sha256="b" * 64,
+                    ots_object_path="collections/docs/manifest.yml.ots.age",
+                    ots_stored_bytes=10,
+                    ots_sha256="c" * 64,
                     last_verified_at="2026-07-14T00:00:00Z",
                 )
             )
 
 
-def _service(path: Path, hot_store: FakeHotStore) -> SqlAlchemyFetchService:
-    return SqlAlchemyFetchService(RuntimeConfig(database_url=sqlite_url(path)), hot_store)
+def _service(
+    path: Path,
+    hot_store: FakeHotStore,
+    archive_store: FakeArchiveStore | None = None,
+) -> SqlAlchemyFetchService:
+    return SqlAlchemyFetchService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        archive_store or FakeArchiveStore(),
+        hot_store,
+    )
 
 
 def test_fetch_start_reports_hot_selection(tmp_path: Path) -> None:
@@ -166,13 +201,13 @@ def test_fetch_start_refuses_collection_with_active_deletion(tmp_path: Path) -> 
         service.start(str(fetch.id))
 
 
-def test_hot_eviction_requires_verified_collection_archive(tmp_path: Path) -> None:
+def test_hot_eviction_requires_complete_collection_archive_upload(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     hot_store = FakeHotStore()
     _seed(path, hot_store, archived=False)
 
-    with pytest.raises(Conflict, match="collection archive is verified"):
+    with pytest.raises(Conflict, match="archive upload is complete"):
         _service(path, hot_store).evict(["docs/a.txt"])
 
 
@@ -180,13 +215,48 @@ def test_hot_eviction_updates_store_and_catalog(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     hot_store = FakeHotStore()
+    archive_store = FakeArchiveStore()
     _seed(path, hot_store)
 
-    payload = _service(path, hot_store).evict(["docs/a.txt"])
+    payload = _service(path, hot_store, archive_store).evict(["docs/a.txt"])
 
     assert payload["evicted_files"] == 1
+    assert archive_store.checks[0][0] == "docs"
+    assert archive_store.checks[0][1].archive.sha256 == "a" * 64
+    assert archive_store.checks[0][1].manifest.sha256 == "b" * 64
+    assert archive_store.checks[0][1].proof.sha256 == "c" * 64
     assert hot_store.deleted[-1] == ("docs", "a.txt")
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         row = session.get(CollectionFileRecord, {"collection_id": "docs", "path": "a.txt"})
         assert row is not None and row.hot is False
+
+
+def test_hot_eviction_dry_run_only_previews_selected_files(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    archive_store = FakeArchiveStore()
+    _seed(path, hot_store)
+
+    payload = _service(path, hot_store, archive_store).evict(["docs/"], dry_run=True)
+
+    assert payload["status"] == "would_evict"
+    assert payload["would_evict_files"] == 2
+    assert archive_store.checks == []
+    assert set(hot_store.files) == {("docs", "a.txt"), ("docs", "b.txt")}
+
+
+def test_hot_eviction_keeps_hot_files_when_remote_archive_check_fails(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    archive_store = FakeArchiveStore()
+    archive_store.failure = ArchivePackageVerificationError("manifest checksum changed")
+    _seed(path, hot_store)
+
+    with pytest.raises(Conflict, match="does not match its upload record"):
+        _service(path, hot_store, archive_store).evict(["docs/"])
+
+    assert set(hot_store.files) == {("docs", "a.txt"), ("docs", "b.txt")}
+    assert hot_store.deleted == []

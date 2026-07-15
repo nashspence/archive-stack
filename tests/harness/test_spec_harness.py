@@ -155,7 +155,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
             hot_store,
             proof_verifier=FixtureProofVerifier(),
         ),
-        fetches=SqlAlchemyFetchService(config, hot_store),
+        fetches=SqlAlchemyFetchService(config, cast(ArchiveStore, unused), hot_store),
         files=SqlAlchemyFileService(config, hot_store),
     )
     app = create_app(

@@ -78,7 +78,7 @@ def default_container() -> ServiceContainer:
             hot_store,
             proof_verifier=proof_verifier,
         ),
-        fetches=SqlAlchemyFetchService(config, hot_store),
+        fetches=SqlAlchemyFetchService(config, archive_store, hot_store),
         files=SqlAlchemyFileService(config, hot_store),
     )
 

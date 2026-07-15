@@ -28,8 +28,11 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
+    ArchiveObjectIdentity,
+    ArchivePackageVerificationError,
     ArchiveRestoreStatus,
     ArchiveUploadReceipt,
+    CollectionArchivePackageIdentity,
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
@@ -345,6 +348,46 @@ class S3ArchiveStore:
             archive_format=package.archive_format,
             compression=package.compression,
         )
+
+    def verify_collection_archive_package(
+        self,
+        *,
+        collection_id: str,
+        package: CollectionArchivePackageIdentity,
+    ) -> None:
+        _ = collection_id
+        checks = (
+            (
+                "archive",
+                package.archive,
+                _configured_s3_storage_class(self._config.archive_storage_class),
+            ),
+            ("manifest", package.manifest, "STANDARD"),
+            ("manifest-proof", package.proof, "STANDARD"),
+        )
+        for kind, expected, storage_class in checks:
+            head = self._head_object(object_key=expected.object_path)
+            if head is None:
+                raise ArchivePackageVerificationError(
+                    f"remote collection {kind} object is missing"
+                )
+            try:
+                _verify_remote_collection_object(
+                    object_key=expected.object_path,
+                    head=head,
+                    kind=kind,
+                    expected=expected,
+                )
+                if self._is_aws_restore_backend():
+                    _validate_aws_storage_class(
+                        object_key=expected.object_path,
+                        head=head,
+                        expected_storage_class=storage_class,
+                    )
+            except RuntimeError as exc:
+                raise ArchivePackageVerificationError(
+                    f"remote collection {kind} object does not match its upload record"
+                ) from exc
 
     def delete_collection_archive_package(
         self,
@@ -1591,6 +1634,33 @@ def _validate_uploaded_collection_metadata(
         raise RuntimeError(
             f"Archive object sha256 does not match collection package member: {object_key}"
         )
+
+
+def _verify_remote_collection_object(
+    *,
+    object_key: str,
+    head: dict[str, Any],
+    kind: str,
+    expected: ArchiveObjectIdentity,
+) -> None:
+    try:
+        stored_bytes = int(head["ContentLength"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"Archive object has invalid stored byte count: {object_key}") from exc
+    if stored_bytes != expected.stored_bytes:
+        raise RuntimeError(f"Archive object stored byte count changed: {object_key}")
+    _validate_uploaded_collection_metadata(
+        object_key=object_key,
+        head=head,
+        expected_sha256=expected.sha256,
+    )
+    metadata = _head_metadata(head)
+    if metadata.get(PLAINTEXT_SHA256_METADATA) != expected.sha256:
+        raise RuntimeError(f"Archive object plaintext sha256 changed: {object_key}")
+    if metadata.get(ENCRYPTION_METADATA) != AGE_SCRYPT_ENCRYPTION:
+        raise RuntimeError(f"Archive object encryption metadata changed: {object_key}")
+    if metadata.get("riverhog-object-kind") != f"collection-{kind}":
+        raise RuntimeError(f"Archive object kind metadata changed: {object_key}")
 
 
 def _format_s3_timestamp(value: object, *, fallback: str) -> str:
