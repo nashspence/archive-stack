@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from datetime import UTC, datetime
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 from fastapi import Request
 
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.timestamps import parse_utc_timestamp
 
 
 def public_request_url(request: Request) -> str:
@@ -27,13 +27,10 @@ def public_request_url(request: Request) -> str:
 def _upload_expires_epoch(expires_at: str | None) -> int | None:
     if expires_at is None:
         return None
-    normalized = expires_at.replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = parse_utc_timestamp(expires_at)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp())
 
 

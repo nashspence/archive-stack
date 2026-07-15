@@ -8,7 +8,6 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, cast
 
@@ -41,6 +40,7 @@ from riverhog_core.fs_paths import (
     normalize_upload_slug,
     normalize_upload_timestamp,
 )
+from riverhog_core.timestamps import utc_timestamp_now
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
@@ -448,7 +448,7 @@ def _collection_upload_dry_run_plan(
         "archive_store": archive_store,
         "retain_hot": retain_hot,
         "server_validation": "not_run",
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": utc_timestamp_now(),
         "files_preview": manifest[:5],
     }
 

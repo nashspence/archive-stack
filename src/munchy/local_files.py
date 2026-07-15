@@ -5,11 +5,11 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from munchy.filesystem_metadata import collect_filesystem_metadata
+from riverhog_core.timestamps import utc_timestamp_now
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 SQLITE_CACHE_TIMEOUT_SECONDS = 60.0
@@ -111,7 +111,7 @@ class FileHashCache:
                 INSERT OR REPLACE INTO file_hashes (path, size, mtime_ns, sha256, updated_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (str(path), size, mtime_ns, sha256, datetime.now(UTC).isoformat()),
+                (str(path), size, mtime_ns, sha256, utc_timestamp_now()),
             )
             self.conn.execute(
                 "DELETE FROM file_hashes WHERE path = ? AND NOT (size = ? AND mtime_ns = ?)",

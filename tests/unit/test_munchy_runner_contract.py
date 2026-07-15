@@ -4639,7 +4639,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": runner.now_iso(),
+            "created_at": runner.utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
@@ -4713,7 +4713,7 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": runner.now_iso(),
+            "created_at": runner.utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
@@ -4813,7 +4813,7 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": runner.now_iso(),
+            "created_at": runner.utc_timestamp_now(),
             "files": [
                 {
                     "path": rel_path,
@@ -4874,7 +4874,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": runner.now_iso(),
+            "created_at": runner.utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "groups": {
@@ -6299,9 +6299,7 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
                 "bytes": 1234,
                 "hot_files": 0,
                 "hot_bytes": 0,
-                    "archive_copies": [
-                        {"store": "deep", "state": "uploaded", "stored_bytes": 567}
-                    ],
+                "archive_copies": [{"store": "deep", "state": "uploaded", "stored_bytes": 567}],
             }
 
     payload = runner.sync_riverhog_session_from_remote(job, FakeApi())  # type: ignore[arg-type]
@@ -6389,7 +6387,7 @@ def test_riverhog_upload_progress_prefers_recent_burst_rate(
         "riverhog_session_upload": {
             "state": "open",
             "collection_id": "2026/20260101T000000Z__camera-archive",
-            "last_eager_upload_at": runner.now_iso(),
+            "last_eager_upload_at": runner.utc_timestamp_now(),
             "last_eager_upload_bytes": 2048,
             "last_eager_upload_elapsed_seconds": 2.0,
             "files": {
@@ -6417,7 +6415,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     runner.ensure_dirs()
     runner.init_state_store()
     monkeypatch.setattr(runner, "RIVERHOG_UPLOAD_ENABLED", True)
-    monkeypatch.setattr(runner, "now_iso", lambda: "2026-01-01T00:00:03Z")
+    monkeypatch.setattr(runner, "utc_timestamp_now", lambda: "2026-01-01T00:00:03Z")
     monkeypatch.setattr(
         runner,
         "upload_riverhog_artifacts",
@@ -7568,7 +7566,7 @@ def test_job_response_includes_eager_encode_progress(
     assert progress["active_output_bytes"] == 6
     assert progress["running_batches"] == 1
     assert progress["pipeline_batches"] == 1
-    assert progress["started_at"] == "2026-06-04T00:00:00Z"
+    assert progress["started_at"] == "2026-06-04T00:00:00.000000Z"
 
 
 def test_eager_encode_progress_ignores_sidecar_evidence_files(

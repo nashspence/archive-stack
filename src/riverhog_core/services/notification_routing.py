@@ -6,7 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 
 from riverhog_core.domain.errors import BadRequest
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.webhooks import WebhookConfig, build_collection_lifecycle_payload, utcnow
+from riverhog_core.timestamps import utc_now
+from riverhog_core.webhooks import WebhookConfig, build_collection_lifecycle_payload
 
 PostWebhook = Callable[..., None]
 _NOTIFY_RECIPIENT_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
@@ -156,7 +157,7 @@ def _post_collection_webhook_payload(
             config=webhook_config,
             event=event,
             collection_id=collection_id,
-            delivered_at=utcnow(),
+            delivered_at=utc_now(),
             details=details,
         )
         if recipient:

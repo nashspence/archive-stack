@@ -52,7 +52,8 @@ from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
     post_collection_operator_webhook,
 )
-from riverhog_core.webhooks import post_webhook, utcnow
+from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
+from riverhog_core.webhooks import post_webhook
 
 _LOG = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class SqlAlchemyArchiveUploadService:
         if limit < 1 or self._upload_store is None:
             return 0
 
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         requeued = 0
         with session_scope(self._session_factory) as session:
             file_stats = (
@@ -145,8 +146,8 @@ class SqlAlchemyArchiveUploadService:
         if limit < 1:
             return 0
 
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         with session_scope(self._session_factory) as session:
             collection_ids: list[str] = []
             if self._upload_store is not None:
@@ -199,8 +200,8 @@ class SqlAlchemyArchiveUploadService:
         if self._upload_store is None:
             return
         upload_store = self._upload_store
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         receipt: CollectionArchiveUploadReceipt | None = None
         manifest_bytes: bytes | None = None
         proof_bytes: bytes | None = None
@@ -343,7 +344,7 @@ class SqlAlchemyArchiveUploadService:
                     self._record_archive_phase(
                         collection_id=collection_id,
                         phase="uploading",
-                        updated_at=_isoformat_z(utcnow()),
+                        updated_at=format_utc_timestamp(utc_now()),
                     )
                     _LOG.info(
                         "uploading collection archive package for %s: archive_bytes=%s",
@@ -532,7 +533,7 @@ class SqlAlchemyArchiveUploadService:
         self._record_archive_phase(
             collection_id=collection_id,
             phase="materializing_hot",
-            updated_at=_isoformat_z(utcnow()),
+            updated_at=format_utc_timestamp(utc_now()),
         )
         max_workers = min(self._config.hot_materialization_concurrency, len(remaining))
         _LOG.info(
@@ -648,7 +649,7 @@ class SqlAlchemyArchiveUploadService:
             file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
             if upload is None or file_record is None:
                 return
-            current_text = _isoformat_z(utcnow())
+            current_text = format_utc_timestamp(utc_now())
             file_record.hot_materialized_at = current_text
             upload.archive_phase = "materializing_hot"
             upload.archive_phase_updated_at = current_text
@@ -666,7 +667,7 @@ class SqlAlchemyArchiveUploadService:
             if upload is None:
                 return
             upload.archive_phase = "finalizing"
-            upload.archive_phase_updated_at = _isoformat_z(utcnow())
+            upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
             session.flush()
             if upload.retain_hot:
                 unmaterialized = [
@@ -722,7 +723,7 @@ class SqlAlchemyArchiveUploadService:
         manifest_bytes: bytes,
         proof_bytes: bytes,
     ) -> None:
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None:
@@ -767,7 +768,7 @@ class SqlAlchemyArchiveUploadService:
         manifest_bytes: bytes,
         proof_bytes: bytes,
     ) -> None:
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None:
@@ -817,12 +818,14 @@ class SqlAlchemyArchiveUploadService:
         error: str,
         retryable: bool,
     ) -> None:
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         notify_operator = False
         attempt_count = 0
         next_retry_at = (
-            _isoformat_z(current + self._config.archive_upload_retry_delay) if retryable else None
+            format_utc_timestamp(current + self._config.archive_upload_retry_delay)
+            if retryable
+            else None
         )
 
         with session_scope(self._session_factory) as session:
@@ -1001,7 +1004,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
                 (state.content_length + state.part_size - 1) // state.part_size,
             )
             upload.archive_phase = "uploading"
-            upload.archive_phase_updated_at = _isoformat_z(utcnow())
+            upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
 
     def record_multipart_upload_progress(
         self,
@@ -1029,7 +1032,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
             upload.archive_multipart_uploaded_parts = uploaded_parts
             upload.archive_multipart_total_parts = total_parts
             upload.archive_phase = "uploading"
-            upload.archive_phase_updated_at = _isoformat_z(utcnow())
+            upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
 
     def clear_multipart_upload(
         self,
@@ -1215,6 +1218,7 @@ def _ensure_archive_storage_prefix(
     upload.archive_storage_prefix = prefix
     return prefix
 
+
 def _archive_receipt_to_json(receipt: CollectionArchiveUploadReceipt) -> str:
     payload = {
         "archive": _archive_upload_receipt_to_payload(receipt.archive),
@@ -1326,7 +1330,7 @@ def _operator_failure_notification_due(
     if last_notified_at is None:
         return True
     try:
-        previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
+        previous = parse_utc_timestamp(last_notified_at)
     except ValueError:
         return True
     return operator_reminder_due(
@@ -1336,7 +1340,3 @@ def _operator_failure_notification_due(
         reminder_time=config.operator_webhook_reminder_time,
         reminder_timezone=config.operator_webhook_reminder_timezone,
     )
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ")

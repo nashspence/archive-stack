@@ -11,7 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb.collector import ATTEMPT_LIST_SORT_FIELDS, Collector, UnrecoverableJebError, iso
+from jeb.collector import (
+    ATTEMPT_LIST_SORT_FIELDS,
+    Collector,
+    UnrecoverableJebError,
+    event_timestamp,
+)
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)
@@ -88,7 +93,7 @@ class JebServiceOperations:
             active_operation = JebServiceOperation(
                 id=operation_id,
                 operation=operation,
-                started_at=iso(),
+                started_at=event_timestamp(),
                 account=account,
                 attempt_id=attempt_id,
                 thread=thread,
@@ -135,7 +140,7 @@ class JebServiceOperations:
             active_operation = JebServiceOperation(
                 id=operation_id,
                 operation=operation,
-                started_at=iso(),
+                started_at=event_timestamp(),
                 account=account,
                 attempt_id=attempt_id,
                 thread=thread,

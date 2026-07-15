@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import case, func, literal, or_, select, union_all
@@ -26,7 +25,7 @@ from riverhog_core.domain.models import (
 )
 from riverhog_core.domain.types import CollectionId
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.webhooks import utcnow
+from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 
 class SqlAlchemyArchiveReportingService:
@@ -34,7 +33,7 @@ class SqlAlchemyArchiveReportingService:
         self._session_factory = make_session_factory(config.database_url)
 
     def get_report(self, *, collection: str | None = None) -> ArchiveUsageReport:
-        measured_at = _isoformat_z(utcnow())
+        measured_at = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             collection_reports = tuple(
                 _collection_usage_reports(session, collection_filter=collection)
@@ -189,8 +188,7 @@ def _archive_usage_totals(
                     func.sum(
                         case(
                             (
-                                CollectionArchiveCopyRecord.state
-                                == ArchiveState.UPLOADED.value,
+                                CollectionArchiveCopyRecord.state == ArchiveState.UPLOADED.value,
                                 1,
                             ),
                             else_=0,
@@ -309,7 +307,7 @@ def _ensure_usage_snapshot(session: Session, *, totals: ArchiveUsageTotals) -> N
         return
     session.add(
         ArchiveUsageSnapshotRecord(
-            captured_at=_isoformat_z(utcnow()),
+            captured_at=format_utc_timestamp(utc_now()),
             uploaded_collections=totals.uploaded_collections,
             measured_storage_bytes=totals.measured_storage_bytes,
         )
@@ -325,7 +323,3 @@ def _snapshot_matches(
         latest.uploaded_collections == totals.uploaded_collections
         and latest.measured_storage_bytes == totals.measured_storage_bytes
     )
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ")

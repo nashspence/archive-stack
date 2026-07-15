@@ -101,8 +101,14 @@ from riverhog_core.operator_reminders import (
     parse_reminder_interval_seconds,
     reminder_zone,
 )
+from riverhog_core.timestamps import (
+    format_utc_timestamp,
+    parse_utc_timestamp,
+    utc_now,
+    utc_timestamp_now,
+)
 from riverhog_core.tus_upload import TusUploadLease, upload_path_to_tus
-from riverhog_core.webhooks import build_munchy_job_payload, utcnow
+from riverhog_core.webhooks import build_munchy_job_payload
 
 LOGGING = {
     "version": 1,
@@ -1344,19 +1350,11 @@ class CreateJobRequest(BaseModel):
         return self
 
 
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def parse_iso(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def safe_parse_iso(value: Any) -> datetime | None:
+def safe_parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return parse_iso(str(value))
+        return parse_utc_timestamp(str(value))
     except ValueError:
         return None
 
@@ -1438,7 +1436,7 @@ def init_state_store() -> None:
 
 def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(payload)
-    payload["updated_at"] = now_iso()
+    payload["updated_at"] = utc_timestamp_now()
     encoded = json.dumps(payload, sort_keys=True)
     with closing(state_db()) as conn:
         conn.execute(
@@ -1797,7 +1795,7 @@ def write_job_debug_bundle(
     if job.get("debug_bundle_dir"):
         return False
     job_id = str(job.get("job_id") or "unknown-job")
-    created_at = now_iso()
+    created_at = utc_timestamp_now()
     bundle_dir = DEBUG_DIR / "jobs" / safe_local_id(job_id) / created_at.replace(":", "")
     bundle_dir.mkdir(parents=True, exist_ok=True)
     error_text = str(error or job.get("error") or "")
@@ -1952,7 +1950,7 @@ def wait_for_free_space(
                 "required_bytes": exc.required_bytes,
                 "free_bytes": exc.free_bytes,
                 "reserved_bytes": exc.reserved_bytes,
-                "last_checked_at": now_iso(),
+                "last_checked_at": utc_timestamp_now(),
                 "retry_after_seconds": STORAGE_WAIT_SECONDS,
             }
             save_job(job)
@@ -1983,7 +1981,7 @@ def scheduling_paused() -> bool:
 def set_scheduling_paused(paused: bool) -> dict[str, Any]:
     payload = scheduler_control()
     payload["paused"] = paused
-    payload["changed_at"] = now_iso()
+    payload["changed_at"] = utc_timestamp_now()
     return write_state("control", "scheduler", payload)
 
 
@@ -2426,7 +2424,7 @@ def input_upload_last_activity(upload: dict[str, Any]) -> datetime:
     timestamps = [
         parsed
         for value in (upload.get("updated_at"), upload.get("created_at"))
-        if (parsed := safe_parse_iso(value)) is not None
+        if (parsed := safe_parse_timestamp(value)) is not None
     ]
     for file_state in upload.get("files", []):
         tus_path = tusd_data_path(str(file_state["file_upload_id"]))
@@ -2444,7 +2442,7 @@ def input_upload_data_last_activity(upload: dict[str, Any]) -> datetime:
     timestamps = [
         parsed
         for value in (upload.get("created_at"),)
-        if (parsed := safe_parse_iso(value)) is not None
+        if (parsed := safe_parse_timestamp(value)) is not None
     ]
     for file_state in upload.get("files", []):
         tus_path = tusd_data_path(str(file_state["file_upload_id"]))
@@ -2474,7 +2472,7 @@ def item_lifecycle_time(item: dict[str, Any]) -> datetime | None:
         "last_submitted_at",
         "started_at",
     ):
-        value = safe_parse_iso(item.get(key))
+        value = safe_parse_timestamp(item.get(key))
         if value is not None:
             values.append(value)
     return max(values) if values else None
@@ -2604,8 +2602,8 @@ def merge_last_eager_upload_metrics(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
 ) -> None:
-    current_at = safe_parse_iso(current_riverhog.get("last_eager_upload_at"))
-    payload_at = safe_parse_iso(payload_riverhog.get("last_eager_upload_at"))
+    current_at = safe_parse_timestamp(current_riverhog.get("last_eager_upload_at"))
+    payload_at = safe_parse_timestamp(payload_riverhog.get("last_eager_upload_at"))
     if current_at is None and payload_at is None:
         return
     source = (
@@ -2627,8 +2625,8 @@ def merge_riverhog_session_upload_state(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
 ) -> dict[str, Any]:
-    current_updated = safe_parse_iso(current_riverhog.get("updated_at"))
-    payload_updated = safe_parse_iso(payload_riverhog.get("updated_at"))
+    current_updated = safe_parse_timestamp(current_riverhog.get("updated_at"))
+    payload_updated = safe_parse_timestamp(payload_riverhog.get("updated_at"))
     if current_updated and (payload_updated is None or current_updated > payload_updated):
         merged = {**payload_riverhog, **current_riverhog}
     else:
@@ -2751,7 +2749,9 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             and payload.get("state") not in TERMINAL_JOB_STATES
         ):
             payload["cancel_requested"] = True
-            payload["cancel_requested_at"] = current.get("cancel_requested_at") or now_iso()
+            payload["cancel_requested_at"] = (
+                current.get("cancel_requested_at") or utc_timestamp_now()
+            )
             if current.get("phase") == "cancel_requested":
                 payload["phase"] = "cancel_requested"
         if (
@@ -2825,18 +2825,15 @@ def normalize_public_tusd_url(location: str) -> str:
 
 
 def tusd_upload_expires_at() -> str:
-    expires_at = datetime.now(UTC) + timedelta(hours=INPUT_UPLOAD_TTL_HOURS)
-    return expires_at.isoformat().replace("+00:00", "Z")
+    expires_at = utc_now() + timedelta(hours=INPUT_UPLOAD_TTL_HOURS)
+    return format_utc_timestamp(expires_at)
 
 
 def upload_expires_epoch(expires_at: str) -> int | None:
-    normalized = expires_at.replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = parse_utc_timestamp(expires_at)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp())
 
 
@@ -3348,7 +3345,7 @@ def write_group_filesystem_metadata(
             continue
         rel_path = upload_file_group_rel_for_state(file_state, group_name).as_posix()
         records[rel_path] = metadata
-    write_filesystem_metadata_map(root / group_name, records, created_at=now_iso())
+    write_filesystem_metadata_map(root / group_name, records, created_at=utc_timestamp_now())
 
 
 def sync_shared_input_tree(
@@ -3462,7 +3459,7 @@ def prepare_shared_input_tree(
         )
     metadata = {
         **shared_input_tree_metadata(upload, group_names),
-        "prepared_at": now_iso(),
+        "prepared_at": utc_timestamp_now(),
     }
     marker = root / ".munchy-input-upload.json"
     part = marker.with_suffix(marker.suffix + ".part")
@@ -3502,7 +3499,7 @@ def store_shared_review_plan(
             "input_upload_id": input_upload_id,
             "group": group_name,
             "task": task_name,
-            "stored_at": now_iso(),
+            "stored_at": utc_timestamp_now(),
         },
     }
     part = path.with_suffix(path.suffix + ".part")
@@ -3860,7 +3857,7 @@ def apply_routing_decision(
     if isinstance(decision.get("matched_facts"), dict):
         file_state["route_matched_facts"] = dict(decision["matched_facts"])
     if action == "leave":
-        file_state["routed_at"] = now_iso()
+        file_state["routed_at"] = utc_timestamp_now()
         return True
     if action == "evidence":
         group = validate_group_name(str(decision.get("group") or ""))
@@ -3871,14 +3868,14 @@ def apply_routing_decision(
         file_state["sidecar_id"] = str(decision.get("sidecar_id") or "")
         file_state["sidecar_format"] = str(decision.get("sidecar_format") or "opaque")
         file_state["sidecar_for"] = str(decision.get("sidecar_for") or "")
-        file_state["routed_at"] = now_iso()
+        file_state["routed_at"] = utc_timestamp_now()
         return True
     group = validate_group_name(str(decision.get("group") or ""))
     file_state["resolved_group"] = group
     file_state["resolved_group_rel"] = str(
         decision.get("collection_rel_path") or file_state["path"]
     )
-    file_state["routed_at"] = now_iso()
+    file_state["routed_at"] = utc_timestamp_now()
     return True
 
 
@@ -4110,7 +4107,7 @@ def route_completed_input_files(
         if isinstance(route_id, str) and route_id:
             route_counts[route_id] = route_counts.get(route_id, 0) + 1
     job["routing_result"] = {
-        "updated_at": now_iso(),
+        "updated_at": utc_timestamp_now(),
         "files": sum(group_counts.values()),
         "left_files": left_count,
         "groups": group_counts,
@@ -4419,7 +4416,7 @@ def write_routing_manifest(
     payload = {
         "schema": "munchy.routing-manifest",
         "schema_version": 1,
-        "created_at": now_iso(),
+        "created_at": utc_timestamp_now(),
         "job_id": str(job.get("job_id") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
         "collection_slug": str(job.get("collection_slug") or ""),
@@ -4808,7 +4805,7 @@ def ensure_file_projection_metadata(
         ),
     )
     file_state["metadata_projection_metadata"] = metadata.as_dict()
-    file_state["metadata_projection_captured_at"] = now_iso()
+    file_state["metadata_projection_captured_at"] = utc_timestamp_now()
     return True
 
 
@@ -5242,7 +5239,7 @@ def write_metadata_projection_sidecars(
                 output_path=output,
             )
             sidecar = immich_xmp_sidecar_path(output)
-            metadata_date = now_iso()
+            metadata_date = utc_timestamp_now()
             xmp_evidence = (
                 xmp_evidence_sidecar_path(upload, file_state)
                 if normalize_output_mode(str(group_config.get("output_mode") or "video"))
@@ -5270,7 +5267,7 @@ def write_metadata_projection_sidecars(
                 file_state["metadata_projection_sidecar"] = sidecar_rel
                 upload_changed = True
     job["metadata_projection_result"] = {
-        "updated_at": now_iso(),
+        "updated_at": utc_timestamp_now(),
         "target": "immich_xmp",
         "sidecars": sum(groups_written.values()),
         "sidecars_written": sidecars_written,
@@ -5395,7 +5392,7 @@ def remove_job_local_work(job: dict[str, Any]) -> list[str]:
             continue
         removed.append(str(root))
     if removed:
-        job["local_work_cleaned_at"] = now_iso()
+        job["local_work_cleaned_at"] = utc_timestamp_now()
         job["local_work_removed"] = removed
     return removed
 
@@ -5508,7 +5505,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     changed = compact_list_field(job, "cleanup_removed") or changed
     changed = compact_list_field(job, "local_work_removed") or changed
     if changed and not job.get("terminal_state_compacted_at"):
-        job["terminal_state_compacted_at"] = now_iso()
+        job["terminal_state_compacted_at"] = utc_timestamp_now()
     return changed
 
 
@@ -5555,13 +5552,13 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
             remove_input_upload_data(upload)
             delete_state("input-upload", upload_id)
             removed.append(f"input-upload:{upload_id}")
-            job["input_upload_deleted_at"] = now_iso()
+            job["input_upload_deleted_at"] = utc_timestamp_now()
     append_cleanup_removed(job, removed)
     if removed and int(job.get("cleanup_removed_count") or 0) < len(removed):
         job["cleanup_removed"] = removed
         job["cleanup_removed_count"] = len(removed)
         job["cleanup_removed_sample"] = removed[:8]
-    job["cleanup_completed_at"] = now_iso()
+    job["cleanup_completed_at"] = utc_timestamp_now()
     return removed
 
 
@@ -5591,7 +5588,7 @@ def snapshot_terminal_progress(job: dict[str, Any]) -> bool:
 
 def mark_job_canceled(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
     snapshot_terminal_progress(job)
-    canceled_at = job.get("canceled_at") or now_iso()
+    canceled_at = job.get("canceled_at") or utc_timestamp_now()
     job["state"] = "canceled"
     job["phase"] = "canceled"
     job["canceled_at"] = canceled_at
@@ -5608,7 +5605,7 @@ def finalize_canceled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]
     try:
         cancel_riverhog_upload_session(job, reason=reason)
     except Exception as exc:
-        job["riverhog_cancel_failed_at"] = now_iso()
+        job["riverhog_cancel_failed_at"] = utc_timestamp_now()
         job["riverhog_cancel_error"] = str(exc)
         log.exception(
             "unexpected failure while cancelling riverhog session for %s", job.get("job_id")
@@ -5619,7 +5616,7 @@ def finalize_canceled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]
         cleanup_canceled_job(job)
         compact_terminal_job_state(job)
     except Exception as exc:
-        job["cleanup_failed_at"] = now_iso()
+        job["cleanup_failed_at"] = utc_timestamp_now()
         job["cleanup_error"] = str(exc)
         log.exception("failed to clean canceled job %s", job.get("job_id"))
     return save_job(job)
@@ -5644,7 +5641,7 @@ def should_cleanup_terminal_local_work(job: dict[str, Any], cutoff: datetime) ->
         return True
     if state not in {"failed", "canceled"}:
         return False
-    finished_at = safe_parse_iso(job.get("finished_at"))
+    finished_at = safe_parse_timestamp(job.get("finished_at"))
     return finished_at is not None and finished_at <= cutoff
 
 
@@ -5710,7 +5707,7 @@ def notify_payload(
             job=job,
             message=message,
             severity=severity,
-            delivered_at=utcnow(),
+            delivered_at=utc_now(),
             recipient=recipient,
             details=extra,
         )
@@ -5782,13 +5779,13 @@ def notify_job_event(
     key = dedupe_key or event
     notifications = job.setdefault("notifications", {})
     event_state = notifications.setdefault(key, {})
-    now = datetime.now(UTC)
-    now_text = now.isoformat().replace("+00:00", "Z")
+    now = utc_now()
+    now_text = format_utc_timestamp(now)
     send_extra = dict(extra or {})
 
     if event == "job.issue":
         last_fingerprint = str(event_state.get("fingerprint") or "")
-        last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
+        last_attempt = safe_parse_timestamp(event_state.get("last_attempt_at"))
         if (
             fingerprint
             and fingerprint == last_fingerprint
@@ -5808,7 +5805,7 @@ def notify_job_event(
         interval = max(0, NOTIFY_REMINDER_INTERVAL_SECONDS)
         if interval <= 0:
             return {"status": "suppressed", "reason": "reminders_disabled"}
-        last_attempt = safe_parse_iso(event_state.get("last_attempt_at"))
+        last_attempt = safe_parse_timestamp(event_state.get("last_attempt_at"))
         if last_attempt is not None and not operator_reminder_due(
             last_sent_at=last_attempt,
             current=now,
@@ -5909,7 +5906,7 @@ def notify_upload_waiting_reminder(
     extra: dict[str, Any] = {
         "input_upload_id": str(upload.get("input_upload_id") or ""),
         "upload_progress": progress,
-        "last_upload_activity_at": last_activity.isoformat().replace("+00:00", "Z"),
+        "last_upload_activity_at": format_utc_timestamp(last_activity),
         "stalled_seconds": int(stalled_seconds),
     }
     encode_progress = encode_progress_for_job(job)
@@ -5962,13 +5959,13 @@ def retry_handoff_until_success(
         attempts = job.setdefault("handoff_attempts", {})
         attempt = int(attempts.get(result_key) or 0) + 1
         attempts[result_key] = attempt
-        attempts[f"{result_key}_last_attempt_at"] = now_iso()
+        attempts[f"{result_key}_last_attempt_at"] = utc_timestamp_now()
         job["phase"] = phase if attempt == 1 else f"{phase}_retrying"
         save_job(job)
         try:
             result = operation()
             result["attempt"] = attempt
-            result["succeeded_at"] = now_iso()
+            result["succeeded_at"] = utc_timestamp_now()
             job[result_key] = result
             job["phase"] = phase
             attempts[f"{result_key}_succeeded_at"] = result["succeeded_at"]
@@ -5979,14 +5976,7 @@ def retry_handoff_until_success(
         except JobCanceled:
             raise
         except Exception as exc:
-            next_retry_at = (
-                (datetime.now(UTC) + timedelta(seconds=delay))
-                .isoformat()
-                .replace(
-                    "+00:00",
-                    "Z",
-                )
-            )
+            next_retry_at = format_utc_timestamp(utc_now() + timedelta(seconds=delay))
             attempts[f"{result_key}_last_error"] = str(exc)
             attempts[f"{result_key}_next_retry_at"] = next_retry_at
             job["phase"] = f"{phase}_retrying"
@@ -6053,7 +6043,7 @@ def release_gpu(token: str) -> bool:
 def acquire_job_gpu(job: dict[str, Any]) -> str:
     token = acquire_gpu(str(job["job_id"]), str(job.get("gpu_lease_token") or ""))
     job["gpu_lease_token"] = token
-    job["gpu_lease_acquired_at"] = now_iso()
+    job["gpu_lease_acquired_at"] = utc_timestamp_now()
     save_job(job)
     return token
 
@@ -6062,7 +6052,7 @@ def release_job_gpu(job: dict[str, Any], token: str) -> None:
     if release_gpu(token):
         if job.get("gpu_lease_token") == token:
             job.pop("gpu_lease_token", None)
-            job["gpu_lease_released_at"] = now_iso()
+            job["gpu_lease_released_at"] = utc_timestamp_now()
             save_job(job)
 
 
@@ -6284,7 +6274,7 @@ def update_riverhog_state_from_payload(
             state["riverhog_state"] = str(payload["state"])
             state["state"] = str(payload["state"])
         state["last_payload"] = compact_riverhog_payload(payload)
-        state["updated_at"] = now_iso()
+        state["updated_at"] = utc_timestamp_now()
 
         files = state.setdefault("files", {})
         if isinstance(files, dict):
@@ -6316,7 +6306,7 @@ def update_riverhog_state_from_payload(
                     and record.get("state") not in {"deleted", "uploaded"}
                 ):
                     record["state"] = "uploaded"
-                    record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+                    record["uploaded_at"] = record.get("uploaded_at") or utc_timestamp_now()
         return state
 
 
@@ -6357,7 +6347,7 @@ def refresh_riverhog_session_from_remote(job: dict[str, Any]) -> None:
 
 def touch_riverhog_session_state(job: dict[str, Any]) -> None:
     with riverhog_upload_lock(str(job.get("job_id") or "")):
-        riverhog_session_state(job)["updated_at"] = now_iso()
+        riverhog_session_state(job)["updated_at"] = utc_timestamp_now()
 
 
 def riverhog_collection_notify_config(job: dict[str, Any]) -> dict[str, Any] | None:
@@ -6403,7 +6393,7 @@ def ensure_riverhog_session(
         )
         update_riverhog_state_from_payload(job, payload)
         state = riverhog_session_state(job)
-        state["opened_at"] = state.get("opened_at") or now_iso()
+        state["opened_at"] = state.get("opened_at") or utc_timestamp_now()
         save_job(job)
         collection_id = str(state.get("collection_id") or "")
         if not collection_id:
@@ -6527,7 +6517,7 @@ def remove_uploaded_riverhog_artifact(
         parent = parent.parent
     with riverhog_upload_lock(str(job.get("job_id") or "")):
         record["state"] = "deleted"
-        record["deleted_at"] = record.get("deleted_at") or now_iso()
+        record["deleted_at"] = record.get("deleted_at") or utc_timestamp_now()
         touch_riverhog_session_state(job)
     log.debug(
         "riverhog upload accepted; removed local artifact job=%s path=%s bytes=%s",
@@ -6583,7 +6573,7 @@ def riverhog_upload_artifact(
         if not isinstance(record, dict):
             record = {"path": rel_path}
             riverhog_session_state(job).setdefault("files", {})[rel_path] = record
-        record["registered_at"] = record.get("registered_at") or now_iso()
+        record["registered_at"] = record.get("registered_at") or utc_timestamp_now()
         record["state"] = "registered"
         touch_riverhog_session_state(job)
     offset = int(session["offset"])
@@ -6597,7 +6587,7 @@ def riverhog_upload_artifact(
     if offset >= length:
         confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
         with riverhog_upload_lock(job_id):
-            record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+            record["uploaded_at"] = record.get("uploaded_at") or utc_timestamp_now()
         remove_uploaded_riverhog_artifact(
             job,
             archive_dir,
@@ -6663,7 +6653,7 @@ def riverhog_upload_artifact(
     with riverhog_upload_lock(job_id):
         record["uploaded_bytes"] = length
         record["state"] = "uploaded"
-        record["uploaded_at"] = record.get("uploaded_at") or now_iso()
+        record["uploaded_at"] = record.get("uploaded_at") or utc_timestamp_now()
         touch_riverhog_session_state(job)
     remove_uploaded_riverhog_artifact(
         job,
@@ -7181,7 +7171,7 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
         )
         if result["processed_files"]:
             state = riverhog_session_state(job)
-            state["last_eager_upload_at"] = now_iso()
+            state["last_eager_upload_at"] = utc_timestamp_now()
             state["last_eager_upload_files"] = int(result["uploaded_files"])
             state["last_eager_upload_bytes"] = int(result["uploaded_bytes"])
             state["last_eager_upload_elapsed_seconds"] = float(result["elapsed_seconds"])
@@ -7286,7 +7276,7 @@ def complete_riverhog_session(
     payload = api.complete_collection_upload_session(collection_id)
     update_riverhog_state_from_payload(job, payload)
     state = riverhog_session_state(job)
-    state["completed_at"] = state.get("completed_at") or now_iso()
+    state["completed_at"] = state.get("completed_at") or utc_timestamp_now()
     save_job(job)
     return payload
 
@@ -7332,7 +7322,7 @@ def wait_for_riverhog_finalized(
             state = riverhog_session_state(job)
             state["riverhog_state"] = "finalized"
             state["state"] = "finalized"
-            state["finalized_at"] = state.get("finalized_at") or now_iso()
+            state["finalized_at"] = state.get("finalized_at") or utc_timestamp_now()
             state["last_payload"] = compact_riverhog_payload(payload)
             save_job(job)
             return payload
@@ -7363,18 +7353,18 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             raise RuntimeError("riverhog upload requested, but runner Riverhog upload is disabled")
         api = ApiClient()
         metrics: dict[str, Any] = {
-            "started_at": now_iso(),
+            "started_at": utc_timestamp_now(),
             "wait": wait,
         }
         job["riverhog_handoff_metrics"] = metrics
         save_job(job)
         try:
-            metrics["final_sweep_started_at"] = now_iso()
+            metrics["final_sweep_started_at"] = utc_timestamp_now()
             metrics["final_sweep_before"] = compact_riverhog_progress_metrics(
                 riverhog_upload_progress_for_job(job)
             )
             final_sweep = upload_riverhog_artifacts(job, archive_dir, final=True)
-            metrics["final_sweep_finished_at"] = now_iso()
+            metrics["final_sweep_finished_at"] = utc_timestamp_now()
             metrics["final_sweep_elapsed_seconds"] = final_sweep["elapsed_seconds"]
             metrics["final_sweep_processed_files"] = final_sweep["processed_files"]
             metrics["final_sweep_uploaded_files"] = final_sweep["uploaded_files"]
@@ -7387,10 +7377,10 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             if not all_riverhog_session_files_uploaded(job):
                 raise RuntimeError("riverhog upload did not upload every registered file")
             complete_started = time.monotonic()
-            metrics["session_complete_started_at"] = now_iso()
+            metrics["session_complete_started_at"] = utc_timestamp_now()
             save_job(job)
             payload = complete_riverhog_session(job, api, archive_dir)
-            metrics["session_complete_finished_at"] = now_iso()
+            metrics["session_complete_finished_at"] = utc_timestamp_now()
             metrics["session_complete_elapsed_seconds"] = round(
                 max(0.0, time.monotonic() - complete_started),
                 6,
@@ -7398,15 +7388,15 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             collection_id = str(payload.get("collection_id") or "")
             if wait == "finalized" and collection_id:
                 finalize_started = time.monotonic()
-                metrics["wait_finalized_started_at"] = now_iso()
+                metrics["wait_finalized_started_at"] = utc_timestamp_now()
                 save_job(job)
                 payload = wait_for_riverhog_finalized(job, api, collection_id)
-                metrics["wait_finalized_finished_at"] = now_iso()
+                metrics["wait_finalized_finished_at"] = utc_timestamp_now()
                 metrics["wait_finalized_elapsed_seconds"] = round(
                     max(0.0, time.monotonic() - finalize_started),
                     6,
                 )
-            metrics["finished_at"] = now_iso()
+            metrics["finished_at"] = utc_timestamp_now()
             save_job(job)
             return {
                 "method": "session",
@@ -7416,11 +7406,11 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
                 "payload": compact_riverhog_payload(payload),
             }
         except JobCanceled:
-            metrics["canceled_at"] = now_iso()
+            metrics["canceled_at"] = utc_timestamp_now()
             save_job(job)
             raise
         except Exception as exc:
-            metrics["failed_at"] = now_iso()
+            metrics["failed_at"] = utc_timestamp_now()
             metrics["error"] = str(exc)
             save_job(job)
             raise
@@ -7488,7 +7478,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         return
     state["cancel_reason"] = reason
     if not RIVERHOG_UPLOAD_ENABLED:
-        state["cancel_skipped_at"] = now_iso()
+        state["cancel_skipped_at"] = utc_timestamp_now()
         state["cancel_skipped_reason"] = "riverhog upload disabled"
         save_job(job)
         return
@@ -7497,7 +7487,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         payload = api.cancel_collection_upload_session(collection_id)
         update_riverhog_state_from_payload(job, payload)
         state = riverhog_session_state(job)
-        state["canceled_at"] = now_iso()
+        state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
         log.info(
             "canceled riverhog upload session job=%s collection=%s reason=%s",
@@ -7508,7 +7498,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     except NotFound:
         state["state"] = "canceled"
         state["riverhog_state"] = "absent"
-        state["canceled_at"] = now_iso()
+        state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
         state["cancel_not_found"] = True
         log.info(
@@ -7518,7 +7508,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
             reason,
         )
     except Exception as exc:
-        state["cancel_failed_at"] = now_iso()
+        state["cancel_failed_at"] = utc_timestamp_now()
         state["cancel_error"] = str(exc)
         log.warning(
             "failed to cancel riverhog upload session job=%s collection=%s: %s",
@@ -7839,7 +7829,7 @@ def review_sweep_result_state(job: dict[str, Any]) -> dict[str, Any]:
         {
             "kind": "munchy.review-sweep",
             "schema_version": 1,
-            "started_at": now_iso(),
+            "started_at": utc_timestamp_now(),
             "routes": {},
             "variants": [],
         },
@@ -7848,7 +7838,7 @@ def review_sweep_result_state(job: dict[str, Any]) -> dict[str, Any]:
         result = {
             "kind": "munchy.review-sweep",
             "schema_version": 1,
-            "started_at": now_iso(),
+            "started_at": utc_timestamp_now(),
             "routes": {},
             "variants": [],
         }
@@ -8045,7 +8035,7 @@ def run_review_sweep_job(
                         "encode_settings": variant.get("encode_settings") or {},
                         "axis_values": variant.get("axis_values") or {},
                         "upload_result": upload_result,
-                        "completed_at": now_iso(),
+                        "completed_at": utc_timestamp_now(),
                     }
                 )
                 completed += 1
@@ -8056,7 +8046,7 @@ def run_review_sweep_job(
         release_job_gpu(job, token)
 
     result = review_sweep_result_state(job)
-    result["finished_at"] = now_iso()
+    result["finished_at"] = utc_timestamp_now()
     result["variants_completed"] = len(result.get("variants") or [])
     job["review_handoff_result"] = result
     job["collection_archive_target_upload_result"] = None
@@ -8129,7 +8119,7 @@ def mark_eager_file_encoding(
     batch_id: str,
 ) -> None:
     rel_path = str(file_state["path"])
-    started_at = now_iso()
+    started_at = utc_timestamp_now()
     output = archive_output_for_upload_file(
         file_state,
         group_name=group_name,
@@ -8167,7 +8157,7 @@ def mark_eager_file_encoded(
     detected_existing: bool = False,
 ) -> None:
     rel_path = str(file_state["path"])
-    encoded_at = now_iso()
+    encoded_at = utc_timestamp_now()
     output = archive_output_for_upload_file(
         file_state,
         group_name=group_name,
@@ -8176,7 +8166,9 @@ def mark_eager_file_encoded(
     )
     files = eager_archive_state(job).setdefault("files", {})
     previous = files.get(rel_path) if isinstance(files.get(rel_path), dict) else {}
-    started = safe_parse_iso(previous.get("started_at")) if isinstance(previous, dict) else None
+    started = (
+        safe_parse_timestamp(previous.get("started_at")) if isinstance(previous, dict) else None
+    )
     elapsed = ""
     if started is not None:
         elapsed = f" elapsed={max(0.0, (datetime.now(UTC) - started).total_seconds()):.1f}s"
@@ -8226,8 +8218,8 @@ def mark_eager_file_failed(
     started = previous.get("started_at") if isinstance(previous, dict) else None
     files[rel_path] = {
         "state": "failed",
-        "started_at": started or now_iso(),
-        "failed_at": now_iso(),
+        "started_at": started or utc_timestamp_now(),
+        "failed_at": utc_timestamp_now(),
         "batch_id": batch_id,
         "group": group_name,
         "input_bytes": int(file_state.get("bytes") or 0),
@@ -8239,7 +8231,7 @@ def mark_eager_file_failed(
 def consume_input_upload_file(upload: dict[str, Any], file_state: dict[str, Any]) -> bool:
     if file_state.get("consumed_at"):
         return False
-    file_state["consumed_at"] = now_iso()
+    file_state["consumed_at"] = utc_timestamp_now()
     file_state["consumed_bytes"] = int(file_state["bytes"])
     if file_state.get("sha256"):
         file_state["consumed_sha256"] = file_state["sha256"]
@@ -8483,7 +8475,7 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     if not known_paths:
         return None
 
-    now = datetime.now(UTC)
+    now = utc_now()
     started_values: list[datetime] = []
     finished_values: list[datetime] = []
     files_total = len(known_paths)
@@ -8502,8 +8494,8 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         state = state_item if isinstance(state_item, dict) else {}
         input_bytes = int(upload_file.get("bytes") or state.get("input_bytes") or 0)
         input_bytes_total += input_bytes
-        started = safe_parse_iso(state.get("started_at"))
-        finished = safe_parse_iso(state.get("encoded_at"))
+        started = safe_parse_timestamp(state.get("started_at"))
+        finished = safe_parse_timestamp(state.get("encoded_at"))
         if started is not None:
             started_values.append(started)
         if finished is not None:
@@ -8525,8 +8517,8 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     for batch in batches.values():
         if not isinstance(batch, dict):
             continue
-        batch_started = safe_parse_iso(batch.get("started_at"))
-        batch_finished = safe_parse_iso(batch.get("finished_at"))
+        batch_started = safe_parse_timestamp(batch.get("started_at"))
+        batch_finished = safe_parse_timestamp(batch.get("finished_at"))
         if batch_started is not None:
             started_values.append(batch_started)
         if batch_finished is not None:
@@ -8569,8 +8561,8 @@ def encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         "output_rate_bytes_per_second": int(output_rate),
         "running_batches": running_batches,
         "pipeline_batches": pipeline_batches,
-        "started_at": started_at.isoformat().replace("+00:00", "Z") if started_at else None,
-        "finished_at": finished_at.isoformat().replace("+00:00", "Z") if finished_at else None,
+        "started_at": format_utc_timestamp(started_at) if started_at else None,
+        "finished_at": format_utc_timestamp(finished_at) if finished_at else None,
         "completed": files_encoded == files_total and files_total > 0,
     }
 
@@ -8692,15 +8684,15 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         len(known_artifact_paths), registered_files_total, local_artifacts_total
     )
 
-    started_at = safe_parse_iso(state.get("opened_at"))
+    started_at = safe_parse_timestamp(state.get("opened_at"))
     if started_at is None:
-        started_at = safe_parse_iso(state.get("started_at"))
+        started_at = safe_parse_timestamp(state.get("started_at"))
     elapsed_seconds = (
         max(0.001, (datetime.now(UTC) - started_at).total_seconds()) if started_at else 0.0
     )
     average_rate = int(uploaded_bytes / elapsed_seconds) if elapsed_seconds else 0
     recent_rate = 0
-    last_eager_upload_at = safe_parse_iso(state.get("last_eager_upload_at"))
+    last_eager_upload_at = safe_parse_timestamp(state.get("last_eager_upload_at"))
     if last_eager_upload_at is not None:
         recent_age = (datetime.now(UTC) - last_eager_upload_at).total_seconds()
         recent_elapsed = float(state.get("last_eager_upload_elapsed_seconds") or 0.0)
@@ -9044,7 +9036,7 @@ def finish_eager_gpu_batch(
             batch_id=str(batch["batch_id"]),
         )
     batch["state"] = "succeeded"
-    batch["finished_at"] = now_iso()
+    batch["finished_at"] = utc_timestamp_now()
     batch["gpu_result"] = gpu_result
     eager_archive_state(job).setdefault("gpu_results", {})[str(batch["batch_id"])] = gpu_result
     shutil.rmtree(
@@ -9065,7 +9057,7 @@ def submit_eager_gpu_job(
     payload = batch.get("payload")
     if not isinstance(payload, dict):
         raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
-    last_submitted = safe_parse_iso(batch.get("last_submitted_at"))
+    last_submitted = safe_parse_timestamp(batch.get("last_submitted_at"))
     if (
         not force
         and last_submitted is not None
@@ -9073,7 +9065,7 @@ def submit_eager_gpu_job(
     ):
         return False
     start_gpu_job(payload)
-    batch["last_submitted_at"] = now_iso()
+    batch["last_submitted_at"] = utc_timestamp_now()
     batch["submit_count"] = int(batch.get("submit_count") or 0) + 1
     save_job(job)
     return True
@@ -9150,7 +9142,7 @@ def start_eager_gpu_batch(
         "evidence_paths": evidence_paths,
         "gpu_job_id": payload["job_id"],
         "payload": payload,
-        "started_at": now_iso(),
+        "started_at": utc_timestamp_now(),
     }
     eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
     for file_state in file_states:
@@ -9215,7 +9207,7 @@ def start_eager_audio_batch(
         "executor": "local_audio",
         "group": group_name,
         "paths": paths,
-        "started_at": now_iso(),
+        "started_at": utc_timestamp_now(),
     }
     eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
     for file_state in file_states:
@@ -9239,7 +9231,7 @@ def start_eager_audio_batch(
     except Exception as exc:
         error = str(exc)
         batch["state"] = "failed"
-        batch["failed_at"] = now_iso()
+        batch["failed_at"] = utc_timestamp_now()
         batch["error"] = error
         for file_state in file_states:
             mark_eager_file_failed(
@@ -9256,7 +9248,7 @@ def start_eager_audio_batch(
         raise EncodingFailed(error) from exc
 
     batch["state"] = "succeeded"
-    batch["finished_at"] = now_iso()
+    batch["finished_at"] = utc_timestamp_now()
     batch["archive_audio_result"] = {
         "status": result.get("status"),
         "count": result.get("count"),
@@ -9303,7 +9295,7 @@ def poll_eager_gpu_batch(
 
     state = str(status.get("state") or "")
     batch["gpu_state"] = state
-    batch["last_polled_at"] = now_iso()
+    batch["last_polled_at"] = utc_timestamp_now()
     if state == "succeeded":
         return finish_eager_gpu_batch(job, upload, batch, groups, archive_dir, status)
     if state == "failed":
@@ -9342,7 +9334,7 @@ def run_eager_archive_groups(
                 upload = poll_eager_gpu_batch(job, upload, batch, groups, archive_dir)
             if eager_groups_complete(job, upload, eager_groups):
                 eager = eager_archive_state(job)
-                eager["completed_at"] = eager.get("completed_at") or now_iso()
+                eager["completed_at"] = eager.get("completed_at") or utc_timestamp_now()
                 save_job(job)
                 return upload
 
@@ -9447,7 +9439,7 @@ def run_job(job_id: str) -> None:
         job = load_job(job_id)
         raise_if_job_canceled(job_id)
         job["state"] = "running"
-        job.setdefault("started_at", now_iso())
+        job.setdefault("started_at", utc_timestamp_now())
         save_job(job)
 
         input_upload = load_input_upload(str(job["input_upload_id"]))
@@ -9518,7 +9510,7 @@ def run_job(job_id: str) -> None:
             raise_if_job_canceled(job_id)
             job["phase"] = "done"
             job["state"] = "succeeded"
-            job["finished_at"] = now_iso()
+            job["finished_at"] = utc_timestamp_now()
             save_job(job)
             if should_cleanup_local_work_on_success(job):
                 cleanup_terminal_job(job)
@@ -9563,7 +9555,7 @@ def run_job(job_id: str) -> None:
                     **group_results.get(group_name, {}),
                     "preserve_copied": True,
                     "preserve_source_artifacts": preserve_source_artifacts,
-                    "copied_at": now_iso(),
+                    "copied_at": utc_timestamp_now(),
                 }
                 save_job(job)
                 raise_if_job_canceled(job_id)
@@ -9598,7 +9590,7 @@ def run_job(job_id: str) -> None:
                             materialized_group_root=input_dir / group_name,
                         ),
                     ),
-                    "archive_audio_at": now_iso(),
+                    "archive_audio_at": utc_timestamp_now(),
                 }
                 save_job(job)
                 raise_if_job_canceled(job_id)
@@ -9754,7 +9746,7 @@ def run_job(job_id: str) -> None:
 
         job["phase"] = "done"
         job["state"] = "succeeded"
-        job["finished_at"] = now_iso()
+        job["finished_at"] = utc_timestamp_now()
         save_job(job)
         if should_cleanup_local_work_on_success(job):
             cleanup_terminal_job(job)
@@ -9776,7 +9768,7 @@ def run_job(job_id: str) -> None:
             job = {"job_id": job_id}
         job["state"] = "failed"
         job["error"] = str(exc)
-        job["finished_at"] = now_iso()
+        job["finished_at"] = utc_timestamp_now()
         write_job_debug_bundle(
             job,
             reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
@@ -9788,7 +9780,7 @@ def run_job(job_id: str) -> None:
                 reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
             )
         else:
-            riverhog_session_state(job)["preserved_after_failure_at"] = now_iso()
+            riverhog_session_state(job)["preserved_after_failure_at"] = utc_timestamp_now()
         save_job(job)
         if isinstance(exc, EncodingFailed):
             cleanup_terminal_job(job)
@@ -10240,7 +10232,7 @@ def create_input_upload_state(
     upload = {
         "input_upload_id": input_upload_id,
         "state": "uploading",
-        "created_at": now_iso(),
+        "created_at": utc_timestamp_now(),
         "files": file_states,
         "storage_hint": storage_hint.model_dump(exclude_none=True),
         "tusd_creation_url": TUSD_PUBLIC_BASE_URL,
@@ -10401,7 +10393,7 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         "job_id": job_id,
         "state": "queued",
         "phase": "queued",
-        "created_at": now_iso(),
+        "created_at": utc_timestamp_now(),
         "input_upload_id": req.input_upload_id,
         "run_id": req.run_id or req.collection_timestamp or "",
         "collection_slug": req.collection_slug or "",
@@ -10504,7 +10496,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
                 "terminal_state_compacted_at",
             ):
                 job.pop(key, None)
-            job["riverhog_resume_preserved_at"] = now_iso()
+            job["riverhog_resume_preserved_at"] = utc_timestamp_now()
         else:
             cancel_riverhog_upload_session(job, reason="job_resume_reset")
             reset_resumable_job_runtime_state(job)
@@ -10536,7 +10528,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
                 compact_terminal_job_state(job)
                 return compact_job_response(save_job(job))
             return compact_job_response(job)
-        now = now_iso()
+        now = utc_timestamp_now()
         job["cancel_requested"] = True
         job["cancel_requested_at"] = now
         job["cleanup_requested"] = True

@@ -37,6 +37,7 @@ from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
 )
+from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _PLAN_TTL = timedelta(minutes=15)
 _CHALLENGE_RE = re.compile(r"^delete-(\d+)-([0-9a-f]{64})$")
@@ -69,7 +70,7 @@ class SqlAlchemyCollectionDeletionService:
             active = session.get(CollectionDeletionRecord, normalized_id)
             if active is not None:
                 return cast(dict[str, object], json.loads(active.plan_json))
-            expires = (datetime.now(UTC) + _PLAN_TTL).replace(microsecond=0)
+            expires = (utc_now() + _PLAN_TTL).replace(microsecond=0)
             plan = _build_plan(
                 session,
                 hot_store=self._hot_store,
@@ -108,7 +109,7 @@ class SqlAlchemyCollectionDeletionService:
                 }
             else:
                 expires = _challenge_expiry(supplied_challenge)
-                if datetime.now(UTC) > expires:
+                if utc_now() > expires:
                     raise Conflict("collection deletion plan has expired; request a new plan")
                 plan = _build_plan(
                     session,
@@ -129,7 +130,7 @@ class SqlAlchemyCollectionDeletionService:
                         collection_id=normalized_id,
                         challenge=supplied_challenge,
                         plan_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
-                        started_at=_isoformat_z(datetime.now(UTC)),
+                        started_at=format_utc_timestamp(utc_now()),
                     )
                 )
 
@@ -411,7 +412,7 @@ def _build_plan(
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
         "warning": ARCHIVE_CUSTODY_WARNING,
-        "expires_at": _isoformat_z(expires_at),
+        "expires_at": format_utc_timestamp(expires_at),
         "files": files,
         "file_count": int(file_count),
         "bytes": int(file_bytes),
@@ -476,7 +477,3 @@ def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, objec
         "bytes": plan["bytes"],
         "remote_storage_bytes": plan["remote_storage_bytes"],
     }
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")

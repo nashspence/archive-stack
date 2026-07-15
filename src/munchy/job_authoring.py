@@ -4,7 +4,6 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -35,6 +34,7 @@ from riverhog_core.config_yaml import (
     normalize_munchy_job_authoring,
     validate_json_schema,
 )
+from riverhog_core.timestamps import utc_now
 
 DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_AUDIO_TASKS = ["archive_audio"]
@@ -71,8 +71,8 @@ def safe_id(value: str) -> str:
     return text or "munchy-job"
 
 
-def utc_timestamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+def collection_timestamp_now() -> str:
+    return utc_now().strftime("%Y%m%dT%H%M%SZ")
 
 
 def normalize_mode(value: str | None, *, default: str, allowed: set[str], label: str) -> str:
@@ -490,7 +490,7 @@ def build_runner_upload_request_from_files(
     if workflow == "collection_archive" and not collection_slug:
         raise MunchyJobAuthoringError("--collection is required")
     timestamp = str(
-        collection_timestamp or defaults.get("collection_timestamp") or utc_timestamp()
+        collection_timestamp or defaults.get("collection_timestamp") or collection_timestamp_now()
     ).strip()
     run_id = str(defaults.get("run_id") or timestamp).strip()
     raw_collection_archive = deepcopy(
@@ -686,7 +686,7 @@ def build_review_sweep_plan(
         group_names=set(groups),
     ).as_dict()
 
-    timestamp = str(defaults.get("collection_timestamp") or utc_timestamp()).strip()
+    timestamp = str(defaults.get("collection_timestamp") or collection_timestamp_now()).strip()
     run_id = str(defaults.get("run_id") or timestamp).strip()
     collection_slug = str(defaults.get("collection_slug") or "").strip()
     job_id = str(defaults.get("job_id") or safe_id(f"review-{timestamp}")).strip()
@@ -946,5 +946,5 @@ __all__ = [
     "routing_report_text",
     "safe_id",
     "storage_groups",
-    "utc_timestamp",
+    "collection_timestamp_now",
 ]

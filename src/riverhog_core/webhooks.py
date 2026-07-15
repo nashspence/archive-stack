@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from riverhog_core.operator_reminders import next_operator_reminder_at
+from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp
 
 _OPERATOR_CONTRACT_PATH = Path("contracts/webhooks/operator-notifications.v1.json")
 
@@ -33,16 +34,6 @@ class WebhookConfig:
             reminder_time=self.reminder_time,
             reminder_timezone=self.reminder_timezone,
         )
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def isoformat_z(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def archive_restore_path(restore_id: str) -> str:
@@ -291,7 +282,7 @@ def _base_archive_restore_payload(
         "event": event,
         "type": "archive_restore",
         "restore_id": restore_id,
-        "delivered_at": isoformat_z(delivered_at),
+        "delivered_at": format_utc_timestamp(delivered_at),
         "collections": [
             {
                 "collection_id": collection["collection_id"],
@@ -392,7 +383,7 @@ def validate_operator_payload(payload: dict[str, object]) -> dict[str, object]:
     if not isinstance(delivered_at, str) or not delivered_at.endswith("Z"):
         raise ValueError(f"operator notification {event} delivered_at must be UTC ISO-8601")
     try:
-        datetime.fromisoformat(delivered_at)
+        parse_utc_timestamp(delivered_at)
     except ValueError as exc:
         raise ValueError(
             f"operator notification {event} delivered_at must be UTC ISO-8601"
@@ -694,7 +685,7 @@ def build_collection_lifecycle_payload(
         "event": event,
         "type": "collection_lifecycle",
         "collection_id": collection_id,
-        "delivered_at": isoformat_z(delivered_at),
+        "delivered_at": format_utc_timestamp(delivered_at),
         "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
         "operator_action": _operator_event_field(event=event, field="operator_action"),
         "notification": _collection_notification(
@@ -738,7 +729,7 @@ def build_munchy_job_payload(
         "type": "munchy_job",
         "source": "munchy",
         "actor": "munchy",
-        "delivered_at": isoformat_z(delivered_at),
+        "delivered_at": format_utc_timestamp(delivered_at),
         "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
         "operator_action": _operator_event_field(event=event, field="operator_action"),
         "severity": severity,
@@ -788,7 +779,7 @@ def build_jeb_event_payload(
         "type": "jeb_issue",
         "source": "jeb",
         "actor": "jeb",
-        "delivered_at": isoformat_z(delivered_at),
+        "delivered_at": format_utc_timestamp(delivered_at),
         "operator_urgency": _operator_event_field(event=event, field="operator_urgency"),
         "operator_action": _jeb_operator_action(
             event=event,

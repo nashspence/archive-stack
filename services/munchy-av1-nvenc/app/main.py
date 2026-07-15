@@ -37,6 +37,7 @@ from munchy.profiles import (
 )
 from munchy.source_artifact_bridge import build_strict_source_artifacts
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
+from riverhog_core.timestamps import parse_utc_timestamp, utc_timestamp_now
 
 LOGGING = {
     "version": 1,
@@ -207,10 +208,6 @@ class JobRequest(BaseModel):
         return value
 
 
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
 def ensure_under_data_dir(path: Path, *, name: str) -> Path:
     resolved = path.expanduser().resolve()
     if resolved != DATA_DIR and DATA_DIR not in resolved.parents:
@@ -224,7 +221,7 @@ def status_path(job_id: str) -> Path:
 
 def write_status(job_id: str, payload: dict[str, Any]) -> None:
     payload = dict(payload)
-    payload["updated_at"] = now_iso()
+    payload["updated_at"] = utc_timestamp_now()
     path = status_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -262,7 +259,7 @@ def mark_interrupted_jobs_on_startup() -> None:
         payload["state"] = "failed"
         payload["error_code"] = "target_restarted"
         payload["error"] = "gpu target restarted before job completed"
-        payload["finished_at"] = now_iso()
+        payload["finished_at"] = utc_timestamp_now()
         log.warning("marking interrupted gpu job as failed after startup: %s", job_id)
         write_status(job_id, payload)
 
@@ -1462,7 +1459,7 @@ def clip_progress_payload(
     started_at: str,
     finished_at: str | None = None,
 ) -> dict[str, Any]:
-    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    started = parse_utc_timestamp(started_at)
     now = datetime.now(UTC)
     elapsed_seconds = max(0.001, (now - started).total_seconds())
     payload: dict[str, Any] = {
@@ -1559,7 +1556,7 @@ def run_qcut_video(
     clip_results: list[dict[str, Any]] = []
     clips_total = len(plan["clips"])
     progress_lock = threading.Lock()
-    progress_started_at = now_iso()
+    progress_started_at = utc_timestamp_now()
     progress_state: dict[str, Any] = {
         "clips_done": 0,
         "clips_running": 0,
@@ -1678,7 +1675,7 @@ def run_qcut_video(
     if output_path.exists():
         result["bytes"] = output_path.stat().st_size
         result["sha256"] = file_sha256(output_path)
-    finished_at = now_iso()
+    finished_at = utc_timestamp_now()
     with progress_lock:
         progress_state["output_bytes"] = int(result.get("bytes") or progress_state["output_bytes"])
         emit_progress("done", finished_at=finished_at)
@@ -1845,7 +1842,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
         "encode_profile": encode_profile_dump,
         "max_parallel_encodes": max_parallel_encodes,
         "tasks": req.tasks,
-        "started_at": now_iso(),
+        "started_at": utc_timestamp_now(),
         "input_dir": str(req.input_dir),
         "archive_dir": str(req.archive_dir),
         "review_dir": str(req.review_dir) if req.review_dir is not None else None,
@@ -1921,20 +1918,20 @@ def run_job(job_id: str, req: JobRequest) -> None:
         status["riverhog_upload"] = maybe_upload_riverhog(req)
         status["review_upload"] = maybe_upload_review(req)
         status["state"] = "succeeded"
-        status["finished_at"] = now_iso()
+        status["finished_at"] = utc_timestamp_now()
         write_status(job_id, status)
     except InputVanishedDuringJob as exc:
         log.warning("job %s input vanished while finishing: %s", job_id, exc)
         status["state"] = "failed"
         status["error_code"] = "input_vanished"
         status["error"] = str(exc)
-        status["finished_at"] = now_iso()
+        status["finished_at"] = utc_timestamp_now()
         write_status(job_id, status)
     except Exception as exc:
         log.exception("job %s failed", job_id)
         status["state"] = "failed"
         status["error"] = str(exc)
-        status["finished_at"] = now_iso()
+        status["finished_at"] = utc_timestamp_now()
         write_status(job_id, status)
 
 
@@ -2072,7 +2069,7 @@ def create_job(req: JobRequest, background_tasks: BackgroundTasks) -> dict[str, 
     initial = {
         "job_id": job_id,
         "state": "queued",
-        "queued_at": now_iso(),
+        "queued_at": utc_timestamp_now(),
         "profile": req.profile,
         "encode_profile": req.encode_profile.runner_payload()
         if req.encode_profile is not None

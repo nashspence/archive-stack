@@ -8,9 +8,10 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+
+from riverhog_core.timestamps import utc_timestamp_now
 
 MP4_LIKE_EXTENSIONS = {".3g2", ".3gp", ".m4v", ".mov", ".mp4"}
 FFPROBE_TIMEOUT_ENV = "MUNCHY_PREFLIGHT_FFPROBE_TIMEOUT"
@@ -166,7 +167,7 @@ class MediaPreflightCache:
                     file.bytes,
                     PREFLIGHT_CACHE_VERSION,
                     payload,
-                    datetime.now(UTC).isoformat(),
+                    utc_timestamp_now(),
                 ),
             )
             self.conn.commit()

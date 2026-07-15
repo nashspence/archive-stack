@@ -47,6 +47,7 @@ from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_custody import require_collection_custody_idle
+from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_archive_restore_canceled_payload,
@@ -56,7 +57,6 @@ from riverhog_core.webhooks import (
     build_archive_restore_retrying_payload,
     build_archive_restore_started_payload,
     post_webhook,
-    utcnow,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ class SqlAlchemyArchiveRestoreService:
         )
 
     def cancel(self, restore_id: str) -> ArchiveRestoreSummary:
-        current = utcnow()
+        current = utc_now()
         with session_scope(self._session_factory) as session:
             record = _require_restore(session, restore_id)
             if record.state == ArchiveRestoreState.CANCELED.value:
@@ -320,7 +320,7 @@ class SqlAlchemyArchiveRestoreService:
                 raise InvalidState("archive restore is not active and cannot be canceled")
             _cleanup_restore(session, record, self._archive_stores)
             record.state = ArchiveRestoreState.CANCELED.value
-            record.canceled_at = _isoformat_z(current)
+            record.canceled_at = format_utc_timestamp(current)
             record.next_poll_at = None
             record.started_notification_next_attempt_at = None
             record.completed_notification_next_attempt_at = None
@@ -331,7 +331,7 @@ class SqlAlchemyArchiveRestoreService:
     def process_due_restores(self, *, limit: int = 100) -> int:
         if limit < 1:
             return 0
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             due_ids = session.scalars(
                 select(ArchiveRestoreRecord.restore_id)
@@ -447,8 +447,8 @@ class SqlAlchemyArchiveRestoreService:
         return missing_count
 
     def _process_one(self, restore_id: str) -> None:
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         with session_scope(self._session_factory) as session:
             record = session.get(ArchiveRestoreRecord, restore_id)
             if record is None:
@@ -477,7 +477,7 @@ class SqlAlchemyArchiveRestoreService:
                 if status.state == "ready":
                     record.state = ArchiveRestoreState.READY.value
                     record.ready_at = status.ready_at or current_text
-                    record.expires_at = status.expires_at or _isoformat_z(
+                    record.expires_at = status.expires_at or format_utc_timestamp(
                         current + self._config.archive_restore_ready_ttl
                     )
                     record.next_poll_at = None
@@ -489,7 +489,7 @@ class SqlAlchemyArchiveRestoreService:
                     _expire_restore(session, record, self._archive_stores)
                     return
                 else:
-                    record.next_poll_at = _isoformat_z(
+                    record.next_poll_at = format_utc_timestamp(
                         current + self._config.archive_restore_sweep_interval
                     )
                     record.latest_message = status.message or (
@@ -512,12 +512,12 @@ class SqlAlchemyArchiveRestoreService:
             )
 
     def _record_processing_failure(self, restore_id: str, exc: Exception) -> None:
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         retryable = _failure_is_retryable(exc)
         error = _error_text(exc)
         next_retry_at = (
-            _isoformat_z(current + self._config.archive_restore_sweep_interval)
+            format_utc_timestamp(current + self._config.archive_restore_sweep_interval)
             if retryable
             else None
         )
@@ -758,7 +758,7 @@ def _create_restore(
     record = ArchiveRestoreRecord(
         restore_id=restore_id,
         state=ArchiveRestoreState.REQUESTED.value,
-        created_at=_isoformat_z(utcnow()),
+        created_at=format_utc_timestamp(utc_now()),
         requested_at=None,
         ready_at=None,
         next_poll_at=None,
@@ -801,8 +801,8 @@ def _request_restore(
     bindings = _restore_collections(session, record)
     if not bindings:
         raise InvalidState("archive restore has no collections")
-    requested_at = _isoformat_z(current)
-    estimated_ready_at = _isoformat_z(current + config.archive_restore_latency)
+    requested_at = format_utc_timestamp(current)
+    estimated_ready_at = format_utc_timestamp(current + config.archive_restore_latency)
     statuses = [
         archive_stores.require(archive.store).prepare_collection_archive_read(
             collection_id=archive.collection_id,
@@ -824,7 +824,7 @@ def _request_restore(
     record.expires_at = _min_timestamp(
         status.expires_at for status in statuses if status.expires_at is not None
     )
-    record.next_poll_at = _isoformat_z(current + config.archive_restore_sweep_interval)
+    record.next_poll_at = format_utc_timestamp(current + config.archive_restore_sweep_interval)
     record.latest_message = (
         "Archive retrieval requested; Riverhog will materialize the collection when ready."
     )
@@ -844,7 +844,7 @@ def _poll_restore(
         archive_stores.require(archive.store).get_collection_archive_read_status(
             collection_id=archive.collection_id,
             object_path=archive.archive_object_path,
-            requested_at=record.requested_at or _isoformat_z(current),
+            requested_at=record.requested_at or format_utc_timestamp(current),
             estimated_ready_at=record.ready_at,
             estimated_expires_at=record.expires_at,
             manifest_object_path=archive.manifest_object_path,
@@ -945,7 +945,7 @@ def _materialize_restore(
     record.materialization_state = "completed"
     _cleanup_restore(session, record, archive_stores)
     record.state = ArchiveRestoreState.COMPLETED.value
-    record.completed_at = _isoformat_z(current)
+    record.completed_at = format_utc_timestamp(current)
     record.expires_at = record.completed_at
     record.next_poll_at = None
     record.latest_message = "The collection was verified and materialized to hot storage."
@@ -1154,7 +1154,7 @@ def _notify_started(
     config: RuntimeConfig,
     current: datetime,
 ) -> None:
-    current_text = _isoformat_z(current)
+    current_text = format_utc_timestamp(current)
     if not config.operator_webhook_url:
         record.started_notification_next_attempt_at = None
         record.started_notification_failure = None
@@ -1181,7 +1181,7 @@ def _notify_started(
         )
     except Exception as exc:
         record.started_notification_failure = _error_text(exc)
-        record.started_notification_next_attempt_at = _isoformat_z(
+        record.started_notification_next_attempt_at = format_utc_timestamp(
             current + config.operator_webhook_retry_delay
         )
         return
@@ -1196,7 +1196,7 @@ def _notify_completed(
     config: RuntimeConfig,
     current: datetime,
 ) -> None:
-    current_text = _isoformat_z(current)
+    current_text = format_utc_timestamp(current)
     if not config.operator_webhook_url:
         record.completed_notification_next_attempt_at = None
         record.completed_notification_failure = None
@@ -1221,7 +1221,7 @@ def _notify_completed(
         )
     except Exception as exc:
         record.completed_notification_failure = _error_text(exc)
-        record.completed_notification_next_attempt_at = _isoformat_z(
+        record.completed_notification_next_attempt_at = format_utc_timestamp(
             current + config.operator_webhook_retry_delay
         )
         return
@@ -1236,7 +1236,7 @@ def _notify_canceled(
     config: RuntimeConfig,
     current: datetime,
 ) -> None:
-    current_text = _isoformat_z(current)
+    current_text = format_utc_timestamp(current)
     if not config.operator_webhook_url:
         record.canceled_notification_next_attempt_at = None
         record.canceled_notification_failure = None
@@ -1261,7 +1261,7 @@ def _notify_canceled(
         )
     except Exception as exc:
         record.canceled_notification_failure = _error_text(exc)
-        record.canceled_notification_next_attempt_at = _isoformat_z(
+        record.canceled_notification_next_attempt_at = format_utc_timestamp(
             current + config.operator_webhook_retry_delay
         )
         return
@@ -1285,7 +1285,7 @@ def _notify_failure(
     webhook = _webhook_config(config)
     collections = _collection_payload(session, record)
     attempts = int(record.failure_count or 0)
-    failed_at = record.last_failure_at or _isoformat_z(current)
+    failed_at = record.last_failure_at or format_utc_timestamp(current)
     try:
         payload = (
             build_archive_restore_retrying_payload(
@@ -1388,7 +1388,7 @@ def _failure_notification_due(
     if last_notified_at is None:
         return True
     try:
-        previous = datetime.fromisoformat(last_notified_at.replace("Z", "+00:00"))
+        previous = parse_utc_timestamp(last_notified_at)
     except ValueError:
         return True
     return operator_reminder_due(
@@ -1402,10 +1402,6 @@ def _failure_notification_due(
 
 def _error_text(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _max_timestamp(values: Iterable[str]) -> str | None:

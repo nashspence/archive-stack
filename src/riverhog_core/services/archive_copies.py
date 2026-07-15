@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Iterator
-from datetime import datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -41,7 +40,7 @@ from riverhog_core.services.archive_records import (
 )
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collection_custody import require_collection_custody_idle
-from riverhog_core.webhooks import utcnow
+from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _LOG = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ class SqlAlchemyArchiveCopyService:
     def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int:
         if limit < 1:
             return 0
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             jobs = session.scalars(
                 select(ArchiveCopyJobRecord)
@@ -89,7 +88,7 @@ class SqlAlchemyArchiveCopyService:
         if source == destination:
             raise BadRequest("archive copy source and destination stores must differ")
         destination_archive_store = self._archive_stores.require(destination)
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             require_collection_custody_idle(session, normalized_collection_id)
             collection = session.get(CollectionRecord, normalized_collection_id)
@@ -133,7 +132,7 @@ class SqlAlchemyArchiveCopyService:
     def process_due(self, *, limit: int = 1) -> int:
         if limit < 1:
             return 0
-        current_text = _isoformat_z(utcnow())
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             jobs = session.execute(
                 select(
@@ -178,8 +177,8 @@ class SqlAlchemyArchiveCopyService:
         return len(jobs)
 
     def _process_one(self, *, collection_id: str, destination_store: str) -> None:
-        current = utcnow()
-        current_text = _isoformat_z(current)
+        current = utc_now()
+        current_text = format_utc_timestamp(current)
         with session_scope(self._session_factory) as session:
             job = session.scalar(
                 select(ArchiveCopyJobRecord)
@@ -201,7 +200,9 @@ class SqlAlchemyArchiveCopyService:
                     retrieval_tier=self._config.archive_restore_retrieval_tier,
                     hold_days=_read_hold_days(self._config),
                     requested_at=current_text,
-                    estimated_ready_at=_isoformat_z(current + self._config.archive_restore_latency),
+                    estimated_ready_at=format_utc_timestamp(
+                        current + self._config.archive_restore_latency
+                    ),
                     manifest_object_path=source_copy.manifest_object_path,
                     proof_object_path=source_copy.ots_object_path,
                 )
@@ -227,7 +228,7 @@ class SqlAlchemyArchiveCopyService:
                 return
             if status.state != "ready":
                 job.state = "waiting"
-                job.next_attempt_at = _isoformat_z(
+                job.next_attempt_at = format_utc_timestamp(
                     current + self._config.archive_restore_sweep_interval
                 )
                 return
@@ -484,7 +485,3 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
 
 def _read_hold_days(config: RuntimeConfig) -> int:
     return max(1, int(config.archive_restore_ready_ttl.total_seconds() // 86400) + 1)
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ")

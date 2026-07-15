@@ -63,11 +63,11 @@ from riverhog_core.operator_reminders import (
     reminder_zone,
 )
 from riverhog_core.runtime_config import parse_notify_webhook_map
+from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_jeb_event_payload,
     post_webhook,
-    utcnow,
 )
 
 LOG = logging.getLogger("jeb")
@@ -154,12 +154,12 @@ class TransientJebError(JebError):
     """A retryable transport or service issue."""
 
 
-def now() -> datetime:
-    return datetime.now(UTC)
+def current_time() -> datetime:
+    return utc_now()
 
 
-def iso(value: datetime | None = None) -> str:
-    return (value or now()).isoformat().replace("+00:00", "Z")
+def event_timestamp(value: datetime | None = None) -> str:
+    return format_utc_timestamp(value or current_time())
 
 
 def parse_duration(value: Any, default: int | None = None) -> int:
@@ -379,7 +379,7 @@ class WebhookNotifier:
             if not bool(notify.get("enabled", True)):
                 return True
             recipients = tuple(str(item) for item in sequence(notify.get("recipients"))) or (None,)
-        delivered_at = utcnow()
+        delivered_at = utc_now()
         ok = True
         for recipient in recipients:
             url = (
@@ -1081,7 +1081,7 @@ class Collector:
                 SET state = ?, updated_at = ?, last_error = ?
                 WHERE id = ?
                 """,
-                (state, iso(), error, attempt_id),
+                (state, event_timestamp(), error, attempt_id),
             )
 
     def set_attempt_fields(self, attempt_id: str, **fields: object) -> None:
@@ -1101,7 +1101,7 @@ class Collector:
         assignments = [f"{name} = ?" for name in fields]
         values = list(fields.values())
         assignments.append("updated_at = ?")
-        values.append(iso())
+        values.append(event_timestamp())
         values.append(attempt_id)
         with self.connect() as conn:
             conn.execute(
@@ -1118,7 +1118,7 @@ class Collector:
     ) -> str | None:
         if not force and account.cadence == "manual":
             return None
-        period = now() if force else self.account_period(account)
+        period = current_time() if force else self.account_period(account)
         before = None if force else period
         if not account.enabled:
             return None
@@ -1169,7 +1169,7 @@ class Collector:
         )
 
     def account_period(self, account: AccountConfig) -> datetime:
-        current = now()
+        current = current_time()
         if account.cadence == "manual":
             return current
         if account.cadence == "weekly":
@@ -1667,7 +1667,7 @@ class Collector:
         total_bytes: int,
         unmatched_count: int,
     ) -> None:
-        now_text = iso()
+        now_text = event_timestamp()
         fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
         input_paths = [item.target_path for item in files[:20]]
         with self.connect() as conn:
@@ -1743,7 +1743,7 @@ class Collector:
                 SET state = 'resolved', resolved_at = ?, updated_at = ?
                 WHERE account_id = ? AND state = 'failed'
                 """,
-                (iso(), iso(), account_id),
+                (event_timestamp(), event_timestamp(), account_id),
             )
 
     def routing_preflight_failure_active(self, account_id: str) -> bool:
@@ -1772,7 +1772,7 @@ class Collector:
 
     def resolve_inactive_routing_preflight_failures(self) -> int:
         active_account_ids = sorted(self.active_routing_preflight_account_ids())
-        now_text = iso()
+        now_text = event_timestamp()
         with self.connect() as conn:
             if active_account_ids:
                 placeholders = ", ".join("?" for _ in active_account_ids)
@@ -1842,7 +1842,7 @@ class Collector:
             "target_name": str(row_payload["target_name"]),
             "target_type": "munchy",
             "collection_slug": str(row_payload["collection_slug"]),
-            "collection_timestamp": iso(),
+            "collection_timestamp": current_time().strftime("%Y%m%dT%H%M%SZ"),
             "state": "failed",
         }
         component = str(row_payload.get("failure_kind") or "routing")
@@ -1856,7 +1856,7 @@ class Collector:
             notify=self.account_by_id(str(row_payload["account_id"])).notify,
         ):
             return False
-        now_text = iso()
+        now_text = event_timestamp()
         with self.connect() as conn:
             conn.execute(
                 """
@@ -1970,7 +1970,7 @@ class Collector:
                     },
                 }
 
-            period = now()
+            period = current_time()
             eligible_files = self.eligible_files(account)
             if not eligible_files:
                 return {
@@ -2096,7 +2096,7 @@ class Collector:
                 SET state = 'superseded', updated_at = ?
                 WHERE id = ?
                 """,
-                (iso(), attempt_id),
+                (event_timestamp(), attempt_id),
             )
 
     def create_retry_attempt(self, failed_attempt_id: str) -> str:
@@ -2122,7 +2122,7 @@ class Collector:
                 f"{failed_attempt['manifest_digest']}{suffix}"
             )
             job_id = f"{input_upload_id}-job"
-            created_at = iso()
+            created_at = event_timestamp()
             conn.execute(
                 """
                 INSERT INTO batch_attempts(
@@ -2197,7 +2197,7 @@ class Collector:
         input_upload_id = f"jeb-{account.id}-{collection_timestamp.lower()}-{digest}"
         job_id = f"{input_upload_id}-job"
         batch_root = self.config.collector.batch_dir / batch_id / "input"
-        created_at = iso()
+        created_at = event_timestamp()
         with self.connect() as conn:
             exists = conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone()
             if exists:
@@ -2302,7 +2302,7 @@ class Collector:
                 lock_file.seek(0)
                 lock_file.truncate()
                 lock_file.write(
-                    f"pid={os.getpid()}\nattempt_id={attempt_id}\nacquired_at={iso()}\n"
+                    f"pid={os.getpid()}\nattempt_id={attempt_id}\nacquired_at={event_timestamp()}\n"
                 )
                 lock_file.flush()
                 yield True
@@ -2370,7 +2370,7 @@ class Collector:
                     SET staged_at = ?
                     WHERE attempt_id = ? AND target_path = ?
                     """,
-                    (iso(), attempt_id, row["target_path"]),
+                    (event_timestamp(), attempt_id, row["target_path"]),
                 )
         self.set_attempt_state(attempt_id, "batched")
 
@@ -2626,7 +2626,7 @@ class Collector:
                     SET staged_at = ?
                     WHERE attempt_id = ? AND target_path = ?
                     """,
-                    (iso(), batch_id, target_path),
+                    (event_timestamp(), batch_id, target_path),
                 )
             return MediaPreflightResult(
                 file=MediaPreflightFile(
@@ -2733,7 +2733,7 @@ class Collector:
         self.set_attempt_fields(
             str(attempt_payload["id"]),
             notified_error_fingerprint=fingerprint,
-            notified_error_at=iso(),
+            notified_error_at=event_timestamp(),
         )
         return True
 
@@ -2742,12 +2742,12 @@ class Collector:
         if not last_sent:
             return True
         try:
-            sent_at = datetime.fromisoformat(str(last_sent).replace("Z", "+00:00"))
+            sent_at = parse_utc_timestamp(str(last_sent))
         except ValueError:
             return True
         return operator_reminder_due(
             last_sent_at=sent_at,
-            current=now(),
+            current=current_time(),
             interval=self.config.notify.reminder_interval_seconds,
             reminder_time=self.config.notify.reminder_time,
             reminder_timezone=self.config.notify.reminder_timezone,

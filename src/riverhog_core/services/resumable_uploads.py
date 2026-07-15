@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from riverhog_core.ports.upload_store import UploadStore
+from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +102,7 @@ def expire_upload_state(
         return current, False
 
     effective_now = now or utc_now()
-    expires_at = datetime.fromisoformat(current.upload_expires_at.replace("Z", "+00:00"))
+    expires_at = parse_utc_timestamp(current.upload_expires_at)
     if expires_at > effective_now:
         return current, False
 
@@ -130,10 +131,6 @@ def expire_upload_state(
     )
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _upload_target_exists(upload_store: UploadStore, target_path: str) -> bool:
     try:
         for _ in upload_store.iter_target(target_path):
@@ -154,9 +151,9 @@ def _upload_state_is_live(
     if upload_state_name(uploaded_bytes=current.uploaded_bytes, length=length) == "uploaded":
         return False
     effective_now = now or utc_now()
-    expires_at = datetime.fromisoformat(current.upload_expires_at.replace("Z", "+00:00"))
+    expires_at = parse_utc_timestamp(current.upload_expires_at)
     return expires_at > effective_now
 
 
 def upload_expiry_timestamp(ttl: timedelta) -> str:
-    return (utc_now() + ttl).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return format_utc_timestamp(utc_now() + ttl)

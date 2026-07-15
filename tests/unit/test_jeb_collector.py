@@ -496,10 +496,10 @@ def test_monthly_cadence_uses_first_scheduled_run_after_month_boundary(
     collector = Collector(config)
     [collection] = config.accounts
 
-    monkeypatch.setattr("jeb.collector.now", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
+    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
     assert collector.account_period(collection) == datetime(2026, 7, 6, 3, tzinfo=UTC)
 
-    monkeypatch.setattr("jeb.collector.now", lambda: datetime(2026, 7, 2, 12, tzinfo=UTC))
+    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 2, 12, tzinfo=UTC))
     assert collector.account_period(collection) == datetime(2026, 6, 1, 3, tzinfo=UTC)
 
 
@@ -519,10 +519,10 @@ def test_seasonal_cadence_uses_first_scheduled_run_after_custom_season_boundary(
     collector = Collector(config)
     [collection] = config.accounts
 
-    monkeypatch.setattr("jeb.collector.now", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
+    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
     assert collector.account_period(collection) == datetime(2026, 6, 1, 3, tzinfo=UTC)
 
-    monkeypatch.setattr("jeb.collector.now", lambda: datetime(2026, 6, 1, 2, tzinfo=UTC))
+    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 6, 1, 2, tzinfo=UTC))
     assert collector.account_period(collection) == datetime(2026, 3, 2, 3, tzinfo=UTC)
 
 

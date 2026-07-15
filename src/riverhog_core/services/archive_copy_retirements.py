@@ -42,6 +42,7 @@ from riverhog_core.services.archive_records import (
 )
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
+from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _PLAN_TTL = timedelta(minutes=15)
 _CHALLENGE_RE = re.compile(r"^retire-copy-(\d+)-([0-9a-f]{64})$")
@@ -82,7 +83,7 @@ class SqlAlchemyArchiveCopyRetirementService:
             )
             if active is not None:
                 return cast(dict[str, object], json.loads(active.plan_json))
-            expires = (datetime.now(UTC) + _PLAN_TTL).replace(microsecond=0)
+            expires = (utc_now() + _PLAN_TTL).replace(microsecond=0)
             plan = _build_plan(
                 session,
                 config=self._config,
@@ -135,7 +136,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                 already_absent = True
             else:
                 expires = _challenge_expiry(supplied_challenge)
-                if datetime.now(UTC) > expires:
+                if utc_now() > expires:
                     raise Conflict("archive copy retirement plan has expired; request a new plan")
                 plan = _build_plan(
                     session,
@@ -158,7 +159,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                         store=normalized_store,
                         challenge=supplied_challenge,
                         plan_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
-                        started_at=_isoformat_z(datetime.now(UTC)),
+                        started_at=format_utc_timestamp(utc_now()),
                     )
                 )
 
@@ -240,7 +241,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                 failures.append(exc)
                 continue
 
-            verified_at = _isoformat_z(datetime.now(UTC))
+            verified_at = format_utc_timestamp(utc_now())
             with session_scope(self._session_factory) as session:
                 active = session.get(
                     ArchiveCopyRetirementRecord,
@@ -465,7 +466,7 @@ def _build_plan(
         "collection_id": collection_id,
         "store": store,
         "warning": _RETIREMENT_WARNING,
-        "expires_at": _isoformat_z(expires_at),
+        "expires_at": format_utc_timestamp(expires_at),
         "target_copy": {
             "store": target.store,
             "last_verified_at": target.last_verified_at,
@@ -527,7 +528,3 @@ def _result(
         "remote_storage_bytes": target["remote_storage_bytes"],
         "verified_store": verified_store,
     }
-
-
-def _isoformat_z(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

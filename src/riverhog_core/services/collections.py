@@ -4,7 +4,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
 from sqlalchemy import and_, case, func, or_, select
@@ -54,6 +54,7 @@ from riverhog_core.services.resumable_uploads import (
     upload_expiry_timestamp,
     upload_state_name,
 )
+from riverhog_core.timestamps import parse_utc_timestamp, utc_now, utc_timestamp_now
 from riverhog_core.webhooks import post_webhook
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -168,8 +169,8 @@ class SqlAlchemyCollectionService:
                     archive_store=normalized_archive_store,
                     retain_hot=retain_hot,
                     state="uploading",
-                    opened_at=_utc_now(),
-                    last_activity_at=_utc_now(),
+                    opened_at=utc_timestamp_now(),
+                    last_activity_at=utc_timestamp_now(),
                 )
                 session.add(upload)
                 for index, item in enumerate(normalized_files, start=1):
@@ -198,7 +199,7 @@ class SqlAlchemyCollectionService:
             ):
                 if upload.state == "failed":
                     upload.state = "archiving"
-                    upload.archive_next_attempt_at = _utc_now()
+                    upload.archive_next_attempt_at = utc_timestamp_now()
                 _ensure_collection_upload_archiving(upload)
                 return _collection_upload_payload(
                     session=session,
@@ -291,7 +292,7 @@ class SqlAlchemyCollectionService:
                 normalized_slug,
             )
             _ensure_collection_id_unused(session, normalized_collection_id)
-            now = _utc_now()
+            now = utc_timestamp_now()
             upload = CollectionUploadRecord(
                 collection_id=normalized_collection_id,
                 ingest_source=ingest_source,
@@ -505,7 +506,7 @@ class SqlAlchemyCollectionService:
                 raise Conflict("collection upload session still has missing file bytes")
 
             _ensure_collection_upload_archiving(upload)
-            now = _utc_now()
+            now = utc_timestamp_now()
             upload.closed_at = now
             upload.last_activity_at = now
             staged_webhook_details = _collection_upload_webhook_details(session, upload)
@@ -559,7 +560,7 @@ class SqlAlchemyCollectionService:
 
             _forget_collection_upload(upload, self._upload_store)
             upload.files.clear()
-            now = _utc_now()
+            now = utc_timestamp_now()
             upload.state = "canceled"
             upload.closed_at = now
             upload.last_activity_at = now
@@ -917,8 +918,7 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             hot_bytes.label("hot_bytes"),
         )
         .options(selectinload(CollectionRecord.archive_copies))
-        .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
-        ,
+        .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),
         {
             "id": CollectionRecord.id,
             "bytes": bytes_total,
@@ -1058,8 +1058,7 @@ def _ensure_upload_archive_store_matches(
     if upload.archive_store == archive_store:
         return
     raise Conflict(
-        "collection upload already exists for a different archive store: "
-        f"{upload.collection_id}"
+        f"collection upload already exists for a different archive store: {upload.collection_id}"
     )
 
 
@@ -1169,7 +1168,7 @@ def _collection_manifest_match_stats(
 
 
 def _mint_collection_id(session: Session, upload_slug: str) -> str:
-    current = _utc_now_dt().replace(microsecond=0)
+    current = utc_now().replace(microsecond=0)
     while True:
         stamp = current.strftime("%Y%m%dT%H%M%SZ")
         collection_id = collection_id_for_upload(upload_slug, stamp)
@@ -1323,7 +1322,7 @@ def _sync_and_expire_collection_upload(
         if _collection_upload_session_is_idle_expired(upload, ttl=session_idle_ttl):
             _forget_collection_upload(upload, upload_store)
             upload.files.clear()
-            now = _utc_now()
+            now = utc_timestamp_now()
             upload.state = "expired"
             upload.closed_at = now
             upload.last_activity_at = now
@@ -1348,14 +1347,14 @@ def _expire_open_collection_upload_if_idle(
         return
     _forget_collection_upload(upload, upload_store)
     upload.files.clear()
-    now = _utc_now()
+    now = utc_timestamp_now()
     upload.state = "expired"
     upload.closed_at = now
     upload.last_activity_at = now
 
 
 def _touch_collection_upload(upload: CollectionUploadRecord) -> None:
-    now = _utc_now()
+    now = utc_timestamp_now()
     if upload.opened_at is None:
         upload.opened_at = now
     upload.last_activity_at = now
@@ -1368,10 +1367,10 @@ def _collection_upload_session_is_idle_expired(
 ) -> bool:
     if upload.state != "open" or ttl is None:
         return False
-    activity_at = _parse_utc_timestamp(upload.last_activity_at or upload.opened_at)
+    activity_at = _safe_parse_utc_timestamp(upload.last_activity_at or upload.opened_at)
     if activity_at is None:
         return False
-    return _utc_now_dt() >= activity_at + ttl
+    return utc_now() >= activity_at + ttl
 
 
 def _collection_upload_has_no_live_file_state(
@@ -1538,7 +1537,7 @@ def _ensure_collection_upload_archiving(upload: CollectionUploadRecord) -> None:
     if upload.state not in {"archiving", "failed"}:
         upload.state = "archiving"
     if upload.archive_next_attempt_at is None and upload.state == "archiving":
-        upload.archive_next_attempt_at = _utc_now()
+        upload.archive_next_attempt_at = utc_timestamp_now()
 
 
 def _finalized_collection_upload_payload(
@@ -1705,12 +1704,6 @@ def _collection_manifest_payload(
     }
 
 
-def _utc_now() -> str:
-    from datetime import UTC, datetime  # noqa: PLC0415
-
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _sha256_hex(content: bytes) -> Sha256Hex:
     return Sha256Hex(hashlib.sha256(content).hexdigest())
 
@@ -1722,15 +1715,11 @@ def _sha256_hex_chunks(chunks: Iterable[bytes]) -> Sha256Hex:
     return Sha256Hex(digest.hexdigest())
 
 
-def _utc_now_dt() -> datetime:
-    return datetime.now(UTC)
-
-
-def _parse_utc_timestamp(value: str | None) -> datetime | None:
+def _safe_parse_utc_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        return parse_utc_timestamp(value)
     except ValueError:
         return None
 

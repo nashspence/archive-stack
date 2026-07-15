@@ -22,7 +22,6 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
 from fractions import Fraction
 from typing import (
     Any,
@@ -32,6 +31,7 @@ from typing import (
 )
 
 from munchy.profiles import normalize_artifact_drop_selector
+from riverhog_core.timestamps import utc_now, utc_timestamp_now
 
 SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
 SOURCE_ARTIFACTS_ZSTD_LEVEL = "19"
@@ -188,10 +188,6 @@ def ffprobe_json(cmd: Sequence[str]) -> dict[str, Any]:
     if not stdout.strip():
         return {}
     return cast(dict[str, Any], json.loads(stdout))
-
-
-def now_utc_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 VIDEO_STREAM_MAP: dict[str, tuple[str, str, bool]] = {
@@ -1613,7 +1609,7 @@ def _source_inventory_payload(
         "kind": "munchy.source-inventory",
         "source": os.path.basename(src),
         "output": output,
-        "created_at": now_utc_iso(),
+        "created_at": utc_timestamp_now(),
         "strict_accounting": True,
         "container": {
             "format": metadata.get("format") if isinstance(metadata, dict) else None,
@@ -1648,7 +1644,7 @@ def _stream_transforms_payload(
         "kind": "munchy.stream-transforms",
         "source": os.path.basename(src),
         "output": output,
-        "created_at": now_utc_iso(),
+        "created_at": utc_timestamp_now(),
         "selected_output_method": selected_method,
         "encode_command": list(encode_cmd),
         "streams": list(stream_transforms),
@@ -1991,7 +1987,7 @@ def _write_source_artifacts_tar(
 ) -> None:
     info = tarfile.TarInfo("manifest.json")
     info.size = len(manifest_bytes)
-    info.mtime = int(datetime.now(UTC).timestamp())
+    info.mtime = int(utc_now().timestamp())
     info.mode = 0o644
     tar.addfile(info, io.BytesIO(manifest_bytes))
     for artifact in artifacts:
@@ -2059,7 +2055,7 @@ def _build_source_artifacts_bundle(
         "kind": "munchy.source-artifacts",
         "source": os.path.basename(src),
         "output": output,
-        "created_at": now_utc_iso(),
+        "created_at": utc_timestamp_now(),
         "artifacts": manifest_entries,
         "dropped": list(dropped_items),
     }
@@ -2446,8 +2442,7 @@ def _audit_extracted_source_artifacts(
         if metadata_keys:
             if source_rebuild_mode == "iso_bmff_rebuild":
                 checks.append(
-                    "source format metadata tags available for moov graft: "
-                    f"{len(metadata_keys)}"
+                    f"source format metadata tags available for moov graft: {len(metadata_keys)}"
                 )
             else:
                 checks.append(f"source format metadata tags recorded: {len(metadata_keys)}")

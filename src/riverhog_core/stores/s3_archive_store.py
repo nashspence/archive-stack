@@ -6,7 +6,7 @@ import re
 import secrets
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from datetime import UTC, datetime
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
 
@@ -40,6 +40,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.stores.s3_support import create_archive_s3_client
+from riverhog_core.timestamps import format_utc_timestamp, utc_timestamp_now
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
 COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
@@ -59,10 +60,6 @@ _LOG = logging.getLogger(__name__)
 class _RestoreHeader(TypedDict):
     ongoing: bool
     expires_at: str | None
-
-
-def _utc_now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _multipart_part_size(content_length: int, configured_part_size: int) -> int:
@@ -299,7 +296,7 @@ class S3ArchiveStore:
                 head=head,
                 expected_storage_class=expected_storage_class,
             )
-        verified_at = _utc_now()
+        verified_at = utc_timestamp_now()
         return ArchiveUploadReceipt(
             object_path=object_key,
             stored_bytes=int(head.get("ContentLength", 0)),
@@ -385,9 +382,7 @@ class S3ArchiveStore:
         for kind, expected, storage_class in checks:
             head = self._head_object(object_key=expected.object_path)
             if head is None:
-                raise ArchivePackageVerificationError(
-                    f"remote collection {kind} object is missing"
-                )
+                raise ArchivePackageVerificationError(f"remote collection {kind} object is missing")
             try:
                 _verify_remote_collection_object(
                     object_key=expected.object_path,
@@ -435,14 +430,11 @@ class S3ArchiveStore:
         for path in object_paths:
             self._client.delete_object(Bucket=self._bucket, Key=path)
         remaining = [
-            path
-            for path in object_paths
-            if self._head_object(object_key=path) is not None
+            path for path in object_paths if self._head_object(object_key=path) is not None
         ]
         if remaining:
             raise RuntimeError(
-                "collection archive package deletion could not be verified: "
-                + ", ".join(remaining)
+                "collection archive package deletion could not be verified: " + ", ".join(remaining)
             )
 
     def publish_restore_catalog(
@@ -572,7 +564,7 @@ class S3ArchiveStore:
             content_length = len(content)
             sha256 = hashlib.sha256(content).hexdigest()
 
-        uploaded_at = _utc_now()
+        uploaded_at = utc_timestamp_now()
         extra_args: dict[str, Any] = {
             "Metadata": {
                 "riverhog-backend": self._store.backend,
@@ -1374,7 +1366,7 @@ class S3ArchiveStore:
             )
         return ArchiveReadStatus(
             state="ready",
-            ready_at=_utc_now(),
+            ready_at=utc_timestamp_now(),
             expires_at=restore["expires_at"],
             message="Collection archive object is restored and readable.",
         )
@@ -1392,7 +1384,7 @@ class S3ArchiveStore:
         status = self.get_collection_archive_read_status(
             collection_id=collection_id,
             object_path=object_path,
-            requested_at=_utc_now(),
+            requested_at=utc_timestamp_now(),
             estimated_ready_at=None,
             estimated_expires_at=None,
         )
@@ -1446,7 +1438,7 @@ class S3ArchiveStore:
         status = self.get_collection_archive_read_status(
             collection_id=collection_id,
             object_path=object_path,
-            requested_at=_utc_now(),
+            requested_at=utc_timestamp_now(),
             estimated_ready_at=None,
             estimated_expires_at=None,
         )
@@ -1692,7 +1684,7 @@ def _verify_remote_collection_object(
 
 def _format_s3_timestamp(value: object, *, fallback: str) -> str:
     if isinstance(value, datetime):
-        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return format_utc_timestamp(value)
     return fallback
 
 

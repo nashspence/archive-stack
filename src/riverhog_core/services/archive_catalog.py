@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,6 +9,7 @@ from riverhog_core.archive_object_paths import archive_storage_prefix_from_objec
 from riverhog_core.catalog_db import session_scope
 from riverhog_core.catalog_models import CollectionArchiveCopyRecord
 from riverhog_core.ports.archive_store import ArchiveStore
+from riverhog_core.timestamps import utc_timestamp_now
 
 
 def publish_archive_restore_catalog(
@@ -60,6 +60,6 @@ def publish_archive_restore_catalog(
         ]
     publish(
         entries=entries,
-        generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        generated_at=utc_timestamp_now(),
     )
     return total
