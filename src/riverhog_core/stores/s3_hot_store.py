@@ -11,7 +11,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
 )
-from riverhog_core.ports.hot_store import HotFileStat
+from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing, HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_s3_client
 
@@ -485,17 +485,26 @@ class S3HotStore:
             if not _is_missing_upload_error(exc):
                 raise
 
-    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
+    def list_collection_files(self, collection_id: str) -> HotCollectionListing:
         paginator = self._client.get_paginator("list_objects_v2")
         prefix = f"collections/{collection_id}/"
-        results: list[tuple[str, int]] = []
+        files: list[HotCollectionFile] = []
+        file_count = 0
+        total_bytes = 0
         for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
             for entry in page.get("Contents", []):
                 key = str(entry["Key"])
                 if key.endswith(".info") or key.endswith(".part"):
                     continue
-                results.append((key.removeprefix(prefix), int(entry.get("Size", 0))))
-        return sorted(results)
+                size = int(entry.get("Size", 0))
+                files.append(HotCollectionFile(path=key.removeprefix(prefix), bytes=size))
+                file_count += 1
+                total_bytes += size
+        return HotCollectionListing(
+            files=tuple(sorted(files, key=lambda file: file.path)),
+            file_count=file_count,
+            total_bytes=total_bytes,
+        )
 
 
 def _file_metadata(*, content_length: int, sha256: str | None) -> dict[str, str]:

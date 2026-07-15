@@ -11,6 +11,19 @@ class HotFileStat:
     sha256: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class HotCollectionFile:
+    path: str
+    bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class HotCollectionListing:
+    files: tuple[HotCollectionFile, ...]
+    file_count: int
+    total_bytes: int
+
+
 class HotStore(Protocol):
     def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None: ...
     def put_collection_file_stream(
@@ -34,4 +47,4 @@ class HotStore(Protocol):
     def stat_collection_file(self, collection_id: str, path: str) -> HotFileStat | None: ...
     def has_collection_file(self, collection_id: str, path: str) -> bool: ...
     def delete_collection_file(self, collection_id: str, path: str) -> None: ...
-    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]: ...
+    def list_collection_files(self, collection_id: str) -> HotCollectionListing: ...

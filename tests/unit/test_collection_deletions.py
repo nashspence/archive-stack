@@ -22,6 +22,7 @@ from riverhog_core.catalog_models import (
     FetchRecord,
 )
 from riverhog_core.domain.errors import Conflict
+from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from tests.unit.db_helpers import sqlite_url
@@ -57,12 +58,17 @@ class FakeHotStore:
         if include_unrelated:
             self.files[("2025/20250103T030405Z__other", "keep.txt")] = b"unrelated durable copy\n"
 
-    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
-        return [
-            (path, len(content))
+    def list_collection_files(self, collection_id: str) -> HotCollectionListing:
+        files = tuple(
+            HotCollectionFile(path=path, bytes=len(content))
             for (current_collection, path), content in sorted(self.files.items())
             if current_collection == collection_id
-        ]
+        )
+        return HotCollectionListing(
+            files=files,
+            file_count=len(files),
+            total_bytes=sum(file.bytes for file in files),
+        )
 
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         self.files.pop((collection_id, path), None)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
+from riverhog_core.ports.hot_store import HotCollectionListing
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.files import SqlAlchemyFileService
 from tests.unit.db_helpers import sqlite_url
@@ -33,7 +34,7 @@ class _FakeHotStore:
     def delete_collection_file(self, collection_id: str, path: str) -> None:
         raise NotImplementedError
 
-    def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
+    def list_collection_files(self, collection_id: str) -> HotCollectionListing:
         raise NotImplementedError
 
 

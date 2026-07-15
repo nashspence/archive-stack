@@ -325,9 +325,10 @@ def _build_plan(
         }
         for file in file_rows
     ]
+    hot_listing = hot_store.list_collection_files(collection_id)
     hot_objects = [
-        {"path": path, "bytes": size}
-        for path, size in hot_store.list_collection_files(collection_id)
+        {"path": file.path, "bytes": file.bytes}
+        for file in hot_listing.files
     ]
     upload_file_rows = session.execute(
         select(
@@ -375,8 +376,8 @@ def _build_plan(
         "file_count": int(file_count),
         "bytes": int(file_bytes),
         "hot_objects": hot_objects,
-        "hot_files": len(hot_objects),
-        "hot_bytes": sum(cast(int, item["bytes"]) for item in hot_objects),
+        "hot_files": hot_listing.file_count,
+        "hot_bytes": hot_listing.total_bytes,
         "archive_objects": archive_objects,
         "remote_storage_bytes": int(archive_row.remote_storage_bytes),
         "upload_files": upload_files,

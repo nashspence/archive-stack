@@ -972,9 +972,10 @@ def _hot_file_available_for_audit(
     listing = listed_hot_files.get(file.collection_id)
     if listing is None:
         try:
+            hot_listing = hot_store.list_collection_files(file.collection_id)
             listing = {
-                path: int(byte_count)
-                for path, byte_count in hot_store.list_collection_files(file.collection_id)
+                listed_file.path: listed_file.bytes
+                for listed_file in hot_listing.files
             }
         except Exception:
             return _hot_file_available(hot_store, file)

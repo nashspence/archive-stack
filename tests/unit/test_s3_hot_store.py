@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -12,6 +12,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
 )
+from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_hot_store import S3HotStore, _multipart_part_size
 from tests.unit.db_helpers import sqlite_url
@@ -115,6 +116,10 @@ class _FakeS3Client:
         _ = Bucket
         self.objects.pop(Key, None)
 
+    def get_paginator(self, operation_name: str) -> _FakeListObjectsV2Paginator:
+        assert operation_name == "list_objects_v2"
+        return _FakeListObjectsV2Paginator(self)
+
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
         _ = Bucket
         return {"Body": _FakeBody(cast(bytes, self.objects[Key]["Body"]))}
@@ -135,6 +140,22 @@ class _FakeS3Client:
                 },
                 "HeadObject",
             ) from exc
+
+
+class _FakeListObjectsV2Paginator:
+    def __init__(self, client: _FakeS3Client) -> None:
+        self._client = client
+
+    def paginate(self, *, Bucket: str, Prefix: str) -> Iterator[dict[str, object]]:
+        _ = Bucket
+        entries = [
+            {"Key": key, "Size": details["ContentLength"]}
+            for key, details in reversed(self._client.objects.items())
+            if key.startswith(Prefix)
+        ]
+        split = len(entries) // 2
+        yield {"Contents": entries[:split]}
+        yield {"Contents": entries[split:]}
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
@@ -186,6 +207,30 @@ def test_put_collection_file_stream_uses_single_put_for_small_file(
     assert client.uploaded_part_sizes == []
     assert client.completed_uploads == []
     assert client.uploads == {}
+
+
+def test_collection_listing_reports_deterministic_storage_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(monkeypatch, tmp_path, client)
+    collection_id = "2025/20250102T030405Z__docs"
+
+    store.put_collection_file(collection_id, "zeta.txt", b"last")
+    store.put_collection_file(collection_id, "alpha.txt", b"first")
+    store.put_collection_file(collection_id, "active-upload.part", b"temporary")
+    store.put_collection_file(collection_id, "active-upload.info", b"temporary")
+    store.put_collection_file("2025/20250103T030405Z__other", "other.txt", b"other")
+
+    assert store.list_collection_files(collection_id) == HotCollectionListing(
+        files=(
+            HotCollectionFile(path="alpha.txt", bytes=5),
+            HotCollectionFile(path="zeta.txt", bytes=4),
+        ),
+        file_count=2,
+        total_bytes=9,
+    )
 
 
 def test_put_collection_file_stream_completes_multipart_upload(
