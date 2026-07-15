@@ -457,6 +457,19 @@ def test_deployed_service_dockerfiles_use_locked_service_dependencies() -> None:
         assert dockerfile.index("--require-hashes -r") < dockerfile.index("COPY config")
 
 
+def test_munchy_av1_image_identifies_its_riverhog_revision() -> None:
+    dockerfile = (REPO_ROOT / "services" / "munchy-av1-nvenc" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    compose = (REPO_ROOT / "services" / "munchy-av1-nvenc" / "compose.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG RIVERHOG_REVISION=unknown" in dockerfile
+    assert 'LABEL org.opencontainers.image.revision="${RIVERHOG_REVISION}"' in dockerfile
+    assert "RIVERHOG_REVISION: ${RIVERHOG_REVISION:-unknown}" in compose
+
+
 def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
     dockerfile = (REPO_ROOT / "services" / "munchy-runner" / "Dockerfile").read_text(
         encoding="utf-8"

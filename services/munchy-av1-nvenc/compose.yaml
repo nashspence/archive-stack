@@ -3,6 +3,8 @@ services:
     build:
       context: ../../..
       dockerfile: services/munchy-av1-nvenc/Dockerfile
+      args:
+        RIVERHOG_REVISION: ${RIVERHOG_REVISION:-unknown}
     image: munchy-av1-nvenc-api:latest
     mem_limit: "24g"
     memswap_limit: "24g"
