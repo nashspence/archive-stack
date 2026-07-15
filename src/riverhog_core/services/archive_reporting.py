@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -38,7 +39,7 @@ class SqlAlchemyArchiveReportingService:
             collection_reports = tuple(
                 _collection_usage_reports(session, collection_filter=collection)
             )
-            totals = _totals_from_collections(collection_reports)
+            totals = _archive_usage_totals(session, collection_filter=collection)
             history: tuple[ArchiveUsageSnapshot, ...] = ()
             if collection is None:
                 _ensure_usage_snapshot(session, totals=totals)
@@ -67,8 +68,10 @@ class SqlAlchemyArchiveReportingService:
 
 def record_archive_usage_snapshot(session: Session, *, config: RuntimeConfig) -> None:
     _ = config
-    reports = tuple(_collection_usage_reports(session, collection_filter=None))
-    _ensure_usage_snapshot(session, totals=_totals_from_collections(reports))
+    _ensure_usage_snapshot(
+        session,
+        totals=_archive_usage_totals(session, collection_filter=None),
+    )
 
 
 def _collection_usage_reports(
@@ -76,100 +79,161 @@ def _collection_usage_reports(
     *,
     collection_filter: str | None,
 ) -> list[ArchiveUsageCollection]:
-    collection_query = select(CollectionRecord.id).order_by(CollectionRecord.id.asc())
+    file_stats = (
+        select(
+            CollectionFileRecord.collection_id.label("collection_id"),
+            func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
+        )
+        .group_by(CollectionFileRecord.collection_id)
+        .subquery()
+    )
+    collection_query = (
+        select(
+            CollectionRecord.id.label("collection_id"),
+            func.coalesce(file_stats.c.bytes, 0).label("bytes"),
+            _measured_storage_bytes_expression().label("measured_storage_bytes"),
+            CollectionArchiveRecord,
+        )
+        .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
+        .outerjoin(
+            CollectionArchiveRecord,
+            CollectionArchiveRecord.collection_id == CollectionRecord.id,
+        )
+        .order_by(CollectionRecord.id.asc())
+    )
     if collection_filter is not None:
         collection_query = collection_query.where(CollectionRecord.id == collection_filter)
-    collection_ids = list(session.scalars(collection_query))
-
-    bytes_by_collection: dict[str, int] = {}
-    archives_by_collection: dict[str, CollectionArchiveRecord] = {}
-    if collection_ids:
-        byte_rows = session.execute(
-            select(
-                CollectionFileRecord.collection_id,
-                func.sum(CollectionFileRecord.bytes).label("bytes"),
-            )
-            .where(CollectionFileRecord.collection_id.in_(collection_ids))
-            .group_by(CollectionFileRecord.collection_id)
-        ).all()
-        bytes_by_collection = {row.collection_id: int(row.bytes or 0) for row in byte_rows}
-        archive_rows = session.scalars(
-            select(CollectionArchiveRecord).where(
-                CollectionArchiveRecord.collection_id.in_(collection_ids)
-            )
-        ).all()
-        archives_by_collection = {archive.collection_id: archive for archive in archive_rows}
-
-    reports: list[ArchiveUsageCollection] = []
-    seen: set[str] = set()
-    for collection_id in collection_ids:
-        seen.add(collection_id)
-        archive = archives_by_collection.get(collection_id)
-        reports.append(
-            ArchiveUsageCollection(
-                id=CollectionId(collection_id),
-                bytes=bytes_by_collection.get(collection_id, 0),
-                measured_storage_bytes=_collection_measured_storage_bytes(archive),
-                archive=_collection_archive_status(archive),
-                collection_manifest=_collection_manifest_status(archive),
-                archive_format=archive.archive_format if archive is not None else None,
-                compression=archive.compression if archive is not None else None,
-            )
+    reports = [
+        ArchiveUsageCollection(
+            id=CollectionId(row.collection_id),
+            bytes=int(row.bytes),
+            measured_storage_bytes=int(row.measured_storage_bytes),
+            archive=_collection_archive_status(row[3]),
+            collection_manifest=_collection_manifest_status(row[3]),
+            archive_format=row[3].archive_format if row[3] is not None else None,
+            compression=row[3].compression if row[3] is not None else None,
         )
+        for row in session.execute(collection_query).all()
+    ]
 
+    upload_file_stats = (
+        select(
+            CollectionUploadFileRecord.collection_id.label("collection_id"),
+            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes"),
+        )
+        .group_by(CollectionUploadFileRecord.collection_id)
+        .subquery()
+    )
+    accepted_collection = (
+        select(CollectionRecord.id)
+        .where(CollectionRecord.id == CollectionUploadRecord.collection_id)
+        .exists()
+    )
     upload_query = (
         select(
-            CollectionUploadRecord.collection_id,
-            CollectionUploadRecord.state,
-            CollectionUploadRecord.archive_phase,
-            CollectionUploadRecord.archive_failure,
+            CollectionUploadRecord.collection_id.label("collection_id"),
+            func.coalesce(upload_file_stats.c.bytes, 0).label("bytes"),
+            _upload_archive_state_expression().label("archive_state"),
+            CollectionUploadRecord.archive_failure.label("archive_failure"),
         )
-        .where(~CollectionUploadRecord.state.in_(("canceled", "expired")))
+        .outerjoin(
+            upload_file_stats,
+            upload_file_stats.c.collection_id == CollectionUploadRecord.collection_id,
+        )
+        .where(
+            _reportable_upload_expression(),
+            ~accepted_collection,
+        )
         .order_by(CollectionUploadRecord.collection_id.asc())
     )
     if collection_filter is not None:
         upload_query = upload_query.where(CollectionUploadRecord.collection_id == collection_filter)
-    upload_rows = session.execute(upload_query).all()
-    pending_ids = [row.collection_id for row in upload_rows if row.collection_id not in seen]
-    pending_bytes: dict[str, int] = {}
-    if pending_ids:
-        rows = session.execute(
-            select(
-                CollectionUploadFileRecord.collection_id,
-                func.sum(CollectionUploadFileRecord.bytes).label("bytes"),
-            )
-            .where(CollectionUploadFileRecord.collection_id.in_(pending_ids))
-            .group_by(CollectionUploadFileRecord.collection_id)
-        ).all()
-        pending_bytes = {row.collection_id: int(row.bytes or 0) for row in rows}
-
-    for upload in upload_rows:
-        if upload.collection_id in seen:
-            continue
-        reports.append(
-            ArchiveUsageCollection(
-                id=CollectionId(upload.collection_id),
-                bytes=pending_bytes.get(upload.collection_id, 0),
-                measured_storage_bytes=0,
-                archive=ArchiveStatus(
-                    state=_upload_archive_state(
-                        state=upload.state,
-                        archive_phase=upload.archive_phase,
-                    ),
-                    failure=upload.archive_failure,
-                ),
-            )
+    reports.extend(
+        ArchiveUsageCollection(
+            id=CollectionId(row.collection_id),
+            bytes=int(row.bytes),
+            measured_storage_bytes=0,
+            archive=ArchiveStatus(
+                state=ArchiveState(row.archive_state),
+                failure=row.archive_failure,
+            ),
         )
+        for row in session.execute(upload_query).all()
+    )
     return reports
 
 
-def _collection_measured_storage_bytes(archive: CollectionArchiveRecord | None) -> int:
-    if archive is None or ArchiveState(archive.state) != ArchiveState.UPLOADED:
-        return 0
-    return (
-        int(archive.stored_bytes or 0)
-        + int(archive.manifest_stored_bytes or 0)
-        + int(archive.ots_stored_bytes or 0)
+def _archive_usage_totals(
+    session: Session,
+    *,
+    collection_filter: str | None,
+) -> ArchiveUsageTotals:
+    accepted = select(
+        CollectionRecord.id.label("collection_id"),
+        case(
+            (CollectionArchiveRecord.state == ArchiveState.UPLOADED.value, 1),
+            else_=0,
+        ).label("uploaded"),
+        _measured_storage_bytes_expression().label("measured_storage_bytes"),
+    ).outerjoin(
+        CollectionArchiveRecord,
+        CollectionArchiveRecord.collection_id == CollectionRecord.id,
+    )
+    pending = select(
+        CollectionUploadRecord.collection_id.label("collection_id"),
+        literal(0).label("uploaded"),
+        literal(0).label("measured_storage_bytes"),
+    ).where(
+        _reportable_upload_expression(),
+        ~select(CollectionRecord.id)
+        .where(CollectionRecord.id == CollectionUploadRecord.collection_id)
+        .exists(),
+    )
+    if collection_filter is not None:
+        accepted = accepted.where(CollectionRecord.id == collection_filter)
+        pending = pending.where(CollectionUploadRecord.collection_id == collection_filter)
+    usage = union_all(accepted, pending).subquery()
+    row = session.execute(
+        select(
+            func.count(usage.c.collection_id).label("collections"),
+            func.coalesce(func.sum(usage.c.uploaded), 0).label("uploaded_collections"),
+            func.coalesce(func.sum(usage.c.measured_storage_bytes), 0).label(
+                "measured_storage_bytes"
+            ),
+        )
+    ).one()
+    return ArchiveUsageTotals(
+        collections=int(row.collections),
+        uploaded_collections=int(row.uploaded_collections),
+        measured_storage_bytes=int(row.measured_storage_bytes),
+    )
+
+
+def _measured_storage_bytes_expression() -> Any:
+    return case(
+        (
+            CollectionArchiveRecord.state == ArchiveState.UPLOADED.value,
+            func.coalesce(CollectionArchiveRecord.stored_bytes, 0)
+            + func.coalesce(CollectionArchiveRecord.manifest_stored_bytes, 0)
+            + func.coalesce(CollectionArchiveRecord.ots_stored_bytes, 0),
+        ),
+        else_=0,
+    )
+
+
+def _upload_archive_state_expression() -> Any:
+    return case(
+        (CollectionUploadRecord.state == "failed", ArchiveState.FAILED.value),
+        (CollectionUploadRecord.archive_phase == "retry_wait", ArchiveState.RETRYING.value),
+        (CollectionUploadRecord.state == "archiving", ArchiveState.UPLOADING.value),
+        else_=ArchiveState.PENDING.value,
+    )
+
+
+def _reportable_upload_expression() -> Any:
+    return or_(
+        CollectionUploadRecord.state.is_(None),
+        ~CollectionUploadRecord.state.in_(("canceled", "expired")),
     )
 
 
@@ -202,28 +266,6 @@ def _collection_manifest_status(
         ots_object_path=archive.ots_object_path,
         ots_state=ots_state,
         ots_sha256=archive.ots_sha256,
-    )
-
-
-def _upload_archive_state(*, state: str | None, archive_phase: str | None) -> ArchiveState:
-    if state == "failed":
-        return ArchiveState.FAILED
-    if archive_phase == "retry_wait":
-        return ArchiveState.RETRYING
-    if state == "archiving":
-        return ArchiveState.UPLOADING
-    return ArchiveState.PENDING
-
-
-def _totals_from_collections(
-    collections: tuple[ArchiveUsageCollection, ...],
-) -> ArchiveUsageTotals:
-    return ArchiveUsageTotals(
-        collections=len(collections),
-        uploaded_collections=sum(
-            1 for collection in collections if collection.archive.state == ArchiveState.UPLOADED
-        ),
-        measured_storage_bytes=sum(collection.measured_storage_bytes for collection in collections),
     )
 
 

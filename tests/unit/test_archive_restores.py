@@ -12,6 +12,8 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FetchCollectionRecord,
+    FetchRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveFile,
@@ -193,3 +195,42 @@ def test_archive_restore_refuses_collection_with_active_deletion(tmp_path: Path)
         _service(path, archive_store, hot_store).create_or_resume_for_collection(
             "2025/20250102T030405Z__docs"
         )
+
+
+def test_archive_restore_list_for_fetch_is_database_paginated(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    archive_store = FakeArchiveStore()
+    hot_store = FakeHotStore()
+    _seed(path, archive_store)
+    service = _service(path, archive_store, hot_store)
+    restored = service.create_or_resume_for_collection("2025/20250102T030405Z__docs")
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            FetchRecord(
+                fetch_id="fx-1",
+                name="documents",
+                fetch_order=1,
+                fetch_state="done",
+            )
+        )
+        session.add(
+            FetchCollectionRecord(
+                fetch_id="fx-1",
+                collection_id="2025/20250102T030405Z__docs",
+                collection_order=1,
+            )
+        )
+
+    page = service.list_for_fetch(
+        "fx-1",
+        page=1,
+        per_page=1,
+        sort="created_at",
+        order="desc",
+    )
+
+    assert page.total == 1
+    assert page.pages == 1
+    assert [item.id for item in page.restores] == [restored.id]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
@@ -10,6 +10,7 @@ from typing import cast
 
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -131,22 +132,12 @@ class SqlAlchemyArchiveRestoreService:
             stmt = stmt.join(ArchiveRestoreCollectionRecord).where(
                 ArchiveRestoreCollectionRecord.collection_id == collection
             )
-        sort_expr = {
-            "created_at": ArchiveRestoreRecord.created_at,
-            "id": ArchiveRestoreRecord.restore_id,
-            "state": ArchiveRestoreRecord.state,
-            "ready_at": ArchiveRestoreRecord.ready_at,
-            "expires_at": ArchiveRestoreRecord.expires_at,
-        }[sort]
-        direction = desc if order == "desc" else asc
-        order_by = [direction(sort_expr)]
-        if sort != "id":
-            order_by.append(asc(ArchiveRestoreRecord.restore_id))
-
         with session_scope(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
             records = session.scalars(
-                stmt.order_by(*order_by).offset((page - 1) * per_page).limit(per_page)
+                stmt.order_by(*_restore_order_by(sort=sort, order=order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
             ).all()
             return ArchiveRestoreListPage(
                 page=page,
@@ -206,10 +197,25 @@ class SqlAlchemyArchiveRestoreService:
         )
         with session_scope(self._session_factory) as session:
             _require_fetch(session, fetch_id)
-            records = _records_for_fetch(session, fetch_id=fetch_id, state=state)
-            records = _sort_records(records, sort=sort, order=order)
-            total = len(records)
-            start = (page - 1) * per_page
+            stmt = (
+                select(ArchiveRestoreRecord)
+                .join(ArchiveRestoreCollectionRecord)
+                .join(
+                    FetchCollectionRecord,
+                    FetchCollectionRecord.collection_id
+                    == ArchiveRestoreCollectionRecord.collection_id,
+                )
+                .where(FetchCollectionRecord.fetch_id == fetch_id)
+                .distinct()
+            )
+            if state is not None:
+                stmt = stmt.where(ArchiveRestoreRecord.state == state)
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            records = session.scalars(
+                stmt.order_by(*_restore_order_by(sort=sort, order=order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            ).all()
             return ArchiveRestoreListPage(
                 page=page,
                 per_page=per_page,
@@ -220,23 +226,33 @@ class SqlAlchemyArchiveRestoreService:
                 terminal="all",
                 state=state,
                 collection=None,
-                restores=[
-                    _restore_summary(session, record, self._config)
-                    for record in records[start : start + per_page]
-                ],
+                restores=[_restore_summary(session, record, self._config) for record in records],
             )
 
     def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
-            files = _fetch_files(session, fetch_id)
-            missing_collection_ids = {file.collection_id for file in files if not file.hot}
-            for collection_id in sorted(missing_collection_ids):
+            missing_collection_ids = list(
+                session.scalars(
+                    select(CollectionFileRecord.collection_id)
+                    .join(
+                        FetchCollectionRecord,
+                        FetchCollectionRecord.collection_id == CollectionFileRecord.collection_id,
+                    )
+                    .where(
+                        FetchCollectionRecord.fetch_id == fetch_id,
+                        CollectionFileRecord.hot.is_(False),
+                    )
+                    .distinct()
+                    .order_by(CollectionFileRecord.collection_id)
+                ).all()
+            )
+            for collection_id in missing_collection_ids:
                 require_collection_not_deleting(session, collection_id)
             if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
                 fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
 
-        for collection_id in sorted(missing_collection_ids):
+        for collection_id in missing_collection_ids:
             self.create_or_resume_for_collection(collection_id)
 
         with session_scope(self._session_factory) as session:
@@ -252,11 +268,23 @@ class SqlAlchemyArchiveRestoreService:
     def cancel_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
-            restore_ids = [
-                record.restore_id
-                for record in _records_for_fetch(session, fetch_id=fetch_id, state=None)
-                if record.state in _ACTIVE_STATES
-            ]
+            restore_ids = list(
+                session.scalars(
+                    select(ArchiveRestoreRecord.restore_id)
+                    .join(ArchiveRestoreCollectionRecord)
+                    .join(
+                        FetchCollectionRecord,
+                        FetchCollectionRecord.collection_id
+                        == ArchiveRestoreCollectionRecord.collection_id,
+                    )
+                    .where(
+                        FetchCollectionRecord.fetch_id == fetch_id,
+                        ArchiveRestoreRecord.state.in_(_ACTIVE_STATES),
+                    )
+                    .distinct()
+                    .order_by(ArchiveRestoreRecord.restore_id)
+                ).all()
+            )
             if fetch.fetch_state in {
                 FetchState.QUEUED_ARCHIVE.value,
                 FetchState.RESTORING_ARCHIVE.value,
@@ -376,6 +404,7 @@ class SqlAlchemyArchiveRestoreService:
                 if missing_count >= limit:
                     break
                 selected = _fetch_files(session, fetch.fetch_id)
+                selected_count = _fetch_file_count(session, fetch.fetch_id)
                 listed: dict[str, dict[str, int]] = {}
                 fetch_missing = False
                 for file in selected:
@@ -384,7 +413,7 @@ class SqlAlchemyArchiveRestoreService:
                     if _hot_file_available_for_audit(
                         self._hot_store,
                         file,
-                        selected_count=len(selected),
+                        selected_count=selected_count,
                         listed_hot_files=listed,
                     ):
                         file.hot = True
@@ -395,7 +424,7 @@ class SqlAlchemyArchiveRestoreService:
                     collections_to_restore.add(file.collection_id)
                 if fetch_missing and fetch.fetch_state == FetchState.DONE.value:
                     fetch.fetch_state = FetchState.QUEUED_ARCHIVE.value
-                elif not fetch_missing and selected:
+                elif not fetch_missing and selected_count > 0:
                     fetch.fetch_state = FetchState.DONE.value
 
         for collection_id in sorted(collections_to_restore):
@@ -598,12 +627,20 @@ def _require_archive_objects(collection: CollectionRecord) -> _CollectionArchive
 
 
 def _restore_collections(session: Session, record: ArchiveRestoreRecord) -> list[CollectionRecord]:
-    rows = session.scalars(
-        select(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
-        .order_by(ArchiveRestoreCollectionRecord.collection_order)
-    ).all()
-    return [_require_collection(session, row.collection_id) for row in rows]
+    return list(
+        session.scalars(
+            select(CollectionRecord)
+            .join(
+                ArchiveRestoreCollectionRecord,
+                ArchiveRestoreCollectionRecord.collection_id == CollectionRecord.id,
+            )
+            .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
+            .order_by(
+                ArchiveRestoreCollectionRecord.collection_order,
+                ArchiveRestoreCollectionRecord.collection_id,
+            )
+        ).all()
+    )
 
 
 def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
@@ -620,56 +657,50 @@ def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
 
 
 def _fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
-    collection_ids = _fetch_collection_ids(session, fetch_id)
-    if not collection_ids:
-        return []
     return list(
         session.scalars(
             select(CollectionFileRecord)
-            .where(CollectionFileRecord.collection_id.in_(collection_ids))
-            .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
+            .join(
+                FetchCollectionRecord,
+                FetchCollectionRecord.collection_id == CollectionFileRecord.collection_id,
+            )
+            .where(FetchCollectionRecord.fetch_id == fetch_id)
+            .order_by(
+                FetchCollectionRecord.collection_order,
+                CollectionFileRecord.collection_id,
+                CollectionFileRecord.path,
+            )
         ).all()
     )
 
 
-def _records_for_fetch(
-    session: Session,
-    *,
-    fetch_id: str,
-    state: str | None,
-) -> list[ArchiveRestoreRecord]:
-    collection_ids = _fetch_collection_ids(session, fetch_id)
-    if not collection_ids:
-        return []
-    stmt = (
-        select(ArchiveRestoreRecord)
-        .join(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.collection_id.in_(collection_ids))
-    )
-    if state is not None:
-        stmt = stmt.where(ArchiveRestoreRecord.state == state)
-    return list(session.scalars(stmt).unique().all())
-
-
-def _sort_records(
-    records: list[ArchiveRestoreRecord], *, sort: str, order: str
-) -> list[ArchiveRestoreRecord]:
-    def value(record: ArchiveRestoreRecord) -> str:
-        return str(
-            {
-                "created_at": record.created_at,
-                "id": record.restore_id,
-                "state": record.state,
-                "ready_at": record.ready_at or "",
-                "expires_at": record.expires_at or "",
-            }[sort]
+def _fetch_file_count(session: Session, fetch_id: str) -> int:
+    return int(
+        session.scalar(
+            select(func.count(CollectionFileRecord.path))
+            .select_from(FetchCollectionRecord)
+            .join(
+                CollectionFileRecord,
+                CollectionFileRecord.collection_id == FetchCollectionRecord.collection_id,
+            )
+            .where(FetchCollectionRecord.fetch_id == fetch_id)
         )
-
-    return sorted(
-        records,
-        key=lambda record: (value(record), record.restore_id),
-        reverse=order == "desc",
+        or 0
     )
+
+
+def _restore_order_by(*, sort: str, order: str) -> tuple[ColumnElement[object], ...]:
+    sort_expr = {
+        "created_at": ArchiveRestoreRecord.created_at,
+        "id": ArchiveRestoreRecord.restore_id,
+        "state": ArchiveRestoreRecord.state,
+        "ready_at": ArchiveRestoreRecord.ready_at,
+        "expires_at": ArchiveRestoreRecord.expires_at,
+    }[sort]
+    direction = desc if order == "desc" else asc
+    if sort == "id":
+        return (direction(sort_expr),)
+    return (direction(sort_expr), asc(ArchiveRestoreRecord.restore_id))
 
 
 def _active_restore_for_collection(
@@ -693,8 +724,7 @@ def _create_restore(
     config: RuntimeConfig,
     collection: CollectionRecord,
 ) -> ArchiveRestoreRecord:
-    existing_ids = session.scalars(select(ArchiveRestoreRecord.restore_id)).all()
-    restore_id = _generated_restore_id(collection.id, existing_ids=existing_ids)
+    restore_id = _generated_restore_id(session, collection.id)
     record = ArchiveRestoreRecord(
         restore_id=restore_id,
         state=ArchiveRestoreState.REQUESTED.value,
@@ -1285,13 +1315,12 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
     )
 
 
-def _generated_restore_id(collection_id: str, *, existing_ids: Sequence[str]) -> str:
-    existing = set(existing_ids)
+def _generated_restore_id(session: Session, collection_id: str) -> str:
     safe_collection_id = collection_id.replace("/", "-")
     ordinal = 1
     while True:
         candidate = f"ar-{safe_collection_id}-{ordinal}"
-        if candidate not in existing:
+        if session.get(ArchiveRestoreRecord, candidate) is None:
             return candidate
         ordinal += 1
 

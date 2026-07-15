@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-from sqlalchemy import case, delete, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import case, delete, func, literal, or_, select
+from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -76,7 +78,7 @@ class SqlAlchemyFetchService:
             session.add(fetch)
             _replace_fetch_collections(session, fetch, collection_ids)
             session.flush()
-            return _fetch_summary(session, fetch)
+            return _fetch_summary(session, fetch.fetch_id)
 
     def list(
         self,
@@ -100,44 +102,7 @@ class SqlAlchemyFetchService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
 
-        stats = (
-            select(
-                FetchCollectionRecord.fetch_id.label("fetch_id"),
-                func.count(CollectionFileRecord.path).label("files"),
-                func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
-                func.coalesce(
-                    func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
-                    0,
-                ).label("hot_files"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("hot_bytes"),
-            )
-            .outerjoin(
-                CollectionFileRecord,
-                CollectionFileRecord.collection_id == FetchCollectionRecord.collection_id,
-            )
-            .group_by(FetchCollectionRecord.fetch_id)
-            .subquery()
-        )
-        files_expr = func.coalesce(stats.c.files, 0)
-        bytes_expr = func.coalesce(stats.c.bytes, 0)
-        hot_files_expr = func.coalesce(stats.c.hot_files, 0)
-        hot_bytes_expr = func.coalesce(stats.c.hot_bytes, 0)
-        missing_bytes_expr = bytes_expr - hot_bytes_expr
-        stmt = select(
-            FetchRecord,
-            files_expr,
-            bytes_expr,
-            hot_files_expr,
-            hot_bytes_expr,
-        ).outerjoin(stats, stats.c.fetch_id == FetchRecord.fetch_id)
+        stmt, expressions = _fetch_summary_query()
         if state is not None:
             stmt = stmt.where(FetchRecord.fetch_state == state)
         if q:
@@ -165,9 +130,9 @@ class SqlAlchemyFetchService:
             "name": func.lower(FetchRecord.name),
             "state": FetchRecord.fetch_state,
             "order": FetchRecord.fetch_order,
-            "files": files_expr,
-            "bytes": bytes_expr,
-            "missing_bytes": missing_bytes_expr,
+            "files": expressions["files"],
+            "bytes": expressions["bytes"],
+            "missing_bytes": expressions["missing_bytes"],
         }[sort]
         order_expr = sort_expr.desc() if order == "desc" else sort_expr.asc()
         stmt = stmt.order_by(order_expr, FetchRecord.fetch_id.asc())
@@ -181,22 +146,11 @@ class SqlAlchemyFetchService:
             fetch_ids = [row[0].fetch_id for row in rows]
             collections_by_fetch = _collections_by_fetch(session, fetch_ids)
             summaries = [
-                FetchSummary(
-                    id=FetchId(fetch.fetch_id),
-                    name=fetch.name,
-                    collections=tuple(
-                        CollectionId(collection_id)
-                        for collection_id in collections_by_fetch.get(fetch.fetch_id, [])
-                    ),
-                    state=FetchState(fetch.fetch_state),
-                    files=int(files),
-                    bytes=int(bytes_total),
-                    hot_files=int(hot_files),
-                    hot_bytes=int(hot_bytes),
-                    missing_files=int(files) - int(hot_files),
-                    missing_bytes=int(bytes_total) - int(hot_bytes),
+                _fetch_summary_from_row(
+                    row,
+                    collections_by_fetch.get(row[0].fetch_id, []),
                 )
-                for fetch, files, bytes_total, hot_files, hot_bytes in rows
+                for row in rows
             ]
 
         return FetchListPage(
@@ -226,7 +180,7 @@ class SqlAlchemyFetchService:
                 [*existing, *[item for item in additions if item not in existing]],
             )
             session.flush()
-            return _fetch_summary(session, fetch)
+            return _fetch_summary(session, fetch.fetch_id)
 
     def remove_collections(
         self,
@@ -246,7 +200,7 @@ class SqlAlchemyFetchService:
             ]
             _replace_fetch_collections(session, fetch, remaining)
             session.flush()
-            return _fetch_summary(session, fetch)
+            return _fetch_summary(session, fetch.fetch_id)
 
     def start(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
@@ -257,16 +211,16 @@ class SqlAlchemyFetchService:
                 raise InvalidState("fetch has no collections")
             for collection_id in collection_ids:
                 require_collection_not_deleting(session, collection_id)
-            files = _collection_files(session, collection_ids)
-            if not files:
+            summary = _fetch_summary(session, fetch_id)
+            if summary.files == 0:
                 raise InvalidState("fetch collections contain no files")
             fetch.fetch_state = (
                 FetchState.DONE.value
-                if all(file.hot for file in files)
+                if summary.hot_files == summary.files
                 else FetchState.QUEUED_ARCHIVE.value
             )
             session.flush()
-            return _fetch_summary(session, fetch)
+            return _fetch_summary(session, fetch.fetch_id)
 
     def cancel(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
@@ -275,7 +229,7 @@ class SqlAlchemyFetchService:
                 raise InvalidState("completed fetches cannot be canceled")
             fetch.fetch_state = FetchState.DRAFT.value
             session.flush()
-            return _fetch_summary(session, fetch)
+            return _fetch_summary(session, fetch.fetch_id)
 
     def evict(
         self,
@@ -288,8 +242,8 @@ class SqlAlchemyFetchService:
             raise BadRequest("at least one collection is required")
         with session_scope(self._session_factory) as session:
             _require_collections_exist(session, collection_ids)
-            selected = _collection_files(session, collection_ids)
-            if not selected:
+            selected_files, selected_bytes = _collection_file_stats(session, collection_ids)
+            if selected_files == 0:
                 raise NotFound("collections contain no files")
             packages: dict[str, CollectionArchivePackageIdentity] = {}
             for collection_id in collection_ids:
@@ -300,12 +254,19 @@ class SqlAlchemyFetchService:
                         f"{collection_id}"
                     )
                 packages[collection_id] = package
-            would_evict = [record for record in selected if record.hot]
+            would_evict = _collection_files(session, collection_ids, hot=True)
+            would_evict_files, would_evict_bytes = _collection_file_stats(
+                session,
+                collection_ids,
+                hot=True,
+            )
             if dry_run:
                 return _eviction_payload(
                     collections=collection_ids,
-                    selected=selected,
-                    affected=would_evict,
+                    selected_files=selected_files,
+                    selected_bytes=selected_bytes,
+                    would_evict_files=would_evict_files,
+                    would_evict_bytes=would_evict_bytes,
                     dry_run=True,
                 )
             for collection_id, package in packages.items():
@@ -324,41 +285,53 @@ class SqlAlchemyFetchService:
                         "cannot confirm the remote collection archive before hot eviction: "
                         f"{collection_id}"
                     ) from exc
-            affected: list[CollectionFileRecord] = []
             for record in would_evict:
                 try:
                     self._hot_store.delete_collection_file(record.collection_id, record.path)
                 except FileNotFoundError:
                     pass
                 record.hot = False
-                affected.append(record)
             return _eviction_payload(
                 collections=collection_ids,
-                selected=selected,
-                affected=affected,
+                selected_files=selected_files,
+                selected_bytes=selected_bytes,
+                would_evict_files=would_evict_files,
+                would_evict_bytes=would_evict_bytes,
                 dry_run=False,
             )
 
     def get(self, fetch_id: str) -> FetchSummary:
         with session_scope(self._session_factory) as session:
-            return _fetch_summary(session, _get_fetch(session, fetch_id))
+            return _fetch_summary(session, fetch_id)
 
     def status(self, fetch_id: str) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            fetch = _get_fetch(session, fetch_id)
-            summary = _fetch_summary(session, fetch)
-            files = _selected_files_for_fetch(session, fetch_id)
+            summary = _fetch_summary(session, fetch_id)
+            collection_rows = session.execute(_fetch_collection_summary_query(fetch_id)).all()
+            files = session.scalars(
+                _fetch_files_query(fetch_id)
+                .order_by(
+                    CollectionFileRecord.collection_id.asc(),
+                    CollectionFileRecord.path.asc(),
+                )
+                .limit(25)
+            ).all()
             collection_summaries = [
                 {
-                    "collection": collection_id,
-                    **_collection_stats(session, collection_id),
+                    "collection_id": row.collection_id,
+                    "files": int(row.files),
+                    "bytes": int(row.bytes),
+                    "hot_files": int(row.hot_files),
+                    "hot_bytes": int(row.hot_bytes),
+                    "missing_files": int(row.missing_files),
+                    "missing_bytes": int(row.missing_bytes),
                 }
-                for collection_id in _fetch_collection_ids(session, fetch_id)
+                for row in collection_rows
             ]
             return {
                 **_fetch_summary_payload(summary),
                 "collection_summaries": collection_summaries,
-                "files_preview": [_file_payload(file) for file in files[:25]],
+                "files_preview": [_file_payload(file) for file in files],
                 "next_action": _next_action(summary),
             }
 
@@ -382,29 +355,24 @@ class SqlAlchemyFetchService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
 
+        stmt = _fetch_files_query(fetch_id)
+        if q:
+            logical_path = (
+                CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
+            )
+            stmt = stmt.where(
+                func.lower(logical_path).like(_like_pattern(q.casefold()), escape="\\")
+            )
+        if hot is not None:
+            stmt = stmt.where(CollectionFileRecord.hot.is_(hot))
         with session_scope(self._session_factory) as session:
             _get_fetch(session, fetch_id)
-            files = _selected_files_for_fetch(session, fetch_id)
-        if q:
-            needle = q.casefold()
-            files = [
-                file for file in files if needle in f"{file.collection_id}/{file.path}".casefold()
-            ]
-        if hot is not None:
-            files = [file for file in files if bool(file.hot) is hot]
-        key: Callable[[CollectionFileRecord], str | int | bool] = {
-            "logical_path": lambda file: f"{file.collection_id}/{file.path}",
-            "collection_id": lambda file: file.collection_id,
-            "collection_path": lambda file: file.path,
-            "bytes": lambda file: file.bytes,
-            "hot": lambda file: file.hot,
-        }[sort]
-        files.sort(
-            key=lambda file: (key(file), file.collection_id, file.path),
-            reverse=order == "desc",
-        )
-        total = len(files)
-        start = (page - 1) * per_page
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            files = session.scalars(
+                stmt.order_by(*_fetch_file_order_by(sort=sort, order=order))
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            ).all()
         return {
             "fetch_id": fetch_id,
             "q": q,
@@ -415,7 +383,7 @@ class SqlAlchemyFetchService:
             "pages": math.ceil(total / per_page) if total else 0,
             "sort": sort,
             "order": order,
-            "files": [_file_payload(file) for file in files[start : start + per_page]],
+            "files": [_file_payload(file) for file in files],
         }
 
 
@@ -424,12 +392,148 @@ def _like_pattern(value: str) -> str:
     return f"%{escaped}%"
 
 
-def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
-    fetch = session.scalar(
-        select(FetchRecord)
-        .options(selectinload(FetchRecord.collections))
-        .where(FetchRecord.fetch_id == fetch_id)
+def _fetch_summary_query() -> tuple[Any, dict[str, Any]]:
+    stats = (
+        select(
+            FetchCollectionRecord.fetch_id.label("fetch_id"),
+            func.count(CollectionFileRecord.path).label("files"),
+            func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
+            func.coalesce(
+                func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
+                0,
+            ).label("hot_files"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("hot_bytes"),
+        )
+        .outerjoin(
+            CollectionFileRecord,
+            CollectionFileRecord.collection_id == FetchCollectionRecord.collection_id,
+        )
+        .group_by(FetchCollectionRecord.fetch_id)
+        .subquery()
     )
+    files = func.coalesce(stats.c.files, 0)
+    bytes_total = func.coalesce(stats.c.bytes, 0)
+    hot_files = func.coalesce(stats.c.hot_files, 0)
+    hot_bytes = func.coalesce(stats.c.hot_bytes, 0)
+    expressions = {
+        "files": files,
+        "bytes": bytes_total,
+        "hot_files": hot_files,
+        "hot_bytes": hot_bytes,
+        "missing_files": files - hot_files,
+        "missing_bytes": bytes_total - hot_bytes,
+    }
+    return (
+        select(
+            FetchRecord,
+            expressions["files"].label("files"),
+            expressions["bytes"].label("bytes"),
+            expressions["hot_files"].label("hot_files"),
+            expressions["hot_bytes"].label("hot_bytes"),
+            expressions["missing_files"].label("missing_files"),
+            expressions["missing_bytes"].label("missing_bytes"),
+        ).outerjoin(stats, stats.c.fetch_id == FetchRecord.fetch_id),
+        expressions,
+    )
+
+
+def _fetch_summary_from_row(row: Any, collection_ids: Sequence[str]) -> FetchSummary:
+    fetch = row[0]
+    return FetchSummary(
+        id=FetchId(fetch.fetch_id),
+        name=fetch.name,
+        collections=tuple(CollectionId(collection_id) for collection_id in collection_ids),
+        state=FetchState(fetch.fetch_state),
+        files=int(row.files),
+        bytes=int(row.bytes),
+        hot_files=int(row.hot_files),
+        hot_bytes=int(row.hot_bytes),
+        missing_files=int(row.missing_files),
+        missing_bytes=int(row.missing_bytes),
+    )
+
+
+def _fetch_collection_summary_query(fetch_id: str) -> Any:
+    files = func.count(CollectionFileRecord.path)
+    bytes_total = func.coalesce(func.sum(CollectionFileRecord.bytes), 0)
+    hot_files = func.coalesce(
+        func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
+        0,
+    )
+    hot_bytes = func.coalesce(
+        func.sum(
+            case(
+                (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
+                else_=0,
+            )
+        ),
+        0,
+    )
+    return (
+        select(
+            FetchCollectionRecord.collection_id.label("collection_id"),
+            files.label("files"),
+            bytes_total.label("bytes"),
+            hot_files.label("hot_files"),
+            hot_bytes.label("hot_bytes"),
+            (files - hot_files).label("missing_files"),
+            (bytes_total - hot_bytes).label("missing_bytes"),
+        )
+        .select_from(FetchCollectionRecord)
+        .outerjoin(
+            CollectionFileRecord,
+            CollectionFileRecord.collection_id == FetchCollectionRecord.collection_id,
+        )
+        .where(FetchCollectionRecord.fetch_id == fetch_id)
+        .group_by(
+            FetchCollectionRecord.collection_id,
+            FetchCollectionRecord.collection_order,
+        )
+        .order_by(
+            FetchCollectionRecord.collection_order,
+            FetchCollectionRecord.collection_id,
+        )
+    )
+
+
+def _fetch_files_query(fetch_id: str) -> Any:
+    return (
+        select(CollectionFileRecord)
+        .join(
+            FetchCollectionRecord,
+            FetchCollectionRecord.collection_id == CollectionFileRecord.collection_id,
+        )
+        .where(FetchCollectionRecord.fetch_id == fetch_id)
+    )
+
+
+def _fetch_file_order_by(*, sort: str, order: str) -> tuple[Any, ...]:
+    logical_path = CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
+    primary = {
+        "logical_path": logical_path,
+        "collection_id": CollectionFileRecord.collection_id,
+        "collection_path": CollectionFileRecord.path,
+        "bytes": CollectionFileRecord.bytes,
+        "hot": CollectionFileRecord.hot,
+    }[sort]
+    direction = primary.desc() if order == "desc" else primary.asc()
+    return (
+        direction,
+        CollectionFileRecord.collection_id.asc(),
+        CollectionFileRecord.path.asc(),
+    )
+
+
+def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
+    fetch = session.get(FetchRecord, fetch_id)
     if fetch is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return fetch
@@ -474,34 +578,17 @@ def _collection_archive_package_identity(
     )
 
 
-def _fetch_collection_records(
-    session: Session,
-    fetch_id: str,
-) -> list[FetchCollectionRecord]:
-    return list(
-        session.scalars(
-            select(FetchCollectionRecord)
-            .where(FetchCollectionRecord.fetch_id == fetch_id)
-            .order_by(
-                FetchCollectionRecord.collection_order,
-                FetchCollectionRecord.collection_id,
-            )
-        ).all()
-    )
-
-
 def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
-    return [record.collection_id for record in _fetch_collection_records(session, fetch_id)]
+    return _collections_by_fetch(session, [fetch_id]).get(fetch_id, [])
 
 
 def _collections_by_fetch(
     session: Session,
     fetch_ids: Sequence[str],
 ) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {fetch_id: [] for fetch_id in fetch_ids}
     if not fetch_ids:
-        return result
-    records = session.scalars(
+        return {}
+    ordered = (
         select(FetchCollectionRecord)
         .where(FetchCollectionRecord.fetch_id.in_(fetch_ids))
         .order_by(
@@ -509,47 +596,73 @@ def _collections_by_fetch(
             FetchCollectionRecord.collection_order,
             FetchCollectionRecord.collection_id,
         )
+        .subquery()
+    )
+    dialect = session.get_bind().dialect.name
+    aggregate = (
+        func.json_group_array(ordered.c.collection_id)
+        if dialect == "sqlite"
+        else func.json_agg(ordered.c.collection_id)
+    )
+    rows = session.execute(
+        select(
+            ordered.c.fetch_id,
+            aggregate.label("collection_ids"),
+        ).group_by(ordered.c.fetch_id)
     ).all()
-    for record in records:
-        result[record.fetch_id].append(record.collection_id)
+    result: dict[str, list[str]] = {fetch_id: [] for fetch_id in fetch_ids}
+    for row in rows:
+        values = (
+            json.loads(row.collection_ids)
+            if isinstance(row.collection_ids, str)
+            else row.collection_ids
+        )
+        result[row.fetch_id] = [str(value) for value in values]
     return result
 
 
 def _collection_files(
     session: Session,
     collection_ids: Sequence[str],
+    *,
+    hot: bool | None = None,
 ) -> list[CollectionFileRecord]:
     if not collection_ids:
         return []
+    stmt = select(CollectionFileRecord).where(
+        CollectionFileRecord.collection_id.in_(collection_ids)
+    )
+    if hot is not None:
+        stmt = stmt.where(CollectionFileRecord.hot.is_(hot))
     return list(
         session.scalars(
-            select(CollectionFileRecord)
-            .where(CollectionFileRecord.collection_id.in_(collection_ids))
-            .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
+            stmt.order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
         ).all()
     )
 
 
-def _selected_files_for_fetch(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
-    return _collection_files(session, _fetch_collection_ids(session, fetch_id))
+def _collection_file_stats(
+    session: Session,
+    collection_ids: Sequence[str],
+    *,
+    hot: bool | None = None,
+) -> tuple[int, int]:
+    stmt = select(
+        func.count(CollectionFileRecord.path),
+        func.coalesce(func.sum(CollectionFileRecord.bytes), 0),
+    ).where(CollectionFileRecord.collection_id.in_(collection_ids))
+    if hot is not None:
+        stmt = stmt.where(CollectionFileRecord.hot.is_(hot))
+    files, bytes_total = session.execute(stmt).one()
+    return int(files), int(bytes_total)
 
 
-def _fetch_summary(session: Session, fetch: FetchRecord) -> FetchSummary:
-    collection_ids = _fetch_collection_ids(session, fetch.fetch_id)
-    files = _collection_files(session, collection_ids)
-    hot_files = [file for file in files if file.hot]
-    return FetchSummary(
-        id=FetchId(fetch.fetch_id),
-        name=fetch.name,
-        collections=tuple(CollectionId(collection_id) for collection_id in collection_ids),
-        state=FetchState(fetch.fetch_state),
-        files=len(files),
-        bytes=sum(int(file.bytes) for file in files),
-        hot_files=len(hot_files),
-        hot_bytes=sum(int(file.bytes) for file in hot_files),
-        missing_files=len(files) - len(hot_files),
-        missing_bytes=sum(int(file.bytes) for file in files if not file.hot),
-    )
+def _fetch_summary(session: Session, fetch_id: str) -> FetchSummary:
+    stmt, _ = _fetch_summary_query()
+    row = session.execute(stmt.where(FetchRecord.fetch_id == fetch_id)).one_or_none()
+    if row is None:
+        raise NotFound(f"fetch not found: {fetch_id}")
+    return _fetch_summary_from_row(row, _fetch_collection_ids(session, fetch_id))
 
 
 def _replace_fetch_collections(
@@ -594,14 +707,17 @@ def _canonical_collection_ids(collections: Sequence[str]) -> list[str]:
 def _require_collections_exist(session: Session, collection_ids: Sequence[str]) -> None:
     if not collection_ids:
         return
-    existing = set(
-        session.scalars(
-            select(CollectionRecord.id).where(CollectionRecord.id.in_(collection_ids))
-        ).all()
+    existing_count = int(
+        session.scalar(
+            select(func.count(CollectionRecord.id)).where(CollectionRecord.id.in_(collection_ids))
+        )
+        or 0
     )
-    missing = [collection_id for collection_id in collection_ids if collection_id not in existing]
-    if missing:
-        raise NotFound(f"collection not found: {missing[0]}")
+    if existing_count == len(collection_ids):
+        return
+    for collection_id in collection_ids:
+        if session.get(CollectionRecord, collection_id) is None:
+            raise NotFound(f"collection not found: {collection_id}")
 
 
 def _next_fetch_order(session: Session) -> int:
@@ -618,19 +734,6 @@ def _require_startable(fetch: FetchRecord) -> None:
         raise InvalidState("fetch is already complete")
     if fetch.fetch_state != FetchState.DRAFT.value:
         raise InvalidState("fetch is already started")
-
-
-def _collection_stats(session: Session, collection_id: str) -> dict[str, int]:
-    files = _collection_files(session, [collection_id])
-    hot_files = [file for file in files if file.hot]
-    return {
-        "files": len(files),
-        "bytes": sum(int(file.bytes) for file in files),
-        "hot_files": len(hot_files),
-        "hot_bytes": sum(int(file.bytes) for file in hot_files),
-        "missing_files": len(files) - len(hot_files),
-        "missing_bytes": sum(int(file.bytes) for file in files if not file.hot),
-    }
 
 
 def _file_payload(file: CollectionFileRecord) -> dict[str, object]:
@@ -672,18 +775,20 @@ def _next_action(summary: FetchSummary) -> dict[str, str]:
 def _eviction_payload(
     *,
     collections: list[str],
-    selected: list[CollectionFileRecord],
-    affected: list[CollectionFileRecord],
+    selected_files: int,
+    selected_bytes: int,
+    would_evict_files: int,
+    would_evict_bytes: int,
     dry_run: bool,
 ) -> dict[str, object]:
     return {
         "collections": collections,
         "dry_run": dry_run,
         "status": "would_evict" if dry_run else "evicted",
-        "files": len(selected),
-        "bytes": sum(int(record.bytes) for record in selected),
-        "evicted_files": 0 if dry_run else len(affected),
-        "evicted_bytes": 0 if dry_run else sum(int(record.bytes) for record in affected),
-        "would_evict_files": len(affected),
-        "would_evict_bytes": sum(int(record.bytes) for record in affected),
+        "files": selected_files,
+        "bytes": selected_bytes,
+        "evicted_files": 0 if dry_run else would_evict_files,
+        "evicted_bytes": 0 if dry_run else would_evict_bytes,
+        "would_evict_files": would_evict_files,
+        "would_evict_bytes": would_evict_bytes,
     }

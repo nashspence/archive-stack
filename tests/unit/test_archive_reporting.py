@@ -8,6 +8,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionUploadFileRecord,
+    CollectionUploadRecord,
 )
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.runtime_config import RuntimeConfig
@@ -78,3 +80,40 @@ def test_archive_report_reuses_unchanged_snapshot(tmp_path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         assert session.query(ArchiveUsageSnapshotRecord).count() == 1
+
+
+def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            CollectionUploadRecord(
+                collection_id="2025/20250103T030405Z__pending",
+                state="archiving",
+            )
+        )
+        session.add(
+            CollectionUploadFileRecord(
+                collection_id="2025/20250103T030405Z__pending",
+                path="pending.txt",
+                file_order=1,
+                bytes=7,
+                sha256="d" * 64,
+                uploaded_bytes=7,
+            )
+        )
+
+    report = SqlAlchemyArchiveReportingService(_config(path)).get_report()
+
+    assert report.totals.collections == 2
+    assert report.totals.uploaded_collections == 1
+    assert report.totals.measured_storage_bytes == 35
+    collection_rows = [
+        (str(item.id), item.bytes, item.archive.state.value) for item in report.collections
+    ]
+    assert collection_rows == [
+        ("2025/20250102T030405Z__docs", 12, "uploaded"),
+        ("2025/20250103T030405Z__pending", 7, "uploading"),
+    ]

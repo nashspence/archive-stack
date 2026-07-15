@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
@@ -43,7 +43,10 @@ from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
-from riverhog_core.services.collections import _collection_upload_target_path
+from riverhog_core.services.collections import (
+    _collection_upload_stats,
+    _collection_upload_target_path,
+)
 from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
     post_collection_operator_webhook,
@@ -79,10 +82,39 @@ class SqlAlchemyArchiveUploadService:
         current_text = _isoformat_z(utcnow())
         requeued = 0
         with session_scope(self._session_factory) as session:
+            file_stats = (
+                select(
+                    CollectionUploadFileRecord.collection_id.label("collection_id"),
+                    func.count(CollectionUploadFileRecord.path).label("files_total"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    CollectionUploadFileRecord.uploaded_bytes
+                                    < CollectionUploadFileRecord.bytes,
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("files_incomplete"),
+                )
+                .group_by(CollectionUploadFileRecord.collection_id)
+                .subquery()
+            )
             uploads = list(
                 session.scalars(
                     select(CollectionUploadRecord)
-                    .where(CollectionUploadRecord.state == "failed")
+                    .join(
+                        file_stats,
+                        file_stats.c.collection_id == CollectionUploadRecord.collection_id,
+                    )
+                    .where(
+                        CollectionUploadRecord.state == "failed",
+                        file_stats.c.files_total > 0,
+                        file_stats.c.files_incomplete == 0,
+                    )
                     .order_by(
                         CollectionUploadRecord.archive_phase_updated_at,
                         CollectionUploadRecord.collection_id,
@@ -91,8 +123,6 @@ class SqlAlchemyArchiveUploadService:
                 )
             )
             for upload in uploads:
-                if not _upload_files_complete(upload.files):
-                    continue
                 previous_error = upload.archive_failure
                 upload.state = "archiving"
                 upload.archive_phase = "retry_wait"
@@ -179,7 +209,11 @@ class SqlAlchemyArchiveUploadService:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
                 return
-            if not _upload_files_complete(upload.files):
+            upload_stats = _collection_upload_stats(session, collection_id)
+            if (
+                upload_stats["files_total"] == 0
+                or upload_stats["files_uploaded"] != upload_stats["files_total"]
+            ):
                 upload.state = "uploading"
                 upload.archive_next_attempt_at = None
                 return
@@ -207,10 +241,14 @@ class SqlAlchemyArchiveUploadService:
                 upload.archive_phase = "packaging"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
-            sorted_files = sorted(
-                upload.files,
-                key=lambda current_file: current_file.file_order,
-            )
+            sorted_files = session.scalars(
+                select(CollectionUploadFileRecord)
+                .where(CollectionUploadFileRecord.collection_id == collection_id)
+                .order_by(
+                    CollectionUploadFileRecord.file_order,
+                    CollectionUploadFileRecord.path,
+                )
+            ).all()
             upload_files = [
                 (
                     file_record.path,
@@ -220,11 +258,16 @@ class SqlAlchemyArchiveUploadService:
                 )
                 for file_record in sorted_files
             ]
-            upload_file_count = len(upload_files)
-            upload_byte_count = sum(_bytes for _, _bytes, _, _ in upload_files)
+            upload_file_count = upload_stats["files_total"]
+            upload_byte_count = upload_stats["bytes_total"]
 
         try:
-            archive_details = _upload_files_webhook_details(upload_files)
+            archive_details = {
+                "files_total": upload_file_count,
+                "files_uploaded": upload_file_count,
+                "bytes_total": upload_byte_count,
+                "uploaded_bytes": upload_byte_count,
+            }
             target_path_by_archive_path: dict[str, str] = {}
             package_files: list[CollectionArchiveExpectedFile] = []
             for path, _bytes, sha256, target_path in upload_files:
@@ -393,7 +436,6 @@ class SqlAlchemyArchiveUploadService:
                     retryable=False,
                 )
             return
-
 
     def _promote_one_collection_file(
         self,
@@ -1093,17 +1135,6 @@ def _multipart_parts_to_json(parts: tuple[ArchiveMultipartUploadedPart, ...]) ->
     )
 
 
-def _upload_files_webhook_details(
-    upload_files: list[tuple[str, int, str, str]],
-) -> dict[str, object]:
-    return {
-        "files_total": len(upload_files),
-        "files_uploaded": len(upload_files),
-        "bytes_total": sum(file_record[1] for file_record in upload_files),
-        "uploaded_bytes": sum(file_record[1] for file_record in upload_files),
-    }
-
-
 def _hot_file_matches(
     hot_store: HotStore,
     *,
@@ -1278,12 +1309,6 @@ def enqueue_collection_archive_upload(
         return
     upload.state = "archiving"
     upload.archive_next_attempt_at = next_attempt_at
-
-
-def _upload_files_complete(file_records: list[CollectionUploadFileRecord]) -> bool:
-    return bool(file_records) and all(
-        file_record.uploaded_bytes >= file_record.bytes for file_record in file_records
-    )
 
 
 def _error_text(exc: Exception) -> str:

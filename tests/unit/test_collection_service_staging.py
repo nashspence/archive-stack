@@ -8,6 +8,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionUploadFileRecord,
 )
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
@@ -114,3 +115,64 @@ def test_collection_list_returns_all_database_summaries_in_one_page(tmp_path: Pa
         ("2025/20250101T000000Z__alpha", 1, 10, 10),
         ("2025/20250102T000000Z__beta", 1, 20, 0),
     ]
+
+
+def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    service = _service(path)
+    files = [
+        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+        {"path": "two.txt", "bytes": 20, "sha256": "b" * 64},
+    ]
+
+    created = service.create_or_resume_upload(
+        upload_slug="progress",
+        upload_timestamp="20250103T000000Z",
+        files=files,
+    )
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        first = session.get(
+            CollectionUploadFileRecord,
+            ("2025/20250103T000000Z__progress", "one.txt"),
+        )
+        assert first is not None
+        first.uploaded_bytes = 10
+        first.hot_promoted_at = "2026-07-15T00:00:00Z"
+        second = session.get(
+            CollectionUploadFileRecord,
+            ("2025/20250103T000000Z__progress", "two.txt"),
+        )
+        assert second is not None
+        second.uploaded_bytes = 5
+        second.upload_expires_at = "2026-07-16T00:00:00Z"
+
+    progress = service.get_upload("2025/20250103T000000Z__progress")
+
+    assert created["files_total"] == 2
+    assert created["bytes_total"] == 30
+    assert progress["files_pending"] == 0
+    assert progress["files_partial"] == 1
+    assert progress["files_uploaded"] == 1
+    assert progress["hot_promoted_files"] == 1
+    assert progress["uploaded_bytes"] == 15
+    assert progress["hot_promoted_bytes"] == 10
+    assert progress["missing_bytes"] == 15
+    assert progress["upload_state_expires_at"] == "2026-07-16T00:00:00Z"
+
+
+def test_collection_upload_matches_finalized_manifest_in_database(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+
+    payload = _service(path).create_or_resume_upload(
+        upload_slug="alpha",
+        upload_timestamp="20250101T000000Z",
+        files=[{"path": "file.txt", "bytes": 10, "sha256": "a" * 64}],
+    )
+
+    assert payload["state"] == "finalized"
+    assert payload["files_total"] == 1
+    assert payload["bytes_total"] == 10

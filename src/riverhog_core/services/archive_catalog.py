@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
@@ -26,13 +26,13 @@ def publish_archive_restore_catalog(
             select(CollectionArchiveRecord)
             .where(CollectionArchiveRecord.state == "uploaded")
             .where(CollectionArchiveRecord.object_path.is_not(None))
-            .order_by(CollectionArchiveRecord.collection_id)
         )
         if excluded_collection_ids:
             statement = statement.where(
                 ~CollectionArchiveRecord.collection_id.in_(excluded_collection_ids)
             )
-        archives = list(session.scalars(statement))
+        total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+        archives = session.scalars(statement.order_by(CollectionArchiveRecord.collection_id)).all()
         entries = [
             {
                 "collection_id": archive.collection_id,
@@ -58,4 +58,4 @@ def publish_archive_restore_catalog(
         entries=entries,
         generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     )
-    return len(entries)
+    return total

@@ -30,9 +30,12 @@ from riverhog_core.domain.enums import FetchState
 from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
+from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
+from riverhog_core.services.files import SqlAlchemyFileService
 from tests.fixtures.crypto import FixtureProofVerifier
 
 pytestmark = pytest.mark.integration
@@ -231,6 +234,53 @@ def _observe_for_update(attempted: threading.Event) -> Callable[..., None]:
             attempted.set()
 
     return observe
+
+
+def test_catalog_read_projections_run_on_postgres(database_url: str) -> None:
+    _, fetches, _, hot_store = _services(database_url, hot=True)
+    config = RuntimeConfig(database_url=database_url)
+    fetch = fetches.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
+
+    fetch_page = fetches.list(page=1, per_page=25, sort="bytes", order="desc")
+    fetch_status = fetches.status(str(fetch.id))
+    file_page = fetches.files(
+        str(fetch.id),
+        page=1,
+        per_page=25,
+        sort="logical_path",
+        order="asc",
+    )
+    collections = SqlAlchemyCollectionService(
+        config,
+        cast(Any, hot_store),
+        cast(Any, FakeUploadStore()),
+    )
+    collection = collections.get("2025/20250102T030405Z__docs")
+    upload = collections.create_or_resume_upload(
+        upload_slug="pending",
+        upload_timestamp="20250103T030405Z",
+        files=[{"path": "pending.txt", "bytes": 7, "sha256": "d" * 64}],
+    )
+    path_page = SqlAlchemyFileService(config, cast(Any, hot_store)).query_by_path(
+        "2025/",
+        page=1,
+        per_page=25,
+    )
+    usage = SqlAlchemyArchiveReportingService(config).get_report()
+
+    assert fetch_page.fetches[0].bytes == len(b"archived document")
+    assert fetch_status["collection_summaries"][0]["collection_id"] == (
+        "2025/20250102T030405Z__docs"
+    )
+    assert file_page["total"] == 1
+    assert collection.files == 1
+    assert upload["files_total"] == 1
+    assert upload["bytes_total"] == 7
+    assert path_page["total"] == 1
+    assert usage.totals.collections == 2
 
 
 def _start_work(

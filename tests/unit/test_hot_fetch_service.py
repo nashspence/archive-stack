@@ -212,6 +212,46 @@ def test_fetch_list_aggregates_all_collection_totals_in_the_database(tmp_path: P
     assert [str(fetch.id) for fetch in filtered.fetches] == ["fx-2"]
 
 
+def test_fetch_status_and_files_share_database_projections(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    _seed(path, hot_store)
+    service = _service(path, hot_store)
+    service.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
+
+    status = service.status("fx-1")
+    page = service.files(
+        "fx-1",
+        page=1,
+        per_page=1,
+        sort="collection_path",
+        order="desc",
+        q=".txt",
+        hot=True,
+    )
+
+    assert status["files"] == 2
+    assert status["bytes"] == 10
+    assert status["collection_summaries"] == [
+        {
+            "collection_id": "2025/20250102T030405Z__docs",
+            "files": 2,
+            "bytes": 10,
+            "hot_files": 2,
+            "hot_bytes": 10,
+            "missing_files": 0,
+            "missing_bytes": 0,
+        }
+    ]
+    assert page["total"] == 2
+    assert page["pages"] == 2
+    assert [file["collection_path"] for file in page["files"]] == ["b.txt"]
+
+
 def test_fetch_start_queues_archive_materialization_for_missing_files(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))

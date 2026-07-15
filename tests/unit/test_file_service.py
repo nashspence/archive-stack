@@ -105,3 +105,21 @@ def test_query_by_path_is_paginated_and_reports_canonical_path(tmp_path: Path) -
         "2025/20250102T030405Z__docs/letters/cover.txt",
         "2025/20250102T030405Z__docs/tax/2022/invoice-123.pdf",
     ]
+
+
+def test_query_by_path_filters_nested_directory_in_database(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "state.sqlite3"
+    initialize_db(sqlite_url(sqlite_path))
+    _seed_docs_collection(sqlite_path)
+
+    payload = SqlAlchemyFileService(_config(sqlite_path), _FakeHotStore()).query_by_path(
+        "2025/20250102T030405Z__docs/tax/",
+        page=2,
+        per_page=1,
+    )
+
+    assert payload["total"] == 2
+    assert payload["pages"] == 2
+    assert [record["collection_path"] for record in payload["files"]] == [
+        "tax/2022/receipt-456.pdf"
+    ]

@@ -56,7 +56,7 @@ class HotEvictResponse(RiverhogModel):
 
 
 class FetchCollectionSummaryOut(RiverhogModel):
-    collection: str
+    collection_id: str
     files: int
     bytes: int
     hot_files: int

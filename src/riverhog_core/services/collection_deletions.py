@@ -7,7 +7,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
@@ -15,8 +15,11 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveRestoreCollectionRecord,
     ArchiveRestoreRecord,
+    CollectionArchiveRecord,
     CollectionDeletionRecord,
+    CollectionFileRecord,
     CollectionRecord,
+    CollectionUploadFileRecord,
     CollectionUploadRecord,
     FetchCollectionRecord,
     FetchRecord,
@@ -188,23 +191,25 @@ class SqlAlchemyCollectionDeletionService:
                 return _deletion_result(plan, status="already_absent")
             if not secrets.compare_digest(active.challenge, challenge):
                 raise Conflict("collection deletion challenge does not match active deletion")
-            restores = list(
-                session.scalars(
-                    select(ArchiveRestoreRecord)
-                    .join(ArchiveRestoreCollectionRecord)
-                    .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
-                ).unique()
-            )
-            newly_active = [
-                restore.restore_id
-                for restore in restores
-                if restore.state in _ACTIVE_RESTORE_STATES
-            ]
+            newly_active = session.scalars(
+                select(ArchiveRestoreRecord.restore_id)
+                .join(ArchiveRestoreCollectionRecord)
+                .where(
+                    ArchiveRestoreCollectionRecord.collection_id == collection_id,
+                    ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
+                )
+                .order_by(ArchiveRestoreRecord.restore_id)
+            ).all()
             if newly_active:
                 raise Conflict(
                     "archive restore became active during collection deletion: "
-                    + ", ".join(sorted(newly_active))
+                    + ", ".join(newly_active)
                 )
+            restores = session.scalars(
+                select(ArchiveRestoreRecord)
+                .join(ArchiveRestoreCollectionRecord)
+                .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
+            ).unique()
             for restore in restores:
                 session.delete(restore)
             upload = session.get(CollectionUploadRecord, collection_id)
@@ -232,17 +237,25 @@ def _build_plan(
     collection_id: str,
     expires_at: datetime,
 ) -> dict[str, object]:
-    collection = session.scalar(
-        select(CollectionRecord)
-        .options(
-            selectinload(CollectionRecord.files),
-            selectinload(CollectionRecord.archive),
+    archive_row = session.execute(
+        select(
+            CollectionRecord.id,
+            CollectionArchiveRecord,
+            (
+                func.coalesce(CollectionArchiveRecord.stored_bytes, 0)
+                + func.coalesce(CollectionArchiveRecord.manifest_stored_bytes, 0)
+                + func.coalesce(CollectionArchiveRecord.ots_stored_bytes, 0)
+            ).label("remote_storage_bytes"),
+        )
+        .outerjoin(
+            CollectionArchiveRecord,
+            CollectionArchiveRecord.collection_id == CollectionRecord.id,
         )
         .where(CollectionRecord.id == collection_id)
-    )
-    if collection is None:
+    ).one_or_none()
+    if archive_row is None:
         raise NotFound(f"collection not found: {collection_id}")
-    archive = collection.archive
+    archive = archive_row[1]
     if (
         archive is None
         or archive.state != "uploaded"
@@ -255,50 +268,87 @@ def _build_plan(
             f"collection archive is not completely uploaded and verified: {collection_id}"
         )
 
-    upload = session.scalar(
-        select(CollectionUploadRecord)
-        .options(selectinload(CollectionUploadRecord.files))
-        .where(CollectionUploadRecord.collection_id == collection_id)
+    upload = session.get(CollectionUploadRecord, collection_id)
+    restore_query = (
+        select(
+            ArchiveRestoreRecord.restore_id,
+            ArchiveRestoreRecord.state,
+        )
+        .join(ArchiveRestoreCollectionRecord)
+        .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
     )
-    restores = list(
-        session.scalars(
-            select(ArchiveRestoreRecord)
-            .join(ArchiveRestoreCollectionRecord)
-            .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
-            .order_by(ArchiveRestoreRecord.restore_id)
-        ).unique()
+    restore_ids = session.scalars(
+        select(ArchiveRestoreRecord.restore_id)
+        .join(ArchiveRestoreCollectionRecord)
+        .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
+        .order_by(ArchiveRestoreRecord.restore_id)
+    ).all()
+    active_restore_ids = session.scalars(
+        select(ArchiveRestoreRecord.restore_id)
+        .join(ArchiveRestoreCollectionRecord)
+        .where(
+            ArchiveRestoreCollectionRecord.collection_id == collection_id,
+            ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
+        )
+        .order_by(ArchiveRestoreRecord.restore_id)
+    ).all()
+    restore_count = int(
+        session.scalar(select(func.count()).select_from(restore_query.subquery())) or 0
     )
     active_fetch_ids = _active_fetch_ids(session, collection_id)
     blockers: list[str] = []
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
-    blockers.extend(
-        f"archive restore is active: {restore.restore_id}"
-        for restore in restores
-        if restore.state in _ACTIVE_RESTORE_STATES
-    )
+    blockers.extend(f"archive restore is active: {restore_id}" for restore_id in active_restore_ids)
     blockers.extend(f"fetch is active: {fetch_id}" for fetch_id in active_fetch_ids)
 
+    file_rows = session.execute(
+        select(
+            CollectionFileRecord.path,
+            CollectionFileRecord.bytes,
+            CollectionFileRecord.hot,
+        )
+        .where(CollectionFileRecord.collection_id == collection_id)
+        .order_by(CollectionFileRecord.path)
+    ).all()
+    file_count, file_bytes = session.execute(
+        select(
+            func.count(CollectionFileRecord.path),
+            func.coalesce(func.sum(CollectionFileRecord.bytes), 0),
+        ).where(CollectionFileRecord.collection_id == collection_id)
+    ).one()
     files = [
         {
             "path": file.path,
             "bytes": file.bytes,
             "hot": file.hot,
         }
-        for file in sorted(collection.files, key=lambda item: item.path)
+        for file in file_rows
     ]
     hot_objects = [
         {"path": path, "bytes": size}
         for path, size in hot_store.list_collection_files(collection_id)
     ]
-    upload_files = (
-        [
-            {"path": file.path, "bytes": file.bytes}
-            for file in sorted(upload.files, key=lambda item: item.file_order)
-        ]
-        if upload is not None
-        else []
+    upload_file_rows = session.execute(
+        select(
+            CollectionUploadFileRecord.path,
+            CollectionUploadFileRecord.bytes,
+        )
+        .where(CollectionUploadFileRecord.collection_id == collection_id)
+        .order_by(
+            CollectionUploadFileRecord.file_order,
+            CollectionUploadFileRecord.path,
+        )
+    ).all()
+    upload_file_count = int(
+        session.scalar(
+            select(func.count(CollectionUploadFileRecord.path)).where(
+                CollectionUploadFileRecord.collection_id == collection_id
+            )
+        )
+        or 0
     )
+    upload_files = [{"path": file.path, "bytes": file.bytes} for file in upload_file_rows]
     archive_objects = [
         {
             "kind": "archive",
@@ -322,23 +372,23 @@ def _build_plan(
         "warning": ARCHIVE_CUSTODY_WARNING,
         "expires_at": _isoformat_z(expires_at),
         "files": files,
-        "file_count": len(files),
-        "bytes": sum(cast(int, item["bytes"]) for item in files),
+        "file_count": int(file_count),
+        "bytes": int(file_bytes),
         "hot_objects": hot_objects,
         "hot_files": len(hot_objects),
         "hot_bytes": sum(cast(int, item["bytes"]) for item in hot_objects),
         "archive_objects": archive_objects,
-        "remote_storage_bytes": sum(cast(int, item["stored_bytes"]) for item in archive_objects),
+        "remote_storage_bytes": int(archive_row.remote_storage_bytes),
         "upload_files": upload_files,
-        "archive_restores": [restore.restore_id for restore in restores],
+        "archive_restores": list(restore_ids),
         "metadata_rows": {
             "collections": 1,
-            "collection_files": len(files),
+            "collection_files": int(file_count),
             "collection_archives": 1,
             "collection_uploads": int(upload is not None),
-            "collection_upload_files": len(upload_files),
-            "archive_restores": len(restores),
-            "archive_restore_collections": len(restores),
+            "collection_upload_files": upload_file_count,
+            "archive_restores": restore_count,
+            "archive_restore_collections": restore_count,
             "encrypted_restore_catalog_entries": 1,
         },
         "blockers": blockers,
