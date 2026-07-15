@@ -8,12 +8,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.catalog_db import session_scope
-from riverhog_core.catalog_models import CollectionArchiveRecord
+from riverhog_core.catalog_models import CollectionArchiveCopyRecord
 from riverhog_core.ports.archive_store import ArchiveStore
 
 
 def publish_archive_restore_catalog(
     *,
+    store_name: str,
     archive_store: ArchiveStore,
     session_factory: sessionmaker[Session],
     excluded_collection_ids: Collection[str] = (),
@@ -23,16 +24,19 @@ def publish_archive_restore_catalog(
         return 0
     with session_scope(session_factory) as session:
         statement = (
-            select(CollectionArchiveRecord)
-            .where(CollectionArchiveRecord.state == "uploaded")
-            .where(CollectionArchiveRecord.object_path.is_not(None))
+            select(CollectionArchiveCopyRecord)
+            .where(CollectionArchiveCopyRecord.state == "uploaded")
+            .where(CollectionArchiveCopyRecord.store == store_name)
+            .where(CollectionArchiveCopyRecord.object_path.is_not(None))
         )
         if excluded_collection_ids:
             statement = statement.where(
-                ~CollectionArchiveRecord.collection_id.in_(excluded_collection_ids)
+                ~CollectionArchiveCopyRecord.collection_id.in_(excluded_collection_ids)
             )
         total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-        archives = session.scalars(statement.order_by(CollectionArchiveRecord.collection_id)).all()
+        archives = session.scalars(
+            statement.order_by(CollectionArchiveCopyRecord.collection_id)
+        ).all()
         entries = [
             {
                 "collection_id": archive.collection_id,

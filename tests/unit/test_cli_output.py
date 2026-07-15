@@ -29,20 +29,26 @@ def test_collection_upload_output_reports_hot_retention_choice() -> None:
     assert "hot storage: retained" in retained
 
 
-def test_collection_output_leads_with_archive_and_hot_state() -> None:
+def test_collection_output_leads_with_archive_copies_and_hot_state() -> None:
     rendered = format_collection_summary(
         {
             "id": "2025/20250102T030405Z__docs",
             "files": 2,
             "bytes": 100,
             "hot_bytes": 60,
-            "archive": {"state": "uploaded", "storage_class": "DEEP_ARCHIVE"},
+            "archive_copies": [
+                {
+                    "store": "deep",
+                    "state": "uploaded",
+                    "storage_class": "DEEP_ARCHIVE",
+                }
+            ],
         }
     )
 
     assert "collection 2025/20250102T030405Z__docs" in rendered
     assert "hot: 60 B" in rendered
-    assert "archive: uploaded" in rendered
+    assert "archive copies: deep=uploaded" in rendered
 
 
 def test_list_and_search_output_use_logical_paths_and_collection_ids() -> None:
@@ -57,7 +63,7 @@ def test_list_and_search_output_use_logical_paths_and_collection_ids() -> None:
                     "files": 1,
                     "bytes": 10,
                     "hot_bytes": 10,
-                    "archive": {"state": "uploaded"},
+                    "archive_copies": [{"store": "deep", "state": "uploaded"}],
                 }
             ],
         }
@@ -77,7 +83,8 @@ def test_list_and_search_output_use_logical_paths_and_collection_ids() -> None:
         }
     )
 
-    assert "2025/20250102T030405Z__docs" in collections and "archive=uploaded" in collections
+    assert "2025/20250102T030405Z__docs" in collections
+    assert "archive=deep=uploaded" in collections
     assert "2025/20250102T030405Z__docs/a.txt" in files and "hot=true" in files
 
 

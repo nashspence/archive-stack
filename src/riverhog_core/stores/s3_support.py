@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 
 _MISSING_BUCKET_CODES = {"404", "NoSuchBucket", "NotFound"}
 
@@ -52,13 +52,13 @@ def create_s3_client(config: RuntimeConfig) -> Any:
     )
 
 
-def create_archive_s3_client(config: RuntimeConfig) -> Any:
+def create_archive_s3_client(config: RuntimeConfig, store: ArchiveStoreConfig) -> Any:
     return _create_s3_client(
-        endpoint_url=config.archive_endpoint_url,
-        region=config.archive_region,
-        access_key_id=config.archive_access_key_id,
-        secret_access_key=config.archive_secret_access_key,
-        force_path_style=config.archive_force_path_style,
+        endpoint_url=store.endpoint_url,
+        region=store.region,
+        access_key_id=store.access_key_id,
+        secret_access_key=store.secret_access_key,
+        force_path_style=store.force_path_style,
         max_pool_connections=config.s3_max_pool_connections,
     )
 
@@ -94,16 +94,17 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
         bucket=config.s3_bucket,
         region=config.s3_region,
     )
-    if (
-        config.archive_bucket == config.s3_bucket
-        and config.archive_endpoint_url == config.s3_endpoint_url
-    ):
-        return
-    _ensure_bucket_exists(
-        create_archive_s3_client(config),
-        bucket=config.archive_bucket,
-        region=config.archive_region,
-    )
+    seen = {(config.s3_endpoint_url, config.s3_bucket)}
+    for store in config.archive_stores.values():
+        signature = (store.endpoint_url, store.bucket)
+        if signature in seen:
+            continue
+        _ensure_bucket_exists(
+            create_archive_s3_client(config, store),
+            bucket=store.bucket,
+            region=store.region,
+        )
+        seen.add(signature)
 
 
 def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> None:
@@ -119,20 +120,20 @@ def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> Non
                 Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
             )
 
-    if (
-        config.archive_bucket == config.s3_bucket
-        and config.archive_endpoint_url == config.s3_endpoint_url
-    ):
-        return
-
-    archive_client = create_archive_s3_client(config)
-    for prefix in prefixes:
-        paginator = archive_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=config.archive_bucket, Prefix=prefix):
-            contents = page.get("Contents", [])
-            if not contents:
-                continue
-            archive_client.delete_objects(
-                Bucket=config.archive_bucket,
-                Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
-            )
+    seen = {(config.s3_endpoint_url, config.s3_bucket)}
+    for store in config.archive_stores.values():
+        signature = (store.endpoint_url, store.bucket)
+        if signature in seen:
+            continue
+        archive_client = create_archive_s3_client(config, store)
+        for prefix in prefixes:
+            paginator = archive_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=store.bucket, Prefix=prefix):
+                contents = page.get("Contents", [])
+                if not contents:
+                    continue
+                archive_client.delete_objects(
+                    Bucket=store.bucket,
+                    Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
+                )
+        seen.add(signature)

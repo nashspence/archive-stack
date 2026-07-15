@@ -11,11 +11,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyJobRecord,
     ArchiveRestoreCollectionRecord,
     ArchiveRestoreRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -26,7 +28,6 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
 from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
-from riverhog_core.ports.archive_store import ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
@@ -52,11 +53,11 @@ class SqlAlchemyCollectionDeletionService:
     def __init__(
         self,
         config: RuntimeConfig,
-        archive_store: ArchiveStore,
+        archive_stores: ArchiveStoreRegistry,
         hot_store: HotStore,
         upload_store: UploadStore,
     ) -> None:
-        self._archive_store = archive_store
+        self._archive_stores = archive_stores
         self._hot_store = hot_store
         self._upload_store = upload_store
         self._session_factory = make_session_factory(config.database_url)
@@ -134,11 +135,13 @@ class SqlAlchemyCollectionDeletionService:
         self._delete_hot_objects(plan)
         self._delete_upload_remnants(normalized_id)
         self._delete_archive_package(plan)
-        publish_archive_restore_catalog(
-            archive_store=self._archive_store,
-            session_factory=self._session_factory,
-            excluded_collection_ids={normalized_id},
-        )
+        for store_name, archive_store in self._archive_stores.items():
+            publish_archive_restore_catalog(
+                store_name=store_name,
+                archive_store=archive_store,
+                session_factory=self._session_factory,
+                excluded_collection_ids={normalized_id},
+            )
         return self._finish(normalized_id, supplied_challenge, plan)
 
     def _delete_hot_objects(self, plan: dict[str, object]) -> None:
@@ -168,16 +171,18 @@ class SqlAlchemyCollectionDeletionService:
                 )
 
     def _delete_archive_package(self, plan: dict[str, object]) -> None:
-        objects = {
-            str(item["kind"]): str(item["object_path"])
-            for item in cast(list[dict[str, object]], plan["archive_objects"])
-        }
-        self._archive_store.delete_collection_archive_package(
-            collection_id=str(plan["collection_id"]),
-            object_path=objects["archive"],
-            manifest_object_path=objects["manifest"],
-            proof_object_path=objects["proof"],
-        )
+        objects_by_store: dict[str, dict[str, str]] = {}
+        for item in cast(list[dict[str, object]], plan["archive_objects"]):
+            objects_by_store.setdefault(str(item["store"]), {})[str(item["kind"])] = str(
+                item["object_path"]
+            )
+        for store_name, objects in objects_by_store.items():
+            self._archive_stores.require(store_name).delete_collection_archive_package(
+                collection_id=str(plan["collection_id"]),
+                object_path=objects["archive"],
+                manifest_object_path=objects["manifest"],
+                proof_object_path=objects["proof"],
+            )
 
     def _finish(
         self,
@@ -204,6 +209,20 @@ class SqlAlchemyCollectionDeletionService:
                 raise Conflict(
                     "archive restore became active during collection deletion: "
                     + ", ".join(newly_active)
+                )
+            active_copy_jobs = session.execute(
+                select(
+                    ArchiveCopyJobRecord.source_store,
+                    ArchiveCopyJobRecord.destination_store,
+                ).where(ArchiveCopyJobRecord.collection_id == collection_id)
+            ).all()
+            if active_copy_jobs:
+                raise Conflict(
+                    "archive copy became active during collection deletion: "
+                    + ", ".join(
+                        f"{source_store} -> {destination_store}"
+                        for source_store, destination_store in active_copy_jobs
+                    )
                 )
             restores = session.scalars(
                 select(ArchiveRestoreRecord)
@@ -237,35 +256,40 @@ def _build_plan(
     collection_id: str,
     expires_at: datetime,
 ) -> dict[str, object]:
-    archive_row = session.execute(
-        select(
-            CollectionRecord.id,
-            CollectionArchiveRecord,
-            (
-                func.coalesce(CollectionArchiveRecord.stored_bytes, 0)
-                + func.coalesce(CollectionArchiveRecord.manifest_stored_bytes, 0)
-                + func.coalesce(CollectionArchiveRecord.ots_stored_bytes, 0)
-            ).label("remote_storage_bytes"),
-        )
-        .outerjoin(
-            CollectionArchiveRecord,
-            CollectionArchiveRecord.collection_id == CollectionRecord.id,
-        )
-        .where(CollectionRecord.id == collection_id)
-    ).one_or_none()
-    if archive_row is None:
+    collection_exists = session.scalar(
+        select(CollectionRecord.id).where(CollectionRecord.id == collection_id)
+    )
+    if collection_exists is None:
         raise NotFound(f"collection not found: {collection_id}")
-    archive = archive_row[1]
-    if (
-        archive is None
-        or archive.state != "uploaded"
+    archives = session.scalars(
+        select(CollectionArchiveCopyRecord)
+        .where(CollectionArchiveCopyRecord.collection_id == collection_id)
+        .order_by(CollectionArchiveCopyRecord.store)
+    ).all()
+    archive_copy_count, remote_storage_bytes = session.execute(
+        select(
+            func.count(CollectionArchiveCopyRecord.store),
+            func.coalesce(
+                func.sum(
+                    func.coalesce(CollectionArchiveCopyRecord.stored_bytes, 0)
+                    + func.coalesce(CollectionArchiveCopyRecord.manifest_stored_bytes, 0)
+                    + func.coalesce(CollectionArchiveCopyRecord.ots_stored_bytes, 0)
+                ),
+                0,
+            ),
+        )
+        .where(CollectionArchiveCopyRecord.collection_id == collection_id)
+    ).one()
+    if not archives or any(
+        archive.state != "uploaded"
         or archive.last_verified_at is None
         or archive.object_path is None
         or archive.manifest_object_path is None
         or archive.ots_object_path is None
+        for archive in archives
     ):
         raise InvalidState(
-            f"collection archive is not completely uploaded and verified: {collection_id}"
+            f"collection archive copies are not completely uploaded and verified: {collection_id}"
         )
 
     upload = session.get(CollectionUploadRecord, collection_id)
@@ -296,11 +320,23 @@ def _build_plan(
         session.scalar(select(func.count()).select_from(restore_query.subquery())) or 0
     )
     active_fetch_ids = _active_fetch_ids(session, collection_id)
+    archive_copy_jobs = session.execute(
+        select(
+            ArchiveCopyJobRecord.source_store,
+            ArchiveCopyJobRecord.destination_store,
+        )
+        .where(ArchiveCopyJobRecord.collection_id == collection_id)
+        .order_by(ArchiveCopyJobRecord.destination_store)
+    ).all()
     blockers: list[str] = []
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
     blockers.extend(f"archive restore is active: {restore_id}" for restore_id in active_restore_ids)
     blockers.extend(f"fetch is active: {fetch_id}" for fetch_id in active_fetch_ids)
+    blockers.extend(
+        f"archive copy is active: {source_store} -> {destination_store}"
+        for source_store, destination_store in archive_copy_jobs
+    )
 
     file_rows = session.execute(
         select(
@@ -352,20 +388,17 @@ def _build_plan(
     upload_files = [{"path": file.path, "bytes": file.bytes} for file in upload_file_rows]
     archive_objects = [
         {
-            "kind": "archive",
-            "object_path": archive.object_path,
-            "stored_bytes": int(archive.stored_bytes or 0),
-        },
-        {
-            "kind": "manifest",
-            "object_path": archive.manifest_object_path,
-            "stored_bytes": int(archive.manifest_stored_bytes or 0),
-        },
-        {
-            "kind": "proof",
-            "object_path": archive.ots_object_path,
-            "stored_bytes": int(archive.ots_stored_bytes or 0),
-        },
+            "store": archive.store,
+            "kind": kind,
+            "object_path": object_path,
+            "stored_bytes": int(stored_bytes or 0),
+        }
+        for archive in archives
+        for kind, object_path, stored_bytes in (
+            ("archive", archive.object_path, archive.stored_bytes),
+            ("manifest", archive.manifest_object_path, archive.manifest_stored_bytes),
+            ("proof", archive.ots_object_path, archive.ots_stored_bytes),
+        )
     ]
     return {
         "status": "blocked" if blockers else "ready",
@@ -379,18 +412,19 @@ def _build_plan(
         "hot_files": hot_listing.file_count,
         "hot_bytes": hot_listing.total_bytes,
         "archive_objects": archive_objects,
-        "remote_storage_bytes": int(archive_row.remote_storage_bytes),
+        "remote_storage_bytes": int(remote_storage_bytes),
         "upload_files": upload_files,
         "archive_restores": list(restore_ids),
         "metadata_rows": {
             "collections": 1,
             "collection_files": int(file_count),
-            "collection_archives": 1,
+            "collection_archive_copies": int(archive_copy_count),
+            "archive_copy_jobs": len(archive_copy_jobs),
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
             "archive_restores": restore_count,
             "archive_restore_collections": restore_count,
-            "encrypted_restore_catalog_entries": 1,
+            "encrypted_restore_catalog_entries": int(archive_copy_count),
         },
         "blockers": blockers,
         "billing_note": (

@@ -8,9 +8,10 @@ from typing import Any
 from sqlalchemy import case, delete, func, literal, or_, select
 from sqlalchemy.orm import Session
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchCollectionRecord,
@@ -30,7 +31,6 @@ from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchivePackageVerificationError,
-    ArchiveStore,
     CollectionArchivePackageIdentity,
 )
 from riverhog_core.ports.hot_store import HotStore
@@ -51,10 +51,10 @@ class SqlAlchemyFetchService:
     def __init__(
         self,
         config: RuntimeConfig,
-        archive_store: ArchiveStore,
+        archive_stores: ArchiveStoreRegistry,
         hot_store: HotStore,
     ) -> None:
-        self._archive_store = archive_store
+        self._archive_stores = archive_stores
         self._hot_store = hot_store
         self._session_factory = make_session_factory(config.database_url)
 
@@ -245,15 +245,18 @@ class SqlAlchemyFetchService:
             selected_files, selected_bytes = _collection_file_stats(session, collection_ids)
             if selected_files == 0:
                 raise NotFound("collections contain no files")
-            packages: dict[str, CollectionArchivePackageIdentity] = {}
+            packages: dict[
+                str,
+                list[tuple[str, CollectionArchivePackageIdentity]],
+            ] = {}
             for collection_id in collection_ids:
-                package = _collection_archive_package_identity(session, collection_id)
-                if package is None:
+                copies = _collection_archive_package_identities(session, collection_id)
+                if not copies:
                     raise Conflict(
                         "cannot evict a collection before its archive upload is complete: "
                         f"{collection_id}"
                     )
-                packages[collection_id] = package
+                packages[collection_id] = copies
             would_evict = _collection_files(session, collection_ids, hot=True)
             would_evict_files, would_evict_bytes = _collection_file_stats(
                 session,
@@ -269,22 +272,31 @@ class SqlAlchemyFetchService:
                     would_evict_bytes=would_evict_bytes,
                     dry_run=True,
                 )
-            for collection_id, package in packages.items():
-                try:
-                    self._archive_store.verify_collection_archive_package(
-                        collection_id=collection_id,
-                        package=package,
-                    )
-                except ArchivePackageVerificationError as exc:
-                    raise Conflict(
-                        "cannot evict a collection because its remote archive does not match "
-                        f"the upload record: {collection_id}"
-                    ) from exc
-                except Exception as exc:
+            for collection_id, copies in packages.items():
+                failures: list[Exception] = []
+                for store_name, package in copies:
+                    try:
+                        self._archive_stores.require(
+                            store_name
+                        ).verify_collection_archive_package(
+                            collection_id=collection_id,
+                            package=package,
+                        )
+                        break
+                    except Exception as exc:
+                        failures.append(exc)
+                else:
+                    if failures and all(
+                        isinstance(exc, ArchivePackageVerificationError) for exc in failures
+                    ):
+                        raise Conflict(
+                            "cannot evict a collection because no remote archive copy matches "
+                            f"its upload record: {collection_id}"
+                        ) from failures[-1]
                     raise ServiceUnavailable(
-                        "cannot confirm the remote collection archive before hot eviction: "
+                        "cannot confirm any remote archive copy before hot eviction: "
                         f"{collection_id}"
-                    ) from exc
+                    ) from failures[-1]
             for record in would_evict:
                 try:
                     self._hot_store.delete_collection_file(record.collection_id, record.path)
@@ -539,43 +551,54 @@ def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
     return fetch
 
 
-def _collection_archive_package_identity(
+def _collection_archive_package_identities(
     session: Session,
     collection_id: str,
-) -> CollectionArchivePackageIdentity | None:
-    archive = session.get(CollectionArchiveRecord, collection_id)
-    if (
-        archive is None
-        or archive.state != ArchiveState.UPLOADED.value
-        or not archive.object_path
-        or archive.stored_bytes is None
-        or not archive.sha256
-        or not archive.manifest_object_path
-        or archive.manifest_stored_bytes is None
-        or not archive.manifest_sha256
-        or not archive.ots_object_path
-        or archive.ots_stored_bytes is None
-        or not archive.ots_sha256
-        or not archive.last_verified_at
-    ):
-        return None
-    return CollectionArchivePackageIdentity(
-        archive=ArchiveObjectIdentity(
-            object_path=archive.object_path,
-            stored_bytes=archive.stored_bytes,
-            sha256=archive.sha256,
-        ),
-        manifest=ArchiveObjectIdentity(
-            object_path=archive.manifest_object_path,
-            stored_bytes=archive.manifest_stored_bytes,
-            sha256=archive.manifest_sha256,
-        ),
-        proof=ArchiveObjectIdentity(
-            object_path=archive.ots_object_path,
-            stored_bytes=archive.ots_stored_bytes,
-            sha256=archive.ots_sha256,
-        ),
-    )
+) -> list[tuple[str, CollectionArchivePackageIdentity]]:
+    archives = session.scalars(
+        select(CollectionArchiveCopyRecord)
+        .where(CollectionArchiveCopyRecord.collection_id == collection_id)
+        .order_by(CollectionArchiveCopyRecord.store)
+    ).all()
+    copies: list[tuple[str, CollectionArchivePackageIdentity]] = []
+    for archive in archives:
+        if (
+            archive.state != ArchiveState.UPLOADED.value
+            or not archive.object_path
+            or archive.stored_bytes is None
+            or not archive.sha256
+            or not archive.manifest_object_path
+            or archive.manifest_stored_bytes is None
+            or not archive.manifest_sha256
+            or not archive.ots_object_path
+            or archive.ots_stored_bytes is None
+            or not archive.ots_sha256
+            or not archive.last_verified_at
+        ):
+            continue
+        copies.append(
+            (
+                archive.store,
+                CollectionArchivePackageIdentity(
+                    archive=ArchiveObjectIdentity(
+                        object_path=archive.object_path,
+                        stored_bytes=archive.stored_bytes,
+                        sha256=archive.sha256,
+                    ),
+                    manifest=ArchiveObjectIdentity(
+                        object_path=archive.manifest_object_path,
+                        stored_bytes=archive.manifest_stored_bytes,
+                        sha256=archive.manifest_sha256,
+                    ),
+                    proof=ArchiveObjectIdentity(
+                        object_path=archive.ots_object_path,
+                        stored_bytes=archive.ots_stored_bytes,
+                        sha256=archive.ots_sha256,
+                    ),
+                ),
+            )
+        )
+    return copies
 
 
 def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:

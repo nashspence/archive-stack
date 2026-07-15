@@ -150,7 +150,31 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         if name.startswith("RIVERHOG_")
         or name in {"INCOMPLETE_UPLOAD_TTL", "UPLOAD_EXPIRY_SWEEP_INTERVAL"}
     }
-    assert all(name in runtime_source for name in configured_names)
+    dynamic_archive_store_names = {
+        name
+        for name in configured_names
+        if name.startswith("RIVERHOG_ARCHIVE_STORE_")
+    }
+    assert all(
+        name in runtime_source
+        for name in configured_names - dynamic_archive_store_names
+    )
+    assert "RIVERHOG_ARCHIVE_STORE_" in runtime_source
+    assert {
+        name.rsplit("_", 1)[-1]
+        for name in dynamic_archive_store_names
+    } <= {
+        "URL",
+        "REGION",
+        "BUCKET",
+        "ID",
+        "KEY",
+        "STYLE",
+        "PREFIX",
+        "BACKEND",
+        "CLASS",
+        "MODE",
+    }
 
     example_names = {
         line.split("=", 1)[0]
@@ -163,15 +187,24 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
 
 def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     required = {
-        "RIVERHOG_ARCHIVE_ENDPOINT_URL",
-        "RIVERHOG_ARCHIVE_REGION",
-        "RIVERHOG_ARCHIVE_BUCKET",
-        "RIVERHOG_ARCHIVE_ACCESS_KEY_ID",
-        "RIVERHOG_ARCHIVE_SECRET_ACCESS_KEY",
-        "RIVERHOG_ARCHIVE_FORCE_PATH_STYLE",
-        "RIVERHOG_ARCHIVE_PREFIX",
-        "RIVERHOG_ARCHIVE_BACKEND",
-        "RIVERHOG_ARCHIVE_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORES",
+        "RIVERHOG_DEFAULT_ARCHIVE_STORE",
+        "RIVERHOG_ARCHIVE_READ_ORDER",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_ENDPOINT_URL",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_REGION",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_BUCKET",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_ACCESS_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_SECRET_ACCESS_KEY",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_FORCE_PATH_STYLE",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_PREFIX",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_READ_MODE",
+        "RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL",
+        "RIVERHOG_ARCHIVE_STORE_B2_BUCKET",
+        "RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY",
+        "RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS",
         "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         "RIVERHOG_ARCHIVE_ENCRYPTION",
@@ -184,7 +217,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_RESTORE_LATENCY",
         "RIVERHOG_ARCHIVE_RESTORE_READY_TTL",
         "RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
-        "RIVERHOG_ARCHIVE_RESTORE_MODE",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):

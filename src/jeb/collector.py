@@ -3333,16 +3333,20 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     notify_defaults: dict[str, Any] = {"enabled": notify.enabled}
     if notify.recipients:
         notify_defaults["recipients"] = list(notify.recipients)
+    riverhog_defaults: dict[str, Any] = {
+        "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized") or "finalized",
+        "retain_hot": env_bool(values, "JEB_RIVERHOG_RETAIN_HOT", True),
+    }
+    archive_store = env_value_from(values, "JEB_RIVERHOG_ARCHIVE_STORE", "")
+    if archive_store:
+        riverhog_defaults["archive_store"] = archive_store
     munchy_job_defaults = {
         "workflow_mode": "collection_archive",
         "output_mode": env_value_from(values, "JEB_OUTPUT_MODE", "video") or "video",
         "tasks": tasks,
         "collection_archive": {
             "destination": "riverhog",
-            "riverhog": {
-                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized") or "finalized",
-                "retain_hot": env_bool(values, "JEB_RIVERHOG_RETAIN_HOT", True),
-            },
+            "riverhog": riverhog_defaults,
         },
         "notify": notify_defaults,
         "cleanup_local_on_success": env_bool(values, "JEB_CLEANUP_LOCAL_ON_SUCCESS", False),

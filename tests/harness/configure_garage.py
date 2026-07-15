@@ -39,13 +39,6 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
 
 def _lifecycle_targets(config) -> list[tuple[object, str]]:
     targets: list[tuple[object, str]] = [(create_s3_client(config), config.s3_bucket)]
-    archive_signature = (
-        config.archive_endpoint_url,
-        config.archive_region,
-        config.archive_bucket,
-        config.archive_access_key_id,
-        config.archive_force_path_style,
-    )
     storage_signature = (
         config.s3_endpoint_url,
         config.s3_region,
@@ -53,8 +46,19 @@ def _lifecycle_targets(config) -> list[tuple[object, str]]:
         config.s3_access_key_id,
         config.s3_force_path_style,
     )
-    if archive_signature != storage_signature:
-        targets.append((create_archive_s3_client(config), config.archive_bucket))
+    seen = {storage_signature}
+    for store in config.archive_stores.values():
+        archive_signature = (
+            store.endpoint_url,
+            store.region,
+            store.bucket,
+            store.access_key_id,
+            store.force_path_style,
+        )
+        if archive_signature in seen:
+            continue
+        seen.add(archive_signature)
+        targets.append((create_archive_s3_client(config, store), store.bucket))
     return targets
 
 

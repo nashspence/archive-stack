@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from riverhog_api.schemas.archive import ArchiveOut, CollectionManifestOut
+from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -48,6 +48,7 @@ class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
     upload_timestamp: str | None = None
+    archive_store: str | None = None
     retain_hot: bool = True
     notify: CollectionNotifyConfig | None = None
 
@@ -56,6 +57,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     slug: str
     ingest_source: str | None = None
     upload_timestamp: str | None = None
+    archive_store: str | None = None
     retain_hot: bool = True
     notify: CollectionNotifyConfig | None = None
 
@@ -70,10 +72,7 @@ class CollectionSummaryOut(RiverhogModel):
     bytes: int
     hot_files: int
     hot_bytes: int
-    archive: ArchiveOut | None = None
-    collection_manifest: CollectionManifestOut | None = None
-    archive_format: str | None = None
-    compression: str | None = None
+    archive_copies: list[ArchiveCopyOut]
 
 
 class ListCollectionsResponse(RiverhogModel):
@@ -91,6 +90,7 @@ class CollectionDeletionFileOut(RiverhogModel):
 
 
 class CollectionDeletionObjectOut(RiverhogModel):
+    store: str
     kind: Literal["archive", "manifest", "proof"]
     object_path: str
     stored_bytes: int
@@ -152,6 +152,7 @@ class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
     retain_hot: bool
+    archive_store: str
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut
 
@@ -160,15 +161,16 @@ class CollectionUploadSessionOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
     retain_hot: bool
+    archive_store: str
     state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
     files_total: int
     files_pending: int
     files_partial: int
     files_uploaded: int
-    hot_promoted_files: int = 0
+    hot_materialized_files: int = 0
     bytes_total: int
     uploaded_bytes: int
-    hot_promoted_bytes: int = 0
+    hot_materialized_bytes: int = 0
     missing_bytes: int
     upload_state_expires_at: str | None
     latest_failure: str | None = None

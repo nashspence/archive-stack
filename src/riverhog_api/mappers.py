@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from riverhog_core.domain.models import (
+    ArchiveCopyStatus,
     ArchiveRestoreCollection,
     ArchiveRestoreListPage,
     ArchiveRestoreNotificationStatus,
     ArchiveRestoreProgress,
     ArchiveRestoreSummary,
-    ArchiveStatus,
     ArchiveUsageCollection,
     ArchiveUsageReport,
     ArchiveUsageSnapshot,
@@ -19,8 +19,9 @@ from riverhog_core.domain.models import (
 )
 
 
-def map_archive(summary: ArchiveStatus) -> dict[str, object]:
+def map_archive(summary: ArchiveCopyStatus) -> dict[str, object]:
     return {
+        "store": summary.store,
         "state": summary.state.value,
         "object_path": summary.object_path,
         "stored_bytes": summary.stored_bytes,
@@ -29,6 +30,9 @@ def map_archive(summary: ArchiveStatus) -> dict[str, object]:
         "last_uploaded_at": summary.last_uploaded_at,
         "last_verified_at": summary.last_verified_at,
         "failure": summary.failure,
+        "collection_manifest": map_collection_manifest(summary.collection_manifest),
+        "archive_format": summary.archive_format,
+        "compression": summary.compression,
     }
 
 
@@ -58,10 +62,7 @@ def map_archive_usage_collection(summary: ArchiveUsageCollection) -> dict[str, o
     return {
         "id": str(summary.id),
         "bytes": summary.bytes,
-        "archive": map_archive(summary.archive),
-        "collection_manifest": map_collection_manifest(summary.collection_manifest),
-        "archive_format": summary.archive_format,
-        "compression": summary.compression,
+        "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
         "measured_storage_bytes": summary.measured_storage_bytes,
     }
 
@@ -91,10 +92,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "bytes": summary.bytes,
         "hot_files": summary.hot_files,
         "hot_bytes": summary.hot_bytes,
-        "archive": map_archive(summary.archive),
-        "collection_manifest": map_collection_manifest(summary.collection_manifest),
-        "archive_format": summary.archive_format,
-        "compression": summary.compression,
+        "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
     }
 
 
@@ -130,8 +128,7 @@ def map_archive_restore_progress(summary: ArchiveRestoreProgress) -> dict[str, o
 def map_archive_restore_collection(summary: ArchiveRestoreCollection) -> dict[str, object]:
     return {
         "id": str(summary.id),
-        "archive": map_archive(summary.archive),
-        "collection_manifest": map_collection_manifest(summary.collection_manifest),
+        "archive_copy": map_archive(summary.archive_copy),
         "stored_bytes": summary.stored_bytes,
     }
 

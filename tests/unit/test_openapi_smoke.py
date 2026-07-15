@@ -9,6 +9,7 @@ def test_openapi_describes_collection_archive_and_fetch_boundaries() -> None:
 
     assert {
         "/v1/archive",
+        "/v1/archive/copies",
         "/v1/archive-restores",
         "/v1/archive-restores/{archive_restore_id}",
         "/v1/collections",

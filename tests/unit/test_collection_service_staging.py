@@ -7,7 +7,7 @@ import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -53,8 +53,9 @@ def _seed(path: Path) -> None:
                 )
             )
         session.add(
-            CollectionArchiveRecord(
+            CollectionArchiveCopyRecord(
                 collection_id="2025/20250101T000000Z__alpha",
+                store="deep",
                 state="uploaded",
                 object_path="collections/alpha/archive.tar.age",
                 stored_bytes=14,
@@ -74,7 +75,30 @@ def test_collection_summary_reports_hot_and_archive_state(tmp_path: Path) -> Non
     assert summary.bytes == 10
     assert summary.hot_files == 1
     assert summary.hot_bytes == 10
-    assert summary.archive.state.value == "uploaded"
+    assert summary.archive_copies[0].store == "deep"
+    assert summary.archive_copies[0].state.value == "uploaded"
+
+
+def test_collection_summary_reports_each_named_archive_copy(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id="2025/20250101T000000Z__alpha",
+                store="b2",
+                state="uploaded",
+                object_path="collections/alpha-b2/archive.tar.age",
+                stored_bytes=15,
+                last_verified_at="2026-07-15T00:00:00Z",
+            )
+        )
+
+    summary = _service(path).get("2025/20250101T000000Z__alpha")
+
+    assert [copy.store for copy in summary.archive_copies] == ["b2", "deep"]
 
 
 def test_collection_list_sorts_current_catalog_fields(tmp_path: Path) -> None:
@@ -144,7 +168,7 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
         )
         assert first is not None
         first.uploaded_bytes = 10
-        first.hot_promoted_at = "2026-07-15T00:00:00Z"
+        first.hot_materialized_at = "2026-07-15T00:00:00Z"
         second = session.get(
             CollectionUploadFileRecord,
             ("2025/20250103T000000Z__progress", "two.txt"),
@@ -161,9 +185,9 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
     assert progress["files_pending"] == 0
     assert progress["files_partial"] == 1
     assert progress["files_uploaded"] == 1
-    assert progress["hot_promoted_files"] == 1
+    assert progress["hot_materialized_files"] == 1
     assert progress["uploaded_bytes"] == 15
-    assert progress["hot_promoted_bytes"] == 10
+    assert progress["hot_materialized_bytes"] == 10
     assert progress["missing_bytes"] == 15
     assert progress["upload_state_expires_at"] == "2026-07-16T00:00:00Z"
 

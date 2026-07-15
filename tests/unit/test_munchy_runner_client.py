@@ -27,13 +27,13 @@ from munchy.runner_client import (
     format_job_summary_line,
     format_progress_status_line,
     format_riverhog_archive_progress,
-    format_riverhog_promotion_progress,
+    format_riverhog_hot_materialization_progress,
     format_riverhog_upload_progress,
     job_finished_cleanly,
     keep_system_awake,
     progress_percent,
     riverhog_archive_progress,
-    riverhog_promotion_progress,
+    riverhog_hot_materialization_progress,
 )
 
 
@@ -309,7 +309,7 @@ def test_format_encode_progress_distinguishes_file_and_input_byte_percent() -> N
     assert "21.30% input" in line
 
 
-def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
+def test_format_riverhog_archive_and_hot_materialization_progress_are_separate() -> None:
     progress = {
         "collection_id": "2026/20260101T000000Z__camera",
         "archive_phase": "uploading",
@@ -318,20 +318,22 @@ def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
         "archive_uploaded_parts": 2,
         "archive_total_parts": 5,
         "retain_hot": True,
-        "hot_promoted_files": 3,
+        "hot_materialized_files": 3,
         "riverhog_files_total": 10,
-        "hot_promoted_bytes": 6_000,
+        "hot_materialized_bytes": 6_000,
         "riverhog_bytes_total": 20_000,
     }
 
     archive = riverhog_archive_progress(progress)
-    promotion = riverhog_promotion_progress(progress)
+    materialization = riverhog_hot_materialization_progress(progress)
 
     assert archive is not None
-    assert promotion is not None
+    assert materialization is not None
     assert format_riverhog_archive_progress(archive).startswith("riverhog deep archive, uploading")
     assert "parts 2/5" in format_riverhog_archive_progress(archive)
-    assert format_riverhog_promotion_progress(promotion).startswith("riverhog promotion 3/10 files")
+    assert format_riverhog_hot_materialization_progress(materialization).startswith(
+        "riverhog hot materialization 3/10 files"
+    )
 
 
 def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
@@ -709,9 +711,9 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
             "archive_phase": "",
             "archive_uploaded_bytes": 0,
             "archive_total_bytes": 0,
-            "hot_promoted_files": 0,
+            "hot_materialized_files": 0,
             "riverhog_files_total": 10,
-            "hot_promoted_bytes": 0,
+            "hot_materialized_bytes": 0,
             "riverhog_bytes_total": 1000,
         },
     }
@@ -722,7 +724,7 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
 
     assert "Riverhog Deep Archive" in text
     assert "riverhog deep archive, waiting" in text
-    assert "Riverhog Promotion" not in text
+    assert "Riverhog Hot Materialization" not in text
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:

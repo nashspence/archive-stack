@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from riverhog_api.schemas.archive import ArchiveOut, CollectionManifestOut
+from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -21,8 +21,7 @@ class ArchiveRestoreProgressOut(RiverhogModel):
 
 class ArchiveRestoreCollectionOut(RiverhogModel):
     id: str
-    archive: ArchiveOut
-    collection_manifest: CollectionManifestOut | None = None
+    archive_copy: ArchiveCopyOut
     stored_bytes: int
 
 

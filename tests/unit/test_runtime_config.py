@@ -72,3 +72,40 @@ def test_load_runtime_config_parses_archive_restore_settings(
     assert config.archive_restore_latency == timedelta(hours=6)
     assert config.archive_restore_ready_ttl == timedelta(days=2)
     assert config.archive_restore_retrieval_tier == "standard"
+
+
+def test_load_runtime_config_builds_named_archive_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORES", "deep,b2")
+    monkeypatch.setenv("RIVERHOG_DEFAULT_ARCHIVE_STORE", "deep")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_READ_ORDER", "b2,deep")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL", "https://s3.example.test")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_REGION", "us-west-004")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BUCKET", "riverhog-b2")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID", "b2-key")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY", "b2-secret")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_FORCE_PATH_STYLE", "false")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BACKEND", "b2")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS", "STANDARD")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_READ_MODE", "auto")
+
+    config = load_runtime_config()
+
+    assert tuple(config.archive_stores) == ("deep", "b2")
+    assert config.default_archive_store == "deep"
+    assert config.archive_read_order == ("b2", "deep")
+    assert config.archive_store("b2").bucket == "riverhog-b2"
+    assert config.archive_store("b2").backend == "b2"
+    assert config.archive_store("b2").storage_class == "STANDARD"
+    assert config.archive_store("b2").read_mode == "auto"
+
+
+def test_configured_archive_store_requires_complete_connection_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORES", "deep,b2")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL", "")
+
+    with pytest.raises(ValueError, match="archive store b2 has blank required fields"):
+        load_runtime_config()

@@ -16,10 +16,9 @@ class CollectionRecord(Base):
         back_populates="collection",
         cascade="all, delete-orphan",
     )
-    archive: Mapped[CollectionArchiveRecord | None] = relationship(
+    archive_copies: Mapped[list[CollectionArchiveCopyRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
-        uselist=False,
     )
 
 
@@ -62,10 +61,11 @@ class CollectionFileRecord(Base):
     collection: Mapped[CollectionRecord] = relationship(back_populates="files")
 
 
-class CollectionArchiveRecord(Base):
-    __tablename__ = "collection_archives"
+class CollectionArchiveCopyRecord(Base):
+    __tablename__ = "collection_archive_copies"
 
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default="pending")
     archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
     object_path: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -95,7 +95,7 @@ class CollectionArchiveRecord(Base):
         ),
     )
 
-    collection: Mapped[CollectionRecord] = relationship(back_populates="archive")
+    collection: Mapped[CollectionRecord] = relationship(back_populates="archive_copies")
 
 
 class ArchiveUsageSnapshotRecord(Base):
@@ -104,6 +104,31 @@ class ArchiveUsageSnapshotRecord(Base):
     captured_at: Mapped[str] = mapped_column(String, primary_key=True)
     uploaded_collections: Mapped[int] = mapped_column(Integer)
     measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
+
+
+class ArchiveCopyJobRecord(Base):
+    __tablename__ = "archive_copy_jobs"
+
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    destination_store: Mapped[str] = mapped_column(String, primary_key=True)
+    destination_storage_prefix: Mapped[str] = mapped_column(String)
+    source_store: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String)
+    requested_at: Mapped[str] = mapped_column(String)
+    read_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "source_store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_archive_copy_jobs_due", "state", "next_attempt_at", "requested_at"),
+    )
 
 
 class ArchiveRestoreRecord(Base):
@@ -159,6 +184,7 @@ class ArchiveRestoreCollectionRecord(Base):
 
     restore_id: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    archive_store: Mapped[str] = mapped_column(String)
     collection_order: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (
@@ -172,9 +198,14 @@ class ArchiveRestoreCollectionRecord(Base):
             ["collections.id"],
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["collection_id", "archive_store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+        ),
     )
 
     restore: Mapped[ArchiveRestoreRecord] = relationship(back_populates="collections")
+    archive_copy: Mapped[CollectionArchiveCopyRecord] = relationship()
 
 
 class FetchRecord(Base):
@@ -214,6 +245,7 @@ class CollectionUploadRecord(Base):
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
     notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_store: Mapped[str] = mapped_column(String, nullable=False)
     retain_hot: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
@@ -268,7 +300,7 @@ class CollectionUploadFileRecord(Base):
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_promoted_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    hot_materialized_at: Mapped[str | None] = mapped_column(String, nullable=True)
     hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
     hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)

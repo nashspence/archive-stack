@@ -278,7 +278,26 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
-    return replace(config, **overrides)
+    store_field_by_old_name = {
+        "archive_backend": "backend",
+        "archive_endpoint_url": "endpoint_url",
+        "archive_region": "region",
+        "archive_bucket": "bucket",
+        "archive_access_key_id": "access_key_id",
+        "archive_secret_access_key": "secret_access_key",
+        "archive_force_path_style": "force_path_style",
+        "archive_prefix": "prefix",
+        "archive_storage_class": "storage_class",
+        "archive_read_mode": "read_mode",
+    }
+    store_overrides = {
+        store_field_by_old_name.pop(name, name): overrides.pop(name)
+        for name in tuple(overrides)
+        if name in store_field_by_old_name
+    }
+    config = replace(config, **overrides)
+    store = replace(config.archive_store("deep"), **store_overrides)
+    return replace(config, archive_stores={"deep": store})
 
 
 def _package() -> CollectionArchivePackage:
@@ -319,9 +338,10 @@ def _store_with_client(
 ) -> S3ArchiveStore:
     monkeypatch.setattr(
         "riverhog_core.stores.s3_archive_store.create_archive_s3_client",
-        lambda config: client,
+        lambda config, store: client,
     )
-    return S3ArchiveStore(_config(tmp_path, **config_overrides))
+    config = _config(tmp_path, **config_overrides)
+    return S3ArchiveStore(config, config.archive_store("deep"))
 
 
 def _package_identity(
@@ -532,21 +552,21 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     assert receipt.manifest_sha256 == package.manifest_sha256
 
     restored_archive = b"".join(
-        store.iter_restored_collection_archive(
+        store.iter_collection_archive(
             collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.archive.object_path,
         )
     )
     assert restored_archive == package.archive_bytes
     assert (
-        store.read_restored_collection_manifest(
+        store.read_collection_manifest(
             collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.manifest.object_path,
         )
         == package.manifest_bytes
     )
     assert (
-        store.read_restored_collection_manifest_proof(
+        store.read_collection_manifest_proof(
             collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.proof.object_path,
         )
@@ -698,7 +718,7 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     assert client.uploads == {}
     assert client.objects[receipt.archive.object_path]["Body"].startswith(first_part)
     restored_archive = b"".join(
-        store.iter_restored_collection_archive(
+        store.iter_collection_archive(
             collection_id="2025/20250104T030405Z__large-docs",
             object_path=receipt.archive.object_path,
         )
@@ -706,7 +726,68 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     assert restored_archive == package.archive_bytes
 
 
-def test_request_collection_archive_restore_requests_collection_manifest_and_proof(
+def test_encrypted_archive_upload_accepts_a_sequential_source_stream(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    passphrase = "sequential archive source passphrase"
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_encryption="age_scrypt",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
+        archive_multipart_part_bytes=5 * 1024 * 1024,
+        archive_multipart_concurrency=1,
+    )
+    package = replace(_large_package(), _archive_chunks_from_offset=None)
+
+    receipt = store.upload_collection_archive_package(
+        collection_id="2025/20250104T030405Z__large-docs",
+        package=package,
+        archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
+    )
+
+    restored_archive = b"".join(
+        store.iter_collection_archive(
+            collection_id="2025/20250104T030405Z__large-docs",
+            object_path=receipt.archive.object_path,
+        )
+    )
+    assert restored_archive == package.archive_bytes
+
+
+def test_interrupted_sequential_archive_upload_aborts_incomplete_multipart(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_passphrase="sequential archive interruption passphrase",
+        archive_work_factor=12,
+        archive_multipart_part_bytes=5 * 1024 * 1024,
+        archive_multipart_concurrency=1,
+    )
+    package = replace(_large_package(), _archive_chunks_from_offset=None)
+    client.fail_next_upload_part_after_successes = 1
+
+    with pytest.raises(RuntimeError, match="synthetic upload_part failure"):
+        store.upload_collection_archive_package(
+            collection_id="2025/20250104T030405Z__large-docs",
+            package=package,
+            archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
+        )
+
+    assert client.aborted_uploads == ["upload-1"]
+    assert client.uploads == {}
+
+
+def test_prepare_collection_archive_read_requests_collection_manifest_and_proof(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -726,7 +807,7 @@ def test_request_collection_archive_restore_requests_collection_manifest_and_pro
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
 
-    status = store.request_collection_archive_restore(
+    status = store.prepare_collection_archive_read(
         collection_id="2025/20250102T030405Z__docs",
         object_path=receipt.archive.object_path,
         manifest_object_path=receipt.manifest.object_path,
@@ -760,9 +841,9 @@ def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
-    client.objects[receipt.archive.object_path]["ArchiveStatus"] = "ARCHIVE_ACCESS"
+    client.objects[receipt.archive.object_path]["ArchiveCopyStatus"] = "ARCHIVE_ACCESS"
 
-    status = store.get_collection_archive_restore_status(
+    status = store.get_collection_archive_read_status(
         collection_id="2025/20250102T030405Z__docs",
         object_path=receipt.archive.object_path,
         requested_at="2026-04-20T04:00:00Z",
@@ -773,7 +854,7 @@ def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
     assert status.state == "requested"
 
 
-def test_iter_restored_collection_archive_streams_when_ready(
+def test_iter_collection_archive_streams_when_ready(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -787,7 +868,7 @@ def test_iter_restored_collection_archive_streams_when_ready(
     )
 
     chunks = list(
-        store.iter_restored_collection_archive(
+        store.iter_collection_archive(
             collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.archive.object_path,
         )

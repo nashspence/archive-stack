@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+import json
+
+from typer.testing import CliRunner
+
+import riverhog_cli.main
+from riverhog_cli.main import app
+
+runner = CliRunner()
+
+
+def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    class FakeClient:
+        def create_or_resume_archive_copy(
+            self,
+            collection_id: str,
+            *,
+            destination_store: str,
+            source_store: str | None = None,
+        ) -> dict[str, object]:
+            calls.append((collection_id, destination_store, source_store))
+            return {
+                "collection_id": collection_id,
+                "source_store": source_store,
+                "destination_store": destination_store,
+                "state": "requested",
+                "requested_at": "2026-07-15T00:00:00Z",
+                "ready_at": None,
+                "expires_at": None,
+                "failure": None,
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "archive",
+            "copy",
+            "2026/20260102T030405Z__docs",
+            "--from",
+            "b2",
+            "--to",
+            "deep",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["state"] == "requested"
+    assert calls == [("2026/20260102T030405Z__docs", "deep", "b2")]

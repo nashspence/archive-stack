@@ -6,9 +6,11 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
@@ -17,6 +19,7 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
 from riverhog_core.services.interfaces import (
+    ArchiveCopyService,
     ArchiveReportingService,
     ArchiveRestoreService,
     ArchiveUploadService,
@@ -39,6 +42,7 @@ class ServiceContainer:
     collection_deletions: CollectionDeletionService
     search: SearchService
     archive_uploads: ArchiveUploadService
+    archive_copies: ArchiveCopyService
     archive_reporting: ArchiveReportingService
     archive_restores: ArchiveRestoreService
     fetches: FetchService
@@ -51,7 +55,13 @@ def default_container() -> ServiceContainer:
     initialize_db(config.database_url)
     ensure_bucket_exists(config)
     hot_store = S3HotStore(config)
-    archive_store = S3ArchiveStore(config)
+    archive_stores = ArchiveStoreRegistry(
+        {
+            name: S3ArchiveStore(config, store)
+            for name, store in config.archive_stores.items()
+        },
+        default_store=config.default_archive_store,
+    )
     upload_store = TusdUploadStore(config)
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
@@ -59,26 +69,31 @@ def default_container() -> ServiceContainer:
         collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
-            archive_store,
+            archive_stores,
             hot_store,
             upload_store,
         ),
         search=SqlAlchemySearchService(config),
         archive_uploads=SqlAlchemyArchiveUploadService(
             config,
-            archive_store,
+            archive_stores,
             hot_store,
             upload_store,
             proof_stamper=proof_stamper,
         ),
+        archive_copies=SqlAlchemyArchiveCopyService(
+            config,
+            archive_stores,
+            proof_verifier=proof_verifier,
+        ),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
         archive_restores=SqlAlchemyArchiveRestoreService(
             config,
-            archive_store,
+            archive_stores,
             hot_store,
             proof_verifier=proof_verifier,
         ),
-        fetches=SqlAlchemyFetchService(config, archive_store, hot_store),
+        fetches=SqlAlchemyFetchService(config, archive_stores, hot_store),
         files=SqlAlchemyFileService(config, hot_store),
     )
 

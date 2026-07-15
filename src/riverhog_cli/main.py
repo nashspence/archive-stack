@@ -18,6 +18,7 @@ import typer
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
+    format_archive_copy_job,
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_summary,
@@ -41,9 +42,11 @@ from riverhog_core.fs_paths import (
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
+archive_app = typer.Typer(help="Archive-store operations.")
 fetch_app = typer.Typer(help="Named whole-collection fetch operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
+app.add_typer(archive_app, name="archive")
 app.add_typer(hot_app, name="hot")
 hot_app.add_typer(fetch_app, name="fetch")
 
@@ -318,6 +321,7 @@ def _create_or_resume_collection_upload(
     ingest_source: str | None,
     upload_timestamp: str | None,
     retain_hot: bool,
+    archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session create/resume",
@@ -326,6 +330,7 @@ def _create_or_resume_collection_upload(
             manifest,
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
+            archive_store=archive_store,
             retain_hot=retain_hot,
         ),
     )
@@ -338,6 +343,7 @@ def _create_or_resume_collection_upload_session(
     ingest_source: str | None,
     upload_timestamp: str | None,
     retain_hot: bool,
+    archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session open/resume",
@@ -345,6 +351,7 @@ def _create_or_resume_collection_upload_session(
             slug,
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
+            archive_store=archive_store,
             retain_hot=retain_hot,
         ),
     )
@@ -409,6 +416,7 @@ def _collection_upload_dry_run_plan(
     wait_mode: UploadWaitMode,
     session_mode: bool,
     retain_hot: bool,
+    archive_store: str | None = None,
 ) -> dict[str, object]:
     try:
         normalized_slug = normalize_upload_slug(slug)
@@ -435,6 +443,7 @@ def _collection_upload_dry_run_plan(
         "bytes_total": sum(item["bytes"] for item in manifest),
         "wait_mode": wait_mode,
         "session": session_mode,
+        "archive_store": archive_store,
         "retain_hot": retain_hot,
         "server_validation": "not_run",
         "created_at": datetime.now(UTC).isoformat(),
@@ -649,23 +658,25 @@ def _finalized_collection_upload_payload(
             for item in manifest
         ]
         files_total = len(files)
-    archive = collection.get("archive")
+    archive_copies = collection.get("archive_copies")
+    archive = archive_copies[0] if isinstance(archive_copies, list) and archive_copies else None
     archive_stored_bytes = 0
     if isinstance(archive, dict):
         archive_stored_bytes = int(archive.get("stored_bytes") or 0)
     return {
         "collection_id": collection_id,
         "ingest_source": collection.get("ingest_source"),
+        "archive_store": archive.get("store") if isinstance(archive, dict) else None,
         "retain_hot": (_optional_int(collection.get("hot_files")) or 0) == files_total,
         "state": "finalized",
         "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": files_total,
-        "hot_promoted_files": _optional_int(collection.get("hot_files")) or 0,
+        "hot_materialized_files": _optional_int(collection.get("hot_files")) or 0,
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
-        "hot_promoted_bytes": _optional_int(collection.get("hot_bytes")) or 0,
+        "hot_materialized_bytes": _optional_int(collection.get("hot_bytes")) or 0,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -794,10 +805,10 @@ def _staged_collection_upload_payload(
             "files_pending": 0,
             "files_partial": 0,
             "files_uploaded": len(manifest),
-            "hot_promoted_files": 0,
+            "hot_materialized_files": 0,
             "bytes_total": bytes_total,
             "uploaded_bytes": bytes_total,
-            "hot_promoted_bytes": 0,
+            "hot_materialized_bytes": 0,
             "missing_bytes": 0,
             "upload_state_expires_at": None,
             "files": [
@@ -824,6 +835,7 @@ def _upload_collection_via_session(
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
     retain_hot: bool,
+    archive_store: str | None = None,
     json_mode: bool = False,
 ) -> dict[str, object]:
     local_path_iter = _iter_local_collection_paths(resolved_root)
@@ -838,6 +850,7 @@ def _upload_collection_via_session(
         slug,
         ingest_source=ingest_source,
         upload_timestamp=upload_timestamp,
+        archive_store=archive_store,
         retain_hot=retain_hot,
     )
     collection_id = str(session_payload["collection_id"])
@@ -969,27 +982,27 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     total_parts = payload.get("archive_total_parts")
     if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
         status += f", parts={uploaded_parts}/{total_parts}"
-    hot_promoted_bytes = payload.get("hot_promoted_bytes")
+    hot_materialized_bytes = payload.get("hot_materialized_bytes")
     bytes_total = payload.get("bytes_total")
     if (
-        phase == "promoting"
-        and isinstance(hot_promoted_bytes, int)
+        phase == "materializing_hot"
+        and isinstance(hot_materialized_bytes, int)
         and isinstance(bytes_total, int)
         and bytes_total > 0
     ):
-        percent = hot_promoted_bytes / bytes_total * 100.0
+        percent = hot_materialized_bytes / bytes_total * 100.0
         status += (
-            f", hot={_format_bytes(hot_promoted_bytes)} / {_format_bytes(bytes_total)} "
+            f", hot={_format_bytes(hot_materialized_bytes)} / {_format_bytes(bytes_total)} "
             f"({percent:.1f}%)"
         )
-    hot_promoted_files = payload.get("hot_promoted_files")
+    hot_materialized_files = payload.get("hot_materialized_files")
     files_total = payload.get("files_total")
     if (
-        phase == "promoting"
-        and isinstance(hot_promoted_files, int)
+        phase == "materializing_hot"
+        and isinstance(hot_materialized_files, int)
         and isinstance(files_total, int)
     ):
-        status += f", hot_files={hot_promoted_files}/{files_total}"
+        status += f", hot_files={hot_materialized_files}/{files_total}"
     latest_failure = payload.get("latest_failure")
     if latest_failure:
         status += f", latest_failure={latest_failure}"
@@ -1012,22 +1025,29 @@ _FIND_SORT_FIELDS = {
 _FETCH_FILE_SORT_FIELDS = _FIND_SORT_FIELDS
 
 
-def _collection_list_archive_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
-    archive = collection.get("archive")
-    if not isinstance(archive, Mapping):
-        return None
-    return {
-        key: archive[key]
-        for key in (
-            "state",
-            "storage_class",
-            "stored_bytes",
-            "last_uploaded_at",
-            "last_verified_at",
-            "failure",
-        )
-        if key in archive
-    }
+def _collection_list_archive_copies_payload(
+    collection: Mapping[str, object],
+) -> list[dict[str, object]]:
+    copies = collection.get("archive_copies")
+    if not isinstance(copies, list):
+        return []
+    return [
+        {
+            key: copy[key]
+            for key in (
+                "store",
+                "state",
+                "storage_class",
+                "stored_bytes",
+                "last_uploaded_at",
+                "last_verified_at",
+                "failure",
+            )
+            if key in copy
+        }
+        for copy in copies
+        if isinstance(copy, Mapping)
+    ]
 
 
 def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str, object]:
@@ -1038,14 +1058,10 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
             "files",
             "bytes",
             "hot_bytes",
-            "archive_format",
-            "compression",
         )
         if key in collection
     }
-    archive = _collection_list_archive_payload(collection)
-    if archive is not None:
-        payload["archive"] = archive
+    payload["archive_copies"] = _collection_list_archive_copies_payload(collection)
     return payload
 
 
@@ -1172,6 +1188,10 @@ def upload_cmd(
             help="Use UTC upload timestamp YYYYMMDDTHHMMSSZ in the collection id",
         ),
     ] = None,
+    archive_store: Annotated[
+        str | None,
+        typer.Option("--archive-store", help="Named archive store destination"),
+    ] = None,
     wait: Annotated[
         str,
         typer.Option(
@@ -1223,6 +1243,7 @@ def upload_cmd(
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
             session_mode=session_mode,
+            archive_store=archive_store,
             retain_hot=not archive_only,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
@@ -1236,6 +1257,7 @@ def upload_cmd(
             resolved_root,
             ingest_source=str(resolved_root),
             upload_timestamp=upload_timestamp,
+            archive_store=archive_store,
             wait_mode=wait_mode,
             retain_hot=not archive_only,
             json_mode=json_mode,
@@ -1260,6 +1282,7 @@ def upload_cmd(
         manifest,
         ingest_source=str(resolved_root),
         upload_timestamp=upload_timestamp,
+        archive_store=archive_store,
         retain_hot=not archive_only,
     )
     collection_id = str(payload["collection_id"])
@@ -1486,6 +1509,29 @@ def collection_delete_cmd(
         raise typer.Exit(1)
     payload = api.delete_collection(collection_id, challenge=challenge)
     emit(format_collection_deletion_result(payload), json_mode=False)
+
+
+@archive_app.command("copy")
+def archive_copy_cmd(
+    collection_id: Annotated[str, typer.Argument(help="Exact collection id")],
+    destination_store: Annotated[
+        str,
+        typer.Option("--to", help="Destination archive store"),
+    ],
+    source_store: Annotated[
+        str | None,
+        typer.Option("--from", help="Source archive store; chosen automatically when omitted"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Copy one collection between archive stores without using hot storage."""
+
+    payload = client().create_or_resume_archive_copy(
+        collection_id,
+        destination_store=destination_store,
+        source_store=source_store,
+    )
+    emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
 
 
 @fetch_app.command("create")

@@ -562,37 +562,41 @@ def format_riverhog_archive_progress(progress: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def riverhog_promotion_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
+def riverhog_hot_materialization_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
     if not progress.get("retain_hot"):
         return None
     total_files = int(
         progress.get("riverhog_files_total") or progress.get("primary_files_total") or 0
     )
-    promoted_files = int(progress.get("hot_promoted_files") or 0)
+    materialized_files = int(progress.get("hot_materialized_files") or 0)
     total_bytes = int(progress.get("riverhog_bytes_total") or progress.get("bytes_total") or 0)
-    promoted_bytes = int(progress.get("hot_promoted_bytes") or 0)
+    materialized_bytes = int(progress.get("hot_materialized_bytes") or 0)
     if total_files <= 0 and total_bytes <= 0:
         return None
-    promoted_files = min(promoted_files, total_files) if total_files else promoted_files
-    promoted_bytes = min(promoted_bytes, total_bytes) if total_bytes else promoted_bytes
+    materialized_files = (
+        min(materialized_files, total_files) if total_files else materialized_files
+    )
+    materialized_bytes = (
+        min(materialized_bytes, total_bytes) if total_bytes else materialized_bytes
+    )
     return {
-        "files_done": promoted_files,
+        "files_done": materialized_files,
         "files_total": total_files,
-        "bytes_done": promoted_bytes,
+        "bytes_done": materialized_bytes,
         "bytes_total": total_bytes,
-        "percent_bytes": (promoted_bytes / total_bytes * 100.0) if total_bytes else 0.0,
-        "percent_files": (promoted_files / total_files * 100.0) if total_files else 0.0,
+        "percent_bytes": (materialized_bytes / total_bytes * 100.0) if total_bytes else 0.0,
+        "percent_files": (materialized_files / total_files * 100.0) if total_files else 0.0,
     }
 
 
-def format_riverhog_promotion_progress(progress: dict[str, Any]) -> str:
+def format_riverhog_hot_materialization_progress(progress: dict[str, Any]) -> str:
     files_done = int(progress.get("files_done") or 0)
     files_total = int(progress.get("files_total") or 0)
     bytes_done = int(progress.get("bytes_done") or 0)
     bytes_total = int(progress.get("bytes_total") or 0)
     pct = progress_percent(progress, percent_key="percent_bytes")
     return (
-        f"riverhog promotion {files_done}/{files_total} files, "
+        f"riverhog hot materialization {files_done}/{files_total} files, "
         f"{format_progress_bytes(bytes_done, bytes_total)}, {pct:.2f}%"
     )
 
@@ -803,9 +807,9 @@ def format_progress_status_line(job: dict[str, Any]) -> str:
         archive_progress = riverhog_archive_progress(riverhog_progress)
         if archive_progress is not None:
             pieces.append(format_riverhog_archive_progress(archive_progress))
-        promotion_progress = riverhog_promotion_progress(riverhog_progress)
-        if promotion_progress is not None:
-            pieces.append(format_riverhog_promotion_progress(promotion_progress))
+        hot_materialization_progress = riverhog_hot_materialization_progress(riverhog_progress)
+        if hot_materialization_progress is not None:
+            pieces.append(format_riverhog_hot_materialization_progress(hot_materialization_progress))
     issue = job.get("transient_issue")
     if isinstance(issue, dict):
         pieces.append(format_transient_issue(issue))
@@ -1141,13 +1145,20 @@ class RichProgressRenderer(ProgressRenderer):
                     self._bar(archive_progress, percent_key="percent_bytes"),
                 )
                 table.add_row("", format_riverhog_archive_progress(archive_progress))
-            promotion_progress = riverhog_promotion_progress(riverhog_progress)
-            if promotion_progress is not None:
+            hot_materialization_progress = riverhog_hot_materialization_progress(
+                riverhog_progress
+            )
+            if hot_materialization_progress is not None:
                 table.add_row(
-                    "Riverhog Promotion",
-                    self._bar(promotion_progress, percent_key="percent_bytes"),
+                    "Riverhog Hot Materialization",
+                    self._bar(hot_materialization_progress, percent_key="percent_bytes"),
                 )
-                table.add_row("", format_riverhog_promotion_progress(promotion_progress))
+                table.add_row(
+                    "",
+                    format_riverhog_hot_materialization_progress(
+                        hot_materialization_progress
+                    ),
+                )
 
         issue = job.get("transient_issue")
         issue = issue if isinstance(issue, dict) else None

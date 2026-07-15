@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 
 from riverhog_api.app import create_app
 from riverhog_api.deps import ServiceContainer
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
 )
@@ -27,6 +28,7 @@ from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDele
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
+from riverhog_core.services.interfaces import ArchiveCopyService
 from riverhog_core.services.search import SqlAlchemySearchService
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.db_helpers import sqlite_url
@@ -105,6 +107,16 @@ class IdleArchiveUploadService:
         return 0
 
 
+class IdleArchiveCopyService:
+    def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int:
+        _ = limit
+        return 0
+
+    def process_due(self, *, limit: int = 1) -> int:
+        _ = limit
+        return 0
+
+
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     path = tmp_path / "catalog.sqlite3"
@@ -127,8 +139,9 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
             )
         )
         session.add(
-            CollectionArchiveRecord(
+            CollectionArchiveCopyRecord(
                 collection_id="2025/20250102T030405Z__docs",
+                store="deep",
                 state="uploaded",
                 object_path="collections/docs/archive.tar.age",
                 stored_bytes=100,
@@ -144,6 +157,10 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         )
 
     unused = cast(object, object())
+    archive_stores = ArchiveStoreRegistry(
+        {"deep": cast(ArchiveStore, unused)},
+        default_store="deep",
+    )
     container = ServiceContainer(
         collections=SqlAlchemyCollectionService(
             config,
@@ -153,14 +170,15 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         collection_deletions=cast(SqlAlchemyCollectionDeletionService, unused),
         search=SqlAlchemySearchService(config),
         archive_uploads=cast(SqlAlchemyArchiveUploadService, IdleArchiveUploadService()),
+        archive_copies=cast(ArchiveCopyService, IdleArchiveCopyService()),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
         archive_restores=SqlAlchemyArchiveRestoreService(
             config,
-            cast(ArchiveStore, unused),
+            archive_stores,
             hot_store,
             proof_verifier=FixtureProofVerifier(),
         ),
-        fetches=SqlAlchemyFetchService(config, cast(ArchiveStore, unused), hot_store),
+        fetches=SqlAlchemyFetchService(config, archive_stores, hot_store),
         files=SqlAlchemyFileService(config, hot_store),
     )
     app = create_app(
@@ -181,7 +199,9 @@ def test_collection_search_and_archive_report_share_current_identity(
     archive = client.get("/v1/archive").json()
 
     assert collection["id"] == "2025/20250102T030405Z__docs"
-    assert collection["archive"]["state"] == "uploaded"
+    assert [
+        (copy["store"], copy["state"]) for copy in collection["archive_copies"]
+    ] == [("deep", "uploaded")]
     assert search["files"][0]["logical_path"] == ("2025/20250102T030405Z__docs/readme.txt")
     assert archive["totals"]["uploaded_collections"] == 1
     assert archive["totals"]["measured_storage_bytes"] == 130

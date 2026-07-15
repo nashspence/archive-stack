@@ -5,8 +5,10 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import cast
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
@@ -92,6 +94,9 @@ class RecordingArchiveStore:
         self.packages: list[CollectionArchivePackage] = []
         self.catalog_entries: list[dict[str, object]] = []
 
+    def new_collection_archive_storage_prefix(self) -> str:
+        return "archive/archives/test-copy"
+
     def upload_collection_archive_package(
         self,
         *,
@@ -147,7 +152,13 @@ class RecordingArchiveStore:
         self.catalog_entries = list(entries)
 
 
-def _stage_upload(path: Path, upload_store: MemoryUploadStore, *, retain_hot: bool) -> None:
+def _stage_upload(
+    path: Path,
+    upload_store: MemoryUploadStore,
+    *,
+    retain_hot: bool,
+    archive_store: str = "deep",
+) -> None:
     database_url = sqlite_url(path)
     initialize_db(database_url)
     digest = hashlib.sha256(_CONTENT).hexdigest()
@@ -158,6 +169,7 @@ def _stage_upload(path: Path, upload_store: MemoryUploadStore, *, retain_hot: bo
         session.add(
             CollectionUploadRecord(
                 collection_id=_COLLECTION_ID,
+                archive_store=archive_store,
                 state="archiving",
                 retain_hot=retain_hot,
             )
@@ -179,10 +191,15 @@ def _process(
     upload_store: MemoryUploadStore,
     archive_store: RecordingArchiveStore,
     hot_store: HotStore | None,
+    *,
+    archive_store_name: str = "deep",
 ) -> None:
     service = SqlAlchemyArchiveUploadService(
         RuntimeConfig(database_url=sqlite_url(path)),
-        cast(ArchiveStore, archive_store),
+        ArchiveStoreRegistry(
+            {archive_store_name: cast(ArchiveStore, archive_store)},
+            default_store=archive_store_name,
+        ),
         hot_store,
         cast(UploadStore, upload_store),
         proof_stamper=FixtureProofStamper(),
@@ -225,3 +242,24 @@ def test_retained_hot_upload_materializes_before_finalizing(tmp_path: Path) -> N
         assert file_record.hot is True
     assert hot_store.files[(_COLLECTION_ID, "document.txt")] == _CONTENT
     assert upload_store.targets == {}
+
+
+def test_upload_routes_the_archive_copy_to_the_selected_store(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    upload_store = MemoryUploadStore()
+    b2_store = RecordingArchiveStore()
+    _stage_upload(path, upload_store, retain_hot=False, archive_store="b2")
+
+    _process(
+        path,
+        upload_store,
+        b2_store,
+        None,
+        archive_store_name="b2",
+    )
+
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        copy = session.get(CollectionArchiveCopyRecord, (_COLLECTION_ID, "b2"))
+        assert copy is not None
+        assert copy.state == "uploaded"

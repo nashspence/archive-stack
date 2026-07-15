@@ -420,6 +420,7 @@ def test_upload_collection_via_session_registers_files_before_completion(
                 *,
                 ingest_source: str | None = None,
                 upload_timestamp: str | None = None,
+                archive_store: str | None = None,
                 retain_hot: bool = True,
             ) -> dict[str, object]:
             assert slug == "photos 2024"
@@ -914,6 +915,7 @@ def test_create_or_resume_collection_upload_retries_transient_errors(
             *,
             ingest_source: str | None,
             upload_timestamp: str | None,
+            archive_store: str | None = None,
             retain_hot: bool,
         ) -> dict[str, object]:
             assert retain_hot is False
@@ -1000,7 +1002,9 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
                 "bytes": 1234,
                 "hot_files": 0,
                 "hot_bytes": 0,
-                "archive": {"state": "uploaded", "stored_bytes": 567},
+                    "archive_copies": [
+                        {"store": "deep", "state": "uploaded", "stored_bytes": 567}
+                    ],
             }
 
     monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)
@@ -1014,7 +1018,7 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
     assert state == "finalized"
     assert payload["files_total"] == 7
     assert payload["retain_hot"] is False
-    assert payload["hot_promoted_files"] == 0
+    assert payload["hot_materialized_files"] == 0
     assert payload["archive_uploaded_bytes"] == 567
 
 

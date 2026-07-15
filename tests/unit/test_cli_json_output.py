@@ -23,14 +23,15 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
                     "files": 2,
                     "bytes": 100,
                     "hot_bytes": 25,
-                    "archive_format": "tar",
-                    "compression": "none",
-                    "archive": {
-                        "state": "uploaded",
-                        "storage_class": "DEEP_ARCHIVE",
-                        "stored_bytes": 128,
-                        "object_path": "riverhog/archives/opaque/archive.tar.age",
-                    },
+                    "archive_copies": [
+                        {
+                            "store": "deep",
+                            "state": "uploaded",
+                            "storage_class": "DEEP_ARCHIVE",
+                            "stored_bytes": 128,
+                            "object_path": "riverhog/archives/opaque/archive.tar.age",
+                        }
+                    ],
                 }
             ],
         }
@@ -42,13 +43,14 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
             "files": 2,
             "bytes": 100,
             "hot_bytes": 25,
-            "archive_format": "tar",
-            "compression": "none",
-            "archive": {
-                "state": "uploaded",
-                "storage_class": "DEEP_ARCHIVE",
-                "stored_bytes": 128,
-            },
+            "archive_copies": [
+                {
+                    "store": "deep",
+                    "state": "uploaded",
+                    "storage_class": "DEEP_ARCHIVE",
+                    "stored_bytes": 128,
+                }
+            ],
         }
     ]
 

@@ -555,6 +555,7 @@ class RiverhogConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wait: Literal["staged", "finalized"] = "finalized"
+    archive_store: str | None = None
     retain_hot: bool = True
 
 
@@ -6227,9 +6228,10 @@ def compact_riverhog_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "archive_total_bytes",
         "archive_uploaded_parts",
         "archive_total_parts",
+        "archive_store",
         "retain_hot",
-        "hot_promoted_files",
-        "hot_promoted_bytes",
+        "hot_materialized_files",
+        "hot_materialized_bytes",
     ]
     return {key: payload[key] for key in keep_keys if key in payload}
 
@@ -6240,22 +6242,24 @@ def finalized_riverhog_payload_from_collection(
 ) -> dict[str, Any]:
     files_total = int(collection.get("files") or 0)
     bytes_total = int(collection.get("bytes") or 0)
-    archive = collection.get("archive")
+    archive_copies = collection.get("archive_copies")
+    archive = archive_copies[0] if isinstance(archive_copies, list) and archive_copies else None
     archived_bytes = 0
     if isinstance(archive, dict):
         archived_bytes = int(archive.get("stored_bytes") or 0)
     return {
         "collection_id": collection_id,
         "state": "finalized",
+        "archive_store": archive.get("store") if isinstance(archive, dict) else None,
         "retain_hot": int(collection.get("hot_files") or 0) == files_total,
         "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": files_total,
-        "hot_promoted_files": int(collection.get("hot_files") or 0),
+        "hot_materialized_files": int(collection.get("hot_files") or 0),
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
-        "hot_promoted_bytes": int(collection.get("hot_bytes") or 0),
+        "hot_materialized_bytes": int(collection.get("hot_bytes") or 0),
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -6390,6 +6394,10 @@ def ensure_riverhog_session(
             str(job["collection_slug"]),
             ingest_source=str(archive_dir),
             upload_timestamp=str(timestamp),
+            archive_store=cast(
+                str | None,
+                dict_or_empty(job.get("riverhog")).get("archive_store"),
+            ),
             retain_hot=bool(dict_or_empty(job.get("riverhog")).get("retain_hot", True)),
             notify=riverhog_collection_notify_config(job),
         )
@@ -7303,8 +7311,8 @@ def compact_riverhog_progress_metrics(progress: dict[str, Any] | None) -> dict[s
         "archive_total_bytes",
         "archive_uploaded_parts",
         "archive_total_parts",
-        "hot_promoted_files",
-        "hot_promoted_bytes",
+        "hot_materialized_files",
+        "hot_materialized_bytes",
         "finalized",
         "safe_to_delete",
     )
@@ -8712,8 +8720,8 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     archive_total_bytes = int(last_payload.get("archive_total_bytes") or 0)
     archive_uploaded_parts = last_payload.get("archive_uploaded_parts")
     archive_total_parts = last_payload.get("archive_total_parts")
-    hot_promoted_files = int(last_payload.get("hot_promoted_files") or 0)
-    hot_promoted_bytes = int(last_payload.get("hot_promoted_bytes") or 0)
+    hot_materialized_files = int(last_payload.get("hot_materialized_files") or 0)
+    hot_materialized_bytes = int(last_payload.get("hot_materialized_bytes") or 0)
     retain_hot = bool(
         last_payload.get("retain_hot", dict_or_empty(job.get("riverhog")).get("retain_hot", True))
     )
@@ -8765,8 +8773,8 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "archive_uploaded_parts": archive_uploaded_parts,
         "archive_total_parts": archive_total_parts,
         "retain_hot": retain_hot,
-        "hot_promoted_files": hot_promoted_files,
-        "hot_promoted_bytes": hot_promoted_bytes,
+        "hot_materialized_files": hot_materialized_files,
+        "hot_materialized_bytes": hot_materialized_bytes,
         "riverhog_files_total": riverhog_files_total,
         "riverhog_bytes_total": riverhog_bytes_total,
         "finalized": finalized,
@@ -10384,7 +10392,7 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=f"job already exists: {job_id}")
     collection_archive = req.collection_archive.model_dump()
     riverhog = {
-        **req.collection_archive.riverhog.model_dump(),
+        **req.collection_archive.riverhog.model_dump(exclude_none=True),
         "enabled": req.workflow_mode == "collection_archive"
         and req.collection_archive.destination == "riverhog",
         "upload_session_on_failure": req.riverhog_upload_session_on_failure,

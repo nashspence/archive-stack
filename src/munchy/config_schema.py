@@ -258,6 +258,7 @@ COLLECTION_ARCHIVE_RIVERHOG_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "wait": {"enum": ["staged", "finalized"]},
+        "archive_store": {"type": "string", "minLength": 1},
         "retain_hot": {"type": "boolean", "default": True},
     },
     "additionalProperties": False,

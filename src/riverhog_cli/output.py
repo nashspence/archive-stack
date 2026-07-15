@@ -46,11 +46,13 @@ def _page_line(payload: Mapping[str, object], noun: str) -> str:
     )
 
 
-def _archive_state(payload: Mapping[str, object]) -> str:
-    archive = payload.get("archive")
-    if not isinstance(archive, Mapping):
-        return "pending"
-    return str(archive.get("state", "pending"))
+def _archive_copy_states(payload: Mapping[str, object]) -> str:
+    copies = _items(payload, "archive_copies")
+    if not copies:
+        return "none"
+    return ", ".join(
+        f"{copy.get('store', 'unknown')}={copy.get('state', 'pending')}" for copy in copies
+    )
 
 
 def format_find(payload: Mapping[str, object]) -> str:
@@ -70,7 +72,7 @@ def format_collections(payload: Mapping[str, object]) -> str:
             f"- {collection.get('id', 'unknown')}  files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
             f"hot={_bytes(collection.get('hot_bytes'))}  "
-            f"archive={_archive_state(collection)}"
+            f"archive={_archive_copy_states(collection)}"
         )
     return "\n".join(lines)
 
@@ -84,14 +86,14 @@ def format_collection_summary(
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"hot: {_bytes(payload.get('hot_bytes'))}",
-        f"archive: {_archive_state(payload)}",
+        f"archive copies: {_archive_copy_states(payload)}",
     ]
-    archive = payload.get("archive")
-    if isinstance(archive, Mapping):
+    for archive in _items(payload, "archive_copies"):
+        store = archive.get("store", "unknown")
         if archive.get("storage_class"):
-            lines.append(f"storage class: {archive['storage_class']}")
+            lines.append(f"{store} storage class: {archive['storage_class']}")
         if archive.get("last_verified_at"):
-            lines.append(f"verified: {archive['last_verified_at']}")
+            lines.append(f"{store} verified: {archive['last_verified_at']}")
     if archive_report is not None:
         totals = archive_report.get("totals")
         if isinstance(totals, Mapping):
@@ -229,6 +231,21 @@ def format_archive_report(payload: Mapping[str, object]) -> str:
         f"collections: {totals.get('uploaded_collections', 0)}/{totals.get('collections', 0)}",
         f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}",
     ]
+    return "\n".join(lines)
+
+
+def format_archive_copy_job(payload: Mapping[str, object]) -> str:
+    route = (
+        f"{payload.get('source_store', 'automatic')} -> "
+        f"{payload.get('destination_store', 'unknown')}"
+    )
+    lines = [
+        f"archive copy {payload.get('collection_id', 'unknown')}",
+        f"route: {route}",
+        f"state: {payload.get('state', 'unknown')}",
+    ]
+    if payload.get("failure"):
+        lines.append(f"failure: {payload['failure']}")
     return "\n".join(lines)
 
 

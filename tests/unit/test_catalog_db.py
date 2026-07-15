@@ -9,10 +9,11 @@ from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
+    "archive_copy_jobs",
     "archive_restore_collections",
     "archive_restores",
     "archive_usage_snapshots",
-    "collection_archives",
+    "collection_archive_copies",
     "collection_deletions",
     "collection_files",
     "collection_upload_files",

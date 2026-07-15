@@ -39,7 +39,12 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
-    return replace(config, **overrides)
+    archive_bucket = overrides.pop("archive_bucket", None)
+    config = replace(config, **overrides)
+    if archive_bucket is None:
+        return config
+    store = replace(config.archive_store("deep"), bucket=str(archive_bucket))
+    return replace(config, archive_stores={"deep": store})
 
 
 def test_lifecycle_targets_uses_archive_bucket_when_distinct(tmp_path: Path) -> None:
@@ -51,7 +56,7 @@ def test_lifecycle_targets_uses_archive_bucket_when_distinct(tmp_path: Path) -> 
     original_archive = configure_garage.create_archive_s3_client
     configure_garage.create_s3_client = lambda current: hot_client  # type: ignore[assignment]
     configure_garage.create_archive_s3_client = (  # type: ignore[assignment]
-        lambda current: archive_client
+        lambda current, store: archive_client
     )
     try:
         targets = configure_garage._lifecycle_targets(config)

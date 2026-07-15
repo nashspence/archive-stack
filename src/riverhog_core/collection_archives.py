@@ -72,6 +72,10 @@ class CollectionArchivePackage:
         yield from _iter_chunks_after_skipping(self.iter_archive(), offset)
 
     @property
+    def supports_archive_ranges(self) -> bool:
+        return self._archive_chunks_from_offset is not None
+
+    @property
     def archive_bytes(self) -> bytes:
         return b"".join(self.iter_archive())
 

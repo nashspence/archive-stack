@@ -98,6 +98,11 @@ def _process_archive_uploads(
         retried = container.archive_uploads.requeue_failed_uploads_for_startup(limit=100)
         if retried:
             _LOG.info("startup requeued failed collection archive uploads: count=%s", retried)
+        requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(
+            limit=100
+        )
+        if requeued_copies:
+            _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
     if startup_restore_catalog_refresh:
         archive_count = container.archive_uploads.publish_restore_catalog()
         _LOG.info(
@@ -105,6 +110,7 @@ def _process_archive_uploads(
             archive_count,
         )
     container.archive_uploads.process_due_uploads(limit=1)
+    container.archive_copies.process_due(limit=1)
 
 
 def _process_archive_restores(

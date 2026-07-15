@@ -1,7 +1,8 @@
 # Archive operations
 
-The remote archive account is Riverhog's durable storage authority. Operational readiness
-therefore includes human and provider controls that application tests cannot establish.
+Riverhog's configured archive stores are its durable storage authority. Operational
+readiness therefore includes human and provider controls that application tests cannot
+establish.
 
 ## Account readiness
 
@@ -15,7 +16,7 @@ Keep these current and periodically exercise them:
 - archive passphrase custody and recovery.
 
 After account, credential, provider, or storage-class changes, run an authenticated
-archive report and retrieve a known collection.
+archive report and retrieve a known collection from the affected store.
 
 ## Recovery exercise
 
@@ -27,6 +28,13 @@ recoverability.
 Riverhog maintains plaintext `README.md` and `AGENTS.md` guidance at the archive root.
 Opaque names do not mean objects are unused; encrypted collection objects may be the sole
 durable copies.
+
+## Archive copies
+
+Use `riverhog archive copy --help` to copy a collection between configured archive stores.
+The background job verifies the source, prepares it for reading when necessary, streams a
+new encrypted destination copy without using hot storage, and records the copy only after
+destination verification. The source copy remains intact.
 
 ## Collection deletion
 

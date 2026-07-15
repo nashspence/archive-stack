@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -121,8 +122,9 @@ def _seed(path: Path, hot_store: FakeHotStore, *, archived: bool = True) -> None
             )
         if archived:
             session.add(
-                CollectionArchiveRecord(
+                CollectionArchiveCopyRecord(
                     collection_id="2025/20250102T030405Z__docs",
+                    store="deep",
                     state="uploaded",
                     object_path="collections/docs/archive.tar.age",
                     stored_bytes=100,
@@ -145,7 +147,10 @@ def _service(
 ) -> SqlAlchemyFetchService:
     return SqlAlchemyFetchService(
         RuntimeConfig(database_url=sqlite_url(path)),
-        archive_store or FakeArchiveStore(),
+        ArchiveStoreRegistry(
+            {"deep": archive_store or FakeArchiveStore()},
+            default_store="deep",
+        ),
         hot_store,
     )
 
@@ -370,7 +375,7 @@ def test_hot_eviction_keeps_hot_files_when_remote_archive_check_fails(tmp_path: 
     archive_store.failure = ArchivePackageVerificationError("manifest checksum changed")
     _seed(path, hot_store)
 
-    with pytest.raises(Conflict, match="does not match the upload record"):
+    with pytest.raises(Conflict, match="no remote archive copy matches"):
         _service(path, hot_store, archive_store).evict(["2025/20250102T030405Z__docs"])
 
     assert set(hot_store.files) == {
@@ -378,3 +383,46 @@ def test_hot_eviction_keeps_hot_files_when_remote_archive_check_fails(tmp_path: 
         ("2025/20250102T030405Z__docs", "b.txt"),
     }
     assert hot_store.deleted == []
+
+
+def test_hot_eviction_uses_another_verified_copy_when_one_store_fails(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    b2_store = FakeArchiveStore()
+    b2_store.failure = ArchivePackageVerificationError("b2 verification failed")
+    deep_store = FakeArchiveStore()
+    _seed(path, hot_store)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id="2025/20250102T030405Z__docs",
+                store="b2",
+                state="uploaded",
+                object_path="collections/docs-b2/archive.tar.age",
+                stored_bytes=100,
+                sha256="a" * 64,
+                manifest_object_path="collections/docs-b2/manifest.yml.age",
+                manifest_stored_bytes=20,
+                manifest_sha256="b" * 64,
+                ots_object_path="collections/docs-b2/manifest.yml.ots.age",
+                ots_stored_bytes=10,
+                ots_sha256="c" * 64,
+                last_verified_at="2026-07-15T00:00:00Z",
+            )
+        )
+    service = SqlAlchemyFetchService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        ArchiveStoreRegistry(
+            {"b2": b2_store, "deep": deep_store},
+            default_store="deep",
+        ),
+        hot_store,
+    )
+
+    payload = service.evict(["2025/20250102T030405Z__docs"])
+
+    assert payload["evicted_files"] == 2
+    assert len(b2_store.checks) == 1
+    assert len(deep_store.checks) == 1

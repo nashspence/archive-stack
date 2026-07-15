@@ -5,7 +5,7 @@ from pathlib import Path
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -35,8 +35,9 @@ def _seed(path: Path) -> None:
             )
         )
         session.add(
-            CollectionArchiveRecord(
+            CollectionArchiveCopyRecord(
                 collection_id="2025/20250102T030405Z__docs",
+                store="deep",
                 state="uploaded",
                 object_path="collections/docs/archive.tar.age",
                 stored_bytes=20,
@@ -63,7 +64,8 @@ def test_archive_report_measures_collection_objects(tmp_path: Path) -> None:
     assert report.totals.collections == 1
     assert report.totals.uploaded_collections == 1
     assert report.totals.measured_storage_bytes == 35
-    assert report.collections[0].archive.state == ArchiveState.UPLOADED
+    assert report.collections[0].archive_copies[0].store == "deep"
+    assert report.collections[0].archive_copies[0].state == ArchiveState.UPLOADED
     assert report.collections[0].measured_storage_bytes == 35
     assert report.history[0].uploaded_collections == 1
 
@@ -91,6 +93,7 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         session.add(
             CollectionUploadRecord(
                 collection_id="2025/20250103T030405Z__pending",
+                archive_store="deep",
                 state="archiving",
             )
         )
@@ -111,7 +114,8 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
     assert report.totals.uploaded_collections == 1
     assert report.totals.measured_storage_bytes == 35
     collection_rows = [
-        (str(item.id), item.bytes, item.archive.state.value) for item in report.collections
+        (str(item.id), item.bytes, item.archive_copies[0].state.value)
+        for item in report.collections
     ]
     assert collection_rows == [
         ("2025/20250102T030405Z__docs", 12, "uploaded"),

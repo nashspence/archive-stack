@@ -104,7 +104,7 @@ class ArchiveMultipartUploadTracker(Protocol):
 
 
 @dataclass(frozen=True)
-class ArchiveRestoreStatus:
+class ArchiveReadStatus:
     state: str
     ready_at: str | None = None
     expires_at: str | None = None
@@ -112,6 +112,8 @@ class ArchiveRestoreStatus:
 
 
 class ArchiveStore(Protocol):
+    def new_collection_archive_storage_prefix(self) -> str: ...
+
     def upload_collection_archive_package(
         self,
         *,
@@ -144,7 +146,7 @@ class ArchiveStore(Protocol):
         generated_at: str,
     ) -> None: ...
 
-    def request_collection_archive_restore(
+    def prepare_collection_archive_read(
         self,
         *,
         collection_id: str,
@@ -155,9 +157,9 @@ class ArchiveStore(Protocol):
         estimated_ready_at: str,
         manifest_object_path: str | None = None,
         proof_object_path: str | None = None,
-    ) -> ArchiveRestoreStatus: ...
+    ) -> ArchiveReadStatus: ...
 
-    def get_collection_archive_restore_status(
+    def get_collection_archive_read_status(
         self,
         *,
         collection_id: str,
@@ -167,30 +169,30 @@ class ArchiveStore(Protocol):
         estimated_expires_at: str | None,
         manifest_object_path: str | None = None,
         proof_object_path: str | None = None,
-    ) -> ArchiveRestoreStatus: ...
+    ) -> ArchiveReadStatus: ...
 
-    def iter_restored_collection_archive(
+    def iter_collection_archive(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> Iterator[bytes]: ...
 
-    def read_restored_collection_manifest(
+    def read_collection_manifest(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> bytes: ...
 
-    def read_restored_collection_manifest_proof(
+    def read_collection_manifest_proof(
         self,
         *,
         collection_id: str,
         object_path: str,
     ) -> bytes: ...
 
-    def cleanup_collection_archive_restore(
+    def cleanup_collection_archive_read(
         self,
         *,
         collection_id: str,

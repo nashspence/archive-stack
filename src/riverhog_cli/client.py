@@ -177,6 +177,7 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        archive_store: str | None = None,
         retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -189,6 +190,8 @@ class ApiClient:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:
             payload["upload_timestamp"] = upload_timestamp
+        if archive_store is not None:
+            payload["archive_store"] = archive_store
         if notify is not None:
             payload["notify"] = dict(notify)
         return self._json("POST", "/v1/collection-uploads", json=payload)
@@ -199,6 +202,7 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        archive_store: str | None = None,
         retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -207,6 +211,8 @@ class ApiClient:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:
             payload["upload_timestamp"] = upload_timestamp
+        if archive_store is not None:
+            payload["archive_store"] = archive_store
         if notify is not None:
             payload["notify"] = dict(notify)
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
@@ -334,6 +340,21 @@ class ApiClient:
         if collection:
             params["collection"] = collection
         return self._json("GET", "/v1/archive", params=params)
+
+    def create_or_resume_archive_copy(
+        self,
+        collection_id: str,
+        *,
+        destination_store: str,
+        source_store: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "collection_id": collection_id,
+            "destination_store": destination_store,
+        }
+        if source_store is not None:
+            payload["source_store"] = source_store
+        return self._json("POST", "/v1/archive/copies", json=payload)
 
     def list_archive_restores(
         self,

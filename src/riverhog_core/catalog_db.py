@@ -59,10 +59,11 @@ def _ensure_schema_indexes(engine: Engine) -> None:
 def initialize_db(database_url: str) -> None:
     """Create the current catalog schema."""
     from riverhog_core.catalog_models import (  # noqa: PLC0415
+        ArchiveCopyJobRecord,
         ArchiveRestoreCollectionRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
-        CollectionArchiveRecord,
+        CollectionArchiveCopyRecord,
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
@@ -73,10 +74,11 @@ def initialize_db(database_url: str) -> None:
     )
 
     _ = (
+        ArchiveCopyJobRecord,
         ArchiveRestoreCollectionRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
-        CollectionArchiveRecord,
+        CollectionArchiveCopyRecord,
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,

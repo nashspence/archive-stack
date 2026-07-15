@@ -20,7 +20,7 @@ DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
-DEFAULT_HOT_PROMOTION_CONCURRENCY = 8
+DEFAULT_HOT_MATERIALIZATION_CONCURRENCY = 8
 DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_ARCHIVE_WORK_FACTOR = 18
@@ -170,8 +170,21 @@ def parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     if not parts:
-        raise ValueError("RIVERHOG_ARCHIVE_PREFIX must not be empty")
+        raise ValueError("archive store prefix must not be empty")
     return "/".join(parts)
+
+
+def _normalize_archive_store_name(value: str) -> str:
+    name = value.strip().casefold()
+    if not name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+        raise ValueError(
+            f"invalid archive store name {value!r}: expected lowercase letters, digits, and dashes"
+        )
+    return name
+
+
+def _archive_store_env_suffix(name: str) -> str:
+    return name.upper().replace("-", "_")
 
 
 def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
@@ -183,6 +196,21 @@ def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
 
 def _database_url_driver(database_url: str) -> str:
     return database_url.strip().split(":", 1)[0].split("+", 1)[0]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveStoreConfig:
+    name: str
+    endpoint_url: str
+    region: str
+    bucket: str
+    access_key_id: str
+    secret_access_key: str
+    force_path_style: bool
+    prefix: str
+    backend: str
+    storage_class: str
+    read_mode: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,18 +234,28 @@ class RuntimeConfig:
     upload_session_idle_ttl: timedelta = field(default_factory=lambda: timedelta(days=7))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     log_level: str = DEFAULT_LOG_LEVEL
-    archive_endpoint_url: str = "http://127.0.0.1:9000"
-    archive_region: str = "us-east-1"
-    archive_bucket: str = "riverhog"
-    archive_access_key_id: str = "minioadmin"
-    archive_secret_access_key: str = "minioadmin"
-    archive_force_path_style: bool = True
-    archive_prefix: str = "archive"
-    archive_backend: str = "s3"
-    archive_storage_class: str = "DEEP_ARCHIVE"
+    default_archive_store: str = "deep"
+    archive_read_order: tuple[str, ...] = ("deep",)
+    archive_stores: Mapping[str, ArchiveStoreConfig] = field(
+        default_factory=lambda: {
+            "deep": ArchiveStoreConfig(
+                name="deep",
+                endpoint_url="http://127.0.0.1:9000",
+                region="us-east-1",
+                bucket="riverhog",
+                access_key_id="minioadmin",
+                secret_access_key="minioadmin",
+                force_path_style=True,
+                prefix="archive",
+                backend="s3",
+                storage_class="DEEP_ARCHIVE",
+                read_mode="auto",
+            )
+        }
+    )
     archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
     archive_multipart_concurrency: int = DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY
-    hot_promotion_concurrency: int = DEFAULT_HOT_PROMOTION_CONCURRENCY
+    hot_materialization_concurrency: int = DEFAULT_HOT_MATERIALIZATION_CONCURRENCY
     hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
     archive_encryption: str = "age_scrypt"
     archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
@@ -239,7 +277,6 @@ class RuntimeConfig:
     archive_restore_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     archive_restore_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     archive_restore_retrieval_tier: str = "bulk"
-    archive_restore_mode: str = "auto"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots",)
     public_base_url: str | None = None
@@ -253,6 +290,55 @@ class RuntimeConfig:
                 "RIVERHOG_LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, or DEBUG"
             )
         object.__setattr__(self, "log_level", log_level)
+        default_archive_store = _normalize_archive_store_name(self.default_archive_store)
+        normalized_archive_stores: dict[str, ArchiveStoreConfig] = {}
+        for raw_name, store in self.archive_stores.items():
+            name = _normalize_archive_store_name(raw_name)
+            if store.name != name:
+                raise ValueError(f"archive store mapping key must match its name: {raw_name!r}")
+            required_store_fields = {
+                "endpoint_url": store.endpoint_url,
+                "region": store.region,
+                "bucket": store.bucket,
+                "access_key_id": store.access_key_id,
+                "secret_access_key": store.secret_access_key,
+                "prefix": store.prefix,
+                "backend": store.backend,
+                "storage_class": store.storage_class,
+            }
+            missing_fields = [
+                field_name
+                for field_name, field_value in required_store_fields.items()
+                if not field_value.strip()
+            ]
+            if missing_fields:
+                raise ValueError(
+                    f"archive store {name} has blank required fields: "
+                    + ", ".join(missing_fields)
+                )
+            if store.read_mode not in {"auto", "aws"}:
+                raise ValueError(f"archive store {name} read_mode must be auto or aws")
+            normalized_archive_stores[name] = store
+        if default_archive_store not in normalized_archive_stores:
+            raise ValueError(
+                f"default archive store is not configured: {default_archive_store}"
+            )
+        object.__setattr__(self, "default_archive_store", default_archive_store)
+        read_order = tuple(
+            dict.fromkeys(_normalize_archive_store_name(name) for name in self.archive_read_order)
+        )
+        unknown_read_stores = set(read_order) - set(normalized_archive_stores)
+        if unknown_read_stores:
+            raise ValueError(
+                "archive read order contains unconfigured stores: "
+                f"{', '.join(sorted(unknown_read_stores))}"
+            )
+        object.__setattr__(
+            self,
+            "archive_read_order",
+            (*read_order, *[name for name in normalized_archive_stores if name not in read_order]),
+        )
+        object.__setattr__(self, "archive_stores", normalized_archive_stores)
         if self.tusd_append_timeout_seconds <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS must be > 0")
         if self.s3_max_pool_connections < 1:
@@ -263,8 +349,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
         if self.archive_multipart_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY must be >= 1")
-        if self.hot_promotion_concurrency < 1:
-            raise ValueError("RIVERHOG_HOT_PROMOTION_CONCURRENCY must be >= 1")
+        if self.hot_materialization_concurrency < 1:
+            raise ValueError("RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY must be >= 1")
         if self.hot_single_put_max_bytes < 0:
             raise ValueError("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES must be >= 0")
         if self.archive_encryption != "age_scrypt":
@@ -329,6 +415,73 @@ class RuntimeConfig:
             reminder_timezone=self.operator_webhook_reminder_timezone,
         )
 
+    def archive_store(self, name: str) -> ArchiveStoreConfig:
+        normalized = _normalize_archive_store_name(name)
+        try:
+            return self.archive_stores[normalized]
+        except KeyError as exc:
+            raise ValueError(f"archive store is not configured: {normalized}") from exc
+
+
+def _parse_archive_stores(
+    values: Mapping[str, str],
+    *,
+    s3_endpoint_url: str,
+    s3_region: str,
+    s3_bucket: str,
+    s3_access_key_id: str,
+    s3_secret_access_key: str,
+    s3_force_path_style: bool,
+) -> tuple[str, tuple[str, ...], dict[str, ArchiveStoreConfig]]:
+    names = tuple(
+        dict.fromkeys(
+            _normalize_archive_store_name(raw)
+            for raw in values.get("RIVERHOG_ARCHIVE_STORES", "deep").split(",")
+            if raw.strip()
+        )
+    )
+    if not names:
+        raise ValueError("RIVERHOG_ARCHIVE_STORES must configure at least one store")
+    default_store = _normalize_archive_store_name(
+        values.get("RIVERHOG_DEFAULT_ARCHIVE_STORE", names[0])
+    )
+    stores: dict[str, ArchiveStoreConfig] = {}
+    for name in names:
+        prefix = f"RIVERHOG_ARCHIVE_STORE_{_archive_store_env_suffix(name)}_"
+        stores[name] = ArchiveStoreConfig(
+            name=name,
+            endpoint_url=values.get(f"{prefix}ENDPOINT_URL", s3_endpoint_url).rstrip("/"),
+            region=values.get(f"{prefix}REGION", s3_region),
+            bucket=values.get(f"{prefix}BUCKET", s3_bucket),
+            access_key_id=values.get(f"{prefix}ACCESS_KEY_ID", s3_access_key_id),
+            secret_access_key=values.get(f"{prefix}SECRET_ACCESS_KEY", s3_secret_access_key),
+            force_path_style=_parse_bool(
+                values.get(f"{prefix}FORCE_PATH_STYLE", str(s3_force_path_style).lower())
+            ),
+            prefix=_normalize_prefix(values.get(f"{prefix}PREFIX", "archive")),
+            backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
+            storage_class=values.get(f"{prefix}STORAGE_CLASS", "DEEP_ARCHIVE").strip()
+            or "DEEP_ARCHIVE",
+            read_mode=_parse_choice(
+                values.get(f"{prefix}READ_MODE", "auto"),
+                name=f"{prefix}READ_MODE",
+                allowed={"auto", "aws"},
+            ),
+        )
+    if default_store not in stores:
+        raise ValueError(
+            f"RIVERHOG_DEFAULT_ARCHIVE_STORE is not listed in RIVERHOG_ARCHIVE_STORES: "
+            f"{default_store}"
+        )
+    read_order = tuple(
+        dict.fromkeys(
+            _normalize_archive_store_name(raw)
+            for raw in values.get("RIVERHOG_ARCHIVE_READ_ORDER", ",".join(names)).split(",")
+            if raw.strip()
+        )
+    )
+    return default_store, read_order, stores
+
 
 def load_runtime_config() -> RuntimeConfig:
     object_store = os.getenv("RIVERHOG_OBJECT_STORE", "s3").strip().casefold() or "s3"
@@ -379,12 +532,12 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         minimum=1,
     )
-    hot_promotion_concurrency = _parse_int(
+    hot_materialization_concurrency = _parse_int(
         os.getenv(
-            "RIVERHOG_HOT_PROMOTION_CONCURRENCY",
-            str(DEFAULT_HOT_PROMOTION_CONCURRENCY),
+            "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
+            str(DEFAULT_HOT_MATERIALIZATION_CONCURRENCY),
         ),
-        name="RIVERHOG_HOT_PROMOTION_CONCURRENCY",
+        name="RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
         minimum=1,
     )
     hot_single_put_max_bytes = _parse_bytes(
@@ -432,10 +585,14 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
         allowed={"bulk", "standard"},
     )
-    archive_restore_mode = _parse_choice(
-        os.getenv("RIVERHOG_ARCHIVE_RESTORE_MODE", "auto"),
-        name="RIVERHOG_ARCHIVE_RESTORE_MODE",
-        allowed={"auto", "aws"},
+    default_archive_store, archive_read_order, archive_stores = _parse_archive_stores(
+        os.environ,
+        s3_endpoint_url=s3_endpoint_url,
+        s3_region=s3_region,
+        s3_bucket=s3_bucket,
+        s3_access_key_id=s3_access_key_id,
+        s3_secret_access_key=s3_secret_access_key,
+        s3_force_path_style=s3_force_path_style,
     )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
     ots_stamp_command = _parse_command(
@@ -501,26 +658,12 @@ def load_runtime_config() -> RuntimeConfig:
         upload_session_idle_ttl=upload_session_idle_ttl,
         upload_expiry_sweep_interval=upload_expiry_sweep_interval,
         log_level=log_level,
-        archive_endpoint_url=os.getenv("RIVERHOG_ARCHIVE_ENDPOINT_URL", s3_endpoint_url).rstrip(
-            "/"
-        ),
-        archive_region=os.getenv("RIVERHOG_ARCHIVE_REGION", s3_region),
-        archive_bucket=os.getenv("RIVERHOG_ARCHIVE_BUCKET", s3_bucket),
-        archive_access_key_id=os.getenv("RIVERHOG_ARCHIVE_ACCESS_KEY_ID", s3_access_key_id),
-        archive_secret_access_key=os.getenv(
-            "RIVERHOG_ARCHIVE_SECRET_ACCESS_KEY",
-            s3_secret_access_key,
-        ),
-        archive_force_path_style=_parse_bool(
-            os.getenv("RIVERHOG_ARCHIVE_FORCE_PATH_STYLE", str(s3_force_path_style).lower())
-        ),
-        archive_prefix=_normalize_prefix(os.getenv("RIVERHOG_ARCHIVE_PREFIX", "archive")),
-        archive_backend=os.getenv("RIVERHOG_ARCHIVE_BACKEND", "s3").strip() or "s3",
-        archive_storage_class=os.getenv("RIVERHOG_ARCHIVE_STORAGE_CLASS", "DEEP_ARCHIVE").strip()
-        or "DEEP_ARCHIVE",
+        default_archive_store=default_archive_store,
+        archive_read_order=archive_read_order,
+        archive_stores=archive_stores,
         archive_multipart_part_bytes=archive_multipart_part_bytes,
         archive_multipart_concurrency=archive_multipart_concurrency,
-        hot_promotion_concurrency=hot_promotion_concurrency,
+        hot_materialization_concurrency=hot_materialization_concurrency,
         hot_single_put_max_bytes=hot_single_put_max_bytes,
         archive_encryption=archive_encryption,
         archive_passphrase=archive_passphrase,
@@ -540,7 +683,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_restore_latency=archive_restore_latency,
         archive_restore_ready_ttl=archive_restore_ready_ttl,
         archive_restore_retrieval_tier=archive_restore_retrieval_tier,
-        archive_restore_mode=archive_restore_mode,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         public_base_url=public_base_url,

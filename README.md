@@ -6,9 +6,9 @@ connects mounted volumes to configured operator actions.
 
 ## Custody
 
-The remote archive account is the durable storage authority. Its encrypted collection
-objects are the sole durable copies Riverhog relies on. Protect account recovery,
-credentials, billing, bucket access, and tested retrieval. Delete a collection only
+Configured archive stores are the durable storage authority. Their encrypted collection
+objects are the durable copies Riverhog relies on. Protect account recovery, credentials,
+billing, bucket access, and tested retrieval for every store. Delete a collection only
 through Riverhog's guarded exact-id operation after accepting the loss.
 
 ## Start here

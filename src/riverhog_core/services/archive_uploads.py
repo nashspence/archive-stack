@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import logging
-import secrets
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -13,9 +12,10 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -42,6 +42,7 @@ from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
+from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import (
     _collection_upload_stats,
@@ -62,14 +63,14 @@ class SqlAlchemyArchiveUploadService:
     def __init__(
         self,
         config: RuntimeConfig,
-        archive_store: ArchiveStore,
+        archive_stores: ArchiveStoreRegistry,
         hot_store: HotStore | None = None,
         upload_store: UploadStore | None = None,
         *,
         proof_stamper: ProofStamper | None = None,
     ) -> None:
         self._config = config
-        self._archive_store = archive_store
+        self._archive_stores = archive_stores
         self._hot_store = hot_store
         self._upload_store = upload_store
         self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
@@ -211,6 +212,7 @@ class SqlAlchemyArchiveUploadService:
             if upload is None or upload.state != "archiving":
                 return
             retain_hot = upload.retain_hot
+            archive_store = self._archive_stores.require(upload.archive_store)
             upload_stats = _collection_upload_stats(session, collection_id)
             if (
                 upload_stats["files_total"] == 0
@@ -226,13 +228,13 @@ class SqlAlchemyArchiveUploadService:
             archive_storage_prefix = _ensure_archive_storage_prefix(
                 session,
                 upload=upload,
-                config=self._config,
+                archive_store=archive_store,
             )
             upload.archive_attempt_count = int(upload.archive_attempt_count or 0) + 1
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
             if receipt is not None:
-                upload.archive_phase = "promoting" if retain_hot else "finalizing"
+                upload.archive_phase = "materializing_hot" if retain_hot else "finalizing"
             elif (
                 manifest_bytes is not None
                 and proof_bytes is not None
@@ -348,7 +350,7 @@ class SqlAlchemyArchiveUploadService:
                         collection_id,
                         package.archive_size,
                     )
-                    receipt = self._archive_store.upload_collection_archive_package(
+                    receipt = archive_store.upload_collection_archive_package(
                         collection_id=collection_id,
                         package=package,
                         archive_storage_prefix=archive_storage_prefix,
@@ -394,7 +396,7 @@ class SqlAlchemyArchiveUploadService:
             if receipt is None:
                 raise RuntimeError("collection archive receipt was not recorded")
             if retain_hot:
-                self._promote_collection_files(
+                self._materialize_collection_files(
                     collection_id=collection_id,
                     upload_files=upload_files,
                 )
@@ -417,6 +419,7 @@ class SqlAlchemyArchiveUploadService:
                     "archive_object_path": receipt.archive.object_path,
                     "archive_total_bytes": receipt.archive.stored_bytes,
                     "archive_sha256": receipt.archive_sha256,
+                    "archive_store": upload.archive_store,
                     "retain_hot": retain_hot,
                 },
             )
@@ -446,7 +449,7 @@ class SqlAlchemyArchiveUploadService:
                 )
             return
 
-    def _promote_one_collection_file(
+    def _materialize_one_collection_file(
         self,
         *,
         collection_id: str,
@@ -466,7 +469,7 @@ class SqlAlchemyArchiveUploadService:
             expected_bytes=byte_count,
             expected_sha256=sha256,
         ):
-            self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+            self._mark_collection_upload_file_materialized(collection_id=collection_id, path=path)
             return
 
         digest = hashlib.sha256()
@@ -499,7 +502,9 @@ class SqlAlchemyArchiveUploadService:
             )
         if digest.hexdigest() != sha256:
             hot_store.delete_collection_file(collection_id, path)
-            raise ValueError(f"promoted collection file sha256 mismatch: {collection_id}/{path}")
+            raise ValueError(
+                f"materialized hot collection file sha256 mismatch: {collection_id}/{path}"
+            )
         if not _hot_file_matches(
             hot_store,
             collection_id=collection_id,
@@ -507,16 +512,18 @@ class SqlAlchemyArchiveUploadService:
             expected_bytes=byte_count,
             expected_sha256=sha256,
         ):
-            raise ValueError(f"promoted collection file metadata mismatch: {collection_id}/{path}")
-        self._mark_collection_upload_file_promoted(collection_id=collection_id, path=path)
+            raise ValueError(
+                f"materialized hot collection file metadata mismatch: {collection_id}/{path}"
+            )
+        self._mark_collection_upload_file_materialized(collection_id=collection_id, path=path)
 
-    def _promote_collection_files(
+    def _materialize_collection_files(
         self,
         *,
         collection_id: str,
         upload_files: list[CollectionUploadFileEntry],
     ) -> None:
-        remaining = self._unpromoted_collection_upload_files(
+        remaining = self._unmaterialized_collection_upload_files(
             collection_id=collection_id,
             upload_files=upload_files,
         )
@@ -524,19 +531,19 @@ class SqlAlchemyArchiveUploadService:
             return
         self._record_archive_phase(
             collection_id=collection_id,
-            phase="promoting",
+            phase="materializing_hot",
             updated_at=_isoformat_z(utcnow()),
         )
-        max_workers = min(self._config.hot_promotion_concurrency, len(remaining))
+        max_workers = min(self._config.hot_materialization_concurrency, len(remaining))
         _LOG.info(
-            "promoting collection files for %s: files=%s concurrency=%s",
+            "materializing collection files in hot storage for %s: files=%s concurrency=%s",
             collection_id,
             len(remaining),
             max_workers,
         )
         if max_workers == 1:
             for path, _bytes, sha256, target_path in remaining:
-                self._promote_collection_file_and_cleanup(
+                self._materialize_collection_file_and_cleanup(
                     collection_id=collection_id,
                     path=path,
                     target_path=target_path,
@@ -547,14 +554,14 @@ class SqlAlchemyArchiveUploadService:
 
         executor = ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix="riverhog-hot-promote",
+            thread_name_prefix="riverhog-hot-materialize",
         )
         futures: list[Future[None]] = []
         try:
             for path, _bytes, sha256, target_path in remaining:
                 futures.append(
                     executor.submit(
-                        self._promote_collection_file_and_cleanup,
+                        self._materialize_collection_file_and_cleanup,
                         collection_id=collection_id,
                         path=path,
                         target_path=target_path,
@@ -571,7 +578,7 @@ class SqlAlchemyArchiveUploadService:
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
 
-    def _promote_collection_file_and_cleanup(
+    def _materialize_collection_file_and_cleanup(
         self,
         *,
         collection_id: str,
@@ -580,7 +587,7 @@ class SqlAlchemyArchiveUploadService:
         byte_count: int,
         sha256: str,
     ) -> None:
-        self._promote_one_collection_file(
+        self._materialize_one_collection_file(
             collection_id=collection_id,
             path=path,
             target_path=target_path,
@@ -604,22 +611,22 @@ class SqlAlchemyArchiveUploadService:
                 target_path=target_path,
             )
 
-    def _unpromoted_collection_upload_files(
+    def _unmaterialized_collection_upload_files(
         self,
         *,
         collection_id: str,
         upload_files: list[CollectionUploadFileEntry],
     ) -> list[CollectionUploadFileEntry]:
         with session_scope(self._session_factory) as session:
-            promoted_paths = set(
+            materialized_paths = set(
                 session.scalars(
                     select(CollectionUploadFileRecord.path).where(
                         CollectionUploadFileRecord.collection_id == collection_id,
-                        CollectionUploadFileRecord.hot_promoted_at.is_not(None),
+                        CollectionUploadFileRecord.hot_materialized_at.is_not(None),
                     )
                 ).all()
             )
-        return [entry for entry in upload_files if entry[0] not in promoted_paths]
+        return [entry for entry in upload_files if entry[0] not in materialized_paths]
 
     def _delete_upload_target(self, *, collection_id: str, target_path: str) -> None:
         upload_store = self._upload_store
@@ -635,15 +642,15 @@ class SqlAlchemyArchiveUploadService:
                 exc_info=True,
             )
 
-    def _mark_collection_upload_file_promoted(self, *, collection_id: str, path: str) -> None:
+    def _mark_collection_upload_file_materialized(self, *, collection_id: str, path: str) -> None:
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
             if upload is None or file_record is None:
                 return
             current_text = _isoformat_z(utcnow())
-            file_record.hot_promoted_at = current_text
-            upload.archive_phase = "promoting"
+            file_record.hot_materialized_at = current_text
+            upload.archive_phase = "materializing_hot"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
@@ -662,13 +669,13 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase_updated_at = _isoformat_z(utcnow())
             session.flush()
             if upload.retain_hot:
-                unpromoted = [
+                unmaterialized = [
                     file_record.path
                     for file_record in upload.files
-                    if file_record.hot_promoted_at is None
+                    if file_record.hot_materialized_at is None
                 ]
-                if unpromoted:
-                    raise RuntimeError(f"collection has unpromoted files: {unpromoted[0]}")
+                if unmaterialized:
+                    raise RuntimeError(f"collection has unmaterialized files: {unmaterialized[0]}")
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 collection = CollectionRecord(
@@ -693,11 +700,17 @@ class SqlAlchemyArchiveUploadService:
                         hot=upload.retain_hot,
                     )
                 )
-            archive = session.get(CollectionArchiveRecord, collection_id)
+            archive = session.get(
+                CollectionArchiveCopyRecord,
+                (collection_id, upload.archive_store),
+            )
             if archive is None:
-                archive = CollectionArchiveRecord(collection_id=collection_id)
+                archive = CollectionArchiveCopyRecord(
+                    collection_id=collection_id,
+                    store=upload.archive_store,
+                )
                 session.add(archive)
-            _apply_archive_receipt(archive, receipt)
+            apply_archive_receipt(archive, receipt)
             session.delete(upload)
             record_archive_usage_snapshot(session, config=self._config)
 
@@ -725,19 +738,26 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_multipart_sha256 = receipt.archive_sha256
             upload.archive_multipart_uploaded_bytes = receipt.archive.stored_bytes
             upload.archive_multipart_uploaded_parts = upload.archive_multipart_total_parts
-            upload.archive_phase = "promoting" if upload.retain_hot else "finalizing"
+            upload.archive_phase = "materializing_hot" if upload.retain_hot else "finalizing"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
     def _publish_restore_catalog(self) -> int:
-        try:
-            return publish_archive_restore_catalog(
-                archive_store=self._archive_store,
-                session_factory=self._session_factory,
-            )
-        except Exception:
-            _LOG.warning("failed to publish encrypted archive restore catalog", exc_info=True)
-            return 0
+        published = 0
+        for store_name, archive_store in self._archive_stores.items():
+            try:
+                published += publish_archive_restore_catalog(
+                    store_name=store_name,
+                    archive_store=archive_store,
+                    session_factory=self._session_factory,
+                )
+            except Exception:
+                _LOG.warning(
+                    "failed to publish encrypted archive catalog for %s",
+                    store_name,
+                    exc_info=True,
+                )
+        return published
 
     def _record_packaged_archive(
         self,
@@ -1181,66 +1201,19 @@ def _hot_file_matches(
     return byte_count == expected_bytes and digest.hexdigest() == expected_sha256
 
 
-def _apply_archive_receipt(
-    archive: CollectionArchiveRecord,
-    receipt: CollectionArchiveUploadReceipt,
-) -> None:
-    archive.state = "uploaded"
-    archive.archive_storage_prefix = archive_storage_prefix_from_object_path(
-        receipt.archive.object_path
-    )
-    archive.object_path = receipt.archive.object_path
-    archive.stored_bytes = receipt.archive.stored_bytes
-    archive.sha256 = receipt.archive_sha256
-    archive.backend = receipt.archive.backend
-    archive.storage_class = receipt.archive.storage_class
-    archive.last_uploaded_at = receipt.archive.uploaded_at
-    archive.last_verified_at = receipt.archive.verified_at
-    archive.failure = None
-    archive.archive_format = receipt.archive_format
-    archive.compression = receipt.compression
-    archive.manifest_object_path = receipt.manifest.object_path
-    archive.manifest_sha256 = receipt.manifest_sha256
-    archive.manifest_stored_bytes = receipt.manifest.stored_bytes
-    archive.manifest_uploaded_at = receipt.manifest.uploaded_at
-    archive.ots_object_path = receipt.proof.object_path
-    archive.ots_sha256 = receipt.proof_sha256
-    archive.ots_stored_bytes = receipt.proof.stored_bytes
-    archive.ots_uploaded_at = receipt.proof.uploaded_at
-
-
 def _ensure_archive_storage_prefix(
     session: Session,
     *,
     upload: CollectionUploadRecord,
-    config: RuntimeConfig,
+    archive_store: ArchiveStore,
 ) -> str:
     if upload.archive_storage_prefix:
         return upload.archive_storage_prefix.strip("/")
     prefix = archive_storage_prefix_from_object_path(upload.archive_object_path)
     if prefix is None:
-        prefix = _mint_archive_storage_prefix(session, config=config)
+        prefix = archive_store.new_collection_archive_storage_prefix()
     upload.archive_storage_prefix = prefix
     return prefix
-
-
-def _mint_archive_storage_prefix(session: Session, *, config: RuntimeConfig) -> str:
-    for _ in range(16):
-        prefix = f"{config.archive_prefix}/archives/{secrets.token_hex(16)}"
-        upload_exists = session.scalar(
-            select(CollectionUploadRecord.collection_id).where(
-                CollectionUploadRecord.archive_storage_prefix == prefix
-            )
-        )
-        archive_exists = session.scalar(
-            select(CollectionArchiveRecord.collection_id).where(
-                CollectionArchiveRecord.archive_storage_prefix == prefix
-            )
-        )
-        if upload_exists is None and archive_exists is None:
-            return prefix
-    raise RuntimeError("failed to mint a unique archive storage prefix")
-
 
 def _archive_receipt_to_json(receipt: CollectionArchiveUploadReceipt) -> str:
     payload = {

@@ -11,6 +11,7 @@ from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     Base,
     create_catalog_engine,
@@ -20,7 +21,7 @@ from riverhog_core.catalog_db import (
 )
 from riverhog_core.catalog_models import (
     ArchiveRestoreRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -28,7 +29,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.domain.enums import FetchState
 from riverhog_core.domain.errors import Conflict
-from riverhog_core.ports.archive_store import ArchiveRestoreStatus
+from riverhog_core.ports.archive_store import ArchiveReadStatus
 from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
@@ -101,11 +102,11 @@ class FakeArchiveStore:
         assert generated_at.endswith("Z")
         self.catalog_entries = entries
 
-    def request_collection_archive_restore(self, **_: object) -> ArchiveRestoreStatus:
-        return ArchiveRestoreStatus(state="requested")
+    def prepare_collection_archive_read(self, **_: object) -> ArchiveReadStatus:
+        return ArchiveReadStatus(state="requested")
 
-    def get_collection_archive_restore_status(self, **_: object) -> ArchiveRestoreStatus:
-        return ArchiveRestoreStatus(state="requested")
+    def get_collection_archive_read_status(self, **_: object) -> ArchiveReadStatus:
+        return ArchiveReadStatus(state="requested")
 
 
 class FakeUploadStore:
@@ -148,8 +149,9 @@ def _seed(database_url: str, *, hot: bool) -> None:
             )
         )
         session.add(
-            CollectionArchiveRecord(
+            CollectionArchiveCopyRecord(
                 collection_id="2025/20250102T030405Z__docs",
+                store="deep",
                 state="uploaded",
                 archive_storage_prefix="archive/archives/opaque-docs",
                 object_path="archive/archives/opaque-docs/archive.tar.age",
@@ -180,21 +182,25 @@ def _services(
     config = RuntimeConfig(database_url=database_url)
     hot_store = BlockingHotStore(hot=hot)
     archive_store = FakeArchiveStore()
+    archive_stores = ArchiveStoreRegistry(
+        {"deep": cast(Any, archive_store)},
+        default_store="deep",
+    )
     return (
         SqlAlchemyCollectionDeletionService(
             config,
-            cast(Any, archive_store),
+            archive_stores,
             cast(Any, hot_store),
             cast(Any, FakeUploadStore()),
         ),
         SqlAlchemyFetchService(
             config,
-            cast(Any, archive_store),
+            archive_stores,
             cast(Any, hot_store),
         ),
         SqlAlchemyArchiveRestoreService(
             config,
-            cast(Any, archive_store),
+            archive_stores,
             cast(Any, hot_store),
             proof_verifier=FixtureProofVerifier(),
         ),

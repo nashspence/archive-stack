@@ -8,15 +8,16 @@ from datetime import datetime, timedelta
 from math import ceil
 from typing import cast
 
-from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveRestoreCollectionRecord,
     ArchiveRestoreRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
     FetchCollectionRecord,
@@ -31,17 +32,17 @@ from riverhog_core.collection_archives import (
 from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, FetchState
 from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.domain.models import (
+    ArchiveCopyStatus,
     ArchiveRestoreCollection,
     ArchiveRestoreListPage,
     ArchiveRestoreNotificationStatus,
     ArchiveRestoreProgress,
     ArchiveRestoreSummary,
-    ArchiveStatus,
     CollectionManifestStatus,
 )
 from riverhog_core.domain.types import CollectionId
 from riverhog_core.operator_reminders import operator_reminder_due
-from riverhog_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
+from riverhog_core.ports.archive_store import ArchiveReadStatus
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
@@ -80,6 +81,7 @@ _SORT_FIELDS = {"created_at", "id", "state", "ready_at", "expires_at"}
 @dataclass(frozen=True, slots=True)
 class _CollectionArchiveObjects:
     collection_id: str
+    store: str
     archive_object_path: str
     manifest_object_path: str
     proof_object_path: str
@@ -87,17 +89,23 @@ class _CollectionArchiveObjects:
     proof_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _RestoreCollection:
+    collection: CollectionRecord
+    archive_copy: CollectionArchiveCopyRecord
+
+
 class SqlAlchemyArchiveRestoreService:
     def __init__(
         self,
         config: RuntimeConfig,
-        archive_store: ArchiveStore,
+        archive_stores: ArchiveStoreRegistry,
         hot_store: HotStore | None = None,
         *,
         proof_verifier: ProofVerifier | None = None,
     ) -> None:
         self._config = config
-        self._archive_store = archive_store
+        self._archive_stores = archive_stores
         self._hot_store = hot_store
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._session_factory = make_session_factory(config.database_url)
@@ -160,13 +168,14 @@ class SqlAlchemyArchiveRestoreService:
         with session_scope(self._session_factory) as session:
             require_collection_not_deleting(session, collection_id)
             collection = _require_collection(session, collection_id)
-            _require_collection_archive_uploaded(collection)
+            archive_copy = _require_collection_archive_uploaded(collection, self._config)
             active = _active_restore_for_collection(session, collection_id)
             if active is None:
                 record = _create_restore(
                     session,
                     config=self._config,
                     collection=collection,
+                    archive_copy=archive_copy,
                 )
             else:
                 record = active
@@ -309,7 +318,7 @@ class SqlAlchemyArchiveRestoreService:
                 return _restore_summary(session, record, self._config)
             if record.state not in _ACTIVE_STATES:
                 raise InvalidState("archive restore is not active and cannot be canceled")
-            _cleanup_restore(session, record, self._archive_store)
+            _cleanup_restore(session, record, self._archive_stores)
             record.state = ArchiveRestoreState.CANCELED.value
             record.canceled_at = _isoformat_z(current)
             record.next_poll_at = None
@@ -454,7 +463,7 @@ class SqlAlchemyArchiveRestoreService:
                 _request_restore(
                     session,
                     record,
-                    archive_store=self._archive_store,
+                    archive_stores=self._archive_stores,
                     config=self._config,
                     current=current,
                 )
@@ -462,7 +471,7 @@ class SqlAlchemyArchiveRestoreService:
                 status = _poll_restore(
                     session,
                     record,
-                    archive_store=self._archive_store,
+                    archive_stores=self._archive_stores,
                     current=current,
                 )
                 if status.state == "ready":
@@ -477,7 +486,7 @@ class SqlAlchemyArchiveRestoreService:
                     )
                     _notify_ready(session, record, self._config, current)
                 elif status.state == "expired":
-                    _expire_restore(session, record, self._archive_store)
+                    _expire_restore(session, record, self._archive_stores)
                     return
                 else:
                     record.next_poll_at = _isoformat_z(
@@ -490,12 +499,12 @@ class SqlAlchemyArchiveRestoreService:
             if record.state != ArchiveRestoreState.READY.value:
                 return
             if record.expires_at is not None and record.expires_at <= current_text:
-                _expire_restore(session, record, self._archive_store)
+                _expire_restore(session, record, self._archive_stores)
                 return
             _materialize_restore(
                 session,
                 record,
-                archive_store=self._archive_store,
+                archive_stores=self._archive_stores,
                 hot_store=self._hot_store,
                 proof_verifier=self._proof_verifier,
                 config=self._config,
@@ -600,17 +609,27 @@ def _require_collection(session: Session, collection_id: str) -> CollectionRecor
     return collection
 
 
-def _require_collection_archive_uploaded(collection: CollectionRecord) -> None:
-    archive = collection.archive
-    if archive is None or ArchiveState(archive.state) != ArchiveState.UPLOADED:
+def _require_collection_archive_uploaded(
+    collection: CollectionRecord,
+    config: RuntimeConfig,
+) -> CollectionArchiveCopyRecord:
+    uploaded = [
+        copy
+        for copy in collection.archive_copies
+        if ArchiveState(copy.state) == ArchiveState.UPLOADED
+    ]
+    if not uploaded:
         raise InvalidState(
             f"collection archive is not uploaded and cannot be restored: {collection.id}"
         )
+    read_rank = {store: index for index, store in enumerate(config.archive_read_order)}
+    return min(uploaded, key=lambda copy: (read_rank.get(copy.store, len(read_rank)), copy.store))
 
 
-def _require_archive_objects(collection: CollectionRecord) -> _CollectionArchiveObjects:
-    archive = collection.archive
-    if archive is None or not archive.object_path:
+def _require_archive_objects(binding: _RestoreCollection) -> _CollectionArchiveObjects:
+    collection = binding.collection
+    archive = binding.archive_copy
+    if not archive.object_path:
         raise InvalidState(f"collection archive object is missing: {collection.id}")
     if not archive.manifest_object_path or not archive.manifest_sha256:
         raise InvalidState(f"collection archive manifest is missing: {collection.id}")
@@ -618,6 +637,7 @@ def _require_archive_objects(collection: CollectionRecord) -> _CollectionArchive
         raise InvalidState(f"collection archive proof is missing: {collection.id}")
     return _CollectionArchiveObjects(
         collection_id=collection.id,
+        store=archive.store,
         archive_object_path=archive.object_path,
         manifest_object_path=archive.manifest_object_path,
         proof_object_path=archive.ots_object_path,
@@ -626,13 +646,23 @@ def _require_archive_objects(collection: CollectionRecord) -> _CollectionArchive
     )
 
 
-def _restore_collections(session: Session, record: ArchiveRestoreRecord) -> list[CollectionRecord]:
-    return list(
-        session.scalars(
-            select(CollectionRecord)
+def _restore_collections(
+    session: Session,
+    record: ArchiveRestoreRecord,
+) -> list[_RestoreCollection]:
+    rows = session.execute(
+            select(CollectionRecord, CollectionArchiveCopyRecord)
             .join(
                 ArchiveRestoreCollectionRecord,
                 ArchiveRestoreCollectionRecord.collection_id == CollectionRecord.id,
+            )
+            .join(
+                CollectionArchiveCopyRecord,
+                and_(
+                    CollectionArchiveCopyRecord.collection_id == CollectionRecord.id,
+                    CollectionArchiveCopyRecord.store
+                    == ArchiveRestoreCollectionRecord.archive_store,
+                ),
             )
             .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
             .order_by(
@@ -640,7 +670,10 @@ def _restore_collections(session: Session, record: ArchiveRestoreRecord) -> list
                 ArchiveRestoreCollectionRecord.collection_id,
             )
         ).all()
-    )
+    return [
+        _RestoreCollection(collection=row[0], archive_copy=row[1])
+        for row in rows
+    ]
 
 
 def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
@@ -723,6 +756,7 @@ def _create_restore(
     *,
     config: RuntimeConfig,
     collection: CollectionRecord,
+    archive_copy: CollectionArchiveCopyRecord,
 ) -> ArchiveRestoreRecord:
     restore_id = _generated_restore_id(session, collection.id)
     record = ArchiveRestoreRecord(
@@ -750,6 +784,7 @@ def _create_restore(
         ArchiveRestoreCollectionRecord(
             restore_id=restore_id,
             collection_id=collection.id,
+            archive_store=archive_copy.store,
             collection_order=0,
         )
     )
@@ -761,19 +796,19 @@ def _request_restore(
     session: Session,
     record: ArchiveRestoreRecord,
     *,
-    archive_store: ArchiveStore,
+    archive_stores: ArchiveStoreRegistry,
     config: RuntimeConfig,
     current: datetime,
 ) -> None:
     if record.requested_at is not None:
         return
-    collections = _restore_collections(session, record)
-    if not collections:
+    bindings = _restore_collections(session, record)
+    if not bindings:
         raise InvalidState("archive restore has no collections")
     requested_at = _isoformat_z(current)
     estimated_ready_at = _isoformat_z(current + config.archive_restore_latency)
     statuses = [
-        archive_store.request_collection_archive_restore(
+        archive_stores.require(archive.store).prepare_collection_archive_read(
             collection_id=archive.collection_id,
             object_path=archive.archive_object_path,
             retrieval_tier=record.retrieval_tier,
@@ -783,7 +818,7 @@ def _request_restore(
             manifest_object_path=archive.manifest_object_path,
             proof_object_path=archive.proof_object_path,
         )
-        for archive in (_require_archive_objects(collection) for collection in collections)
+        for archive in (_require_archive_objects(binding) for binding in bindings)
     ]
     record.requested_at = requested_at
     record.ready_at = (
@@ -803,14 +838,14 @@ def _poll_restore(
     session: Session,
     record: ArchiveRestoreRecord,
     *,
-    archive_store: ArchiveStore,
+    archive_stores: ArchiveStoreRegistry,
     current: datetime,
-) -> ArchiveRestoreStatus:
-    collections = _restore_collections(session, record)
-    if not collections:
+) -> ArchiveReadStatus:
+    bindings = _restore_collections(session, record)
+    if not bindings:
         raise InvalidState("archive restore has no collections")
     statuses = [
-        archive_store.get_collection_archive_restore_status(
+        archive_stores.require(archive.store).get_collection_archive_read_status(
             collection_id=archive.collection_id,
             object_path=archive.archive_object_path,
             requested_at=record.requested_at or _isoformat_z(current),
@@ -819,12 +854,12 @@ def _poll_restore(
             manifest_object_path=archive.manifest_object_path,
             proof_object_path=archive.proof_object_path,
         )
-        for archive in (_require_archive_objects(collection) for collection in collections)
+        for archive in (_require_archive_objects(binding) for binding in bindings)
     ]
     if any(status.state == "expired" for status in statuses):
-        return ArchiveRestoreStatus(state="expired")
+        return ArchiveReadStatus(state="expired")
     if statuses and all(status.state == "ready" for status in statuses):
-        return ArchiveRestoreStatus(
+        return ArchiveReadStatus(
             state="ready",
             ready_at=_max_timestamp(
                 status.ready_at for status in statuses if status.ready_at is not None
@@ -833,7 +868,7 @@ def _poll_restore(
                 status.expires_at for status in statuses if status.expires_at is not None
             ),
         )
-    return ArchiveRestoreStatus(
+    return ArchiveReadStatus(
         state="requested",
         message="Archive retrieval is in progress; Riverhog will poll again.",
     )
@@ -843,7 +878,7 @@ def _materialize_restore(
     session: Session,
     record: ArchiveRestoreRecord,
     *,
-    archive_store: ArchiveStore,
+    archive_stores: ArchiveStoreRegistry,
     hot_store: HotStore | None,
     proof_verifier: ProofVerifier,
     config: RuntimeConfig,
@@ -851,16 +886,18 @@ def _materialize_restore(
 ) -> None:
     if hot_store is None:
         raise InvalidState("archive restore service has no hot store")
-    for collection in _restore_collections(session, record):
+    for binding in _restore_collections(session, record):
+        collection = binding.collection
         expected_files = _expected_files(session, collection.id)
         if not expected_files:
             continue
-        archive = _require_archive_objects(collection)
+        archive = _require_archive_objects(binding)
+        archive_store = archive_stores.require(archive.store)
         record.archive_verification_state = "in_progress"
         record.extraction_state = "in_progress"
         record.materialization_state = "in_progress"
         session.flush()
-        manifest_bytes = archive_store.read_restored_collection_manifest(
+        manifest_bytes = archive_store.read_collection_manifest(
             collection_id=archive.collection_id,
             object_path=archive.manifest_object_path,
         )
@@ -870,7 +907,7 @@ def _materialize_restore(
             collection_id=archive.collection_id,
             files=expected_files,
         )
-        proof_bytes = archive_store.read_restored_collection_manifest_proof(
+        proof_bytes = archive_store.read_collection_manifest_proof(
             collection_id=archive.collection_id,
             object_path=archive.proof_object_path,
         )
@@ -882,7 +919,7 @@ def _materialize_restore(
         )
         record.archive_verification_state = "completed"
         materialized: set[str] = set()
-        chunks = archive_store.iter_restored_collection_archive(
+        chunks = archive_store.iter_collection_archive(
             collection_id=archive.collection_id,
             object_path=archive.archive_object_path,
         )
@@ -910,7 +947,7 @@ def _materialize_restore(
             )
     record.extraction_state = "completed"
     record.materialization_state = "completed"
-    _cleanup_restore(session, record, archive_store)
+    _cleanup_restore(session, record, archive_stores)
     record.state = ArchiveRestoreState.COMPLETED.value
     record.completed_at = _isoformat_z(current)
     record.expires_at = record.completed_at
@@ -923,9 +960,9 @@ def _materialize_restore(
 def _expire_restore(
     session: Session,
     record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
+    archive_stores: ArchiveStoreRegistry,
 ) -> None:
-    _cleanup_restore(session, record, archive_store)
+    _cleanup_restore(session, record, archive_stores)
     record.state = ArchiveRestoreState.EXPIRED.value
     record.next_poll_at = None
     record.latest_message = "Temporary archive retrieval expired; start a new restore."
@@ -934,12 +971,12 @@ def _expire_restore(
 def _cleanup_restore(
     session: Session,
     record: ArchiveRestoreRecord,
-    archive_store: ArchiveStore,
+    archive_stores: ArchiveStoreRegistry,
 ) -> None:
-    for collection in _restore_collections(session, record):
-        archive = _require_archive_objects(collection)
-        archive_store.cleanup_collection_archive_restore(
-            collection_id=collection.id,
+    for binding in _restore_collections(session, record):
+        archive = _require_archive_objects(binding)
+        archive_stores.require(archive.store).cleanup_collection_archive_read(
+            collection_id=binding.collection.id,
             object_path=archive.archive_object_path,
             manifest_object_path=archive.manifest_object_path,
             proof_object_path=archive.proof_object_path,
@@ -1017,14 +1054,11 @@ def _restore_summary(
 ) -> ArchiveRestoreSummary:
     collections = tuple(
         ArchiveRestoreCollection(
-            id=CollectionId(collection.id),
-            archive=_archive_status(collection.archive),
-            collection_manifest=_manifest_status(collection.archive),
-            stored_bytes=int(collection.archive.stored_bytes or 0)
-            if collection.archive is not None
-            else 0,
+            id=CollectionId(binding.collection.id),
+            archive_copy=_archive_status(binding.archive_copy),
+            stored_bytes=int(binding.archive_copy.stored_bytes or 0),
         )
-        for collection in _restore_collections(session, record)
+        for binding in _restore_collections(session, record)
     )
     return ArchiveRestoreSummary(
         id=record.restore_id,
@@ -1052,10 +1086,9 @@ def _restore_summary(
     )
 
 
-def _archive_status(archive: CollectionArchiveRecord | None) -> ArchiveStatus:
-    if archive is None:
-        return ArchiveStatus()
-    return ArchiveStatus(
+def _archive_status(archive: CollectionArchiveCopyRecord) -> ArchiveCopyStatus:
+    return ArchiveCopyStatus(
+        store=archive.store,
         state=ArchiveState(archive.state),
         object_path=archive.object_path,
         stored_bytes=archive.stored_bytes,
@@ -1064,14 +1097,15 @@ def _archive_status(archive: CollectionArchiveRecord | None) -> ArchiveStatus:
         last_uploaded_at=archive.last_uploaded_at,
         last_verified_at=archive.last_verified_at,
         failure=archive.failure,
+        collection_manifest=_manifest_status(archive),
+        archive_format=archive.archive_format,
+        compression=archive.compression,
     )
 
 
 def _manifest_status(
-    archive: CollectionArchiveRecord | None,
-) -> CollectionManifestStatus | None:
-    if archive is None:
-        return None
+    archive: CollectionArchiveCopyRecord,
+) -> CollectionManifestStatus:
     ots_state = "uploaded" if archive.ots_object_path else "pending"
     if ArchiveState(archive.state) == ArchiveState.FAILED:
         ots_state = "failed"

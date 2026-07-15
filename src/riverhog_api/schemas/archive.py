@@ -5,7 +5,8 @@ from typing import Literal
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class ArchiveOut(RiverhogModel):
+class ArchiveCopyOut(RiverhogModel):
+    store: str
     state: Literal["pending", "uploading", "uploaded", "retrying", "failed"]
     object_path: str | None
     stored_bytes: int | None
@@ -14,6 +15,9 @@ class ArchiveOut(RiverhogModel):
     last_uploaded_at: str | None
     last_verified_at: str | None
     failure: str | None
+    collection_manifest: CollectionManifestOut | None = None
+    archive_format: str | None = None
+    compression: str | None = None
 
 
 class CollectionManifestOut(RiverhogModel):
@@ -22,3 +26,20 @@ class CollectionManifestOut(RiverhogModel):
     ots_object_path: str | None = None
     ots_sha256: str | None = None
     ots_state: Literal["pending", "uploaded", "failed"] = "pending"
+
+
+class CreateArchiveCopyRequest(RiverhogModel):
+    collection_id: str
+    destination_store: str
+    source_store: str | None = None
+
+
+class ArchiveCopyJobOut(RiverhogModel):
+    collection_id: str
+    source_store: str | None
+    destination_store: str
+    state: Literal["requested", "waiting", "copying", "completed", "failed"]
+    requested_at: str | None
+    ready_at: str | None
+    expires_at: str | None
+    failure: str | None

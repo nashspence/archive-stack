@@ -256,7 +256,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive complete! This collection is safe, promoted, and ready."
+        "body_template": "Oink, archive complete! This collection is safely archived and ready."
       },
       "required_payload_fields": [
         "event",

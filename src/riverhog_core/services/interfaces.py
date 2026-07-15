@@ -42,6 +42,7 @@ class CollectionService(Protocol):
         files: list[dict[str, object]],
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        archive_store: str | None = None,
         retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
@@ -51,6 +52,7 @@ class CollectionService(Protocol):
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        archive_store: str | None = None,
         retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
@@ -117,6 +119,18 @@ class ArchiveUploadService(Protocol):
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
     def publish_restore_catalog(self) -> int: ...
     def process_due_uploads(self, *, limit: int = 1) -> int: ...
+
+
+class ArchiveCopyService(Protocol):
+    def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int: ...
+    def create_or_resume(
+        self,
+        collection_id: str,
+        *,
+        destination_store: str,
+        source_store: str | None = None,
+    ) -> JsonObject: ...
+    def process_due(self, *, limit: int = 1) -> int: ...
 
 
 class ArchiveReportingService(Protocol):

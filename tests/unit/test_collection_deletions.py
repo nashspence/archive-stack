@@ -8,11 +8,13 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyJobRecord,
     ArchiveRestoreCollectionRecord,
     ArchiveRestoreRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -154,8 +156,9 @@ def _seed(
             )
         )
         session.add(
-            CollectionArchiveRecord(
+            CollectionArchiveCopyRecord(
                 collection_id="2025/20250102T030405Z__docs",
+                store="deep",
                 state="uploaded",
                 archive_storage_prefix="archive/archives/opaque-docs",
                 object_path="archive/archives/opaque-docs/archive.tar.age",
@@ -173,6 +176,7 @@ def _seed(
         session.add(
             CollectionUploadRecord(
                 collection_id="2025/20250102T030405Z__docs",
+                archive_store="deep",
                 state="expired",
             )
         )
@@ -202,6 +206,7 @@ def _seed(
             ArchiveRestoreCollectionRecord(
                 restore_id=restore_id,
                 collection_id="2025/20250102T030405Z__docs",
+                archive_store="deep",
                 collection_order=0,
             )
         )
@@ -234,8 +239,9 @@ def _seed(
                 )
             )
             session.add(
-                CollectionArchiveRecord(
+                CollectionArchiveCopyRecord(
                     collection_id="2025/20250103T030405Z__other",
+                    store="deep",
                     state="uploaded",
                     archive_storage_prefix="archive/archives/opaque-other",
                     object_path="archive/archives/opaque-other/archive.tar.age",
@@ -260,7 +266,7 @@ def _service(
 ) -> SqlAlchemyCollectionDeletionService:
     return SqlAlchemyCollectionDeletionService(
         RuntimeConfig(database_url=sqlite_url(path)),
-        archive_store,
+        ArchiveStoreRegistry({"deep": archive_store}, default_store="deep"),
         hot_store,
         upload_store,
     )
@@ -315,7 +321,8 @@ def test_plan_enumerates_custody_impact_and_issues_state_bound_challenge(tmp_pat
     assert plan["metadata_rows"] == {
         "collections": 1,
         "collection_files": 1,
-        "collection_archives": 1,
+        "collection_archive_copies": 1,
+        "archive_copy_jobs": 0,
         "collection_uploads": 1,
         "collection_upload_files": 1,
         "archive_restores": 1,
@@ -331,6 +338,58 @@ def test_plan_enumerates_custody_impact_and_issues_state_bound_challenge(tmp_pat
         service.delete("2025/20250102T030405Z__docs", challenge=str(plan["challenge"]))
 
 
+def test_collection_deletion_removes_every_archive_copy(tmp_path: Path) -> None:
+    path, _, deep_store, hot_store, upload_store = _setup(tmp_path)
+    factory = make_session_factory(sqlite_url(path))
+    b2_paths = {
+        "b2/archives/opaque-docs/archive.tar.age",
+        "b2/archives/opaque-docs/manifest.yml.age",
+        "b2/archives/opaque-docs/manifest.yml.ots.age",
+    }
+    with session_scope(factory) as session:
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id="2025/20250102T030405Z__docs",
+                store="b2",
+                state="uploaded",
+                archive_storage_prefix="b2/archives/opaque-docs",
+                object_path="b2/archives/opaque-docs/archive.tar.age",
+                stored_bytes=200,
+                sha256="d" * 64,
+                manifest_object_path="b2/archives/opaque-docs/manifest.yml.age",
+                manifest_sha256="e" * 64,
+                manifest_stored_bytes=30,
+                ots_object_path="b2/archives/opaque-docs/manifest.yml.ots.age",
+                ots_sha256="f" * 64,
+                ots_stored_bytes=10,
+                last_verified_at="2026-07-15T00:00:00Z",
+            )
+        )
+    b2_store = FakeArchiveStore(FailOnce())
+    b2_store.objects = set(b2_paths)
+    service = SqlAlchemyCollectionDeletionService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        ArchiveStoreRegistry(
+            {"deep": deep_store, "b2": b2_store},
+            default_store="deep",
+        ),
+        hot_store,
+        upload_store,
+    )
+
+    plan = service.plan("2025/20250102T030405Z__docs")
+    result = service.delete(
+        "2025/20250102T030405Z__docs",
+        challenge=str(plan["challenge"]),
+    )
+
+    assert result["status"] == "deleted"
+    assert result["remote_storage_bytes"] == 370
+    assert deep_store.catalog_entries == []
+    assert b2_store.catalog_entries == []
+    assert not (b2_paths & b2_store.objects)
+
+
 def test_plan_reports_active_restore_and_fetch_blockers(tmp_path: Path) -> None:
     _, service, _, _, _ = _setup(tmp_path, active_restore=True, active_fetch=True)
 
@@ -342,6 +401,28 @@ def test_plan_reports_active_restore_and_fetch_blockers(tmp_path: Path) -> None:
         "archive restore is active: ar-active",
         "fetch is active: fx-1",
     ]
+
+
+def test_plan_blocks_collection_with_active_archive_copy(tmp_path: Path) -> None:
+    path, service, _, _, _ = _setup(tmp_path)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(
+            ArchiveCopyJobRecord(
+                collection_id="2025/20250102T030405Z__docs",
+                source_store="deep",
+                destination_store="b2",
+                destination_storage_prefix="b2/archives/pending-copy",
+                state="copying",
+                requested_at="2026-07-15T00:00:00Z",
+            )
+        )
+
+    plan = service.plan("2025/20250102T030405Z__docs")
+
+    assert plan["status"] == "blocked"
+    assert plan["challenge"] is None
+    assert plan["blockers"] == ["archive copy is active: deep -> b2"]
 
 
 def test_delete_removes_collection_objects_and_dependent_state(tmp_path: Path) -> None:

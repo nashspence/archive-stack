@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, FetchState
 from riverhog_core.domain.types import CollectionId, FetchId, Sha256Hex
 
 
 @dataclass(frozen=True)
-class ArchiveStatus:
+class ArchiveCopyStatus:
+    store: str
     state: ArchiveState = ArchiveState.PENDING
     object_path: str | None = None
     stored_bytes: int | None = None
@@ -16,6 +17,9 @@ class ArchiveStatus:
     last_uploaded_at: str | None = None
     last_verified_at: str | None = None
     failure: str | None = None
+    collection_manifest: CollectionManifestStatus | None = None
+    archive_format: str | None = None
+    compression: str | None = None
 
 
 @dataclass(frozen=True)
@@ -39,10 +43,7 @@ class ArchiveUsageCollection:
     id: CollectionId
     bytes: int
     measured_storage_bytes: int
-    archive: ArchiveStatus = field(default_factory=ArchiveStatus)
-    collection_manifest: CollectionManifestStatus | None = None
-    archive_format: str | None = None
-    compression: str | None = None
+    archive_copies: tuple[ArchiveCopyStatus, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,8 +80,7 @@ class ArchiveRestoreProgress:
 @dataclass(frozen=True)
 class ArchiveRestoreCollection:
     id: CollectionId
-    archive: ArchiveStatus
-    collection_manifest: CollectionManifestStatus | None
+    archive_copy: ArchiveCopyStatus
     stored_bytes: int
 
 
@@ -122,10 +122,7 @@ class CollectionSummary:
     bytes: int
     hot_files: int
     hot_bytes: int
-    archive: ArchiveStatus = field(default_factory=ArchiveStatus)
-    collection_manifest: CollectionManifestStatus | None = None
-    archive_format: str | None = None
-    compression: str | None = None
+    archive_copies: tuple[ArchiveCopyStatus, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
-    CollectionArchiveRecord,
+    CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
 )
@@ -16,9 +16,9 @@ from riverhog_core.catalog_models import (
     ("model", "column"),
     [
         (CollectionFileRecord, "bytes"),
-        (CollectionArchiveRecord, "stored_bytes"),
-        (CollectionArchiveRecord, "manifest_stored_bytes"),
-        (CollectionArchiveRecord, "ots_stored_bytes"),
+        (CollectionArchiveCopyRecord, "stored_bytes"),
+        (CollectionArchiveCopyRecord, "manifest_stored_bytes"),
+        (CollectionArchiveCopyRecord, "ots_stored_bytes"),
         (ArchiveUsageSnapshotRecord, "measured_storage_bytes"),
         (CollectionUploadFileRecord, "bytes"),
         (CollectionUploadFileRecord, "uploaded_bytes"),

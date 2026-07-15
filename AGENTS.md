@@ -4,14 +4,14 @@ Read [README.md](README.md) for the product entrypoint.
 
 ## Boundaries
 
-Riverhog owns generic collection custody, encrypted remote archives, hot-cache
+Riverhog owns generic collection custody, named archive stores and copies, hot-cache
 materialization, fetches, and search. Munchy owns generic media ingest, Jeb owns generic
 watched-drop collection, and Gogurt owns mounted-volume actions. Keep public code generic;
 real identity and deployment topology belong downstream.
 
 ## Safety
 
-- Treat the remote archive account as the durable authority.
+- Treat configured archive stores as the durable authority.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
 - Treat catalog and object-store mutations as one custody operation.
 - Never expose secrets or private deployment identity in public code, fixtures, logs,

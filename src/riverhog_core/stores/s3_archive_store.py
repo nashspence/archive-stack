@@ -30,12 +30,12 @@ from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
     ArchivePackageVerificationError,
-    ArchiveRestoreStatus,
+    ArchiveReadStatus,
     ArchiveUploadReceipt,
     CollectionArchivePackageIdentity,
     CollectionArchiveUploadReceipt,
 )
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.stores.s3_support import create_archive_s3_client
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
@@ -150,9 +150,22 @@ def _iter_encrypted_archive(
     session: ResumableAgeScryptSession,
 ) -> Iterator[bytes]:
     yield session.age_prefix
-    for chunk_index, start, end, final in _plaintext_chunks(package.archive_size):
-        plaintext = _read_archive_range(package, start, end - start)
-        yield session.encrypt_chunk(chunk_index, plaintext, final=final)
+    chunks = iter(package.iter_archive())
+    buffer = bytearray()
+    chunk_index = 0
+    plaintext_bytes = 0
+    for chunk in chunks:
+        buffer.extend(chunk)
+        while len(buffer) > CHUNK_SIZE:
+            plaintext = bytes(buffer[:CHUNK_SIZE])
+            del buffer[:CHUNK_SIZE]
+            plaintext_bytes += len(plaintext)
+            yield session.encrypt_chunk(chunk_index, plaintext, final=False)
+            chunk_index += 1
+    plaintext_bytes += len(buffer)
+    if plaintext_bytes != package.archive_size:
+        raise ValueError("collection archive stream size changed during encryption")
+    yield session.encrypt_chunk(chunk_index, bytes(buffer), final=True)
 
 
 def _encrypted_archive_part_body(
@@ -221,14 +234,15 @@ def _validate_recorded_parts_exist_remotely(
 
 
 class S3ArchiveStore:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config: RuntimeConfig, store: ArchiveStoreConfig) -> None:
         self._config = config
-        self._bucket = config.archive_bucket
-        self._client = create_archive_s3_client(config)
+        self._store = store
+        self._bucket = store.bucket
+        self._client = create_archive_s3_client(config, store)
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
-        return f"{self._config.archive_prefix}/archives/{archive_id}"
+        return f"{self._store.prefix}/archives/{archive_id}"
 
     def _collection_object_keys(
         self,
@@ -276,7 +290,7 @@ class S3ArchiveStore:
             expected_bytes=expected_bytes,
             expected_sha256=expected_sha256,
         )
-        if self._is_aws_restore_backend():
+        if self._requires_aws_read_preparation():
             _validate_aws_storage_class(
                 object_key=object_key,
                 head=head,
@@ -286,7 +300,7 @@ class S3ArchiveStore:
         return ArchiveUploadReceipt(
             object_path=object_key,
             stored_bytes=int(head.get("ContentLength", 0)),
-            backend=self._config.archive_backend,
+            backend=self._store.backend,
             storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
             or _format_s3_timestamp(
@@ -360,7 +374,7 @@ class S3ArchiveStore:
             (
                 "archive",
                 package.archive,
-                _configured_s3_storage_class(self._config.archive_storage_class),
+                _configured_s3_storage_class(self._store.storage_class),
             ),
             ("manifest", package.manifest, "STANDARD"),
             ("manifest-proof", package.proof, "STANDARD"),
@@ -378,7 +392,7 @@ class S3ArchiveStore:
                     kind=kind,
                     expected=expected,
                 )
-                if self._is_aws_restore_backend():
+                if self._requires_aws_read_preparation():
                     _validate_aws_storage_class(
                         object_key=expected.object_path,
                         head=head,
@@ -406,7 +420,7 @@ class S3ArchiveStore:
         object_paths = (object_path, manifest_object_path, proof_object_path)
         prefixes = {path.rsplit("/", 1)[0] for path in object_paths}
         suffixes = {path.rsplit("/", 1)[-1] for path in object_paths}
-        archive_root = f"{self._config.archive_prefix}/archives/"
+        archive_root = f"{self._store.prefix}/archives/"
         if (
             len(prefixes) != 1
             or suffixes != expected_suffixes
@@ -435,7 +449,7 @@ class S3ArchiveStore:
         generated_at: str,
     ) -> None:
         self._put_archive_root_guidance()
-        catalog_key = f"{self._config.archive_prefix}/catalog/collections.yml.age"
+        catalog_key = f"{self._store.prefix}/catalog/collections.yml.age"
         catalog_bytes = yaml.safe_dump(
             {
                 "format": "encrypted-archive-catalog-v1",
@@ -446,7 +460,7 @@ class S3ArchiveStore:
                         for key, value in {
                             **entry,
                             "archive_id": archive_id_from_storage_prefix(
-                                archive_prefix=self._config.archive_prefix,
+                                archive_prefix=self._store.prefix,
                                 storage_prefix=cast(
                                     str | None,
                                     entry.get("archive_storage_prefix"),
@@ -494,7 +508,7 @@ class S3ArchiveStore:
         ):
             self._client.put_object(
                 Bucket=self._bucket,
-                Key=f"{self._config.archive_prefix}/{filename}",
+                Key=f"{self._store.prefix}/{filename}",
                 Body=content,
                 ContentLength=len(content),
                 Metadata={"archive-guidance-format": format_name},
@@ -516,7 +530,7 @@ class S3ArchiveStore:
         logical_sha256 = sha256
         encryption = AGE_SCRYPT_ENCRYPTION
         storage_class = _collection_object_storage_class(
-            archive_storage_class=self._config.archive_storage_class,
+            archive_storage_class=self._store.storage_class,
             kind=kind,
         )
         existing = self._head_object(object_key=object_key)
@@ -554,7 +568,7 @@ class S3ArchiveStore:
         uploaded_at = _utc_now()
         extra_args: dict[str, Any] = {
             "Metadata": {
-                "riverhog-backend": self._config.archive_backend,
+                "riverhog-backend": self._store.backend,
                 "riverhog-storage-class": _configured_s3_storage_class(storage_class),
                 "riverhog-object-kind": f"collection-{kind}",
                 "riverhog-collection-sha256": hashlib.sha256(
@@ -574,12 +588,12 @@ class S3ArchiveStore:
             }
         }
         if (
-            self._is_aws_restore_backend()
+            self._requires_aws_read_preparation()
             and _configured_s3_storage_class(storage_class) != "STANDARD"
         ):
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
-            if kind == "archive":
+            if kind == "archive" and package.supports_archive_ranges:
                 if age_session is None:
                     raise RuntimeError("encrypted archive upload session was not initialized")
                 self._put_encrypted_archive_object_multipart(
@@ -598,7 +612,7 @@ class S3ArchiveStore:
                     object_key=object_key,
                     content=content,
                     content_length=content_length,
-                    sha256=sha256,
+                    sha256=logical_sha256 if kind == "archive" else sha256,
                     kind=kind,
                     package=package,
                     extra_args=extra_args,
@@ -895,16 +909,23 @@ class S3ArchiveStore:
             )
         except Exception:
             if upload_state is not None:
-                _LOG.warning(
-                    "leaving incomplete S3 multipart upload for %s resumable: upload_id=%s "
-                    "uploaded_bytes=%s/%s resumed_parts=%s",
-                    object_key,
-                    upload_state.upload_id,
-                    uploaded_bytes,
-                    content_length,
-                    resumed_part_count,
-                    exc_info=True,
-                )
+                if multipart_tracker is None:
+                    self._client.abort_multipart_upload(
+                        Bucket=self._bucket,
+                        Key=object_key,
+                        UploadId=upload_state.upload_id,
+                    )
+                else:
+                    _LOG.warning(
+                        "leaving incomplete S3 multipart upload for %s resumable: "
+                        "upload_id=%s uploaded_bytes=%s/%s resumed_parts=%s",
+                        object_key,
+                        upload_state.upload_id,
+                        uploaded_bytes,
+                        content_length,
+                        resumed_part_count,
+                        exc_info=True,
+                    )
             raise
 
     def _put_encrypted_archive_object_multipart(
@@ -1207,7 +1228,7 @@ class S3ArchiveStore:
             contiguous.append(recorded)
         return contiguous
 
-    def request_collection_archive_restore(
+    def prepare_collection_archive_read(
         self,
         *,
         collection_id: str,
@@ -1218,7 +1239,7 @@ class S3ArchiveStore:
         estimated_ready_at: str,
         manifest_object_path: str | None = None,
         proof_object_path: str | None = None,
-    ) -> ArchiveRestoreStatus:
+    ) -> ArchiveReadStatus:
         statuses = [
             self._request_collection_object_restore(
                 object_path=current_object_path,
@@ -1243,21 +1264,21 @@ class S3ArchiveStore:
         hold_days: int,
         requested_at: str,
         estimated_ready_at: str,
-    ) -> ArchiveRestoreStatus:
+    ) -> ArchiveReadStatus:
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
         if _is_immediately_readable_storage_class(head):
-            return ArchiveRestoreStatus(
+            return ArchiveReadStatus(
                 state="ready",
                 ready_at=requested_at,
                 message="Collection archive object is immediately readable.",
             )
-        if self._restore_mode() == "auto" and not self._is_aws_restore_backend():
+        if self._store.read_mode == "auto" and not self._requires_aws_read_preparation():
             raise RuntimeError(
-                "real archive restore requires an AWS S3 archive backend or "
-                "RIVERHOG_ARCHIVE_RESTORE_MODE=aws"
+                "archive object read preparation requires an AWS S3 archive backend or "
+                "a store READ_MODE of aws"
             )
         try:
             self._client.restore_object(
@@ -1271,7 +1292,7 @@ class S3ArchiveStore:
         except Exception as exc:
             restore_error = _restore_request_error_code(exc)
             if restore_error == "ObjectAlreadyInActiveTierError":
-                return ArchiveRestoreStatus(
+                return ArchiveReadStatus(
                     state="ready",
                     ready_at=requested_at,
                     message="Collection archive object is already readable.",
@@ -1285,7 +1306,7 @@ class S3ArchiveStore:
             estimated_expires_at=None,
         )
 
-    def get_collection_archive_restore_status(
+    def get_collection_archive_read_status(
         self,
         *,
         collection_id: str,
@@ -1295,7 +1316,7 @@ class S3ArchiveStore:
         estimated_expires_at: str | None,
         manifest_object_path: str | None = None,
         proof_object_path: str | None = None,
-    ) -> ArchiveRestoreStatus:
+    ) -> ArchiveReadStatus:
         statuses = [
             self._collection_object_restore_status(
                 object_path=current_object_path,
@@ -1318,7 +1339,7 @@ class S3ArchiveStore:
         requested_at: str,
         estimated_ready_at: str | None,
         estimated_expires_at: str | None,
-    ) -> ArchiveRestoreStatus:
+    ) -> ArchiveReadStatus:
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
@@ -1326,32 +1347,32 @@ class S3ArchiveStore:
         restore = _parse_restore_header(head.get("Restore"))
         if restore is None:
             if _is_immediately_readable_storage_class(head):
-                return ArchiveRestoreStatus(
+                return ArchiveReadStatus(
                     state="ready",
                     ready_at=requested_at,
                     message="Collection archive object is immediately readable.",
                 )
-            return ArchiveRestoreStatus(
+            return ArchiveReadStatus(
                 state="requested",
                 ready_at=estimated_ready_at,
                 expires_at=estimated_expires_at,
                 message="Collection archive restore is still in progress.",
             )
         if restore["ongoing"]:
-            return ArchiveRestoreStatus(
+            return ArchiveReadStatus(
                 state="requested",
                 ready_at=estimated_ready_at,
                 expires_at=restore["expires_at"] or estimated_expires_at,
                 message="Collection archive restore is still in progress.",
             )
-        return ArchiveRestoreStatus(
+        return ArchiveReadStatus(
             state="ready",
             ready_at=_utc_now(),
             expires_at=restore["expires_at"],
             message="Collection archive object is restored and readable.",
         )
 
-    def iter_restored_collection_archive(
+    def iter_collection_archive(
         self,
         *,
         collection_id: str,
@@ -1361,7 +1382,7 @@ class S3ArchiveStore:
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
-        status = self.get_collection_archive_restore_status(
+        status = self.get_collection_archive_read_status(
             collection_id=collection_id,
             object_path=object_path,
             requested_at=_utc_now(),
@@ -1383,7 +1404,7 @@ class S3ArchiveStore:
             if callable(close):
                 close()
 
-    def read_restored_collection_manifest(
+    def read_collection_manifest(
         self,
         *,
         collection_id: str,
@@ -1394,7 +1415,7 @@ class S3ArchiveStore:
             object_path=object_path,
         )
 
-    def read_restored_collection_manifest_proof(
+    def read_collection_manifest_proof(
         self,
         *,
         collection_id: str,
@@ -1415,7 +1436,7 @@ class S3ArchiveStore:
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
-        status = self.get_collection_archive_restore_status(
+        status = self.get_collection_archive_read_status(
             collection_id=collection_id,
             object_path=object_path,
             requested_at=_utc_now(),
@@ -1434,7 +1455,7 @@ class S3ArchiveStore:
                 close()
         return decrypt_age_scrypt(content, self._config.archive_passphrase)
 
-    def cleanup_collection_archive_restore(
+    def cleanup_collection_archive_read(
         self,
         *,
         collection_id: str,
@@ -1444,15 +1465,13 @@ class S3ArchiveStore:
     ) -> None:
         return
 
-    def _restore_mode(self) -> str:
-        mode = self._config.archive_restore_mode
-        if mode != "auto":
-            return mode
-        return "auto"
-
-    def _is_aws_restore_backend(self) -> bool:
-        endpoint = self._config.archive_endpoint_url.casefold()
-        return self._config.archive_backend.casefold() == "aws" or "amazonaws.com" in endpoint
+    def _requires_aws_read_preparation(self) -> bool:
+        endpoint = self._store.endpoint_url.casefold()
+        return (
+            self._store.read_mode == "aws"
+            or self._store.backend.casefold() == "aws"
+            or "amazonaws.com" in endpoint
+        )
 
 
 def _fetch_materialization_paths(
@@ -1470,18 +1489,18 @@ def _fetch_materialization_paths(
 
 
 def _combine_fetch_materialization_statuses(
-    statuses: list[ArchiveRestoreStatus],
-) -> ArchiveRestoreStatus:
+    statuses: list[ArchiveReadStatus],
+) -> ArchiveReadStatus:
     if any(status.state == "expired" for status in statuses):
-        return ArchiveRestoreStatus(state="expired")
+        return ArchiveReadStatus(state="expired")
     if statuses and all(status.state == "ready" for status in statuses):
-        return ArchiveRestoreStatus(
+        return ArchiveReadStatus(
             state="ready",
             ready_at=_max_timestamp(status.ready_at for status in statuses),
             expires_at=_min_timestamp(status.expires_at for status in statuses),
             message="Collection archive package objects are restored and readable.",
         )
-    return ArchiveRestoreStatus(
+    return ArchiveReadStatus(
         state="requested",
         ready_at=_max_timestamp(status.ready_at for status in statuses),
         expires_at=_min_timestamp(status.expires_at for status in statuses),
@@ -1701,7 +1720,7 @@ def _normalized_s3_storage_class(head: dict[str, Any]) -> str:
 
 
 def _normalized_s3_archive_status(head: dict[str, Any]) -> str:
-    return str(head.get("ArchiveStatus", "")).strip().upper()
+    return str(head.get("ArchiveCopyStatus", "")).strip().upper()
 
 
 def _configured_s3_storage_class(value: str) -> str:
@@ -1734,7 +1753,7 @@ def _validate_aws_storage_class(
     raise RuntimeError(
         "existing AWS archive-store object storage class does not match Riverhog's "
         f"expected class for {object_key}: expected {expected}, got {actual}. "
-        "Delete the stale object or choose a fresh RIVERHOG_ARCHIVE_PREFIX before rerunning."
+        "Delete the stale object or choose a fresh archive store prefix before rerunning."
     )
 
 

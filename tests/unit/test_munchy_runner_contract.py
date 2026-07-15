@@ -5373,6 +5373,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             *,
             ingest_source: str | None = None,
             upload_timestamp: str | None = None,
+            archive_store: str | None = None,
             retain_hot: bool = True,
             notify: dict[str, object] | None = None,
         ) -> dict[str, object]:
@@ -6298,7 +6299,9 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
                 "bytes": 1234,
                 "hot_files": 0,
                 "hot_bytes": 0,
-                "archive": {"state": "uploaded", "stored_bytes": 567},
+                    "archive_copies": [
+                        {"store": "deep", "state": "uploaded", "stored_bytes": 567}
+                    ],
             }
 
     payload = runner.sync_riverhog_session_from_remote(job, FakeApi())  # type: ignore[arg-type]
@@ -6309,7 +6312,7 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
     assert progress["state"] == "finalized"
     assert progress["safe_to_delete"] is True
     assert progress["retain_hot"] is False
-    assert progress["hot_promoted_files"] == 0
+    assert progress["hot_materialized_files"] == 0
     assert progress["riverhog_bytes_total"] == 1234
     assert progress["archive_uploaded_bytes"] == 567
 
@@ -6342,8 +6345,8 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
                 "files_uploaded": 14,
                 "bytes_total": 1234,
                 "uploaded_bytes": 1234,
-                "hot_promoted_files": 0,
-                "hot_promoted_bytes": 0,
+                "hot_materialized_files": 0,
+                "hot_materialized_bytes": 0,
                 "archive_phase": "uploading",
                 "archive_uploaded_bytes": 256,
                 "archive_total_bytes": 1024,

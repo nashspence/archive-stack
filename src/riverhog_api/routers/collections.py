@@ -57,6 +57,7 @@ def create_or_resume_collection_upload(
         files=[item.model_dump() for item in request.files],
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
+        archive_store=request.archive_store,
         retain_hot=request.retain_hot,
         notify=request.notify.model_dump() if request.notify is not None else None,
     )
@@ -72,6 +73,7 @@ def create_or_resume_collection_upload_session(
         upload_slug=request.slug,
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
+        archive_store=request.archive_store,
         retain_hot=request.retain_hot,
         notify=request.notify.model_dump() if request.notify is not None else None,
     )
