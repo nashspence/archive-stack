@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import sys
@@ -20,6 +21,22 @@ SPEC.loader.exec_module(av1)
 
 
 class SourceArtifactsTests(unittest.TestCase):
+    def test_startup_recovers_interrupted_jobs(self) -> None:
+        calls: list[str] = []
+
+        async def run_lifespan() -> None:
+            async with av1.app.router.lifespan_context(av1.app):
+                pass
+
+        with patch.object(
+            av1,
+            "mark_interrupted_jobs_on_startup",
+            side_effect=lambda: calls.append("recovered"),
+        ):
+            asyncio.run(run_lifespan())
+
+        self.assertEqual(calls, ["recovered"])
+
     def test_profile_source_artifact_drops_require_reason(self) -> None:
         with self.assertRaisesRegex(ValueError, "reason"):
             av1.EncodeProfile.model_validate(

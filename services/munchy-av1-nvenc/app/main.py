@@ -15,8 +15,9 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, cast
@@ -142,7 +143,6 @@ CUVID_DECODERS = {
     "vp9": "vp9_cuvid",
 }
 
-app = FastAPI(title="munchy-av1-nvenc", version="0.1.0")
 jobs_lock = threading.Lock()
 jobs: dict[str, dict[str, Any]] = {}
 encode_semaphore = threading.Semaphore(MAX_PARALLEL_ENCODES)
@@ -267,9 +267,13 @@ def mark_interrupted_jobs_on_startup() -> None:
         write_status(job_id, payload)
 
 
-@app.on_event("startup")
-def recover_interrupted_jobs() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     mark_interrupted_jobs_on_startup()
+    yield
+
+
+app = FastAPI(title="munchy-av1-nvenc", version="0.1.0", lifespan=lifespan)
 
 
 def run_command(
