@@ -86,6 +86,7 @@ def test_load_runtime_config_builds_named_archive_stores(
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID", "b2-key")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY", "b2-secret")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_FORCE_PATH_STYLE", "false")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_PREFIX", "")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BACKEND", "b2")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS", "STANDARD")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_READ_MODE", "auto")
@@ -99,6 +100,7 @@ def test_load_runtime_config_builds_named_archive_stores(
     assert config.archive_store("b2").backend == "b2"
     assert config.archive_store("b2").storage_class == "STANDARD"
     assert config.archive_store("b2").read_mode == "auto"
+    assert config.archive_store("b2").prefix == ""
 
 
 def test_configured_archive_store_requires_complete_connection_settings(

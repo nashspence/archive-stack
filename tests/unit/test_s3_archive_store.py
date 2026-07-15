@@ -667,6 +667,70 @@ def test_publish_restore_catalog_writes_generic_readme_and_encrypted_catalog(
     }
 
 
+def test_dedicated_archive_bucket_uses_bucket_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    passphrase = "dedicated bucket passphrase"
+    store = _store_with_client(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_prefix="",
+        archive_passphrase=passphrase,
+        archive_work_factor=12,
+    )
+
+    storage_prefix = store.new_collection_archive_storage_prefix()
+    assert storage_prefix.startswith("archives/")
+
+    receipt = store.upload_collection_archive_package(
+        collection_id="2026/20260603T060000Z__bucket-root",
+        package=_package(),
+        archive_storage_prefix="archives/opaque-root",
+    )
+    assert {
+        receipt.archive.object_path,
+        receipt.manifest.object_path,
+        receipt.proof.object_path,
+    } == {
+        "archives/opaque-root/archive.tar.age",
+        "archives/opaque-root/manifest.yml.age",
+        "archives/opaque-root/manifest.yml.ots.age",
+    }
+    store.delete_collection_archive_package(
+        collection_id="2026/20260603T060000Z__bucket-root",
+        object_path=receipt.archive.object_path,
+        manifest_object_path=receipt.manifest.object_path,
+        proof_object_path=receipt.proof.object_path,
+    )
+    assert client.objects == {}
+
+    store.publish_restore_catalog(
+        generated_at="2026-06-03T06:00:00Z",
+        entries=[{"archive_storage_prefix": "archives/opaque-root"}],
+    )
+
+    assert set(client.objects) == {
+        "AGENTS.md",
+        "README.md",
+        "catalog/collections.yml.age",
+    }
+    assert "omit it when this guidance file is stored at the bucket root" in client.objects[
+        "README.md"
+    ]["Body"].decode("utf-8")
+    catalog = yaml.safe_load(
+        decrypt_age_scrypt(client.objects["catalog/collections.yml.age"]["Body"], passphrase)
+    )
+    assert catalog["archives"] == [
+        {
+            "archive_storage_prefix": "archives/opaque-root",
+            "archive_id": "opaque-root",
+        }
+    ]
+
+
 def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     monkeypatch,
     tmp_path: Path,

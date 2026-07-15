@@ -22,7 +22,10 @@ from riverhog_age import (
     iter_decrypt_age_scrypt,
 )
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING, archive_agents_guidance
-from riverhog_core.archive_object_paths import archive_id_from_storage_prefix
+from riverhog_core.archive_object_paths import (
+    archive_id_from_storage_prefix,
+    archive_store_object_path,
+)
 from riverhog_core.collection_archives import CollectionArchivePackage
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
@@ -242,7 +245,7 @@ class S3ArchiveStore:
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
-        return f"{self._store.prefix}/archives/{archive_id}"
+        return archive_store_object_path(self._store.prefix, "archives", archive_id)
 
     def _collection_object_keys(
         self,
@@ -420,7 +423,7 @@ class S3ArchiveStore:
         object_paths = (object_path, manifest_object_path, proof_object_path)
         prefixes = {path.rsplit("/", 1)[0] for path in object_paths}
         suffixes = {path.rsplit("/", 1)[-1] for path in object_paths}
-        archive_root = f"{self._store.prefix}/archives/"
+        archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
         if (
             len(prefixes) != 1
             or suffixes != expected_suffixes
@@ -449,7 +452,11 @@ class S3ArchiveStore:
         generated_at: str,
     ) -> None:
         self._put_archive_root_guidance()
-        catalog_key = f"{self._store.prefix}/catalog/collections.yml.age"
+        catalog_key = archive_store_object_path(
+            self._store.prefix,
+            "catalog",
+            "collections.yml.age",
+        )
         catalog_bytes = yaml.safe_dump(
             {
                 "format": "encrypted-archive-catalog-v1",
@@ -508,7 +515,7 @@ class S3ArchiveStore:
         ):
             self._client.put_object(
                 Bucket=self._bucket,
-                Key=f"{self._store.prefix}/{filename}",
+                Key=archive_store_object_path(self._store.prefix, filename),
                 Body=content,
                 ContentLength=len(content),
                 Metadata={"archive-guidance-format": format_name},
@@ -1554,7 +1561,8 @@ If there is no catalog, list the opaque archive directories:
 aws s3 ls s3://BUCKET/PREFIX/archives/
 ```
 
-Replace `BUCKET`, `PREFIX`, and `ARCHIVE_ID` in the examples below.
+Replace `BUCKET` and `ARCHIVE_ID` in the examples below. `PREFIX/` is optional:
+omit it when this guidance file is stored at the bucket root.
 
 ## Inspect the Manifest
 

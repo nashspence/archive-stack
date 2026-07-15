@@ -4,7 +4,7 @@ import os
 import re
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -169,8 +169,6 @@ def parse_notify_webhook_map(values: Mapping[str, str]) -> dict[str, str]:
 
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
-    if not parts:
-        raise ValueError("archive store prefix must not be empty")
     return "/".join(parts)
 
 
@@ -296,13 +294,13 @@ class RuntimeConfig:
             name = _normalize_archive_store_name(raw_name)
             if store.name != name:
                 raise ValueError(f"archive store mapping key must match its name: {raw_name!r}")
+            store = replace(store, prefix=_normalize_prefix(store.prefix))
             required_store_fields = {
                 "endpoint_url": store.endpoint_url,
                 "region": store.region,
                 "bucket": store.bucket,
                 "access_key_id": store.access_key_id,
                 "secret_access_key": store.secret_access_key,
-                "prefix": store.prefix,
                 "backend": store.backend,
                 "storage_class": store.storage_class,
             }
