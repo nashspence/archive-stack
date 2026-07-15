@@ -24,6 +24,20 @@ class ProofVerifier(Protocol):
     def verify(self, *, manifest_bytes: bytes, proof_bytes: bytes) -> None: ...
 
 
+def _is_pending_blockchain_confirmation(stdout: str, stderr: str) -> bool:
+    lines = [
+        line.strip()
+        for output in (stdout, stderr)
+        for line in output.splitlines()
+        if line.strip()
+    ]
+    return bool(lines) and all(
+        line.startswith("Calendar ")
+        and line.endswith(": Pending confirmation in Bitcoin blockchain")
+        for line in lines
+    )
+
+
 @dataclass(frozen=True)
 class CommandProofStamper:
     command: Sequence[str] = ("ots",)
@@ -64,5 +78,8 @@ class CommandProofVerifier:
                 text=True,
                 check=False,
             )
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not _is_pending_blockchain_confirmation(
+            proc.stdout,
+            proc.stderr,
+        ):
             raise ProofVerifyError(proc.stderr or proc.stdout or "proof verification failed")

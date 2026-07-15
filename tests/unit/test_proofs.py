@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -30,4 +31,50 @@ def test_command_proof_verifier_rejects_mismatched_manifest_proof(tmp_path: Path
         CommandProofVerifier(_COMMAND).verify(
             manifest_bytes=b"schema: other/v1\n",
             proof_bytes=proof_path.read_bytes(),
+        )
+
+
+def test_command_proof_verifier_accepts_pending_blockchain_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "riverhog_core.proofs.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Calendar https://example.invalid: "
+                "Pending confirmation in Bitcoin blockchain\n"
+            ),
+        ),
+    )
+
+    CommandProofVerifier(_COMMAND).verify(
+        manifest_bytes=b"schema: unit/v1\n",
+        proof_bytes=b"pending proof",
+    )
+
+
+def test_command_proof_verifier_rejects_other_pending_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "riverhog_core.proofs.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Calendar https://example.invalid: "
+                "Pending confirmation in Bitcoin blockchain\n"
+                "deterministic proof digest mismatch\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(ProofVerifyError, match="digest mismatch"):
+        CommandProofVerifier(_COMMAND).verify(
+            manifest_bytes=b"schema: unit/v1\n",
+            proof_bytes=b"mismatched proof",
         )
