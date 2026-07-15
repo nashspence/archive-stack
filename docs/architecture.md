@@ -1,7 +1,7 @@
 # Architecture
 
 Riverhog accepts logical collections, preserves each as a verified age-encrypted package
-in remote object storage, and materializes complete collections into a fast hot cache.
+in remote object storage, and can materialize complete collections into a fast hot cache.
 PostgreSQL records identity, manifests, custody evidence, and current materialization;
 object stores hold the bytes.
 
@@ -9,7 +9,8 @@ object stores hold the bytes.
 
 A collection is the deletion and recovery unit. Its files have stable relative paths,
 sizes, and SHA-256 digests. A collection becomes accepted only after Riverhog verifies the
-uploaded files, remote archive package, encrypted manifest, and OpenTimestamps proof.
+remote archive package, encrypted manifest, and OpenTimestamps proof. Uploads are
+archive-only unless the caller explicitly asks Riverhog to retain a hot materialization.
 
 The remote archive is the durable authority. Upload staging is temporary ingest state,
 and hot storage is a replaceable materialization for browsing and direct access. A

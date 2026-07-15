@@ -3,13 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
+    CollectionUploadRecord,
 )
+from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
@@ -68,6 +72,7 @@ def test_collection_summary_reports_hot_and_archive_state(tmp_path: Path) -> Non
 
     assert summary.files == 1
     assert summary.bytes == 10
+    assert summary.hot_files == 1
     assert summary.hot_bytes == 10
     assert summary.archive.state.value == "uploaded"
 
@@ -151,6 +156,7 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
     progress = service.get_upload("2025/20250103T000000Z__progress")
 
     assert created["files_total"] == 2
+    assert created["retain_hot"] is False
     assert created["bytes_total"] == 30
     assert progress["files_pending"] == 0
     assert progress["files_partial"] == 1
@@ -160,6 +166,32 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
     assert progress["hot_promoted_bytes"] == 10
     assert progress["missing_bytes"] == 15
     assert progress["upload_state_expires_at"] == "2026-07-16T00:00:00Z"
+
+
+def test_upload_session_persists_hot_retention_choice(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    service = _service(path)
+
+    created = service.create_or_resume_upload_session(
+        upload_slug="retained",
+        upload_timestamp="20250103T000000Z",
+        retain_hot=True,
+    )
+
+    assert created["retain_hot"] is True
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        upload = session.get(CollectionUploadRecord, "2025/20250103T000000Z__retained")
+        assert upload is not None
+        assert upload.retain_hot is True
+
+    with pytest.raises(Conflict, match="different hot-retention choice"):
+        service.create_or_resume_upload_session(
+            upload_slug="retained",
+            upload_timestamp="20250103T000000Z",
+            retain_hot=False,
+        )
 
 
 def test_collection_upload_matches_finalized_manifest_in_database(tmp_path: Path) -> None:

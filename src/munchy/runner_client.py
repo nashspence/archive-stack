@@ -563,6 +563,8 @@ def format_riverhog_archive_progress(progress: dict[str, Any]) -> str:
 
 
 def riverhog_promotion_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
+    if not progress.get("retain_hot"):
+        return None
     total_files = int(
         progress.get("riverhog_files_total") or progress.get("primary_files_total") or 0
     )

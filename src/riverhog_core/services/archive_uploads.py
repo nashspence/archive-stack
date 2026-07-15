@@ -76,7 +76,7 @@ class SqlAlchemyArchiveUploadService:
         self._session_factory = make_session_factory(config.database_url)
 
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
-        if limit < 1 or self._hot_store is None or self._upload_store is None:
+        if limit < 1 or self._upload_store is None:
             return 0
 
         current_text = _isoformat_z(utcnow())
@@ -148,7 +148,7 @@ class SqlAlchemyArchiveUploadService:
         current_text = _isoformat_z(current)
         with session_scope(self._session_factory) as session:
             collection_ids: list[str] = []
-            if self._hot_store is not None and self._upload_store is not None:
+            if self._upload_store is not None:
                 collection_ids = list(
                     session.scalars(
                         select(CollectionUploadRecord.collection_id)
@@ -195,7 +195,7 @@ class SqlAlchemyArchiveUploadService:
         return attempted
 
     def _process_one_collection(self, *, collection_id: str) -> None:
-        if self._hot_store is None or self._upload_store is None:
+        if self._upload_store is None:
             return
         upload_store = self._upload_store
         current = utcnow()
@@ -205,10 +205,12 @@ class SqlAlchemyArchiveUploadService:
         proof_bytes: bytes | None = None
         packaged_archive_sha256: str | None = None
         package: CollectionArchivePackage | None = None
+        retain_hot = False
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
                 return
+            retain_hot = upload.retain_hot
             upload_stats = _collection_upload_stats(session, collection_id)
             if (
                 upload_stats["files_total"] == 0
@@ -230,7 +232,7 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
             if receipt is not None:
-                upload.archive_phase = "promoting"
+                upload.archive_phase = "promoting" if retain_hot else "finalizing"
             elif (
                 manifest_bytes is not None
                 and proof_bytes is not None
@@ -391,10 +393,16 @@ class SqlAlchemyArchiveUploadService:
         try:
             if receipt is None:
                 raise RuntimeError("collection archive receipt was not recorded")
-            self._promote_collection_files(
-                collection_id=collection_id,
-                upload_files=upload_files,
-            )
+            if retain_hot:
+                self._promote_collection_files(
+                    collection_id=collection_id,
+                    upload_files=upload_files,
+                )
+            else:
+                self._delete_collection_upload_targets(
+                    collection_id=collection_id,
+                    upload_files=upload_files,
+                )
             self._finalize_archived_collection(
                 collection_id=collection_id,
                 receipt=receipt,
@@ -409,13 +417,14 @@ class SqlAlchemyArchiveUploadService:
                     "archive_object_path": receipt.archive.object_path,
                     "archive_total_bytes": receipt.archive.stored_bytes,
                     "archive_sha256": receipt.archive_sha256,
+                    "retain_hot": retain_hot,
                 },
             )
         except Exception as exc:
             error = _error_text(exc)
             if _archive_failure_is_retryable(exc):
                 _LOG.exception(
-                    "collection archive promotion/finalization failed for %s; scheduling retry: %s",
+                    "collection archive finalization failed for %s; scheduling retry: %s",
                     collection_id,
                     error,
                 )
@@ -426,7 +435,7 @@ class SqlAlchemyArchiveUploadService:
                 )
             else:
                 _LOG.exception(
-                    "collection archive promotion/finalization failed permanently for %s: %s",
+                    "collection archive finalization failed permanently for %s: %s",
                     collection_id,
                     error,
                 )
@@ -449,7 +458,7 @@ class SqlAlchemyArchiveUploadService:
         hot_store = self._hot_store
         upload_store = self._upload_store
         if hot_store is None or upload_store is None:
-            return
+            raise RuntimeError("hot storage is unavailable for retained-hot upload")
         if _hot_file_matches(
             hot_store,
             collection_id=collection_id,
@@ -578,10 +587,22 @@ class SqlAlchemyArchiveUploadService:
             byte_count=byte_count,
             sha256=sha256,
         )
-        self._delete_promoted_upload_target(
+        self._delete_upload_target(
             collection_id=collection_id,
             target_path=target_path,
         )
+
+    def _delete_collection_upload_targets(
+        self,
+        *,
+        collection_id: str,
+        upload_files: list[CollectionUploadFileEntry],
+    ) -> None:
+        for _path, _bytes, _sha256, target_path in upload_files:
+            self._delete_upload_target(
+                collection_id=collection_id,
+                target_path=target_path,
+            )
 
     def _unpromoted_collection_upload_files(
         self,
@@ -600,7 +621,7 @@ class SqlAlchemyArchiveUploadService:
             )
         return [entry for entry in upload_files if entry[0] not in promoted_paths]
 
-    def _delete_promoted_upload_target(self, *, collection_id: str, target_path: str) -> None:
+    def _delete_upload_target(self, *, collection_id: str, target_path: str) -> None:
         upload_store = self._upload_store
         if upload_store is None:
             return
@@ -608,7 +629,7 @@ class SqlAlchemyArchiveUploadService:
             upload_store.delete_target(target_path)
         except Exception:
             _LOG.warning(
-                "failed to delete promoted collection upload target for %s: %s",
+                "failed to delete collection upload target for %s: %s",
                 collection_id,
                 target_path,
                 exc_info=True,
@@ -640,13 +661,14 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase = "finalizing"
             upload.archive_phase_updated_at = _isoformat_z(utcnow())
             session.flush()
-            unpromoted = [
-                file_record.path
-                for file_record in upload.files
-                if file_record.hot_promoted_at is None
-            ]
-            if unpromoted:
-                raise RuntimeError(f"collection has unpromoted files: {unpromoted[0]}")
+            if upload.retain_hot:
+                unpromoted = [
+                    file_record.path
+                    for file_record in upload.files
+                    if file_record.hot_promoted_at is None
+                ]
+                if unpromoted:
+                    raise RuntimeError(f"collection has unpromoted files: {unpromoted[0]}")
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 collection = CollectionRecord(
@@ -668,7 +690,7 @@ class SqlAlchemyArchiveUploadService:
                         path=path,
                         bytes=_bytes,
                         sha256=sha256,
-                        hot=True,
+                        hot=upload.retain_hot,
                     )
                 )
             archive = session.get(CollectionArchiveRecord, collection_id)
@@ -703,7 +725,7 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_multipart_sha256 = receipt.archive_sha256
             upload.archive_multipart_uploaded_bytes = receipt.archive.stored_bytes
             upload.archive_multipart_uploaded_parts = upload.archive_multipart_total_parts
-            upload.archive_phase = "promoting"
+            upload.archive_phase = "promoting" if upload.retain_hot else "finalizing"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 

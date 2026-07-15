@@ -317,6 +317,7 @@ def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
         "archive_total_bytes": 10_000,
         "archive_uploaded_parts": 2,
         "archive_total_parts": 5,
+        "retain_hot": True,
         "hot_promoted_files": 3,
         "riverhog_files_total": 10,
         "hot_promoted_bytes": 6_000,
@@ -721,7 +722,7 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
 
     assert "Riverhog Deep Archive" in text
     assert "riverhog deep archive, waiting" in text
-    assert "Riverhog Promotion" in text
+    assert "Riverhog Promotion" not in text
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:

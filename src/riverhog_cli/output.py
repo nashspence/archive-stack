@@ -152,6 +152,7 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files_uploaded', 0)}/{payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('uploaded_bytes'))}/{_bytes(payload.get('bytes_total'))}",
+        "hot storage: retained" if payload.get("retain_hot") else "hot storage: archive only",
     ]
     if payload.get("archive_phase"):
         lines.append(f"archive phase: {payload['archive_phase']}")
@@ -167,6 +168,7 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
         f"collection upload dry-run: {identity}",
         f"files: {payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('bytes_total'))}",
+        "hot storage: retained" if payload.get("retain_hot") else "hot storage: archive only",
     ]
     return "\n".join(lines)
 

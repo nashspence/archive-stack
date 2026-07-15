@@ -123,6 +123,7 @@ def test_riverhog_handoff_wait_defaults_to_finalized(
 
     assert runner.RIVERHOG_WAIT == "finalized"
     assert runner.RiverhogConfig().wait == "finalized"
+    assert runner.RiverhogConfig().retain_hot is False
 
 
 def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
@@ -167,6 +168,7 @@ def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
     assert job["riverhog"] == {
         "enabled": True,
         "wait": "staged",
+        "retain_hot": False,
         "upload_session_on_failure": "cancel",
     }
 
@@ -5371,11 +5373,13 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             *,
             ingest_source: str | None = None,
             upload_timestamp: str | None = None,
+            retain_hot: bool = False,
             notify: dict[str, object] | None = None,
         ) -> dict[str, object]:
             assert slug == "camera-archive"
             assert ingest_source == str(archive_dir)
             assert upload_timestamp == "20260101T000000Z"
+            assert retain_hot is False
             assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
             return self.payload(state="open")
 
@@ -6292,6 +6296,8 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
                 "id": collection_id,
                 "files": 7,
                 "bytes": 1234,
+                "hot_files": 0,
+                "hot_bytes": 0,
                 "archive": {"state": "uploaded", "stored_bytes": 567},
             }
 
@@ -6302,7 +6308,8 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
     assert payload["state"] == "finalized"
     assert progress["state"] == "finalized"
     assert progress["safe_to_delete"] is True
-    assert progress["hot_promoted_files"] == 7
+    assert progress["retain_hot"] is False
+    assert progress["hot_promoted_files"] == 0
     assert progress["riverhog_bytes_total"] == 1234
     assert progress["archive_uploaded_bytes"] == 567
 

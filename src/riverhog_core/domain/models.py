@@ -120,6 +120,7 @@ class CollectionSummary:
     id: CollectionId
     files: int
     bytes: int
+    hot_files: int
     hot_bytes: int
     archive: ArchiveStatus = field(default_factory=ArchiveStatus)
     collection_manifest: CollectionManifestStatus | None = None

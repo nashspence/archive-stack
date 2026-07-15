@@ -48,6 +48,7 @@ class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
     upload_timestamp: str | None = None
+    retain_hot: bool = False
     notify: CollectionNotifyConfig | None = None
 
 
@@ -55,6 +56,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     slug: str
     ingest_source: str | None = None
     upload_timestamp: str | None = None
+    retain_hot: bool = False
     notify: CollectionNotifyConfig | None = None
 
 
@@ -66,6 +68,7 @@ class CollectionSummaryOut(RiverhogModel):
     id: str
     files: int
     bytes: int
+    hot_files: int
     hot_bytes: int
     archive: ArchiveOut | None = None
     collection_manifest: CollectionManifestOut | None = None
@@ -148,6 +151,7 @@ class CollectionUploadFileOut(RiverhogModel):
 class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
+    retain_hot: bool
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut
 
@@ -155,6 +159,7 @@ class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
+    retain_hot: bool
     state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
     files_total: int
     files_pending: int

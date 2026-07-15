@@ -106,6 +106,7 @@ class SqlAlchemyCollectionService:
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        retain_hot: bool = False,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
@@ -146,6 +147,7 @@ class SqlAlchemyCollectionService:
                     upload.collection_id,
                     requested_collection_id,
                 )
+                _ensure_upload_retain_hot_matches(upload, retain_hot)
             if upload is None:
                 normalized_collection_id = requested_collection_id or _mint_collection_id(
                     session,
@@ -156,6 +158,7 @@ class SqlAlchemyCollectionService:
                     collection_id=normalized_collection_id,
                     ingest_source=ingest_source,
                     notify_json=normalized_notify_json,
+                    retain_hot=retain_hot,
                     state="uploading",
                     opened_at=_utc_now(),
                     last_activity_at=_utc_now(),
@@ -209,6 +212,7 @@ class SqlAlchemyCollectionService:
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        retain_hot: bool = False,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
@@ -234,6 +238,7 @@ class SqlAlchemyCollectionService:
                 upload = _find_open_upload_session(session, upload_slug=normalized_slug)
 
             if upload is not None:
+                _ensure_upload_retain_hot_matches(upload, retain_hot)
                 upload = _sync_and_expire_collection_upload(
                     session,
                     upload,
@@ -276,6 +281,7 @@ class SqlAlchemyCollectionService:
                 collection_id=normalized_collection_id,
                 ingest_source=ingest_source,
                 notify_json=normalized_notify_json,
+                retain_hot=retain_hot,
                 state="open",
                 opened_at=now,
                 last_activity_at=now,
@@ -854,6 +860,10 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             func.count(CollectionFileRecord.path).label("files"),
             func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
             func.coalesce(
+                func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
+                0,
+            ).label("hot_files"),
+            func.coalesce(
                 func.sum(
                     case(
                         (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
@@ -868,6 +878,7 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
     )
     files = func.coalesce(file_stats.c.files, 0)
     bytes_total = func.coalesce(file_stats.c.bytes, 0)
+    hot_files = func.coalesce(file_stats.c.hot_files, 0)
     hot_bytes = func.coalesce(file_stats.c.hot_bytes, 0)
     return (
         select(
@@ -875,6 +886,7 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             CollectionArchiveRecord,
             files.label("files"),
             bytes_total.label("bytes"),
+            hot_files.label("hot_files"),
             hot_bytes.label("hot_bytes"),
         )
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
@@ -886,6 +898,7 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             "id": CollectionRecord.id,
             "bytes": bytes_total,
             "files": files,
+            "hot_files": hot_files,
             "hot_bytes": hot_bytes,
         },
     )
@@ -897,6 +910,7 @@ def _collection_summary_from_row(row: Any) -> CollectionSummary:
         id=CollectionId(row.collection_id),
         files=int(row.files),
         bytes=int(row.bytes),
+        hot_files=int(row.hot_files),
         hot_bytes=int(row.hot_bytes),
         archive=_collection_archive_status(archive),
         collection_manifest=_collection_manifest_status(archive),
@@ -997,6 +1011,18 @@ def _ensure_requested_collection_id_matches(
     raise Conflict(
         "collection upload already exists for this slug and manifest with a different "
         f"timestamp: {existing_collection_id}"
+    )
+
+
+def _ensure_upload_retain_hot_matches(
+    upload: CollectionUploadRecord,
+    retain_hot: bool,
+) -> None:
+    if upload.retain_hot == retain_hot:
+        return
+    raise Conflict(
+        "collection upload already exists with a different hot-retention choice: "
+        f"{upload.collection_id}"
     )
 
 
@@ -1478,64 +1504,6 @@ def _ensure_collection_upload_archiving(upload: CollectionUploadRecord) -> None:
         upload.archive_next_attempt_at = _utc_now()
 
 
-def _finalize_collection_upload(
-    session: Session,
-    upload: CollectionUploadRecord,
-    *,
-    hot_store: HotStore,
-    upload_store: UploadStore,
-) -> CollectionSummary:
-    collection = CollectionRecord(
-        id=upload.collection_id,
-        ingest_source=upload.ingest_source,
-        notify_json=upload.notify_json,
-    )
-    session.add(collection)
-
-    upload_files = session.scalars(
-        select(CollectionUploadFileRecord)
-        .where(CollectionUploadFileRecord.collection_id == upload.collection_id)
-        .order_by(
-            CollectionUploadFileRecord.file_order,
-            CollectionUploadFileRecord.path,
-        )
-    ).all()
-    for file_record in upload_files:
-        target_path = _collection_upload_target_path(upload.collection_id, file_record.path)
-        content_digest = _promote_upload_target_to_hot_store(
-            hot_store,
-            upload_store,
-            collection_id=upload.collection_id,
-            path=file_record.path,
-            target_path=target_path,
-            content_length=file_record.bytes,
-        )
-        if content_digest != file_record.sha256:
-            hot_store.delete_collection_file(upload.collection_id, file_record.path)
-            raise Conflict(
-                "uploaded collection file sha256 did not match "
-                f"expected digest for {upload.collection_id}/{file_record.path}"
-            )
-        upload_store.delete_target(target_path)
-        collection.files.append(
-            CollectionFileRecord(
-                collection_id=upload.collection_id,
-                path=file_record.path,
-                bytes=file_record.bytes,
-                sha256=content_digest,
-                hot=True,
-            )
-        )
-
-    session.flush()
-    stmt, _ = _collection_summary_query()
-    summary = _collection_summary_from_row(
-        session.execute(stmt.where(CollectionRecord.id == upload.collection_id)).one()
-    )
-    session.delete(upload)
-    return summary
-
-
 def _finalized_collection_upload_payload(
     session: Session,
     collection: CollectionRecord,
@@ -1553,15 +1521,16 @@ def _finalized_collection_upload_payload(
     return {
         "collection_id": collection.id,
         "ingest_source": collection.ingest_source,
+        "retain_hot": summary.files > 0 and summary.hot_files == summary.files,
         "state": "finalized",
         "files_total": summary.files,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": summary.files,
-        "hot_promoted_files": summary.files,
+        "hot_promoted_files": summary.hot_files,
         "bytes_total": summary.bytes,
         "uploaded_bytes": summary.bytes,
-        "hot_promoted_bytes": summary.bytes,
+        "hot_promoted_bytes": summary.hot_bytes,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -1604,6 +1573,7 @@ def _collection_upload_payload(
     return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
+        "retain_hot": upload.retain_hot,
         "state": state or _collection_upload_session_state(upload, stats),
         **stats,
         "latest_failure": upload.archive_failure,
@@ -1627,6 +1597,7 @@ def _collection_upload_file_registration_payload(
     return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
+        "retain_hot": upload.retain_hot,
         "state": upload.state or "open",
         "file": _collection_upload_file_payload(file_record),
     }
@@ -1653,6 +1624,7 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
         "id": str(summary.id),
         "files": summary.files,
         "bytes": summary.bytes,
+        "hot_files": summary.hot_files,
         "hot_bytes": summary.hot_bytes,
         "archive": {
             "state": summary.archive.state.value,
@@ -1697,31 +1669,6 @@ def _sha256_hex_chunks(chunks: Iterable[bytes]) -> Sha256Hex:
     digest = hashlib.sha256()
     for chunk in chunks:
         digest.update(chunk)
-    return Sha256Hex(digest.hexdigest())
-
-
-def _promote_upload_target_to_hot_store(
-    hot_store: HotStore,
-    upload_store: UploadStore,
-    *,
-    collection_id: str,
-    path: str,
-    target_path: str,
-    content_length: int,
-) -> Sha256Hex:
-    digest = hashlib.sha256()
-
-    def digesting_chunks() -> Iterable[bytes]:
-        for chunk in upload_store.iter_target(target_path):
-            digest.update(chunk)
-            yield chunk
-
-    hot_store.put_collection_file_stream(
-        collection_id,
-        path,
-        digesting_chunks(),
-        content_length=content_length,
-    )
     return Sha256Hex(digest.hexdigest())
 
 

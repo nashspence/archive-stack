@@ -317,6 +317,7 @@ def _create_or_resume_collection_upload(
     *,
     ingest_source: str | None,
     upload_timestamp: str | None,
+    retain_hot: bool,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session create/resume",
@@ -325,6 +326,7 @@ def _create_or_resume_collection_upload(
             manifest,
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
+            retain_hot=retain_hot,
         ),
     )
 
@@ -335,6 +337,7 @@ def _create_or_resume_collection_upload_session(
     *,
     ingest_source: str | None,
     upload_timestamp: str | None,
+    retain_hot: bool,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session open/resume",
@@ -342,6 +345,7 @@ def _create_or_resume_collection_upload_session(
             slug,
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
+            retain_hot=retain_hot,
         ),
     )
 
@@ -404,6 +408,7 @@ def _collection_upload_dry_run_plan(
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
     session_mode: bool,
+    retain_hot: bool,
 ) -> dict[str, object]:
     try:
         normalized_slug = normalize_upload_slug(slug)
@@ -430,6 +435,7 @@ def _collection_upload_dry_run_plan(
         "bytes_total": sum(item["bytes"] for item in manifest),
         "wait_mode": wait_mode,
         "session": session_mode,
+        "retain_hot": retain_hot,
         "server_validation": "not_run",
         "created_at": datetime.now(UTC).isoformat(),
         "files_preview": manifest[:5],
@@ -650,15 +656,16 @@ def _finalized_collection_upload_payload(
     return {
         "collection_id": collection_id,
         "ingest_source": collection.get("ingest_source"),
+        "retain_hot": (_optional_int(collection.get("hot_files")) or 0) == files_total,
         "state": "finalized",
         "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": files_total,
-        "hot_promoted_files": files_total,
+        "hot_promoted_files": _optional_int(collection.get("hot_files")) or 0,
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
-        "hot_promoted_bytes": bytes_total,
+        "hot_promoted_bytes": _optional_int(collection.get("hot_bytes")) or 0,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -816,6 +823,7 @@ def _upload_collection_via_session(
     ingest_source: str | None,
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
+    retain_hot: bool,
     json_mode: bool = False,
 ) -> dict[str, object]:
     local_path_iter = _iter_local_collection_paths(resolved_root)
@@ -830,6 +838,7 @@ def _upload_collection_via_session(
         slug,
         ingest_source=ingest_source,
         upload_timestamp=upload_timestamp,
+        retain_hot=retain_hot,
     )
     collection_id = str(session_payload["collection_id"])
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
@@ -1185,6 +1194,10 @@ def upload_cmd(
             help="Hash and preview without creating a session or uploading bytes",
         ),
     ] = False,
+    retain_hot: Annotated[
+        bool,
+        typer.Option("--retain-hot", help="Keep a hot-storage copy after archival"),
+    ] = False,
 ) -> None:
     """Upload a local directory as a collection."""
 
@@ -1210,6 +1223,7 @@ def upload_cmd(
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
             session_mode=session_mode,
+            retain_hot=retain_hot,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
         return
@@ -1223,6 +1237,7 @@ def upload_cmd(
             ingest_source=str(resolved_root),
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
+            retain_hot=retain_hot,
             json_mode=json_mode,
         )
         emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
@@ -1245,6 +1260,7 @@ def upload_cmd(
         manifest,
         ingest_source=str(resolved_root),
         upload_timestamp=upload_timestamp,
+        retain_hot=retain_hot,
     )
     collection_id = str(payload["collection_id"])
     upload_files = _response_upload_files(payload)

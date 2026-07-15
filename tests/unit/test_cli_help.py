@@ -21,3 +21,10 @@ def test_hot_fetch_help_describes_archive_materialization() -> None:
 
     assert result.exit_code == 0
     assert "restoring complete collections" in result.stdout
+
+
+def test_collection_upload_help_exposes_retained_hot_materialization() -> None:
+    result = runner.invoke(app, ["collection", "upload", "--help"])
+
+    assert result.exit_code == 0
+    assert "--retain-hot" in result.stdout

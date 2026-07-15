@@ -4,6 +4,8 @@ from riverhog_cli.output import (
     format_archive_report,
     format_archive_restore,
     format_collection_summary,
+    format_collection_upload,
+    format_collection_upload_plan,
     format_collections,
     format_fetch,
     format_fetches,
@@ -13,6 +15,18 @@ from riverhog_cli.output import (
     format_jeb_attempts,
     format_jeb_status,
 )
+
+
+def test_collection_upload_output_reports_hot_retention_choice() -> None:
+    archive_only = format_collection_upload(
+        {"collection_id": "2026/20260101T000000Z__docs", "retain_hot": False}
+    )
+    retained = format_collection_upload_plan(
+        {"collection_id": "2026/20260101T000000Z__docs", "retain_hot": True}
+    )
+
+    assert "hot storage: archive only" in archive_only
+    assert "hot storage: retained" in retained
 
 
 def test_collection_output_leads_with_archive_and_hot_state() -> None:

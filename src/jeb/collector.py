@@ -3340,7 +3340,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         "collection_archive": {
             "destination": "riverhog",
             "riverhog": {
-                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized") or "finalized"
+                "wait": env_value_from(values, "JEB_RIVERHOG_WAIT", "finalized") or "finalized",
+                "retain_hot": env_bool(values, "JEB_RIVERHOG_RETAIN_HOT", False),
             },
         },
         "notify": notify_defaults,

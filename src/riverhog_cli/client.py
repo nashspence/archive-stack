@@ -177,11 +177,13 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        retain_hot: bool = False,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "slug": slug,
             "files": [dict(file) for file in files],
+            "retain_hot": retain_hot,
         }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
@@ -197,9 +199,10 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
+        retain_hot: bool = False,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"slug": slug}
+        payload: dict[str, Any] = {"slug": slug, "retain_hot": retain_hot}
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:

@@ -89,6 +89,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "id": str(summary.id),
         "files": summary.files,
         "bytes": summary.bytes,
+        "hot_files": summary.hot_files,
         "hot_bytes": summary.hot_bytes,
         "archive": map_archive(summary.archive),
         "collection_manifest": map_collection_manifest(summary.collection_manifest),

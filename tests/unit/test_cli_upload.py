@@ -69,6 +69,7 @@ def test_collection_upload_dry_run_hashes_manifest_without_api(
             "--timestamp",
             "20260713T120000Z",
             "--dry-run",
+            "--retain-hot",
             "--json",
         ],
     )
@@ -81,6 +82,7 @@ def test_collection_upload_dry_run_hashes_manifest_without_api(
     assert payload["collection_id"] == "2026/20260713T120000Z__my-trip"
     assert payload["files_total"] == 1
     assert payload["bytes_total"] == 5
+    assert payload["retain_hot"] is True
     assert payload["server_validation"] == "not_run"
 
 
@@ -105,6 +107,7 @@ def test_collection_upload_dry_run_human_output_marks_server_assigned_ids(
     assert result.exit_code == 0
     assert "collection upload dry-run" in result.stdout
     assert "server-assigned" in result.stdout
+    assert "hot storage: archive only" in result.stdout
     assert "None" not in result.stdout
 
 
@@ -414,13 +417,15 @@ def test_upload_collection_via_session_registers_files_before_completion(
         def create_or_resume_collection_upload_session(
             self,
             slug: str,
-            *,
-            ingest_source: str | None = None,
-            upload_timestamp: str | None = None,
-        ) -> dict[str, object]:
+                *,
+                ingest_source: str | None = None,
+                upload_timestamp: str | None = None,
+                retain_hot: bool = False,
+            ) -> dict[str, object]:
             assert slug == "photos 2024"
             assert ingest_source == str(root)
             assert upload_timestamp == "20250712T213200Z"
+            assert retain_hot is False
             events.append(("open", slug))
             return {"collection_id": "2025/20250712T213200Z__photos-2024", "state": "open"}
 
@@ -504,6 +509,7 @@ def test_upload_collection_via_session_registers_files_before_completion(
         ingest_source=str(root),
         upload_timestamp="20250712T213200Z",
         wait_mode="staged",
+        retain_hot=False,
     )
 
     assert payload["state"] == "archiving"
@@ -537,6 +543,7 @@ def test_upload_collection_via_session_rejects_empty_source_before_opening(
             ingest_source=str(root),
             upload_timestamp=None,
             wait_mode="staged",
+            retain_hot=False,
         )
 
 
@@ -907,7 +914,9 @@ def test_create_or_resume_collection_upload_retries_transient_errors(
             *,
             ingest_source: str | None,
             upload_timestamp: str | None,
+            retain_hot: bool,
         ) -> dict[str, object]:
+            assert retain_hot is False
             self.calls += 1
             if self.calls <= 2:
                 raise httpx.HTTPStatusError(
@@ -926,6 +935,7 @@ def test_create_or_resume_collection_upload_retries_transient_errors(
         [],
         ingest_source="/tmp/docs",
         upload_timestamp="20250101T000000Z",
+        retain_hot=False,
     )
 
     assert fake_api.calls == 3
@@ -988,6 +998,8 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
                 "id": collection_id,
                 "files": 7,
                 "bytes": 1234,
+                "hot_files": 0,
+                "hot_bytes": 0,
                 "archive": {"state": "uploaded", "stored_bytes": 567},
             }
 
@@ -1001,7 +1013,8 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
 
     assert state == "finalized"
     assert payload["files_total"] == 7
-    assert payload["hot_promoted_files"] == 7
+    assert payload["retain_hot"] is False
+    assert payload["hot_promoted_files"] == 0
     assert payload["archive_uploaded_bytes"] == 567
 
 
