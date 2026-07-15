@@ -27,4 +27,4 @@ def test_collection_upload_help_exposes_retained_hot_materialization() -> None:
     result = runner.invoke(app, ["collection", "upload", "--help"])
 
     assert result.exit_code == 0
-    assert "--retain-hot" in result.stdout
+    assert "--archive-only" in result.stdout

@@ -5,7 +5,7 @@ job:
     destination: riverhog
     riverhog:
       wait: finalized
-      retain_hot: false
+      retain_hot: true
   notify:
     enabled: false
     recipients:

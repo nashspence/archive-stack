@@ -38,3 +38,16 @@ def test_archive_restore_schema_is_collection_materialization() -> None:
         "collections",
         "progress",
     }
+
+
+def test_collection_upload_requests_retain_hot_storage_by_default() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+
+    assert schemas["CreateOrResumeCollectionUploadRequest"]["properties"]["retain_hot"] == {
+        "type": "boolean",
+        "title": "Retain Hot",
+        "default": True,
+    }
+    assert schemas["CreateOrResumeCollectionUploadSessionRequest"]["properties"][
+        "retain_hot"
+    ]["default"] is True

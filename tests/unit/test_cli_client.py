@@ -61,3 +61,13 @@ def test_archive_restore_list_filters_collection_and_state() -> None:
     assert path == "/v1/archive-restores"
     assert kwargs["params"]["state"] == "requested"
     assert kwargs["params"]["collection"] == "2025/20250102T030405Z__docs"
+
+
+def test_collection_upload_requests_retain_hot_storage_by_default() -> None:
+    client = RecordingClient()
+
+    client.create_or_resume_collection_upload("docs", [])
+    client.create_or_resume_collection_upload_session("docs")
+
+    assert client.calls[0][2]["json"]["retain_hot"] is True
+    assert client.calls[1][2]["json"]["retain_hot"] is True

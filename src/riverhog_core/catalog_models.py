@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String, Text, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -214,7 +214,12 @@ class CollectionUploadRecord(Base):
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
     notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    retain_hot: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    retain_hot: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=true(),
+        nullable=False,
+    )
     opened_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_activity_at: Mapped[str | None] = mapped_column(String, nullable=True)
     closed_at: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -1194,9 +1194,9 @@ def upload_cmd(
             help="Hash and preview without creating a session or uploading bytes",
         ),
     ] = False,
-    retain_hot: Annotated[
+    archive_only: Annotated[
         bool,
-        typer.Option("--retain-hot", help="Keep a hot-storage copy after archival"),
+        typer.Option("--archive-only", help="Skip hot storage after archival"),
     ] = False,
 ) -> None:
     """Upload a local directory as a collection."""
@@ -1223,7 +1223,7 @@ def upload_cmd(
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
             session_mode=session_mode,
-            retain_hot=retain_hot,
+            retain_hot=not archive_only,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
         return
@@ -1237,7 +1237,7 @@ def upload_cmd(
             ingest_source=str(resolved_root),
             upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
-            retain_hot=retain_hot,
+            retain_hot=not archive_only,
             json_mode=json_mode,
         )
         emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
@@ -1260,7 +1260,7 @@ def upload_cmd(
         manifest,
         ingest_source=str(resolved_root),
         upload_timestamp=upload_timestamp,
-        retain_hot=retain_hot,
+        retain_hot=not archive_only,
     )
     collection_id = str(payload["collection_id"])
     upload_files = _response_upload_files(payload)

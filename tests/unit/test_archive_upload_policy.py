@@ -27,7 +27,7 @@ from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
 _COLLECTION_ID = "2026/20260102T030405Z__docs"
-_CONTENT = b"archive-only by default\n"
+_CONTENT = b"archive upload policy\n"
 
 
 class MemoryUploadStore:

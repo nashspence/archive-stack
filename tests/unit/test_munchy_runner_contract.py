@@ -123,7 +123,7 @@ def test_riverhog_handoff_wait_defaults_to_finalized(
 
     assert runner.RIVERHOG_WAIT == "finalized"
     assert runner.RiverhogConfig().wait == "finalized"
-    assert runner.RiverhogConfig().retain_hot is False
+    assert runner.RiverhogConfig().retain_hot is True
 
 
 def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
@@ -168,7 +168,7 @@ def test_riverhog_upload_session_failure_policy_is_runtime_job_option(
     assert job["riverhog"] == {
         "enabled": True,
         "wait": "staged",
-        "retain_hot": False,
+        "retain_hot": True,
         "upload_session_on_failure": "cancel",
     }
 
@@ -5373,13 +5373,13 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             *,
             ingest_source: str | None = None,
             upload_timestamp: str | None = None,
-            retain_hot: bool = False,
+            retain_hot: bool = True,
             notify: dict[str, object] | None = None,
         ) -> dict[str, object]:
             assert slug == "camera-archive"
             assert ingest_source == str(archive_dir)
             assert upload_timestamp == "20260101T000000Z"
-            assert retain_hot is False
+            assert retain_hot is True
             assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
             return self.payload(state="open")
 

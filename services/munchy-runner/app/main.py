@@ -555,7 +555,7 @@ class RiverhogConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wait: Literal["staged", "finalized"] = "finalized"
-    retain_hot: bool = False
+    retain_hot: bool = True
 
 
 class TargetUploadConfig(BaseModel):
@@ -6390,7 +6390,7 @@ def ensure_riverhog_session(
             str(job["collection_slug"]),
             ingest_source=str(archive_dir),
             upload_timestamp=str(timestamp),
-            retain_hot=bool(dict_or_empty(job.get("riverhog")).get("retain_hot")),
+            retain_hot=bool(dict_or_empty(job.get("riverhog")).get("retain_hot", True)),
             notify=riverhog_collection_notify_config(job),
         )
         update_riverhog_state_from_payload(job, payload)
@@ -8715,7 +8715,7 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     hot_promoted_files = int(last_payload.get("hot_promoted_files") or 0)
     hot_promoted_bytes = int(last_payload.get("hot_promoted_bytes") or 0)
     retain_hot = bool(
-        last_payload.get("retain_hot", dict_or_empty(job.get("riverhog")).get("retain_hot"))
+        last_payload.get("retain_hot", dict_or_empty(job.get("riverhog")).get("retain_hot", True))
     )
     riverhog_files_total = int(last_payload.get("files_total") or primary_files_total)
     riverhog_bytes_total = int(last_payload.get("bytes_total") or bytes_total)

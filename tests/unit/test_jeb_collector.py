@@ -109,7 +109,7 @@ def test_env_config_creates_accounts(tmp_path: Path) -> None:
     assert config.munchy_job_defaults["tasks"] == ["archive_video"]
     assert config.munchy_job_defaults["collection_archive"]["riverhog"] == {
         "wait": "finalized",
-        "retain_hot": False,
+        "retain_hot": True,
     }
 
 

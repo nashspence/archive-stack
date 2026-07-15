@@ -48,9 +48,10 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "collection_id",
         "collection_order",
     }
-    assert "retain_hot" in {
-        column["name"] for column in inspector.get_columns("collection_uploads")
+    upload_columns = {
+        column["name"]: column for column in inspector.get_columns("collection_uploads")
     }
+    assert upload_columns["retain_hot"]["default"] in {"1", "true"}
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

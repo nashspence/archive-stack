@@ -106,7 +106,7 @@ class SqlAlchemyCollectionService:
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
@@ -212,7 +212,7 @@ class SqlAlchemyCollectionService:
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)

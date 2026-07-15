@@ -177,7 +177,7 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -199,7 +199,7 @@ class ApiClient:
         *,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"slug": slug, "retain_hot": retain_hot}

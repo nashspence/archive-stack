@@ -156,7 +156,7 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
     progress = service.get_upload("2025/20250103T000000Z__progress")
 
     assert created["files_total"] == 2
-    assert created["retain_hot"] is False
+    assert created["retain_hot"] is True
     assert created["bytes_total"] == 30
     assert progress["files_pending"] == 0
     assert progress["files_partial"] == 1

@@ -42,7 +42,7 @@ class CollectionService(Protocol):
         files: list[dict[str, object]],
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def create_or_resume_upload_session(
@@ -51,7 +51,7 @@ class CollectionService(Protocol):
         upload_slug: str,
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
-        retain_hot: bool = False,
+        retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def register_upload_session_file(

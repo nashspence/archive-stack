@@ -9,8 +9,8 @@ object stores hold the bytes.
 
 A collection is the deletion and recovery unit. Its files have stable relative paths,
 sizes, and SHA-256 digests. A collection becomes accepted only after Riverhog verifies the
-remote archive package, encrypted manifest, and OpenTimestamps proof. Uploads are
-archive-only unless the caller explicitly asks Riverhog to retain a hot materialization.
+remote archive package, encrypted manifest, and OpenTimestamps proof. Uploads retain a
+hot materialization unless the caller explicitly chooses archive-only storage.
 
 The remote archive is the durable authority. Upload staging is temporary ingest state,
 and hot storage is a replaceable materialization for browsing and direct access. A

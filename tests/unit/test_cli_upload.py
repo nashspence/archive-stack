@@ -69,7 +69,7 @@ def test_collection_upload_dry_run_hashes_manifest_without_api(
             "--timestamp",
             "20260713T120000Z",
             "--dry-run",
-            "--retain-hot",
+            "--archive-only",
             "--json",
         ],
     )
@@ -82,7 +82,7 @@ def test_collection_upload_dry_run_hashes_manifest_without_api(
     assert payload["collection_id"] == "2026/20260713T120000Z__my-trip"
     assert payload["files_total"] == 1
     assert payload["bytes_total"] == 5
-    assert payload["retain_hot"] is True
+    assert payload["retain_hot"] is False
     assert payload["server_validation"] == "not_run"
 
 
@@ -107,7 +107,7 @@ def test_collection_upload_dry_run_human_output_marks_server_assigned_ids(
     assert result.exit_code == 0
     assert "collection upload dry-run" in result.stdout
     assert "server-assigned" in result.stdout
-    assert "hot storage: archive only" in result.stdout
+    assert "hot storage: retained" in result.stdout
     assert "None" not in result.stdout
 
 
@@ -420,7 +420,7 @@ def test_upload_collection_via_session_registers_files_before_completion(
                 *,
                 ingest_source: str | None = None,
                 upload_timestamp: str | None = None,
-                retain_hot: bool = False,
+                retain_hot: bool = True,
             ) -> dict[str, object]:
             assert slug == "photos 2024"
             assert ingest_source == str(root)

@@ -205,7 +205,7 @@ class SqlAlchemyArchiveUploadService:
         proof_bytes: bytes | None = None
         packaged_archive_sha256: str | None = None
         package: CollectionArchivePackage | None = None
-        retain_hot = False
+        retain_hot = True
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
