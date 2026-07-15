@@ -344,6 +344,8 @@ def test_retire_verifies_another_store_and_updates_custody_state(tmp_path: Path)
         retained = session.get(CollectionArchiveCopyRecord, (_COLLECTION_ID, "deep"))
         assert retained is not None
         assert retained.last_verified_at != "2026-07-14T00:00:00Z"
+        assert retained.last_verified_at is not None
+        assert "." not in retained.last_verified_at
         assert session.get(ArchiveRestoreRecord, "ar-complete") is None
         assert session.get(ArchiveCopyRetirementRecord, (_COLLECTION_ID, "b2")) is None
         assert session.query(ArchiveUsageSnapshotRecord).count() == 1
