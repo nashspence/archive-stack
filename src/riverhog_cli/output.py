@@ -265,7 +265,10 @@ def format_hot_evict(payload: Mapping[str, object]) -> str:
     return "\n".join(
         [
             f"hot eviction: {payload.get('status', 'unknown')}",
-            f"selected: {payload.get('files', 0)} ({_bytes(payload.get('bytes'))})",
+            (
+                f"selected: {payload.get('selected_files', 0)} "
+                f"({_bytes(payload.get('selected_bytes'))})"
+            ),
             (
                 f"affected: {payload.get('would_evict_files', 0)} "
                 f"({_bytes(payload.get('would_evict_bytes'))})"

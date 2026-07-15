@@ -16,15 +16,16 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    ArchiveRestoreCollectionRecord,
+    ArchiveRestoreFileRecord,
     ArchiveRestoreRecord,
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
-    FetchCollectionRecord,
+    FetchFileRecord,
     FetchRecord,
 )
 from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
@@ -33,6 +34,7 @@ from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
+from riverhog_core.services.archive_records import archive_copy_identity, archive_copy_is_complete
 from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
@@ -136,7 +138,7 @@ class SqlAlchemyCollectionDeletionService:
 
         self._delete_hot_objects(plan)
         self._delete_upload_remnants(normalized_id)
-        self._delete_archive_package(plan)
+        self._delete_archive_objects(plan)
         for store_name, archive_store in self._archive_stores.items():
             publish_archive_restore_catalog(
                 store_name=store_name,
@@ -172,18 +174,23 @@ class SqlAlchemyCollectionDeletionService:
                     _collection_upload_target_path(collection_id, file.path)
                 )
 
-    def _delete_archive_package(self, plan: dict[str, object]) -> None:
-        objects_by_store: dict[str, dict[str, str]] = {}
-        for item in cast(list[dict[str, object]], plan["archive_objects"]):
-            objects_by_store.setdefault(str(item["store"]), {})[str(item["kind"])] = str(
-                item["object_path"]
-            )
-        for store_name, objects in objects_by_store.items():
-            self._archive_stores.require(store_name).delete_collection_archive_package(
+    def _delete_archive_objects(self, plan: dict[str, object]) -> None:
+        collection_id = str(plan["collection_id"])
+        store_names = {
+            str(item["store"]) for item in cast(list[dict[str, object]], plan["archive_objects"])
+        }
+        for store_name in sorted(store_names):
+            with session_scope(self._session_factory) as session:
+                copy = session.get(
+                    CollectionArchiveCopyRecord,
+                    (collection_id, store_name),
+                )
+                if copy is None or not archive_copy_is_complete(copy):
+                    raise Conflict("collection archive changed during deletion")
+                objects = archive_copy_identity(copy).objects
+            self._archive_stores.require(store_name).delete_collection_archive(
                 collection_id=str(plan["collection_id"]),
-                object_path=objects["archive"],
-                manifest_object_path=objects["manifest"],
-                proof_object_path=objects["proof"],
+                objects=objects,
             )
 
     def _finish(
@@ -200,9 +207,9 @@ class SqlAlchemyCollectionDeletionService:
                 raise Conflict("collection deletion challenge does not match active deletion")
             newly_active = session.scalars(
                 select(ArchiveRestoreRecord.restore_id)
-                .join(ArchiveRestoreCollectionRecord)
+                .join(ArchiveRestoreFileRecord)
                 .where(
-                    ArchiveRestoreCollectionRecord.collection_id == collection_id,
+                    ArchiveRestoreFileRecord.collection_id == collection_id,
                     ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
                 )
                 .order_by(ArchiveRestoreRecord.restore_id)
@@ -238,8 +245,8 @@ class SqlAlchemyCollectionDeletionService:
                 )
             restores = session.scalars(
                 select(ArchiveRestoreRecord)
-                .join(ArchiveRestoreCollectionRecord)
-                .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
+                .join(ArchiveRestoreFileRecord)
+                .where(ArchiveRestoreFileRecord.collection_id == collection_id)
             ).unique()
             for restore in restores:
                 session.delete(restore)
@@ -270,27 +277,23 @@ def _build_plan(
         .where(CollectionArchiveCopyRecord.collection_id == collection_id)
         .order_by(CollectionArchiveCopyRecord.store)
     ).all()
-    archive_copy_count, remote_storage_bytes = session.execute(
-        select(
-            func.count(CollectionArchiveCopyRecord.store),
-            func.coalesce(
-                func.sum(
-                    func.coalesce(CollectionArchiveCopyRecord.stored_bytes, 0)
-                    + func.coalesce(CollectionArchiveCopyRecord.manifest_stored_bytes, 0)
-                    + func.coalesce(CollectionArchiveCopyRecord.ots_stored_bytes, 0)
-                ),
-                0,
-            ),
-        ).where(CollectionArchiveCopyRecord.collection_id == collection_id)
-    ).one()
-    if not archives or any(
-        archive.state != "uploaded"
-        or archive.last_verified_at is None
-        or archive.object_path is None
-        or archive.manifest_object_path is None
-        or archive.ots_object_path is None
-        for archive in archives
-    ):
+    archive_copy_count = int(
+        session.scalar(
+            select(func.count(CollectionArchiveCopyRecord.store)).where(
+                CollectionArchiveCopyRecord.collection_id == collection_id
+            )
+        )
+        or 0
+    )
+    remote_storage_bytes = int(
+        session.scalar(
+            select(func.coalesce(func.sum(CollectionArchiveObjectRecord.stored_bytes), 0)).where(
+                CollectionArchiveObjectRecord.collection_id == collection_id
+            )
+        )
+        or 0
+    )
+    if not archives or any(not archive_copy_is_complete(archive) for archive in archives):
         raise InvalidState(
             f"collection archive copies are not completely uploaded and verified: {collection_id}"
         )
@@ -301,20 +304,20 @@ def _build_plan(
             ArchiveRestoreRecord.restore_id,
             ArchiveRestoreRecord.state,
         )
-        .join(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
+        .join(ArchiveRestoreFileRecord)
+        .where(ArchiveRestoreFileRecord.collection_id == collection_id)
     )
     restore_ids = session.scalars(
         select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.collection_id == collection_id)
+        .join(ArchiveRestoreFileRecord)
+        .where(ArchiveRestoreFileRecord.collection_id == collection_id)
         .order_by(ArchiveRestoreRecord.restore_id)
     ).all()
     active_restore_ids = session.scalars(
         select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreCollectionRecord)
+        .join(ArchiveRestoreFileRecord)
         .where(
-            ArchiveRestoreCollectionRecord.collection_id == collection_id,
+            ArchiveRestoreFileRecord.collection_id == collection_id,
             ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
         )
         .order_by(ArchiveRestoreRecord.restore_id)
@@ -397,16 +400,12 @@ def _build_plan(
     archive_objects = [
         {
             "store": archive.store,
-            "kind": kind,
-            "object_path": object_path,
-            "stored_bytes": int(stored_bytes or 0),
+            "kind": current.kind,
+            "object_path": current.object_path,
+            "stored_bytes": current.stored_bytes,
         }
         for archive in archives
-        for kind, object_path, stored_bytes in (
-            ("archive", archive.object_path, archive.stored_bytes),
-            ("manifest", archive.manifest_object_path, archive.manifest_stored_bytes),
-            ("proof", archive.ots_object_path, archive.ots_stored_bytes),
-        )
+        for current in sorted(archive.objects, key=lambda item: item.object_order)
     ]
     return {
         "status": "blocked" if blockers else "ready",
@@ -432,7 +431,7 @@ def _build_plan(
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
             "archive_restores": restore_count,
-            "archive_restore_collections": restore_count,
+            "archive_restore_files": restore_count,
             "encrypted_restore_catalog_entries": int(archive_copy_count),
         },
         "blockers": blockers,
@@ -447,10 +446,10 @@ def _active_fetch_ids(session: Session, collection_id: str) -> list[str]:
     return list(
         session.scalars(
             select(FetchRecord.fetch_id)
-            .join(FetchCollectionRecord)
+            .join(FetchFileRecord)
             .where(
                 FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES),
-                FetchCollectionRecord.collection_id == collection_id,
+                FetchFileRecord.collection_id == collection_id,
             )
             .order_by(FetchRecord.fetch_id)
         ).all()

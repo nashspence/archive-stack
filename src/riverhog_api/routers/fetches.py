@@ -10,6 +10,7 @@ from riverhog_api.schemas.fetches import (
     CreateFetchRequest,
     FetchCollectionsRequest,
     FetchesResponse,
+    FetchFilesRequest,
     FetchFilesResponse,
     FetchStatusResponse,
     FetchSummaryOut,
@@ -35,12 +36,16 @@ def _fetch_status_payload(fetch_id: str, container: ContainerDep) -> dict[str, o
 
 
 @router.post("/hot/evict", response_model=HotEvictResponse)
-def evict_hot_collections(
+def evict_hot(
     request: HotEvictRequest,
     container: ContainerDep,
 ) -> HotEvictResponse:
     return HotEvictResponse.model_validate(
-        container.fetches.evict(request.collections, dry_run=request.dry_run)
+        container.fetches.evict(
+            request.collections,
+            files=[(item.collection_id, item.path) for item in request.files],
+            dry_run=request.dry_run,
+        )
     )
 
 
@@ -80,6 +85,7 @@ def create_fetch(
             container.fetches.create(
                 name=request.name,
                 collections=request.collections,
+                files=[(item.collection_id, item.path) for item in request.files],
             )
         )
     )
@@ -104,6 +110,38 @@ def remove_fetch_collections(
 ) -> FetchSummaryOut:
     return FetchSummaryOut.model_validate(
         map_fetch(container.fetches.remove_collections(fetch_id, request.collections))
+    )
+
+
+@router.post("/fetches/{fetch_id}/files", response_model=FetchSummaryOut)
+def add_fetch_files(
+    fetch_id: str,
+    request: FetchFilesRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    return FetchSummaryOut.model_validate(
+        map_fetch(
+            container.fetches.add_files(
+                fetch_id,
+                [(item.collection_id, item.path) for item in request.files],
+            )
+        )
+    )
+
+
+@router.delete("/fetches/{fetch_id}/files", response_model=FetchSummaryOut)
+def remove_fetch_files(
+    fetch_id: str,
+    request: FetchFilesRequest,
+    container: ContainerDep,
+) -> FetchSummaryOut:
+    return FetchSummaryOut.model_validate(
+        map_fetch(
+            container.fetches.remove_files(
+                fetch_id,
+                [(item.collection_id, item.path) for item in request.files],
+            )
+        )
     )
 
 

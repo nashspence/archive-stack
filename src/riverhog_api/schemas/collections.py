@@ -91,7 +91,7 @@ class CollectionDeletionFileOut(RiverhogModel):
 
 class CollectionDeletionObjectOut(RiverhogModel):
     store: str
-    kind: Literal["archive", "manifest", "proof"]
+    kind: Literal["pack", "file", "segment", "manifest", "proof"]
     object_path: str
     stored_bytes: int
 
@@ -176,7 +176,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     latest_failure: str | None = None
     archive_phase: str | None = None
     archive_phase_updated_at: str | None = None
-    archive_object_path: str | None = None
+    archive_storage_prefix: str | None = None
     archive_uploaded_bytes: int | None = None
     archive_total_bytes: int | None = None
     archive_uploaded_parts: int | None = None

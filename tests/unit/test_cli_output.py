@@ -132,8 +132,8 @@ def test_hot_evict_output_reports_selected_and_affected_bytes() -> None:
     rendered = format_hot_evict(
         {
             "status": "evicted",
-            "files": 2,
-            "bytes": 20,
+            "selected_files": 2,
+            "selected_bytes": 20,
             "would_evict_files": 1,
             "would_evict_bytes": 10,
         }

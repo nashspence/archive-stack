@@ -297,12 +297,13 @@ class _MemoryMultipartTracker:
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_path: str,
         part_size: int,
         content_length: int,
         sha256: str,
     ) -> ArchiveMultipartUploadState | None:
-        _ = collection_id, object_path, part_size, content_length, sha256
+        _ = collection_id, object_id, object_path, part_size, content_length, sha256
         return self.state
 
     def save_multipart_upload(
@@ -326,6 +327,7 @@ class _MemoryMultipartTracker:
     ) -> None:
         _ = collection_id, uploaded_bytes, uploaded_parts, total_parts
         self.state = ArchiveMultipartUploadState(
+            object_id=state.object_id,
             upload_id=state.upload_id,
             object_path=state.object_path,
             part_size=state.part_size,
@@ -334,8 +336,8 @@ class _MemoryMultipartTracker:
             parts=(*state.parts, part),
         )
 
-    def clear_multipart_upload(self, *, collection_id: str, upload_id: str) -> None:
-        _ = collection_id
+    def clear_multipart_upload(self, *, collection_id: str, object_id: str, upload_id: str) -> None:
+        _ = collection_id, object_id
         self.cleared_upload_ids.append(upload_id)
         self.state = None
 

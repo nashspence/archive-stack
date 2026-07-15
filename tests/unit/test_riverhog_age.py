@@ -1,11 +1,8 @@
-import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tarfile
-from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -27,10 +24,6 @@ from riverhog_age import (
     parse_scrypt_header,
     parse_scrypt_header_from_age_file,
 )
-from riverhog_core.collection_archives import (
-    CollectionArchiveExpectedFile,
-    build_collection_archive_package_from_chunk_reader,
-)
 
 PASS = b"correct horse battery staple"
 FAST_LOG_N = 14
@@ -43,13 +36,6 @@ official_age = pytest.mark.skipif(
     not OFFICIAL_AGE or not OFFICIAL_BATCHPASS,
     reason="official age and age-plugin-batchpass are required",
 )
-
-
-class FixtureProofStamper:
-    def stamp(self, manifest_path):
-        proof_path = manifest_path.with_name(f"{manifest_path.name}.ots")
-        proof_path.write_bytes(b"fixture ots proof\n" + manifest_path.read_bytes()[:64])
-        return proof_path
 
 
 def new_test_session(plaintext_size=None):
@@ -396,53 +382,17 @@ def test_s3_plan_accepts_exactly_max_parts_and_rejects_one_more():
         session.s3_part_plans(max_size + CHUNK_SIZE, chunks_per_part=1)
 
 
-def test_riverhog_tar_range_provider_reconstructs_exact_age_file():
-    files_by_path = {
-        "clips/large.mov": bytes((i * 7 + 11) % 256 for i in range(CHUNK_SIZE * 2 + 711)),
-        "docs/readme.txt": b"hello from a tiny file\n",
-        "empty.bin": b"",
-    }
-    expected_files = tuple(
-        CollectionArchiveExpectedFile(
-            path=path,
-            bytes=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-        )
-        for path, content in files_by_path.items()
-    )
-
-    def read_chunks(path):
-        content = files_by_path[path]
-        for offset in range(0, len(content), 8191):
-            yield content[offset : offset + 8191]
-
-    def read_range(path, offset, size):
-        content = files_by_path[path]
-        end = None if size is None else offset + size
-        for chunk_offset in range(offset, len(content) if end is None else end, 4093):
-            range_end = len(content) if end is None else end
-            yield content[chunk_offset : min(chunk_offset + 4093, range_end)]
-
-    package = build_collection_archive_package_from_chunk_reader(
-        collection_id="2026/20260601T120000Z__range-test",
-        files=expected_files,
-        read_file_chunks=read_chunks,
-        read_file_chunks_range=read_range,
-        stamper=FixtureProofStamper(),
-    )
-    plaintext = package.archive_bytes
+def test_ranged_plaintext_provider_reconstructs_exact_age_file():
+    plaintext = bytes((i * 7 + 11) % 256 for i in range(CHUNK_SIZE * 5 + 711))
     session = new_test_session(len(plaintext))
     full = session.encrypt_plaintext(plaintext)
     plans = session.s3_part_plans(len(plaintext), chunks_per_part=2, enforce_s3_limits=False)
 
     def provider(_chunk_index, start, end):
-        return b"".join(package.iter_archive_from_offset(start))[: end - start]
+        return plaintext[start:end]
 
     rebuilt = b"".join(
         session.encrypt_part(plan, provider, plaintext_size=len(plaintext)) for plan in plans
     )
     assert rebuilt == full
     assert decrypt_age_scrypt(rebuilt, PASS) == plaintext
-
-    with tarfile.open(fileobj=BytesIO(decrypt_age_scrypt(rebuilt, PASS)), mode="r:") as archive:
-        assert sorted(archive.getnames()) == sorted(files_by_path)

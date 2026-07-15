@@ -269,9 +269,10 @@
         "files_uploaded",
         "bytes_total",
         "uploaded_bytes",
-        "archive_object_path",
+        "archive_storage_prefix",
+        "archive_objects",
         "archive_total_bytes",
-        "archive_sha256"
+        "archive_store"
       ]
     },
     {

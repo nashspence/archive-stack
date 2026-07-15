@@ -32,23 +32,35 @@ class FetchesResponse(RiverhogModel):
 class CreateFetchRequest(RiverhogModel):
     name: str
     collections: list[str] = Field(default_factory=list)
+    files: list[FetchFileSelection] = Field(default_factory=list)
+
+
+class FetchFileSelection(RiverhogModel):
+    collection_id: str
+    path: str
 
 
 class FetchCollectionsRequest(RiverhogModel):
     collections: list[str]
 
 
+class FetchFilesRequest(RiverhogModel):
+    files: list[FetchFileSelection]
+
+
 class HotEvictRequest(RiverhogModel):
-    collections: list[str]
+    collections: list[str] = Field(default_factory=list)
+    files: list[FetchFileSelection] = Field(default_factory=list)
     dry_run: bool = False
 
 
 class HotEvictResponse(RiverhogModel):
     collections: list[str]
+    files: list[FetchFileSelection]
     dry_run: bool
     status: str
-    files: int
-    bytes: int
+    selected_files: int
+    selected_bytes: int
     evicted_files: int
     evicted_bytes: int
     would_evict_files: int

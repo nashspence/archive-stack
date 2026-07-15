@@ -147,6 +147,7 @@ class S3HotStore:
         if multipart_tracker is not None and sha256 is not None:
             upload_state = multipart_tracker.load_multipart_upload(
                 collection_id=collection_id,
+                object_id=path,
                 object_path=final_key,
                 part_size=part_size,
                 content_length=content_length,
@@ -167,6 +168,7 @@ class S3HotStore:
                         raise
                     multipart_tracker.clear_multipart_upload(
                         collection_id=collection_id,
+                        object_id=path,
                         upload_id=upload_state.upload_id,
                     )
                     upload_id = None
@@ -209,6 +211,7 @@ class S3HotStore:
                 )
                 upload_id = str(response["UploadId"])
                 upload_state = ArchiveMultipartUploadState(
+                    object_id=path,
                     upload_id=upload_id,
                     object_path=final_key,
                     part_size=part_size,
@@ -313,6 +316,7 @@ class S3HotStore:
             if multipart_tracker is not None:
                 multipart_tracker.clear_multipart_upload(
                     collection_id=collection_id,
+                    object_id=path,
                     upload_id=upload_id,
                 )
         except Exception as exc:

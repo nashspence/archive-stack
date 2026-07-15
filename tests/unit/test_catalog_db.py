@@ -11,16 +11,20 @@ from tests.unit.db_helpers import sqlite_url
 CURRENT_TABLES = {
     "archive_copy_jobs",
     "archive_copy_retirements",
-    "archive_restore_collections",
+    "archive_restore_files",
+    "archive_restore_objects",
     "archive_restores",
     "archive_usage_snapshots",
     "collection_archive_copies",
+    "collection_archive_file_objects",
+    "collection_archive_object_uploads",
+    "collection_archive_objects",
     "collection_deletions",
     "collection_files",
     "collection_upload_files",
     "collection_uploads",
     "collections",
-    "fetch_collections",
+    "fetch_files",
     "fetches",
 }
 
@@ -45,10 +49,11 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "extraction_state",
         "materialization_state",
     }
-    assert {column["name"] for column in inspector.get_columns("fetch_collections")} == {
+    assert {column["name"] for column in inspector.get_columns("fetch_files")} == {
         "fetch_id",
         "collection_id",
-        "collection_order",
+        "path",
+        "file_order",
     }
     upload_columns = {
         column["name"]: column for column in inspector.get_columns("collection_uploads")

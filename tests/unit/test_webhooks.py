@@ -43,9 +43,10 @@ def _collection_details(event: str) -> dict[str, object]:
     if event == "collections.finalized":
         return {
             **common,
-            "archive_object_path": "archive/docs.tar.age",
+            "archive_storage_prefix": "archive/opaque-docs",
+            "archive_objects": 3,
+            "archive_store": "b2",
             "archive_total_bytes": 20,
-            "archive_sha256": "a" * 64,
         }
     if event == "collections.archive_retrying":
         return {

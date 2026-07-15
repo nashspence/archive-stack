@@ -14,6 +14,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
 )
@@ -138,23 +139,41 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
                 hot=True,
             )
         )
-        session.add(
-            CollectionArchiveCopyRecord(
-                collection_id="2025/20250102T030405Z__docs",
-                store="deep",
-                state="uploaded",
-                object_path="collections/docs/archive.tar.age",
-                stored_bytes=100,
-                sha256="a" * 64,
-                manifest_object_path="collections/docs/manifest.yml",
-                manifest_sha256="b" * 64,
-                manifest_stored_bytes=20,
-                ots_object_path="collections/docs/manifest.yml.ots",
-                ots_sha256="c" * 64,
-                ots_stored_bytes=10,
-                last_verified_at="2026-07-14T00:00:00Z",
-            )
+        copy = CollectionArchiveCopyRecord(
+            collection_id="2025/20250102T030405Z__docs",
+            store="deep",
+            state="uploaded",
+            archive_storage_prefix="collections/docs",
+            backend="s3",
+            storage_class="STANDARD",
+            last_uploaded_at="2026-07-14T00:00:00Z",
+            last_verified_at="2026-07-14T00:00:00Z",
         )
+        for order, (object_id, kind, stored_bytes, digest) in enumerate(
+            (
+                ("data-000000", "file", 100, "a" * 64),
+                ("manifest", "manifest", 20, "b" * 64),
+                ("proof", "proof", 10, "c" * 64),
+            )
+        ):
+            copy.objects.append(
+                CollectionArchiveObjectRecord(
+                    collection_id=copy.collection_id,
+                    store=copy.store,
+                    object_id=object_id,
+                    object_order=order,
+                    kind=kind,
+                    object_path=f"collections/docs/{object_id}.age",
+                    plaintext_bytes=stored_bytes - 1,
+                    stored_bytes=stored_bytes,
+                    sha256=digest,
+                    backend="s3",
+                    storage_class="STANDARD",
+                    uploaded_at="2026-07-14T00:00:00Z",
+                    verified_at="2026-07-14T00:00:00Z",
+                )
+            )
+        session.add(copy)
 
     unused = cast(object, object())
     archive_stores = ArchiveStoreRegistry(

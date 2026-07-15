@@ -46,8 +46,8 @@ def _ensure_schema_indexes(engine: Engine) -> None:
     statements = (
         "CREATE INDEX IF NOT EXISTS idx_collection_upload_files_collection_order "
         "ON collection_upload_files (collection_id, file_order)",
-        "CREATE INDEX IF NOT EXISTS ix_fetch_collections_collection "
-        "ON fetch_collections (collection_id, fetch_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fetch_files_collection "
+        "ON fetch_files (collection_id, fetch_id)",
         "CREATE INDEX IF NOT EXISTS ix_archive_restores_state_created "
         "ON archive_restores (state, created_at, restore_id)",
     )
@@ -85,33 +85,41 @@ def initialize_db(database_url: str) -> None:
     from riverhog_core.catalog_models import (  # noqa: PLC0415
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
-        ArchiveRestoreCollectionRecord,
+        ArchiveRestoreFileRecord,
+        ArchiveRestoreObjectRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
         CollectionArchiveCopyRecord,
+        CollectionArchiveFileObjectRecord,
+        CollectionArchiveObjectRecord,
+        CollectionArchiveObjectUploadRecord,
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
-        FetchCollectionRecord,
+        FetchFileRecord,
         FetchRecord,
     )
 
     _ = (
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
-        ArchiveRestoreCollectionRecord,
+        ArchiveRestoreFileRecord,
+        ArchiveRestoreObjectRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
         CollectionArchiveCopyRecord,
+        CollectionArchiveFileObjectRecord,
+        CollectionArchiveObjectRecord,
+        CollectionArchiveObjectUploadRecord,
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         FetchRecord,
-        FetchCollectionRecord,
+        FetchFileRecord,
     )
     engine = create_catalog_engine(database_url)
     Base.metadata.create_all(engine)

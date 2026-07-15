@@ -14,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -39,6 +40,10 @@ from riverhog_core.fs_paths import (
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_records import (
+    ArchiveCopyAggregate,
+    archive_copy_aggregates,
+)
 from riverhog_core.services.notification_routing import (
     collection_notify_json as _collection_notify_json,
 )
@@ -826,7 +831,13 @@ class SqlAlchemyCollectionService:
             ).one_or_none()
             if row is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
-            return _collection_summary_from_row(row)
+            return _collection_summary_from_row(
+                row,
+                aggregates=archive_copy_aggregates(
+                    session,
+                    collection_ids=[normalized_collection_id],
+                ),
+            )
 
     def list(
         self,
@@ -872,13 +883,19 @@ class SqlAlchemyCollectionService:
             if not all_items:
                 collections_stmt = collections_stmt.offset(start).limit(per_page)
             rows = session.execute(collections_stmt).all()
+            aggregates = archive_copy_aggregates(
+                session,
+                collection_ids=[str(row[0].id) for row in rows],
+            )
 
             return CollectionListPage(
                 page=1 if all_items else page,
                 per_page=total if all_items else per_page,
                 total=total,
                 pages=(1 if total else 0) if all_items else pages,
-                collections=[_collection_summary_from_row(row) for row in rows],
+                collections=[
+                    _collection_summary_from_row(row, aggregates=aggregates) for row in rows
+                ],
             )
 
 
@@ -929,7 +946,11 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
     )
 
 
-def _collection_summary_from_row(row: Any) -> CollectionSummary:
+def _collection_summary_from_row(
+    row: Any,
+    *,
+    aggregates: dict[tuple[str, str], ArchiveCopyAggregate],
+) -> CollectionSummary:
     collection = row[0]
     return CollectionSummary(
         id=CollectionId(collection.id),
@@ -938,7 +959,7 @@ def _collection_summary_from_row(row: Any) -> CollectionSummary:
         hot_files=int(row.hot_files),
         hot_bytes=int(row.hot_bytes),
         archive_copies=tuple(
-            _collection_archive_status(copy)
+            _collection_archive_status(copy, aggregates=aggregates)
             for copy in sorted(collection.archive_copies, key=lambda item: item.store)
         ),
     )
@@ -1548,7 +1569,8 @@ def _finalized_collection_upload_payload(
 ) -> dict[str, object]:
     stmt, _ = _collection_summary_query()
     summary = _collection_summary_from_row(
-        session.execute(stmt.where(CollectionRecord.id == collection.id)).one()
+        session.execute(stmt.where(CollectionRecord.id == collection.id)).one(),
+        aggregates=archive_copy_aggregates(session, collection_ids=[collection.id]),
     )
     files = session.scalars(
         select(CollectionFileRecord)
@@ -1559,6 +1581,12 @@ def _finalized_collection_upload_payload(
         (copy for copy in collection.archive_copies if copy.store == archive_store),
         collection.archive_copies[0] if collection.archive_copies else None,
     )
+    archive_stored_bytes = None
+    if archive is not None:
+        archive_stored_bytes = archive_copy_aggregates(
+            session,
+            collection_ids=[collection.id],
+        ).get((collection.id, archive.store), (0, 0))[1]
     return {
         "collection_id": collection.id,
         "ingest_source": collection.ingest_source,
@@ -1578,9 +1606,9 @@ def _finalized_collection_upload_payload(
         "latest_failure": None,
         "archive_phase": "completed",
         "archive_phase_updated_at": archive.last_verified_at if archive is not None else None,
-        "archive_object_path": archive.object_path if archive is not None else None,
-        "archive_uploaded_bytes": archive.stored_bytes if archive is not None else None,
-        "archive_total_bytes": archive.stored_bytes if archive is not None else None,
+        "archive_storage_prefix": (archive.archive_storage_prefix if archive is not None else None),
+        "archive_uploaded_bytes": archive_stored_bytes,
+        "archive_total_bytes": archive_stored_bytes,
         "archive_uploaded_parts": None,
         "archive_total_parts": None,
         "notify": _decode_collection_notify_json(collection.notify_json),
@@ -1612,6 +1640,17 @@ def _collection_upload_payload(
         .where(CollectionUploadFileRecord.collection_id == upload.collection_id)
         .order_by(CollectionUploadFileRecord.file_order, CollectionUploadFileRecord.path)
     ).all()
+    object_progress = session.execute(
+        select(
+            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_bytes), 0),
+            func.coalesce(
+                func.sum(CollectionArchiveObjectUploadRecord.multipart_content_length),
+                0,
+            ),
+            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_parts), 0),
+            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.total_parts), 0),
+        ).where(CollectionArchiveObjectUploadRecord.collection_id == upload.collection_id)
+    ).one()
     return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
@@ -1622,11 +1661,11 @@ def _collection_upload_payload(
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
         "archive_phase_updated_at": upload.archive_phase_updated_at,
-        "archive_object_path": upload.archive_object_path,
-        "archive_uploaded_bytes": upload.archive_multipart_uploaded_bytes,
-        "archive_total_bytes": upload.archive_multipart_content_length,
-        "archive_uploaded_parts": upload.archive_multipart_uploaded_parts,
-        "archive_total_parts": upload.archive_multipart_total_parts,
+        "archive_storage_prefix": upload.archive_storage_prefix,
+        "archive_uploaded_bytes": int(object_progress[0]),
+        "archive_total_bytes": int(object_progress[1]),
+        "archive_uploaded_parts": int(object_progress[2]),
+        "archive_total_parts": int(object_progress[3]),
         "notify": _decode_collection_notify_json(upload.notify_json),
         "files": [_collection_upload_file_payload(file_record) for file_record in files],
         "collection": _collection_summary_payload(collection) if collection is not None else None,
@@ -1678,7 +1717,8 @@ def _archive_copy_payload(summary: ArchiveCopyStatus) -> dict[str, object]:
     return {
         "store": summary.store,
         "state": summary.state.value,
-        "object_path": summary.object_path,
+        "storage_prefix": summary.storage_prefix,
+        "object_count": summary.object_count,
         "stored_bytes": summary.stored_bytes,
         "backend": summary.backend,
         "storage_class": summary.storage_class,
@@ -1686,8 +1726,6 @@ def _archive_copy_payload(summary: ArchiveCopyStatus) -> dict[str, object]:
         "last_verified_at": summary.last_verified_at,
         "failure": summary.failure,
         "collection_manifest": _collection_manifest_payload(summary.collection_manifest),
-        "archive_format": summary.archive_format,
-        "compression": summary.compression,
     }
 
 
@@ -1699,8 +1737,9 @@ def _collection_manifest_payload(
     return {
         "object_path": summary.object_path,
         "sha256": summary.sha256,
-        "ots_object_path": summary.ots_object_path,
-        "ots_state": summary.ots_state,
+        "proof_object_path": summary.proof_object_path,
+        "proof_state": summary.proof_state,
+        "proof_sha256": summary.proof_sha256,
     }
 
 
@@ -1724,34 +1763,46 @@ def _safe_parse_utc_timestamp(value: str | None) -> datetime | None:
         return None
 
 
-def _collection_archive_status(archive: CollectionArchiveCopyRecord) -> ArchiveCopyStatus:
+def _collection_archive_status(
+    archive: CollectionArchiveCopyRecord,
+    *,
+    aggregates: dict[tuple[str, str], ArchiveCopyAggregate],
+) -> ArchiveCopyStatus:
+    object_count, stored_bytes = aggregates.get((archive.collection_id, archive.store), (0, 0))
     return ArchiveCopyStatus(
         store=archive.store,
         state=ArchiveState(archive.state),
-        object_path=archive.object_path,
-        stored_bytes=archive.stored_bytes,
+        storage_prefix=archive.archive_storage_prefix,
+        object_count=object_count,
+        stored_bytes=stored_bytes,
         backend=archive.backend,
         storage_class=archive.storage_class,
         last_uploaded_at=archive.last_uploaded_at,
         last_verified_at=archive.last_verified_at,
         failure=archive.failure,
         collection_manifest=_collection_manifest_status(archive),
-        archive_format=archive.archive_format,
-        compression=archive.compression,
     )
 
 
 def _collection_manifest_status(archive: CollectionArchiveCopyRecord) -> CollectionManifestStatus:
+    manifest = next(
+        (current for current in archive.objects if current.object_id == "manifest"),
+        None,
+    )
+    proof = next(
+        (current for current in archive.objects if current.object_id == "proof"),
+        None,
+    )
     return CollectionManifestStatus(
-        object_path=archive.manifest_object_path,
-        sha256=archive.manifest_sha256,
-        ots_object_path=archive.ots_object_path,
-        ots_state=(
+        object_path=manifest.object_path if manifest else None,
+        sha256=manifest.sha256 if manifest else None,
+        proof_object_path=proof.object_path if proof else None,
+        proof_state=(
             "failed"
             if archive.state == ArchiveState.FAILED.value
             else "uploaded"
-            if archive.ots_object_path
+            if proof
             else "pending"
         ),
-        ots_sha256=archive.ots_sha256,
+        proof_sha256=proof.sha256 if proof else None,
     )

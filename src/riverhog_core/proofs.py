@@ -26,10 +26,7 @@ class ProofVerifier(Protocol):
 
 def _is_pending_blockchain_confirmation(stdout: str, stderr: str) -> bool:
     lines = [
-        line.strip()
-        for output in (stdout, stderr)
-        for line in output.splitlines()
-        if line.strip()
+        line.strip() for output in (stdout, stderr) for line in output.splitlines() if line.strip()
     ]
     return bool(lines) and all(
         line.startswith("Calendar ")

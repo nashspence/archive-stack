@@ -1,42 +1,52 @@
 # Architecture
 
-Riverhog accepts logical collections, preserves each as a verified age-encrypted package
-in a named archive store, and can materialize complete collections into a fast hot cache.
-A collection may have verified copies in multiple archive stores. PostgreSQL records
-identity, manifests, custody evidence, copies, and current materialization; object stores
-hold the bytes.
+Riverhog accepts logical collections, preserves each as independently encrypted objects
+in one or more named archive stores, and materializes selected files into a fast hot cache.
+PostgreSQL records identity, object placement, archive copies, and current materialization;
+object stores hold the bytes.
 
 ## Custody model
 
-A collection is the deletion and recovery unit. Its files have stable relative paths,
-sizes, and SHA-256 digests. A collection becomes accepted only after Riverhog verifies an
-archive copy's package, encrypted manifest, and OpenTimestamps proof. Uploads target the
-configured default archive store and retain a hot materialization unless the caller
-explicitly selects another store or archive-only storage.
+A collection is the deletion unit. Its files have stable relative paths, sizes, and
+SHA-256 digests. Riverhog accepts a collection only after every required archive object,
+the encrypted manifest, and its OpenTimestamps proof are uploaded and verified. Uploads
+target the configured default archive store and retain hot files unless the caller
+explicitly requests archive-only storage.
 
 Archive stores are the durable authority. Upload staging is temporary ingest state, and
 hot storage is a replaceable materialization for browsing and direct access. A collection's
 logical contents are immutable while present; changing them means accepting a new collection
-or deliberately deleting the existing collection. Its verified archive-copy set can change
-through guarded copy and retirement operations.
+or deliberately deleting the existing collection. Its archive-copy set can change through
+guarded copy and retirement operations.
 
-An archive copy job reads and verifies an existing copy, streams the package through
-decryption and destination encryption, verifies the destination, and records the new copy.
-It does not materialize collection files in hot storage. Source reads are prepared only
-when the selected store requires it, and interrupted jobs are requeued from durable
-catalog state.
+Each archive copy contains:
 
-Archive object keys are opaque. Human identity comes from the catalog and encrypted
-manifest rather than bucket paths. Riverhog keeps plaintext safety guidance at the
-archive root without exposing collection identity.
+- packs containing files smaller than 16 MiB, with at most 32 MiB of file payload per pack;
+- one object per file from 16 MiB through the store's maximum plaintext size;
+- sequential objects for larger files;
+- a manifest mapping every logical file byte to its object or pack member;
+- a proof binding that manifest.
+
+Every stored object is independently age encrypted and checksummed. No encrypted object may
+exceed 32 GiB; Riverhog derives the plaintext segment ceiling from the exact age framing
+overhead. The manifest and proof are independently readable standard-class objects. Archive
+object keys are opaque, and plaintext archive-root guidance contains no collection identity.
+
+An archive copy job reads and verifies every source object, writes and verifies an equivalent
+destination object set, then records the new copy. It does not materialize files in hot
+storage. Source reads are prepared only when the selected store requires retrieval.
 
 ## Retrieval
 
-A fetch records an exact collection set. If any file in a fetched collection is missing
-from hot storage, Riverhog retrieves and verifies its encrypted archive and materializes
-the complete collection. Eviction likewise removes complete collections from hot storage.
-Before eviction, Riverhog confirms that at least one recorded archive copy is still
-present in its store and matches its recorded checksum.
+A fetch records an exact set of logical files. Collection arguments are a convenience that
+select every file in each named collection. Riverhog prepares and reads only the data objects
+mapped to missing selected files, verifies the manifest, proof, object checksums, and file
+checksums, then materializes those files. A shared small-file pack is fetched once when any
+of its members is selected.
+
+Eviction accepts the same collection-or-file selection boundary. Before removing a hot file,
+Riverhog verifies a recorded archive copy containing its required data objects, manifest,
+and proof.
 
 ## Component boundaries
 
@@ -50,12 +60,12 @@ present in its store and matches its recorded checksum.
 
 ## Core terms
 
-- **Collection:** the logical deletion and recovery unit.
-- **Collection archive:** the canonical package, manifest, and proof for a collection.
+- **Collection:** the logical deletion unit and namespace for archived files.
+- **Archive object:** one independently encrypted pack, file, segment, manifest, or proof.
 - **Archive store:** a named remote object-store destination with its own access and read
   behavior.
-- **Archive copy:** a verified encrypted instance of a collection archive in one store.
+- **Archive copy:** one verified object set for a collection in one archive store.
 - **Hot storage:** the replaceable materialized cache of verified logical files.
-- **Fetch:** a named request to make exact collections hot.
-- **Restore:** verified whole-collection materialization into hot storage, including remote
-  read preparation when the selected archive store requires it.
+- **Fetch:** a named selection of files to keep materialized in hot storage.
+- **Restore:** retrieval and verification of the archive objects needed to materialize
+  selected files.

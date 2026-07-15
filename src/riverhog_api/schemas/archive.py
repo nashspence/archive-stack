@@ -8,7 +8,8 @@ from riverhog_api.schemas.common import RiverhogModel
 class ArchiveCopyOut(RiverhogModel):
     store: str
     state: Literal["pending", "uploading", "uploaded", "retrying", "failed"]
-    object_path: str | None
+    storage_prefix: str | None
+    object_count: int
     stored_bytes: int | None
     backend: str | None
     storage_class: str | None
@@ -16,16 +17,14 @@ class ArchiveCopyOut(RiverhogModel):
     last_verified_at: str | None
     failure: str | None
     collection_manifest: CollectionManifestOut | None = None
-    archive_format: str | None = None
-    compression: str | None = None
 
 
 class CollectionManifestOut(RiverhogModel):
     object_path: str | None = None
     sha256: str | None = None
-    ots_object_path: str | None = None
-    ots_sha256: str | None = None
-    ots_state: Literal["pending", "uploaded", "failed"] = "pending"
+    proof_object_path: str | None = None
+    proof_sha256: str | None = None
+    proof_state: Literal["pending", "uploaded", "failed"] = "pending"
 
 
 class CreateArchiveCopyRequest(RiverhogModel):
@@ -55,7 +54,7 @@ class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
 
 
 class ArchiveCopyRetirementObjectOut(RiverhogModel):
-    kind: Literal["archive", "manifest", "proof"]
+    kind: Literal["pack", "file", "segment", "manifest", "proof"]
     object_path: str
     stored_bytes: int
 

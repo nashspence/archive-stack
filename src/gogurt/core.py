@@ -138,7 +138,7 @@ def _trigger_text(scripts_dir: Path, action: GogurtAction) -> str:
             "fi",
             (
                 f"printf '%s gogurt launch available: route=%s action=%s mount=%s\\n' "
-                f"{quoted_emoji} {quoted_route} {quoted_action} \"$1\" >&2"
+                f'{quoted_emoji} {quoted_route} {quoted_action} "$1" >&2'
             ),
             'case "${GOGURT_AUTORUN:-}" in',
             "    1|true|TRUE|yes|YES|on|ON)",
@@ -157,7 +157,7 @@ def _trigger_text(scripts_dir: Path, action: GogurtAction) -> str:
             "                *)",
             (
                 f"                    printf '%s gogurt launch declined: "
-                f"route=%s mount=%s\\n' {quoted_emoji} {quoted_route} \"$1\" >&2"
+                f'route=%s mount=%s\\n\' {quoted_emoji} {quoted_route} "$1" >&2'
             ),
             "                    exit 0",
             "                    ;;",
@@ -174,7 +174,7 @@ def _trigger_text(scripts_dir: Path, action: GogurtAction) -> str:
             "esac",
             (
                 f"printf '%s gogurt launching: route=%s action=%s mount=%s\\n' "
-                f"{quoted_emoji} {quoted_route} {quoted_action} \"$1\" >&2"
+                f'{quoted_emoji} {quoted_route} {quoted_action} "$1" >&2'
             ),
             f'exec {quoted_script} "$1"{suffix}',
             "",

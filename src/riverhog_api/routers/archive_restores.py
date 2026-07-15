@@ -16,9 +16,7 @@ def list_archive_restores(
     container: ContainerDep,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["created_at", "id", "state", "ready_at", "expires_at"] = Query(
-        "created_at"
-    ),
+    sort: Literal["created_at", "id", "state", "ready_at", "expires_at"] = Query("created_at"),
     order: Literal["asc", "desc"] = Query("desc"),
     terminal: Literal["active", "terminal", "all"] = Query("all"),
     state: Literal["requested", "ready", "expired", "completed", "failed", "canceled"]

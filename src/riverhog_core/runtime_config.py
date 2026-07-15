@@ -311,16 +311,13 @@ class RuntimeConfig:
             ]
             if missing_fields:
                 raise ValueError(
-                    f"archive store {name} has blank required fields: "
-                    + ", ".join(missing_fields)
+                    f"archive store {name} has blank required fields: " + ", ".join(missing_fields)
                 )
             if store.read_mode not in {"auto", "aws"}:
                 raise ValueError(f"archive store {name} read_mode must be auto or aws")
             normalized_archive_stores[name] = store
         if default_archive_store not in normalized_archive_stores:
-            raise ValueError(
-                f"default archive store is not configured: {default_archive_store}"
-            )
+            raise ValueError(f"default archive store is not configured: {default_archive_store}")
         object.__setattr__(self, "default_archive_store", default_archive_store)
         read_order = tuple(
             dict.fromkeys(_normalize_archive_store_name(name) for name in self.archive_read_order)

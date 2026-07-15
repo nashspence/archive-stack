@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, cast
@@ -45,7 +45,7 @@ from riverhog_core.timestamps import utc_timestamp_now
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
-fetch_app = typer.Typer(help="Named whole-collection fetch operations.")
+fetch_app = typer.Typer(help="Named collection-file fetch operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
@@ -970,8 +970,8 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     if not phase:
         return ""
     status = f", archive_phase={phase}"
-    if phase == "packaging":
-        status += ", building archive package"
+    if phase == "planning":
+        status += ", planning archive objects"
     uploaded_bytes = payload.get("archive_uploaded_bytes")
     total_bytes = payload.get("archive_total_bytes")
     if isinstance(uploaded_bytes, int) and isinstance(total_bytes, int) and total_bytes > 0:
@@ -1610,6 +1610,19 @@ def archive_retire_cmd(
     emit(format_archive_copy_retirement_result(payload), json_mode=False)
 
 
+def _parse_file_selections(values: Sequence[str]) -> list[tuple[str, str]]:
+    selections: list[tuple[str, str]] = []
+    for value in values:
+        collection_id, separator, path = value.partition("::")
+        if not separator or not collection_id or not path:
+            raise typer.BadParameter(
+                "file selections must use COLLECTION_ID::PATH",
+                param_hint="--file",
+            )
+        selections.append((collection_id, path))
+    return selections
+
+
 @fetch_app.command("create")
 def fetch_create_cmd(
     name: Annotated[str, typer.Option("--name", "-n", help="Human-readable fetch purpose")],
@@ -1617,12 +1630,20 @@ def fetch_create_cmd(
         list[str] | None,
         typer.Argument(help="Optional collection ids to add immediately"),
     ] = None,
+    files: Annotated[
+        list[str] | None,
+        typer.Option("--file", help="Add COLLECTION_ID::PATH (repeatable)"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Create a named editable fetch."""
 
     api = client()
-    payload = api.create_fetch(name=name, collections=collections or [])
+    payload = api.create_fetch(
+        name=name,
+        collections=collections or [],
+        files=_parse_file_selections(files or []),
+    )
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1632,29 +1653,55 @@ def fetch_create_cmd(
 
 @hot_app.command("evict")
 def hot_evict_cmd(
-    collections: Annotated[list[str], typer.Argument(help="Collection ids to evict")],
+    collections: Annotated[
+        list[str] | None,
+        typer.Argument(help="Collection ids whose files should be evicted"),
+    ] = None,
+    files: Annotated[
+        list[str] | None,
+        typer.Option("--file", help="Evict COLLECTION_ID::PATH (repeatable)"),
+    ] = None,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Preview complete collections without evicting them"),
+        typer.Option("--dry-run", help="Preview selected files without evicting them"),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Evict complete collections backed by verified remote archives."""
+    """Evict selected hot files backed by verified remote archive objects."""
 
-    payload = client().evict_hot_collections(collections, dry_run=dry_run)
+    if not collections and not files:
+        raise typer.BadParameter("provide at least one collection or --file")
+    payload = client().evict_hot(
+        collections or (),
+        files=_parse_file_selections(files or []),
+        dry_run=dry_run,
+    )
     emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
 
 
 @fetch_app.command("add")
 def fetch_add_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    collections: Annotated[list[str], typer.Argument(help="Collection ids to add")],
+    collections: Annotated[
+        list[str] | None,
+        typer.Argument(help="Collection ids to add"),
+    ] = None,
+    files: Annotated[
+        list[str] | None,
+        typer.Option("--file", help="Add COLLECTION_ID::PATH (repeatable)"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Add collections to an editable fetch."""
+    """Add collection files to an editable fetch."""
 
     api = client()
-    payload = api.add_fetch_collections(fetch_id, collections)
+    if not collections and not files:
+        raise typer.BadParameter("provide at least one collection or --file")
+    payload = (
+        api.add_fetch_collections(fetch_id, collections) if collections else api.get_fetch(fetch_id)
+    )
+    if files:
+        payload = api.add_fetch_files(fetch_id, _parse_file_selections(files))
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1665,13 +1712,28 @@ def fetch_add_cmd(
 @fetch_app.command("remove")
 def fetch_remove_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    collections: Annotated[list[str], typer.Argument(help="Collection ids to remove")],
+    collections: Annotated[
+        list[str] | None,
+        typer.Argument(help="Collection ids whose files should be removed"),
+    ] = None,
+    files: Annotated[
+        list[str] | None,
+        typer.Option("--file", help="Remove COLLECTION_ID::PATH (repeatable)"),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Remove collections from an editable fetch."""
+    """Remove collection files from an editable fetch."""
 
     api = client()
-    payload = api.remove_fetch_collections(fetch_id, collections)
+    if not collections and not files:
+        raise typer.BadParameter("provide at least one collection or --file")
+    payload = (
+        api.remove_fetch_collections(fetch_id, collections)
+        if collections
+        else api.get_fetch(fetch_id)
+    )
+    if files:
+        payload = api.remove_fetch_files(fetch_id, _parse_file_selections(files))
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1758,7 +1820,7 @@ def fetch_files_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List files in a fetch's collections."""
+    """List the files selected by a fetch."""
 
     normalized_sort = sort.casefold()
     if normalized_sort not in _FETCH_FILE_SORT_FIELDS:
@@ -1786,7 +1848,7 @@ def fetch_start_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Start a fetch, restoring complete collections when needed."""
+    """Start a fetch, restoring only the archive objects its files require."""
 
     api = client()
     payload = api.start_fetch(fetch_id)

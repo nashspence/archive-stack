@@ -56,7 +56,7 @@ class AgeDecryptError(ValueError):
 @dataclass(frozen=True)
 class UploadState:
     """
-    Serializable state needed to resume archive.tar.age upload.
+    Serializable state needed to resume an age-encrypted object upload.
 
     The header contains the encrypted file key. With batchpass/passphrase available,
     Riverhog can rederive the file key on resume without storing it in plaintext.

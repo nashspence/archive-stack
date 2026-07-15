@@ -16,12 +16,12 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    ArchiveRestoreCollectionRecord,
+    ArchiveRestoreFileRecord,
     ArchiveRestoreRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionRecord,
-    FetchCollectionRecord,
+    FetchFileRecord,
     FetchRecord,
 )
 from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
@@ -32,13 +32,13 @@ from riverhog_core.domain.errors import (
     NotFound,
     ServiceUnavailable,
 )
-from riverhog_core.ports.archive_store import ArchivePackageVerificationError
+from riverhog_core.ports.archive_store import ArchiveVerificationError
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
 from riverhog_core.services.archive_records import (
+    archive_copy_aggregates,
     archive_copy_identity,
     archive_copy_is_complete,
-    archive_copy_stored_bytes,
 )
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
@@ -187,16 +187,17 @@ class SqlAlchemyArchiveCopyRetirementService:
             self._clear_active(normalized_id, normalized_store, supplied_challenge)
             raise
 
-        target_payload = cast(dict[str, object], plan["target_copy"])
-        objects = {
-            str(item["kind"]): str(item["object_path"])
-            for item in cast(list[dict[str, object]], target_payload["objects"])
-        }
-        target_store.delete_collection_archive_package(
+        with session_scope(self._session_factory) as session:
+            target = session.get(
+                CollectionArchiveCopyRecord,
+                (normalized_id, normalized_store),
+            )
+            if target is None or not archive_copy_is_complete(target):
+                raise Conflict("archive copy changed during retirement")
+            target_objects = archive_copy_identity(target).objects
+        target_store.delete_collection_archive(
             collection_id=normalized_id,
-            object_path=objects["archive"],
-            manifest_object_path=objects["manifest"],
-            proof_object_path=objects["proof"],
+            objects=target_objects,
         )
         publish_archive_restore_catalog(
             store_name=normalized_store,
@@ -226,16 +227,16 @@ class SqlAlchemyArchiveCopyRetirementService:
                 copy = session.get(CollectionArchiveCopyRecord, (collection_id, store))
                 if copy is None or not archive_copy_is_complete(copy):
                     failures.append(
-                        ArchivePackageVerificationError(
+                        ArchiveVerificationError(
                             f"retained archive copy is incomplete: {collection_id} in {store}"
                         )
                     )
                     continue
                 identity = archive_copy_identity(copy)
             try:
-                self._archive_stores.require(store).verify_collection_archive_package(
+                self._archive_stores.require(store).verify_collection_archive(
                     collection_id=collection_id,
-                    package=identity,
+                    archive=identity,
                 )
             except Exception as exc:
                 failures.append(exc)
@@ -258,9 +259,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                 copy.last_verified_at = verified_at
             return store
 
-        if failures and all(
-            isinstance(failure, ArchivePackageVerificationError) for failure in failures
-        ):
+        if failures and all(isinstance(failure, ArchiveVerificationError) for failure in failures):
             raise Conflict(
                 f"no retained archive copy matches its upload record: {collection_id}"
             ) from failures[-1]
@@ -294,9 +293,9 @@ class SqlAlchemyArchiveCopyRetirementService:
                 raise Conflict("archive copy retirement challenge does not match active retirement")
             active_restores = session.scalars(
                 select(ArchiveRestoreRecord.restore_id)
-                .join(ArchiveRestoreCollectionRecord)
+                .join(ArchiveRestoreFileRecord)
                 .where(
-                    ArchiveRestoreCollectionRecord.collection_id == collection_id,
+                    ArchiveRestoreFileRecord.collection_id == collection_id,
                     ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
                 )
                 .order_by(ArchiveRestoreRecord.restore_id)
@@ -325,10 +324,10 @@ class SqlAlchemyArchiveCopyRetirementService:
                 )
             terminal_restores = session.scalars(
                 select(ArchiveRestoreRecord)
-                .join(ArchiveRestoreCollectionRecord)
+                .join(ArchiveRestoreFileRecord)
                 .where(
-                    ArchiveRestoreCollectionRecord.collection_id == collection_id,
-                    ArchiveRestoreCollectionRecord.archive_store == store,
+                    ArchiveRestoreFileRecord.collection_id == collection_id,
+                    ArchiveRestoreFileRecord.archive_store == store,
                 )
             ).unique()
             for restore in terminal_restores:
@@ -387,18 +386,18 @@ def _build_plan(
     )
     active_restores = db.scalars(
         select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreCollectionRecord)
+        .join(ArchiveRestoreFileRecord)
         .where(
-            ArchiveRestoreCollectionRecord.collection_id == collection_id,
+            ArchiveRestoreFileRecord.collection_id == collection_id,
             ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
         )
         .order_by(ArchiveRestoreRecord.restore_id)
     ).all()
     active_fetches = db.scalars(
         select(FetchRecord.fetch_id)
-        .join(FetchCollectionRecord)
+        .join(FetchFileRecord)
         .where(
-            FetchCollectionRecord.collection_id == collection_id,
+            FetchFileRecord.collection_id == collection_id,
             FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES),
         )
         .order_by(FetchRecord.fetch_id)
@@ -424,10 +423,10 @@ def _build_plan(
     ).all()
     terminal_restore_ids = db.scalars(
         select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreCollectionRecord)
+        .join(ArchiveRestoreFileRecord)
         .where(
-            ArchiveRestoreCollectionRecord.collection_id == collection_id,
-            ArchiveRestoreCollectionRecord.archive_store == store,
+            ArchiveRestoreFileRecord.collection_id == collection_id,
+            ArchiveRestoreFileRecord.archive_store == store,
             ~ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
         )
         .order_by(ArchiveRestoreRecord.restore_id)
@@ -451,16 +450,13 @@ def _build_plan(
 
     target_objects = [
         {
-            "kind": kind,
-            "object_path": str(object_path),
-            "stored_bytes": int(stored_bytes or 0),
+            "kind": current.kind,
+            "object_path": current.object_path,
+            "stored_bytes": current.stored_bytes,
         }
-        for kind, object_path, stored_bytes in (
-            ("archive", target.object_path, target.stored_bytes),
-            ("manifest", target.manifest_object_path, target.manifest_stored_bytes),
-            ("proof", target.ots_object_path, target.ots_stored_bytes),
-        )
+        for current in sorted(target.objects, key=lambda item: item.object_order)
     ]
+    aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
     return {
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
@@ -470,14 +466,14 @@ def _build_plan(
         "target_copy": {
             "store": target.store,
             "last_verified_at": target.last_verified_at,
-            "remote_storage_bytes": archive_copy_stored_bytes(target),
+            "remote_storage_bytes": aggregates.get((collection_id, target.store), (0, 0))[1],
             "objects": target_objects,
         },
         "retained_copies": [
             {
                 "store": copy.store,
                 "last_verified_at": copy.last_verified_at,
-                "remote_storage_bytes": archive_copy_stored_bytes(copy),
+                "remote_storage_bytes": aggregates.get((collection_id, copy.store), (0, 0))[1],
             }
             for copy in retained
         ],

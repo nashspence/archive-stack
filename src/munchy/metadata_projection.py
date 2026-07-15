@@ -386,11 +386,7 @@ def merge_immich_xmp_sidecar(
         merge_rdf_array(description, "lr:hierarchicalSubject", "Bag", hierarchical_tags(tags))
 
     body = ET.tostring(root, encoding="unicode")
-    return (
-        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
-        f"{body}\n"
-        '<?xpacket end="w"?>\n'
-    )
+    return f'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n{body}\n<?xpacket end="w"?>\n'
 
 
 def xmp_qname(prefixed_name: str) -> str:
@@ -513,13 +509,7 @@ def render_rdf_seq(name: str, values: Sequence[str]) -> str:
 
 def render_rdf_list(name: str, values: Sequence[str], *, container: str) -> str:
     tag_lines = "\n".join(f"     <rdf:li>{escape(value)}</rdf:li>" for value in values)
-    return (
-        f"  <{name}>\n"
-        f"   <rdf:{container}>\n"
-        f"{tag_lines}\n"
-        f"   </rdf:{container}>\n"
-        f"  </{name}>"
-    )
+    return f"  <{name}>\n   <rdf:{container}>\n{tag_lines}\n   </rdf:{container}>\n  </{name}>"
 
 
 def first_capture_date(
@@ -1098,10 +1088,9 @@ def rational_text(value: float) -> str:
 def ffmpeg_metadata_location_text(metadata: ProjectionMetadata) -> str | None:
     if metadata.gps is None:
         return None
-    location = (
-        f"{float(metadata.gps.latitude):+.8f}".rstrip("0").rstrip(".")
-        + f"{float(metadata.gps.longitude):+.8f}".rstrip("0").rstrip(".")
-    )
+    location = f"{float(metadata.gps.latitude):+.8f}".rstrip("0").rstrip(
+        "."
+    ) + f"{float(metadata.gps.longitude):+.8f}".rstrip("0").rstrip(".")
     if metadata.gps.altitude is not None:
         location += f"{float(metadata.gps.altitude):+.3f}".rstrip("0").rstrip(".")
     return f"{location}/"

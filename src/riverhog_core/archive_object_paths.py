@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 _ARCHIVE_FILENAMES = {
-    "archive.tar.age",
     "manifest.yml.age",
     "manifest.yml.ots.age",
 }
 
 
 def archive_store_object_path(prefix: str, *parts: str) -> str:
-    return "/".join(
-        normalized
-        for value in (prefix, *parts)
-        if (normalized := value.strip("/"))
-    )
+    return "/".join(normalized for value in (prefix, *parts) if (normalized := value.strip("/")))
 
 
 def archive_storage_prefix_from_object_path(object_path: str | None) -> str | None:

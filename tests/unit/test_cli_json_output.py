@@ -29,7 +29,7 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
                             "state": "uploaded",
                             "storage_class": "DEEP_ARCHIVE",
                             "stored_bytes": 128,
-                            "object_path": "riverhog/archives/opaque/archive.tar.age",
+                            "storage_prefix": "riverhog/archives/opaque",
                         }
                     ],
                 }

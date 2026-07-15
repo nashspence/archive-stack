@@ -17,7 +17,6 @@ from riverhog_age import (
     CHUNK_SIZE,
     ResumableAgeScryptSession,
     age_ciphertext_len_for_plaintext_len,
-    decrypt_age_scrypt,
     encrypt_age_scrypt,
     iter_decrypt_age_scrypt,
 )
@@ -26,16 +25,21 @@ from riverhog_core.archive_object_paths import (
     archive_id_from_storage_prefix,
     archive_store_object_path,
 )
-from riverhog_core.collection_archives import CollectionArchivePackage
+from riverhog_core.archive_objects import (
+    STORED_OBJECT_LIMIT,
+    CollectionArchive,
+    CollectionArchiveDataObject,
+    max_age_plaintext_object_bytes,
+)
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
-    ArchivePackageVerificationError,
+    ArchiveObjectUploadReceipt,
     ArchiveReadStatus,
-    ArchiveUploadReceipt,
-    CollectionArchivePackageIdentity,
+    ArchiveVerificationError,
+    CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
@@ -144,13 +148,13 @@ def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Ite
         raise ValueError("collection archive stream ended before resumable upload offset")
 
 
-def _iter_encrypted_archive(
+def _iter_encrypted_object(
     *,
-    package: CollectionArchivePackage,
+    object: CollectionArchiveDataObject,
     session: ResumableAgeScryptSession,
 ) -> Iterator[bytes]:
     yield session.age_prefix
-    chunks = iter(package.iter_archive())
+    chunks = iter(object.iter_plaintext())
     buffer = bytearray()
     chunk_index = 0
     plaintext_bytes = 0
@@ -163,40 +167,40 @@ def _iter_encrypted_archive(
             yield session.encrypt_chunk(chunk_index, plaintext, final=False)
             chunk_index += 1
     plaintext_bytes += len(buffer)
-    if plaintext_bytes != package.archive_size:
-        raise ValueError("collection archive stream size changed during encryption")
+    if plaintext_bytes != object.plaintext_bytes:
+        raise ValueError("archive object stream size changed during encryption")
     yield session.encrypt_chunk(chunk_index, bytes(buffer), final=True)
 
 
-def _encrypted_archive_part_body(
+def _encrypted_object_part_body(
     *,
-    package: CollectionArchivePackage,
+    object: CollectionArchiveDataObject,
     session: ResumableAgeScryptSession,
     plan: Any,
 ) -> bytes:
-    plaintext = _read_archive_range(package, plan.plaintext_start, plan.plaintext_len)
+    plaintext = _read_object_range(object, plan.plaintext_start, plan.plaintext_len)
 
     def provider(_chunk_index: int, start: int, end: int) -> bytes:
         relative_start = start - plan.plaintext_start
         relative_end = end - plan.plaintext_start
         return plaintext[relative_start:relative_end]
 
-    return session.encrypt_part(plan, provider, plaintext_size=package.archive_size)
+    return session.encrypt_part(plan, provider, plaintext_size=object.plaintext_bytes)
 
 
-def _read_archive_range(
-    package: CollectionArchivePackage,
+def _read_object_range(
+    object: CollectionArchiveDataObject,
     offset: int,
     size: int,
 ) -> bytes:
     out = bytearray()
-    for chunk in package.iter_archive_from_offset(offset):
+    for chunk in object.iter_plaintext_from_offset(offset):
         if len(out) >= size:
             break
         needed = size - len(out)
         out.extend(chunk[:needed])
     if len(out) != size:
-        raise ValueError("collection archive stream ended before encrypted part range")
+        raise ValueError("archive object stream ended before encrypted part range")
     return bytes(out)
 
 
@@ -244,24 +248,29 @@ class S3ArchiveStore:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
         return archive_store_object_path(self._store.prefix, "archives", archive_id)
 
-    def _collection_object_keys(
+    def max_plaintext_object_bytes(self) -> int:
+        session = ResumableAgeScryptSession.create(
+            self._config.archive_passphrase,
+            log_n=self._config.archive_work_factor,
+        )
+        return max_age_plaintext_object_bytes(age_prefix_len=len(session.age_prefix))
+
+    def _collection_object_key(
         self,
         *,
-        collection_id: str,
+        object_id: str,
         archive_storage_prefix: str | None,
-    ) -> dict[str, str]:
-        _ = collection_id
+    ) -> str:
         collection_prefix = (
             archive_storage_prefix.strip("/")
             if archive_storage_prefix
             else self.new_collection_archive_storage_prefix()
         )
-        archive_key = f"{collection_prefix}/archive.tar.age"
-        return {
-            "archive": archive_key,
-            "manifest": f"{collection_prefix}/manifest.yml.age",
-            "proof": f"{collection_prefix}/manifest.yml.ots.age",
-        }
+        filename = {
+            "manifest": "manifest.yml.age",
+            "proof": "manifest.yml.ots.age",
+        }.get(object_id, f"objects/{object_id}.age")
+        return f"{collection_prefix}/{filename}"
 
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
         try:
@@ -277,13 +286,15 @@ class S3ArchiveStore:
     def _collection_receipt_from_head(
         self,
         *,
+        object_id: str,
+        kind: str,
         object_key: str,
         head: dict[str, Any],
         expected_bytes: int,
         expected_sha256: str,
         expected_storage_class: str,
         uploaded_at: str | None = None,
-    ) -> ArchiveUploadReceipt:
+    ) -> ArchiveObjectUploadReceipt:
         _validate_uploaded_collection_metadata(
             object_key=object_key,
             head=head,
@@ -296,10 +307,17 @@ class S3ArchiveStore:
                 head=head,
                 expected_storage_class=expected_storage_class,
             )
+        stored_bytes = int(head.get("ContentLength", 0))
+        if stored_bytes > STORED_OBJECT_LIMIT:
+            raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
         verified_at = utc_timestamp_now()
-        return ArchiveUploadReceipt(
+        return ArchiveObjectUploadReceipt(
+            object_id=object_id,
+            kind=kind,
             object_path=object_key,
-            stored_bytes=int(head.get("ContentLength", 0)),
+            plaintext_bytes=expected_bytes,
+            stored_bytes=stored_bytes,
+            sha256=expected_sha256,
             backend=self._store.backend,
             storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
@@ -310,84 +328,79 @@ class S3ArchiveStore:
             verified_at=verified_at,
         )
 
-    def upload_collection_archive_package(
+    def upload_collection_archive(
         self,
         *,
         collection_id: str,
-        package: CollectionArchivePackage,
+        archive: CollectionArchive,
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt:
-        keys = self._collection_object_keys(
-            collection_id=collection_id,
-            archive_storage_prefix=archive_storage_prefix,
-        )
-        archive = self._put_collection_package_object(
-            collection_id=collection_id,
-            object_key=keys["archive"],
-            content=package.iter_archive(),
-            content_length=package.archive_size,
-            sha256=package.archive_sha256,
-            kind="archive",
-            package=package,
-            multipart_tracker=multipart_tracker,
-        )
-        manifest = self._put_collection_package_object(
-            collection_id=collection_id,
-            object_key=keys["manifest"],
-            content=package.manifest_bytes,
-            content_length=len(package.manifest_bytes),
-            sha256=package.manifest_sha256,
-            kind="manifest",
-            package=package,
-            multipart_tracker=None,
-        )
-        proof = self._put_collection_package_object(
-            collection_id=collection_id,
-            object_key=keys["proof"],
-            content=package.proof_bytes,
-            content_length=len(package.proof_bytes),
-            sha256=package.proof_sha256,
-            kind="manifest-proof",
-            package=package,
-            multipart_tracker=None,
-        )
-        return CollectionArchiveUploadReceipt(
-            archive=archive,
-            manifest=manifest,
-            proof=proof,
-            archive_sha256=package.archive_sha256,
-            manifest_sha256=package.manifest_sha256,
-            proof_sha256=package.proof_sha256,
-            archive_format=package.archive_format,
-            compression=package.compression,
-        )
+        if archive.collection_id != collection_id:
+            raise ValueError("collection archive id mismatch")
+        storage_prefix = archive_storage_prefix or self.new_collection_archive_storage_prefix()
+        receipts: list[ArchiveObjectUploadReceipt] = []
+        for current in archive.data_objects:
+            receipts.append(
+                self._put_archive_object(
+                    collection_id=collection_id,
+                    object_id=current.object_id,
+                    kind=current.kind,
+                    object_key=self._collection_object_key(
+                        object_id=current.object_id,
+                        archive_storage_prefix=storage_prefix,
+                    ),
+                    content=current.iter_plaintext(),
+                    plaintext_bytes=current.plaintext_bytes,
+                    sha256=current.sha256,
+                    data_object=current,
+                    multipart_tracker=multipart_tracker,
+                )
+            )
+        for object_id, kind, content, sha256 in (
+            ("manifest", "manifest", archive.manifest_bytes, archive.manifest_sha256),
+            ("proof", "proof", archive.proof_bytes, archive.proof_sha256),
+        ):
+            receipts.append(
+                self._put_archive_object(
+                    collection_id=collection_id,
+                    object_id=object_id,
+                    kind=kind,
+                    object_key=self._collection_object_key(
+                        object_id=object_id,
+                        archive_storage_prefix=storage_prefix,
+                    ),
+                    content=content,
+                    plaintext_bytes=len(content),
+                    sha256=sha256,
+                    data_object=None,
+                    multipart_tracker=None,
+                )
+            )
+        return CollectionArchiveUploadReceipt(objects=tuple(receipts))
 
-    def verify_collection_archive_package(
+    def verify_collection_archive(
         self,
         *,
         collection_id: str,
-        package: CollectionArchivePackageIdentity,
+        archive: CollectionArchiveIdentity,
     ) -> None:
         _ = collection_id
-        checks = (
-            (
-                "archive",
-                package.archive,
-                _configured_s3_storage_class(self._store.storage_class),
-            ),
-            ("manifest", package.manifest, "STANDARD"),
-            ("manifest-proof", package.proof, "STANDARD"),
-        )
-        for kind, expected, storage_class in checks:
+        for expected in archive.objects:
+            storage_class = _collection_object_storage_class(
+                archive_storage_class=self._store.storage_class,
+                kind=expected.kind,
+            )
             head = self._head_object(object_key=expected.object_path)
             if head is None:
-                raise ArchivePackageVerificationError(f"remote collection {kind} object is missing")
+                raise ArchiveVerificationError(
+                    f"remote collection {expected.kind} object is missing"
+                )
             try:
                 _verify_remote_collection_object(
                     object_key=expected.object_path,
                     head=head,
-                    kind=kind,
+                    kind=expected.kind,
                     expected=expected,
                 )
                 if self._requires_aws_read_preparation():
@@ -397,36 +410,29 @@ class S3ArchiveStore:
                         expected_storage_class=storage_class,
                     )
             except RuntimeError as exc:
-                raise ArchivePackageVerificationError(
-                    f"remote collection {kind} object does not match its upload record"
+                raise ArchiveVerificationError(
+                    f"remote collection {expected.kind} object does not match its upload record"
                 ) from exc
 
-    def delete_collection_archive_package(
+    def delete_collection_archive(
         self,
         *,
         collection_id: str,
-        object_path: str,
-        manifest_object_path: str,
-        proof_object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
         _ = collection_id
-        expected_suffixes = {
-            "archive.tar.age",
-            "manifest.yml.age",
-            "manifest.yml.ots.age",
-        }
-        object_paths = (object_path, manifest_object_path, proof_object_path)
-        prefixes = {path.rsplit("/", 1)[0] for path in object_paths}
-        suffixes = {path.rsplit("/", 1)[-1] for path in object_paths}
+        if not objects:
+            raise ValueError("collection archive has no objects")
+        object_paths = tuple(current.object_path for current in objects)
         archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
-        if (
-            len(prefixes) != 1
-            or suffixes != expected_suffixes
-            or any(not path.startswith(archive_root) for path in object_paths)
+        archive_prefixes = {
+            path.rsplit("/objects/", 1)[0] if "/objects/" in path else path.rsplit("/", 1)[0]
+            for path in object_paths
+        }
+        if len(archive_prefixes) != 1 or any(
+            not path.startswith(archive_root) for path in object_paths
         ):
-            raise ValueError(
-                "collection archive package paths are outside one owned archive prefix"
-            )
+            raise ValueError("collection archive paths are outside one owned archive prefix")
         for path in object_paths:
             self._client.delete_object(Bucket=self._bucket, Key=path)
         remaining = [
@@ -434,7 +440,7 @@ class S3ArchiveStore:
         ]
         if remaining:
             raise RuntimeError(
-                "collection archive package deletion could not be verified: " + ", ".join(remaining)
+                "collection archive deletion could not be verified: " + ", ".join(remaining)
             )
 
     def publish_restore_catalog(
@@ -513,21 +519,19 @@ class S3ArchiveStore:
                 Metadata={"archive-guidance-format": format_name},
             )
 
-    def _put_collection_package_object(
+    def _put_archive_object(
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_key: str,
         content: Any,
-        content_length: int,
+        plaintext_bytes: int,
         sha256: str,
         kind: str,
-        package: CollectionArchivePackage,
+        data_object: CollectionArchiveDataObject | None,
         multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> ArchiveUploadReceipt:
-        logical_content_length = content_length
-        logical_sha256 = sha256
-        encryption = AGE_SCRYPT_ENCRYPTION
+    ) -> ArchiveObjectUploadReceipt:
         storage_class = _collection_object_storage_class(
             archive_storage_class=self._store.storage_class,
             kind=kind,
@@ -535,25 +539,27 @@ class S3ArchiveStore:
         existing = self._head_object(object_key=object_key)
         if existing is not None:
             return self._collection_receipt_from_head(
+                object_id=object_id,
+                kind=kind,
                 object_key=object_key,
                 head=existing,
-                expected_bytes=logical_content_length,
-                expected_sha256=logical_sha256,
+                expected_bytes=plaintext_bytes,
+                expected_sha256=sha256,
                 expected_storage_class=storage_class,
             )
 
         age_session: ResumableAgeScryptSession | None = None
-        if kind == "archive":
+        if data_object is not None:
             age_session = ResumableAgeScryptSession.create(
                 self._config.archive_passphrase,
                 log_n=self._config.archive_work_factor,
-                plaintext_size=package.archive_size,
+                plaintext_size=plaintext_bytes,
             )
             content_length = age_ciphertext_len_for_plaintext_len(
-                package.archive_size,
+                plaintext_bytes,
                 age_prefix_len=len(age_session.age_prefix),
             )
-            content = _iter_encrypted_archive(package=package, session=age_session)
+            content = _iter_encrypted_object(object=data_object, session=age_session)
         else:
             plaintext = _single_put_body(content)
             content = encrypt_age_scrypt(
@@ -562,7 +568,8 @@ class S3ArchiveStore:
                 log_n=self._config.archive_work_factor,
             )
             content_length = len(content)
-            sha256 = hashlib.sha256(content).hexdigest()
+        if content_length > STORED_OBJECT_LIMIT:
+            raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
 
         uploaded_at = utc_timestamp_now()
         extra_args: dict[str, Any] = {
@@ -570,20 +577,15 @@ class S3ArchiveStore:
                 "riverhog-backend": self._store.backend,
                 "riverhog-storage-class": _configured_s3_storage_class(storage_class),
                 "riverhog-object-kind": f"collection-{kind}",
+                "riverhog-object-id": object_id,
                 "riverhog-collection-sha256": hashlib.sha256(
-                    package.collection_id.encode("utf-8")
+                    collection_id.encode("utf-8")
                 ).hexdigest(),
-                "riverhog-archive-format": package.archive_format,
-                "riverhog-compression": package.compression,
-                "riverhog-archive-bytes": str(package.archive_size),
-                "riverhog-archive-sha256": package.archive_sha256,
-                "riverhog-manifest-sha256": package.manifest_sha256,
-                "riverhog-ots-sha256": package.proof_sha256,
-                ENCRYPTION_METADATA: encryption,
-                PLAINTEXT_BYTES_METADATA: str(logical_content_length),
-                PLAINTEXT_SHA256_METADATA: logical_sha256,
-                COLLECTION_BYTES_METADATA: str(logical_content_length),
-                COLLECTION_SHA256_METADATA: logical_sha256,
+                ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
+                PLAINTEXT_BYTES_METADATA: str(plaintext_bytes),
+                PLAINTEXT_SHA256_METADATA: sha256,
+                COLLECTION_BYTES_METADATA: str(plaintext_bytes),
+                COLLECTION_SHA256_METADATA: sha256,
             }
         }
         if (
@@ -592,28 +594,28 @@ class S3ArchiveStore:
         ):
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
-            if kind == "archive" and package.supports_archive_ranges:
+            if data_object is not None and data_object.supports_ranges:
                 if age_session is None:
-                    raise RuntimeError("encrypted archive upload session was not initialized")
-                self._put_encrypted_archive_object_multipart(
+                    raise RuntimeError("encrypted object upload session was not initialized")
+                self._put_encrypted_object_multipart(
                     collection_id=collection_id,
+                    object_id=object_id,
                     object_key=object_key,
-                    package=package,
+                    object=data_object,
                     content_length=content_length,
-                    logical_sha256=logical_sha256,
+                    logical_sha256=sha256,
                     initial_session=age_session,
                     extra_args=extra_args,
                     multipart_tracker=multipart_tracker,
                 )
             else:
-                self._put_collection_package_object_multipart(
+                self._put_archive_object_multipart(
                     collection_id=collection_id,
+                    object_id=object_id,
                     object_key=object_key,
                     content=content,
                     content_length=content_length,
-                    sha256=logical_sha256 if kind == "archive" else sha256,
-                    kind=kind,
-                    package=package,
+                    sha256=sha256,
                     extra_args=extra_args,
                     multipart_tracker=multipart_tracker,
                 )
@@ -630,24 +632,25 @@ class S3ArchiveStore:
             self._client.head_object(Bucket=self._bucket, Key=object_key),
         )
         return self._collection_receipt_from_head(
+            object_id=object_id,
+            kind=kind,
             object_key=object_key,
             head=head,
-            expected_bytes=logical_content_length,
-            expected_sha256=logical_sha256,
+            expected_bytes=plaintext_bytes,
+            expected_sha256=sha256,
             expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
         )
 
-    def _put_collection_package_object_multipart(
+    def _put_archive_object_multipart(
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_key: str,
         content: Any,
         content_length: int,
         sha256: str,
-        kind: str,
-        package: CollectionArchivePackage,
         extra_args: dict[str, Any],
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> None:
@@ -669,6 +672,7 @@ class S3ArchiveStore:
         if multipart_tracker is not None:
             upload_state = multipart_tracker.load_multipart_upload(
                 collection_id=collection_id,
+                object_id=object_id,
                 object_path=object_key,
                 part_size=part_size,
                 content_length=content_length,
@@ -688,6 +692,7 @@ class S3ArchiveStore:
                         raise
                     multipart_tracker.clear_multipart_upload(
                         collection_id=collection_id,
+                        object_id=object_id,
                         upload_id=upload_state.upload_id,
                     )
                     upload_state = None
@@ -731,6 +736,7 @@ class S3ArchiveStore:
                     ),
                 )
                 upload_state = ArchiveMultipartUploadState(
+                    object_id=object_id,
                     upload_id=str(response["UploadId"]),
                     object_path=object_key,
                     part_size=part_size,
@@ -830,13 +836,10 @@ class S3ArchiveStore:
                     if len(pending) >= multipart_concurrency:
                         drain_completed(return_when=FIRST_COMPLETED)
 
-                if kind == "archive" and skip_bytes:
-                    chunks = package.iter_archive_from_offset(skip_bytes)
-                else:
-                    chunks = _iter_chunks_after_skipping(
-                        _iter_content_chunks(content),
-                        skip_bytes,
-                    )
+                chunks = _iter_chunks_after_skipping(
+                    _iter_content_chunks(content),
+                    skip_bytes,
+                )
                 for chunk in chunks:
                     size += len(chunk)
                     chunk_view = memoryview(chunk)
@@ -898,6 +901,7 @@ class S3ArchiveStore:
             if multipart_tracker is not None:
                 multipart_tracker.clear_multipart_upload(
                     collection_id=collection_id,
+                    object_id=object_id,
                     upload_id=upload_state.upload_id,
                 )
             _LOG.info(
@@ -927,12 +931,13 @@ class S3ArchiveStore:
                     )
             raise
 
-    def _put_encrypted_archive_object_multipart(
+    def _put_encrypted_object_multipart(
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_key: str,
-        package: CollectionArchivePackage,
+        object: CollectionArchiveDataObject,
         content_length: int,
         logical_sha256: str,
         initial_session: ResumableAgeScryptSession,
@@ -946,7 +951,7 @@ class S3ArchiveStore:
         )
         chunks_per_part = _age_chunks_per_s3_part(part_size)
         session = initial_session
-        plans = session.s3_part_plans(package.archive_size, chunks_per_part=chunks_per_part)
+        plans = session.s3_part_plans(object.plaintext_bytes, chunks_per_part=chunks_per_part)
         expected_part_count = len(plans)
         uploaded_bytes = 0
         resumed_part_count = 0
@@ -958,6 +963,7 @@ class S3ArchiveStore:
         if multipart_tracker is not None:
             upload_state = multipart_tracker.load_multipart_upload(
                 collection_id=collection_id,
+                object_id=object_id,
                 object_path=object_key,
                 part_size=part_size,
                 content_length=content_length,
@@ -967,6 +973,7 @@ class S3ArchiveStore:
                 if not upload_state.encryption_state_json:
                     multipart_tracker.clear_multipart_upload(
                         collection_id=collection_id,
+                        object_id=object_id,
                         upload_id=upload_state.upload_id,
                     )
                     upload_state = None
@@ -976,7 +983,7 @@ class S3ArchiveStore:
                         upload_state.encryption_state_json,
                     )
                     plans = session.s3_part_plans(
-                        package.archive_size,
+                        object.plaintext_bytes,
                         chunks_per_part=chunks_per_part,
                     )
                     try:
@@ -993,6 +1000,7 @@ class S3ArchiveStore:
                             raise
                         multipart_tracker.clear_multipart_upload(
                             collection_id=collection_id,
+                            object_id=object_id,
                             upload_id=upload_state.upload_id,
                         )
                         upload_state = None
@@ -1035,13 +1043,16 @@ class S3ArchiveStore:
                     ),
                 )
                 upload_state = ArchiveMultipartUploadState(
+                    object_id=object_id,
                     upload_id=str(response["UploadId"]),
                     object_path=object_key,
                     part_size=part_size,
                     content_length=content_length,
                     sha256=logical_sha256,
                     total_parts=expected_part_count,
-                    encryption_state_json=session.export_state(plaintext_size=package.archive_size)
+                    encryption_state_json=session.export_state(
+                        plaintext_size=object.plaintext_bytes
+                    )
                     .to_json_bytes()
                     .decode("utf-8"),
                 )
@@ -1081,8 +1092,8 @@ class S3ArchiveStore:
         try:
             upload_id = ensure_upload()
             for plan in plans[resumed_part_count:]:
-                body = _encrypted_archive_part_body(
-                    package=package,
+                body = _encrypted_object_part_body(
+                    object=object,
                     session=session,
                     plan=plan,
                 )
@@ -1130,6 +1141,7 @@ class S3ArchiveStore:
             if multipart_tracker is not None:
                 multipart_tracker.clear_multipart_upload(
                     collection_id=collection_id,
+                    object_id=object_id,
                     upload_id=upload_id,
                 )
             _LOG.info(
@@ -1227,18 +1239,17 @@ class S3ArchiveStore:
             contiguous.append(recorded)
         return contiguous
 
-    def prepare_collection_archive_read(
+    def prepare_archive_objects_read(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
         retrieval_tier: str,
         hold_days: int,
         requested_at: str,
         estimated_ready_at: str,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
     ) -> ArchiveReadStatus:
+        _ = collection_id
         statuses = [
             self._request_collection_object_restore(
                 object_path=current_object_path,
@@ -1247,12 +1258,10 @@ class S3ArchiveStore:
                 requested_at=requested_at,
                 estimated_ready_at=estimated_ready_at,
             )
-            for current_object_path in _fetch_materialization_paths(
-                object_path=object_path,
-                manifest_object_path=manifest_object_path,
-                proof_object_path=proof_object_path,
-            )
+            for current_object_path in (current.object_path for current in objects)
         ]
+        if not statuses:
+            return ArchiveReadStatus(state="ready", ready_at=requested_at)
         return _combine_fetch_materialization_statuses(statuses)
 
     def _request_collection_object_restore(
@@ -1305,17 +1314,16 @@ class S3ArchiveStore:
             estimated_expires_at=None,
         )
 
-    def get_collection_archive_read_status(
+    def get_archive_objects_read_status(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
         requested_at: str,
         estimated_ready_at: str | None,
         estimated_expires_at: str | None,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
     ) -> ArchiveReadStatus:
+        _ = collection_id
         statuses = [
             self._collection_object_restore_status(
                 object_path=current_object_path,
@@ -1323,12 +1331,10 @@ class S3ArchiveStore:
                 estimated_ready_at=estimated_ready_at,
                 estimated_expires_at=estimated_expires_at,
             )
-            for current_object_path in _fetch_materialization_paths(
-                object_path=object_path,
-                manifest_object_path=manifest_object_path,
-                proof_object_path=proof_object_path,
-            )
+            for current_object_path in (current.object_path for current in objects)
         ]
+        if not statuses:
+            return ArchiveReadStatus(state="ready", ready_at=requested_at)
         return _combine_fetch_materialization_statuses(statuses)
 
     def _collection_object_restore_status(
@@ -1371,19 +1377,20 @@ class S3ArchiveStore:
             message="Collection archive object is restored and readable.",
         )
 
-    def iter_collection_archive(
+    def iter_archive_object(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        object: ArchiveObjectIdentity,
     ) -> Iterator[bytes]:
+        object_path = object.object_path
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_collection_metadata(object_key=object_path, head=head)
-        status = self.get_collection_archive_read_status(
+        status = self.get_archive_objects_read_status(
             collection_id=collection_id,
-            object_path=object_path,
+            objects=(object,),
             requested_at=utc_timestamp_now(),
             estimated_ready_at=None,
             estimated_expires_at=None,
@@ -1403,65 +1410,13 @@ class S3ArchiveStore:
             if callable(close):
                 close()
 
-    def read_collection_manifest(
+    def cleanup_archive_objects_read(
         self,
         *,
         collection_id: str,
-        object_path: str,
-    ) -> bytes:
-        return self._read_restored_collection_object(
-            collection_id=collection_id,
-            object_path=object_path,
-        )
-
-    def read_collection_manifest_proof(
-        self,
-        *,
-        collection_id: str,
-        object_path: str,
-    ) -> bytes:
-        return self._read_restored_collection_object(
-            collection_id=collection_id,
-            object_path=object_path,
-        )
-
-    def _read_restored_collection_object(
-        self,
-        *,
-        collection_id: str,
-        object_path: str,
-    ) -> bytes:
-        head = self._head_object(object_key=object_path)
-        if head is None:
-            raise RuntimeError(f"Archive object is missing: {object_path}")
-        _validate_uploaded_collection_metadata(object_key=object_path, head=head)
-        status = self.get_collection_archive_read_status(
-            collection_id=collection_id,
-            object_path=object_path,
-            requested_at=utc_timestamp_now(),
-            estimated_ready_at=None,
-            estimated_expires_at=None,
-        )
-        if status.state != "ready":
-            raise RuntimeError(f"Archive object is not restored yet: {object_path}")
-        response = self._client.get_object(Bucket=self._bucket, Key=object_path)
-        body = response["Body"]
-        try:
-            content = cast(bytes, body.read())
-        finally:
-            close = getattr(body, "close", None)
-            if callable(close):
-                close()
-        return decrypt_age_scrypt(content, self._config.archive_passphrase)
-
-    def cleanup_collection_archive_read(
-        self,
-        *,
-        collection_id: str,
-        object_path: str,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
+        objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
+        _ = collection_id, objects
         return
 
     def _requires_aws_read_preparation(self) -> bool:
@@ -1471,20 +1426,6 @@ class S3ArchiveStore:
             or self._store.backend.casefold() == "aws"
             or "amazonaws.com" in endpoint
         )
-
-
-def _fetch_materialization_paths(
-    *,
-    object_path: str,
-    manifest_object_path: str | None,
-    proof_object_path: str | None,
-) -> tuple[str, ...]:
-    paths: list[str] = []
-    for path in (object_path, manifest_object_path, proof_object_path):
-        if path is None or path in paths:
-            continue
-        paths.append(path)
-    return tuple(paths)
 
 
 def _combine_fetch_materialization_statuses(
@@ -1497,13 +1438,13 @@ def _combine_fetch_materialization_statuses(
             state="ready",
             ready_at=_max_timestamp(status.ready_at for status in statuses),
             expires_at=_min_timestamp(status.expires_at for status in statuses),
-            message="Collection archive package objects are restored and readable.",
+            message="Archive objects are restored and readable.",
         )
     return ArchiveReadStatus(
         state="requested",
         ready_at=_max_timestamp(status.ready_at for status in statuses),
         expires_at=_min_timestamp(status.expires_at for status in statuses),
-        message="Collection archive package restore is still in progress.",
+        message="Archive object restoration is still in progress.",
     )
 
 
@@ -1517,7 +1458,7 @@ movement, overwriting, lifecycle expiration, storage-class changes, and object-
 version removal are mutations. Use Riverhog's guarded archive workflows for an
 authorized collection deletion or archive-copy retirement.
 
-This bucket or prefix stores encrypted archive packages. Object paths are opaque
+This bucket or prefix stores independently encrypted archive objects. Paths are opaque
 on purpose so that bucket listings, access logs, and screenshots
 do not reveal private collection names.
 
@@ -1525,7 +1466,8 @@ do not reveal private collection names.
 
 - S3 credentials, token, or S3 login/session that can list and read this bucket or prefix.
 - The archive passphrase.
-- Standard recovery tools: an S3 CLI such as `aws`, `age`, `tar`, and optionally `ots`.
+- Standard recovery tools: an S3 CLI such as `aws`, `age`, `sha256sum`, `tar`, and
+  optionally `ots`.
 
 S3 credentials and the archive passphrase are different secrets. The `aws`
 commands below will fail until the CLI is authenticated with S3 access. Common
@@ -1577,28 +1519,42 @@ Optional timestamp proof verification:
 ots verify manifest.yml.ots -f manifest.yml
 ```
 
-## Restore and Extract the Archive
+## Recover files
 
-`archive.tar.age` may be in S3 Glacier Deep Archive or another cold S3 storage
-class. If the object is not immediately readable, request a restore first:
+The manifest maps each file to one or more `data-*` objects. Download only those
+objects from `archives/ARCHIVE_ID/objects/`. An object in S3 Glacier Deep Archive
+must be restored before it is readable:
 
 ```sh
 aws s3api restore-object \\
   --bucket BUCKET \\
-  --key PREFIX/archives/ARCHIVE_ID/archive.tar.age \\
+  --key PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age \\
   --restore-request '{{"Days":7,"ArchiveJobParameters":{{"Tier":"Bulk"}}}}'
 ```
 
-After the restore is complete, download, decrypt, and extract:
+After any required restore completes, download and independently decrypt each
+needed object:
 
 ```sh
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/archive.tar.age .
-age --decrypt -o archive.tar archive.tar.age
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age .
+age --decrypt -o data-NNNNNN data-NNNNNN.age
 # Enter the same archive passphrase when age prompts.
-
-mkdir restored
-tar -xf archive.tar -C restored
+sha256sum data-NNNNNN
 ```
+
+Compare each decrypted object's digest with its `objects` entry in the
+manifest. Then follow the file's ordered `objects` mappings:
+
+- For a `file` object, the decrypted object is the complete logical file.
+- For a `segment` object, concatenate decrypted segments in manifest order.
+- For a `pack` object, extract the mapping's `member` from the decrypted tar:
+
+```sh
+tar -xOf data-NNNNNN MEMBER > recovered-file
+```
+
+Finally compare every recovered file's size and SHA-256 digest with its manifest
+entry.
 """
 
 
@@ -1644,15 +1600,11 @@ def _validate_uploaded_collection_metadata(
             f"Archive object has invalid collection byte metadata: {object_key}"
         ) from exc
     if expected_bytes is not None and collection_bytes != expected_bytes:
-        raise RuntimeError(
-            f"Archive object size does not match collection package member: {object_key}"
-        )
+        raise RuntimeError(f"Archive object plaintext size does not match its record: {object_key}")
     if not _SHA256_RE.fullmatch(metadata_sha256):
         raise RuntimeError(f"Archive object has invalid collection sha256 metadata: {object_key}")
     if expected_sha256 is not None and metadata_sha256 != expected_sha256:
-        raise RuntimeError(
-            f"Archive object sha256 does not match collection package member: {object_key}"
-        )
+        raise RuntimeError(f"Archive object sha256 does not match its record: {object_key}")
 
 
 def _verify_remote_collection_object(
@@ -1735,7 +1687,7 @@ def _collection_object_storage_class(
     archive_storage_class: str,
     kind: str,
 ) -> str:
-    if kind == "archive":
+    if kind in {"pack", "file", "segment"}:
         return _configured_s3_storage_class(archive_storage_class)
     return "STANDARD"
 

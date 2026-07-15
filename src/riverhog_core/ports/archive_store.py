@@ -4,58 +4,75 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from riverhog_core.collection_archives import CollectionArchivePackage
+from riverhog_core.archive_objects import CollectionArchive
 
 
-@dataclass(frozen=True)
-class ArchiveUploadReceipt:
+@dataclass(frozen=True, slots=True)
+class ArchiveObjectUploadReceipt:
+    object_id: str
+    kind: str
     object_path: str
+    plaintext_bytes: int
     stored_bytes: int
+    sha256: str
     backend: str
     storage_class: str
     uploaded_at: str
     verified_at: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CollectionArchiveUploadReceipt:
-    archive: ArchiveUploadReceipt
-    manifest: ArchiveUploadReceipt
-    proof: ArchiveUploadReceipt
-    archive_sha256: str
-    manifest_sha256: str
-    proof_sha256: str
-    archive_format: str
-    compression: str
+    objects: tuple[ArchiveObjectUploadReceipt, ...]
+
+    def require_object(self, object_id: str) -> ArchiveObjectUploadReceipt:
+        for current in self.objects:
+            if current.object_id == object_id:
+                return current
+        raise KeyError(object_id)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArchiveObjectIdentity:
+    object_id: str
+    kind: str
     object_path: str
+    plaintext_bytes: int
     stored_bytes: int
     sha256: str
 
 
-@dataclass(frozen=True)
-class CollectionArchivePackageIdentity:
-    archive: ArchiveObjectIdentity
-    manifest: ArchiveObjectIdentity
-    proof: ArchiveObjectIdentity
+@dataclass(frozen=True, slots=True)
+class CollectionArchiveIdentity:
+    objects: tuple[ArchiveObjectIdentity, ...]
+
+    def require_object(self, object_id: str) -> ArchiveObjectIdentity:
+        for current in self.objects:
+            if current.object_id == object_id:
+                return current
+        raise KeyError(object_id)
+
+    @property
+    def data_objects(self) -> tuple[ArchiveObjectIdentity, ...]:
+        return tuple(
+            current for current in self.objects if current.kind in {"pack", "file", "segment"}
+        )
 
 
-class ArchivePackageVerificationError(RuntimeError):
+class ArchiveVerificationError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArchiveMultipartUploadedPart:
     part_number: int
     etag: str
     size: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArchiveMultipartUploadState:
+    object_id: str
     upload_id: str
     object_path: str
     part_size: int
@@ -71,6 +88,7 @@ class ArchiveMultipartUploadTracker(Protocol):
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_path: str,
         part_size: int,
         content_length: int,
@@ -99,11 +117,12 @@ class ArchiveMultipartUploadTracker(Protocol):
         self,
         *,
         collection_id: str,
+        object_id: str,
         upload_id: str,
     ) -> None: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArchiveReadStatus:
     state: str
     ready_at: str | None = None
@@ -114,29 +133,29 @@ class ArchiveReadStatus:
 class ArchiveStore(Protocol):
     def new_collection_archive_storage_prefix(self) -> str: ...
 
-    def upload_collection_archive_package(
+    def max_plaintext_object_bytes(self) -> int: ...
+
+    def upload_collection_archive(
         self,
         *,
         collection_id: str,
-        package: CollectionArchivePackage,
+        archive: CollectionArchive,
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt: ...
 
-    def verify_collection_archive_package(
+    def verify_collection_archive(
         self,
         *,
         collection_id: str,
-        package: CollectionArchivePackageIdentity,
+        archive: CollectionArchiveIdentity,
     ) -> None: ...
 
-    def delete_collection_archive_package(
+    def delete_collection_archive(
         self,
         *,
         collection_id: str,
-        object_path: str,
-        manifest_object_path: str,
-        proof_object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
     ) -> None: ...
 
     def publish_restore_catalog(
@@ -146,57 +165,37 @@ class ArchiveStore(Protocol):
         generated_at: str,
     ) -> None: ...
 
-    def prepare_collection_archive_read(
+    def prepare_archive_objects_read(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
         retrieval_tier: str,
         hold_days: int,
         requested_at: str,
         estimated_ready_at: str,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
     ) -> ArchiveReadStatus: ...
 
-    def get_collection_archive_read_status(
+    def get_archive_objects_read_status(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        objects: Sequence[ArchiveObjectIdentity],
         requested_at: str,
         estimated_ready_at: str | None,
         estimated_expires_at: str | None,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
     ) -> ArchiveReadStatus: ...
 
-    def iter_collection_archive(
+    def iter_archive_object(
         self,
         *,
         collection_id: str,
-        object_path: str,
+        object: ArchiveObjectIdentity,
     ) -> Iterator[bytes]: ...
 
-    def read_collection_manifest(
+    def cleanup_archive_objects_read(
         self,
         *,
         collection_id: str,
-        object_path: str,
-    ) -> bytes: ...
-
-    def read_collection_manifest_proof(
-        self,
-        *,
-        collection_id: str,
-        object_path: str,
-    ) -> bytes: ...
-
-    def cleanup_collection_archive_read(
-        self,
-        *,
-        collection_id: str,
-        object_path: str,
-        manifest_object_path: str | None = None,
-        proof_object_path: str | None = None,
+        objects: Sequence[ArchiveObjectIdentity],
     ) -> None: ...

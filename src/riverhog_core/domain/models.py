@@ -10,7 +10,8 @@ from riverhog_core.domain.types import CollectionId, FetchId, Sha256Hex
 class ArchiveCopyStatus:
     store: str
     state: ArchiveState = ArchiveState.PENDING
-    object_path: str | None = None
+    storage_prefix: str | None = None
+    object_count: int = 0
     stored_bytes: int | None = None
     backend: str | None = None
     storage_class: str | None = None
@@ -18,17 +19,15 @@ class ArchiveCopyStatus:
     last_verified_at: str | None = None
     failure: str | None = None
     collection_manifest: CollectionManifestStatus | None = None
-    archive_format: str | None = None
-    compression: str | None = None
 
 
 @dataclass(frozen=True)
 class CollectionManifestStatus:
     object_path: str | None = None
     sha256: str | None = None
-    ots_object_path: str | None = None
-    ots_state: str = "pending"
-    ots_sha256: str | None = None
+    proof_object_path: str | None = None
+    proof_state: str = "pending"
+    proof_sha256: str | None = None
 
 
 @dataclass(frozen=True)

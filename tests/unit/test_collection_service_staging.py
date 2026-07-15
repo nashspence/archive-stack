@@ -8,6 +8,7 @@ import pytest
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -52,16 +53,48 @@ def _seed(path: Path) -> None:
                     hot=hot,
                 )
             )
-        session.add(
-            CollectionArchiveCopyRecord(
-                collection_id="2025/20250101T000000Z__alpha",
-                store="deep",
-                state="uploaded",
-                object_path="collections/alpha/archive.tar.age",
-                stored_bytes=14,
-                last_verified_at="2026-07-14T00:00:00Z",
+        session.add(_archive_copy("deep", stored_bytes=14))
+
+
+def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyRecord:
+    collection_id = "2025/20250101T000000Z__alpha"
+    verified_at = "2026-07-14T00:00:00Z"
+    prefix = f"collections/alpha/{store}"
+    copy = CollectionArchiveCopyRecord(
+        collection_id=collection_id,
+        store=store,
+        state="uploaded",
+        archive_storage_prefix=prefix,
+        backend="s3",
+        storage_class="STANDARD",
+        last_uploaded_at=verified_at,
+        last_verified_at=verified_at,
+    )
+    for order, (object_id, kind, size) in enumerate(
+        (
+            ("data-000000", "file", stored_bytes),
+            ("manifest", "manifest", 1),
+            ("proof", "proof", 1),
+        )
+    ):
+        copy.objects.append(
+            CollectionArchiveObjectRecord(
+                collection_id=collection_id,
+                store=store,
+                object_id=object_id,
+                object_order=order,
+                kind=kind,
+                object_path=f"{prefix}/{object_id}.age",
+                plaintext_bytes=max(0, size - 1),
+                stored_bytes=size,
+                sha256="c" * 64,
+                backend="s3",
+                storage_class="STANDARD",
+                uploaded_at=verified_at,
+                verified_at=verified_at,
             )
         )
+    return copy
 
 
 def test_collection_summary_reports_hot_and_archive_state(tmp_path: Path) -> None:
@@ -85,16 +118,7 @@ def test_collection_summary_reports_each_named_archive_copy(tmp_path: Path) -> N
     _seed(path)
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(
-            CollectionArchiveCopyRecord(
-                collection_id="2025/20250101T000000Z__alpha",
-                store="b2",
-                state="uploaded",
-                object_path="collections/alpha-b2/archive.tar.age",
-                stored_bytes=15,
-                last_verified_at="2026-07-15T00:00:00Z",
-            )
-        )
+        session.add(_archive_copy("b2", stored_bytes=15))
 
     summary = _service(path).get("2025/20250101T000000Z__alpha")
 

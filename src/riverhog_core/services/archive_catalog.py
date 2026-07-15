@@ -5,7 +5,6 @@ from collections.abc import Collection
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.catalog_db import session_scope
 from riverhog_core.catalog_models import CollectionArchiveCopyRecord
 from riverhog_core.ports.archive_store import ArchiveStore
@@ -27,7 +26,6 @@ def publish_archive_restore_catalog(
             select(CollectionArchiveCopyRecord)
             .where(CollectionArchiveCopyRecord.state == "uploaded")
             .where(CollectionArchiveCopyRecord.store == store_name)
-            .where(CollectionArchiveCopyRecord.object_path.is_not(None))
         )
         if excluded_collection_ids:
             statement = statement.where(
@@ -40,19 +38,23 @@ def publish_archive_restore_catalog(
         entries = [
             {
                 "collection_id": archive.collection_id,
-                "archive_storage_prefix": archive.archive_storage_prefix
-                or archive_storage_prefix_from_object_path(archive.object_path),
-                "archive_key": archive.object_path,
-                "manifest_key": archive.manifest_object_path,
-                "proof_key": archive.ots_object_path,
-                "archive_stored_bytes": archive.stored_bytes,
-                "archive_plaintext_sha256": archive.sha256,
-                "manifest_sha256": archive.manifest_sha256,
-                "proof_sha256": archive.ots_sha256,
+                "archive_storage_prefix": archive.archive_storage_prefix,
+                "objects": [
+                    {
+                        "id": current.object_id,
+                        "kind": current.kind,
+                        "key": current.object_path,
+                        "plaintext_bytes": current.plaintext_bytes,
+                        "stored_bytes": current.stored_bytes,
+                        "sha256": current.sha256,
+                        "storage_class": current.storage_class,
+                    }
+                    for current in sorted(
+                        archive.objects,
+                        key=lambda item: item.object_order,
+                    )
+                ],
                 "backend": archive.backend,
-                "archive_storage_class": archive.storage_class,
-                "archive_format": archive.archive_format,
-                "compression": archive.compression,
                 "uploaded_at": archive.last_uploaded_at,
                 "verified_at": archive.last_verified_at,
             }

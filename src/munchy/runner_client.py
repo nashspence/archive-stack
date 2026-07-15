@@ -573,12 +573,8 @@ def riverhog_hot_materialization_progress(progress: dict[str, Any]) -> dict[str,
     materialized_bytes = int(progress.get("hot_materialized_bytes") or 0)
     if total_files <= 0 and total_bytes <= 0:
         return None
-    materialized_files = (
-        min(materialized_files, total_files) if total_files else materialized_files
-    )
-    materialized_bytes = (
-        min(materialized_bytes, total_bytes) if total_bytes else materialized_bytes
-    )
+    materialized_files = min(materialized_files, total_files) if total_files else materialized_files
+    materialized_bytes = min(materialized_bytes, total_bytes) if total_bytes else materialized_bytes
     return {
         "files_done": materialized_files,
         "files_total": total_files,
@@ -809,7 +805,9 @@ def format_progress_status_line(job: dict[str, Any]) -> str:
             pieces.append(format_riverhog_archive_progress(archive_progress))
         hot_materialization_progress = riverhog_hot_materialization_progress(riverhog_progress)
         if hot_materialization_progress is not None:
-            pieces.append(format_riverhog_hot_materialization_progress(hot_materialization_progress))
+            pieces.append(
+                format_riverhog_hot_materialization_progress(hot_materialization_progress)
+            )
     issue = job.get("transient_issue")
     if isinstance(issue, dict):
         pieces.append(format_transient_issue(issue))
@@ -1145,9 +1143,7 @@ class RichProgressRenderer(ProgressRenderer):
                     self._bar(archive_progress, percent_key="percent_bytes"),
                 )
                 table.add_row("", format_riverhog_archive_progress(archive_progress))
-            hot_materialization_progress = riverhog_hot_materialization_progress(
-                riverhog_progress
-            )
+            hot_materialization_progress = riverhog_hot_materialization_progress(riverhog_progress)
             if hot_materialization_progress is not None:
                 table.add_row(
                     "Riverhog Hot Materialization",
@@ -1155,9 +1151,7 @@ class RichProgressRenderer(ProgressRenderer):
                 )
                 table.add_row(
                     "",
-                    format_riverhog_hot_materialization_progress(
-                        hot_materialization_progress
-                    ),
+                    format_riverhog_hot_materialization_progress(hot_materialization_progress),
                 )
 
         issue = job.get("transient_issue")

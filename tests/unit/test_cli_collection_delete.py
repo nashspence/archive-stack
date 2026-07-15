@@ -24,7 +24,7 @@ def _plan() -> dict[str, object]:
         "hot_files": 1,
         "hot_bytes": 12,
         "archive_objects": [
-            {"kind": "archive", "object_path": "archive.tar.age", "stored_bytes": 20},
+            {"kind": "pack", "object_path": "objects/data-000000.age", "stored_bytes": 20},
             {"kind": "manifest", "object_path": "manifest.yml.age", "stored_bytes": 5},
             {"kind": "proof", "object_path": "manifest.yml.ots.age", "stored_bytes": 3},
         ],

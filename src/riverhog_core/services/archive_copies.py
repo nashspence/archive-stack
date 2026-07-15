@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-from collections.abc import Iterator
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from riverhog_core.archive_objects import CollectionArchiveFile, load_collection_archive
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -15,19 +14,11 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
 )
-from riverhog_core.collection_archives import (
-    CollectionArchiveExpectedFile,
-    CollectionArchivePackage,
-    collection_archive_size,
-    verify_collection_manifest,
-    verify_collection_manifest_proof,
-)
-from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_id
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
-    CollectionArchivePackageIdentity,
+    CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
@@ -98,7 +89,7 @@ class SqlAlchemyArchiveCopyService:
                 CollectionArchiveCopyRecord,
                 (normalized_collection_id, destination),
             )
-            if existing is not None and existing.state == ArchiveState.UPLOADED.value:
+            if existing is not None and archive_copy_is_complete(existing):
                 return _completed_payload(existing)
             source_copy = _select_source_copy(
                 collection,
@@ -120,9 +111,7 @@ class SqlAlchemyArchiveCopyService:
                     next_attempt_at=current_text,
                 )
                 session.add(job)
-            else:
-                if job.state in {"requested", "waiting", "copying"}:
-                    return _job_payload(job)
+            elif job.state not in {"requested", "waiting", "copying"}:
                 job.source_store = source_copy.store
                 job.state = "requested"
                 job.next_attempt_at = current_text
@@ -191,31 +180,29 @@ class SqlAlchemyArchiveCopyService:
             if job is None or job.state not in {"requested", "waiting"}:
                 return
             source_copy = _required_copy(session, collection_id, job.source_store)
+            source_identity = archive_copy_identity(source_copy)
             source_store = self._archive_stores.require(job.source_store)
             destination = self._archive_stores.require(job.destination_store)
+            data_objects = source_identity.data_objects
             if job.read_requested_at is None:
-                status = source_store.prepare_collection_archive_read(
+                status = source_store.prepare_archive_objects_read(
                     collection_id=collection_id,
-                    object_path=str(source_copy.object_path),
+                    objects=data_objects,
                     retrieval_tier=self._config.archive_restore_retrieval_tier,
                     hold_days=_read_hold_days(self._config),
                     requested_at=current_text,
                     estimated_ready_at=format_utc_timestamp(
                         current + self._config.archive_restore_latency
                     ),
-                    manifest_object_path=source_copy.manifest_object_path,
-                    proof_object_path=source_copy.ots_object_path,
                 )
                 job.read_requested_at = current_text
             else:
-                status = source_store.get_collection_archive_read_status(
+                status = source_store.get_archive_objects_read_status(
                     collection_id=collection_id,
-                    object_path=str(source_copy.object_path),
+                    objects=data_objects,
                     requested_at=job.read_requested_at,
                     estimated_ready_at=job.ready_at,
                     estimated_expires_at=job.expires_at,
-                    manifest_object_path=source_copy.manifest_object_path,
-                    proof_object_path=source_copy.ots_object_path,
                 )
             job.ready_at = status.ready_at or job.ready_at
             job.expires_at = status.expires_at or job.expires_at
@@ -234,70 +221,47 @@ class SqlAlchemyArchiveCopyService:
                 return
             job.state = "copying"
             job.next_attempt_at = None
+            destination_storage_prefix = job.destination_storage_prefix
 
-        source_store.verify_collection_archive_package(
+        source_store.verify_collection_archive(
             collection_id=collection_id,
-            package=archive_copy_identity(source_copy),
+            archive=source_identity,
+        )
+        manifest_identity = source_identity.require_object("manifest")
+        proof_identity = source_identity.require_object("proof")
+        manifest_bytes = b"".join(
+            source_store.iter_archive_object(
+                collection_id=collection_id,
+                object=manifest_identity,
+            )
+        )
+        proof_bytes = b"".join(
+            source_store.iter_archive_object(
+                collection_id=collection_id,
+                object=proof_identity,
+            )
         )
         expected_files = self._expected_files(collection_id)
-        manifest_bytes = source_store.read_collection_manifest(
-            collection_id=collection_id,
-            object_path=str(source_copy.manifest_object_path),
-        )
-        verify_collection_manifest(
-            manifest_bytes=manifest_bytes,
-            expected_sha256=str(source_copy.manifest_sha256),
+        data_by_id = {current.object_id: current for current in data_objects}
+        archive = load_collection_archive(
             collection_id=collection_id,
             files=expected_files,
-        )
-        proof_bytes = source_store.read_collection_manifest_proof(
-            collection_id=collection_id,
-            object_path=str(source_copy.ots_object_path),
-        )
-        verify_collection_manifest_proof(
-            proof_bytes=proof_bytes,
-            expected_sha256=str(source_copy.ots_sha256),
             manifest_bytes=manifest_bytes,
+            proof_bytes=proof_bytes,
+            read_object_chunks=lambda object_id: source_store.iter_archive_object(
+                collection_id=collection_id,
+                object=data_by_id[object_id],
+            ),
             verifier=self._proof_verifier,
         )
-        archive_digest = hashlib.sha256()
-        archive_bytes = 0
-
-        def archive_chunks() -> Iterator[bytes]:
-            nonlocal archive_bytes
-            for chunk in source_store.iter_collection_archive(
-                collection_id=collection_id,
-                object_path=str(source_copy.object_path),
-            ):
-                archive_digest.update(chunk)
-                archive_bytes += len(chunk)
-                yield chunk
-
-        package = CollectionArchivePackage(
+        receipt = destination.upload_collection_archive(
             collection_id=collection_id,
-            archive_size=collection_archive_size(expected_files),
-            archive_sha256=str(source_copy.sha256),
-            manifest_bytes=manifest_bytes,
-            manifest_sha256=str(source_copy.manifest_sha256),
-            proof_bytes=proof_bytes,
-            proof_sha256=str(source_copy.ots_sha256),
-            archive_format=str(source_copy.archive_format or "tar"),
-            compression=str(source_copy.compression or "none"),
-            _archive_chunks=archive_chunks,
+            archive=archive,
+            archive_storage_prefix=destination_storage_prefix,
         )
-        receipt = destination.upload_collection_archive_package(
+        destination.verify_collection_archive(
             collection_id=collection_id,
-            package=package,
-            archive_storage_prefix=job.destination_storage_prefix,
-        )
-        if archive_bytes and (
-            archive_bytes != package.archive_size
-            or archive_digest.hexdigest() != package.archive_sha256
-        ):
-            raise ValueError("source archive content changed during copy")
-        destination.verify_collection_archive_package(
-            collection_id=collection_id,
-            package=_receipt_identity(receipt),
+            archive=_receipt_identity(receipt),
         )
         with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
@@ -313,14 +277,12 @@ class SqlAlchemyArchiveCopyService:
                     store=destination_store,
                 )
                 session.add(copy)
-            apply_archive_receipt(copy, receipt)
+            apply_archive_receipt(copy, receipt, archive)
             session.delete(job)
             record_archive_usage_snapshot(session, config=self._config)
-        source_store.cleanup_collection_archive_read(
+        source_store.cleanup_archive_objects_read(
             collection_id=collection_id,
-            object_path=str(source_copy.object_path),
-            manifest_object_path=source_copy.manifest_object_path,
-            proof_object_path=source_copy.ots_object_path,
+            objects=data_objects,
         )
         publish_archive_restore_catalog(
             store_name=destination_store,
@@ -328,10 +290,7 @@ class SqlAlchemyArchiveCopyService:
             session_factory=self._session_factory,
         )
 
-    def _expected_files(
-        self,
-        collection_id: str,
-    ) -> tuple[CollectionArchiveExpectedFile, ...]:
+    def _expected_files(self, collection_id: str) -> tuple[CollectionArchiveFile, ...]:
         with session_scope(self._session_factory) as session:
             files = session.scalars(
                 select(CollectionFileRecord)
@@ -339,7 +298,7 @@ class SqlAlchemyArchiveCopyService:
                 .order_by(CollectionFileRecord.path)
             ).all()
         return tuple(
-            CollectionArchiveExpectedFile(path=file.path, bytes=file.bytes, sha256=file.sha256)
+            CollectionArchiveFile(path=file.path, bytes=file.bytes, sha256=file.sha256)
             for file in files
         )
 
@@ -358,12 +317,7 @@ class SqlAlchemyArchiveCopyService:
             job.next_attempt_at = None
             job.failure = f"{type(exc).__name__}: {exc}"
 
-    def _cleanup_source_read(
-        self,
-        *,
-        collection_id: str,
-        destination_store: str,
-    ) -> None:
+    def _cleanup_source_read(self, *, collection_id: str, destination_store: str) -> None:
         with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
             if job is None or job.read_requested_at is None:
@@ -372,15 +326,13 @@ class SqlAlchemyArchiveCopyService:
                 CollectionArchiveCopyRecord,
                 (collection_id, job.source_store),
             )
-            if source_copy is None or source_copy.object_path is None:
+            if source_copy is None or not archive_copy_is_complete(source_copy):
                 return
             source_store = self._archive_stores.require(job.source_store)
             try:
-                source_store.cleanup_collection_archive_read(
+                source_store.cleanup_archive_objects_read(
                     collection_id=collection_id,
-                    object_path=source_copy.object_path,
-                    manifest_object_path=source_copy.manifest_object_path,
-                    proof_object_path=source_copy.ots_object_path,
+                    objects=archive_copy_identity(source_copy).data_objects,
                 )
             except Exception:
                 _LOG.exception(
@@ -406,7 +358,7 @@ def _select_source_copy(
     candidates = [
         copy
         for copy in collection.archive_copies
-        if copy.store != destination_store and copy.state == ArchiveState.UPLOADED.value
+        if copy.store != destination_store and archive_copy_is_complete(copy)
     ]
     if source_store is not None:
         candidates = [copy for copy in candidates if copy.store == source_store]
@@ -430,23 +382,19 @@ def _required_copy(
     return copy
 
 
-def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchivePackageIdentity:
-    return CollectionArchivePackageIdentity(
-        archive=ArchiveObjectIdentity(
-            object_path=receipt.archive.object_path,
-            stored_bytes=receipt.archive.stored_bytes,
-            sha256=receipt.archive_sha256,
-        ),
-        manifest=ArchiveObjectIdentity(
-            object_path=receipt.manifest.object_path,
-            stored_bytes=receipt.manifest.stored_bytes,
-            sha256=receipt.manifest_sha256,
-        ),
-        proof=ArchiveObjectIdentity(
-            object_path=receipt.proof.object_path,
-            stored_bytes=receipt.proof.stored_bytes,
-            sha256=receipt.proof_sha256,
-        ),
+def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdentity:
+    return CollectionArchiveIdentity(
+        objects=tuple(
+            ArchiveObjectIdentity(
+                object_id=current.object_id,
+                kind=current.kind,
+                object_path=current.object_path,
+                plaintext_bytes=current.plaintext_bytes,
+                stored_bytes=current.stored_bytes,
+                sha256=current.sha256,
+            )
+            for current in receipt.objects
+        )
     )
 
 

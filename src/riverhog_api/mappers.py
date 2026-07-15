@@ -23,7 +23,8 @@ def map_archive(summary: ArchiveCopyStatus) -> dict[str, object]:
     return {
         "store": summary.store,
         "state": summary.state.value,
-        "object_path": summary.object_path,
+        "storage_prefix": summary.storage_prefix,
+        "object_count": summary.object_count,
         "stored_bytes": summary.stored_bytes,
         "backend": summary.backend,
         "storage_class": summary.storage_class,
@@ -31,8 +32,6 @@ def map_archive(summary: ArchiveCopyStatus) -> dict[str, object]:
         "last_verified_at": summary.last_verified_at,
         "failure": summary.failure,
         "collection_manifest": map_collection_manifest(summary.collection_manifest),
-        "archive_format": summary.archive_format,
-        "compression": summary.compression,
     }
 
 
@@ -44,9 +43,9 @@ def map_collection_manifest(
     return {
         "object_path": summary.object_path,
         "sha256": summary.sha256,
-        "ots_object_path": summary.ots_object_path,
-        "ots_state": summary.ots_state,
-        "ots_sha256": summary.ots_sha256,
+        "proof_object_path": summary.proof_object_path,
+        "proof_state": summary.proof_state,
+        "proof_sha256": summary.proof_sha256,
     }
 
 

@@ -54,6 +54,12 @@ def _timeout_seconds(env_name: str, default: float) -> float:
     return value
 
 
+def _file_selections_payload(
+    files: Sequence[tuple[str, str]],
+) -> list[dict[str, str]]:
+    return [{"collection_id": collection_id, "path": path} for collection_id, path in files]
+
+
 class ApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self.base_url = (
@@ -493,11 +499,21 @@ class ApiClient:
             params["all"] = True
         return self._json("GET", "/v1/fetches", params=params)
 
-    def create_fetch(self, *, name: str, collections: Sequence[str]) -> dict[str, Any]:
+    def create_fetch(
+        self,
+        *,
+        name: str,
+        collections: Sequence[str],
+        files: Sequence[tuple[str, str]] = (),
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/fetches",
-            json={"name": name, "collections": list(collections)},
+            json={
+                "name": name,
+                "collections": list(collections),
+                "files": _file_selections_payload(files),
+            },
         )
 
     def add_fetch_collections(
@@ -522,6 +538,28 @@ class ApiClient:
             json={"collections": list(collections)},
         )
 
+    def add_fetch_files(
+        self,
+        fetch_id: str,
+        files: Sequence[tuple[str, str]],
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            json={"files": _file_selections_payload(files)},
+        )
+
+    def remove_fetch_files(
+        self,
+        fetch_id: str,
+        files: Sequence[tuple[str, str]],
+    ) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            json={"files": _file_selections_payload(files)},
+        )
+
     def start_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
@@ -531,16 +569,21 @@ class ApiClient:
     def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cancel")
 
-    def evict_hot_collections(
+    def evict_hot(
         self,
-        collections: Sequence[str],
+        collections: Sequence[str] = (),
         *,
+        files: Sequence[tuple[str, str]] = (),
         dry_run: bool = False,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/hot/evict",
-            json={"collections": list(collections), "dry_run": dry_run},
+            json={
+                "collections": list(collections),
+                "files": _file_selections_payload(files),
+                "dry_run": dry_run,
+            },
         )
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:

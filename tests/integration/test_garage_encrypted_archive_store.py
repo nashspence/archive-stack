@@ -11,14 +11,15 @@ from typing import Any
 import pytest
 
 from riverhog_age import decrypt_age_scrypt
-from riverhog_core.collection_archives import (
-    CollectionArchiveFile,
-    build_collection_archive_package,
+from riverhog_core.archive_objects import (
+    CollectionArchiveSourceFile,
+    build_collection_archive,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
+    ArchiveObjectIdentity,
 )
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.stores.s3_archive_store import (
@@ -60,12 +61,13 @@ class _MemoryMultipartTracker(ArchiveMultipartUploadTracker):
         self,
         *,
         collection_id: str,
+        object_id: str,
         object_path: str,
         part_size: int,
         content_length: int,
         sha256: str,
     ) -> ArchiveMultipartUploadState | None:
-        _ = collection_id
+        _ = collection_id, object_id
         if self.state is None:
             return None
         if self.state.object_path != object_path:
@@ -107,25 +109,27 @@ class _MemoryMultipartTracker(ArchiveMultipartUploadTracker):
         self,
         *,
         collection_id: str,
+        object_id: str,
         upload_id: str,
     ) -> None:
-        _ = collection_id
+        _ = collection_id, object_id
         self.cleared.append(upload_id)
         self.state = None
         self.parts = []
 
 
-def _large_package():
+def _large_archive():
     content = bytes((i * 37 + 9) % 256 for i in range(6 * 1024 * 1024))
-    return build_collection_archive_package(
+    return build_collection_archive(
         collection_id="2025/20250105T030405Z__garage-encrypted",
         files=(
-            CollectionArchiveFile(
+            CollectionArchiveSourceFile(
                 path="camera/video.bin",
                 content=content,
                 sha256=hashlib.sha256(content).hexdigest(),
             ),
         ),
+        max_plaintext_object_bytes=32 * 1024 * 1024,
         stamper=FixtureProofStamper(),
     )
 
@@ -186,7 +190,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         archive_multipart_part_bytes=5 * 1024 * 1024,
         archive_multipart_concurrency=1,
     )
-    package = _large_package()
+    archive = _large_archive()
     tracker = _MemoryMultipartTracker()
     real_client = create_archive_s3_client(config, archive_store_config)
     _ensure_bucket_exists(real_client, bucket=archive_store_config.bucket)
@@ -196,9 +200,9 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
 
     try:
         with pytest.raises(RuntimeError, match="synthetic Garage multipart interruption"):
-            store.upload_collection_archive_package(
+            store.upload_collection_archive(
                 collection_id="2025/20250105T030405Z__garage-encrypted",
-                package=package,
+                archive=archive,
                 archive_storage_prefix=archive_storage_prefix,
                 multipart_tracker=tracker,
             )
@@ -209,50 +213,74 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         upload_id = tracker.state.upload_id
 
         store._client = real_client  # type: ignore[attr-defined]
-        receipt = store.upload_collection_archive_package(
+        receipt = store.upload_collection_archive(
             collection_id="2025/20250105T030405Z__garage-encrypted",
-            package=package,
+            archive=archive,
             archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=tracker,
         )
 
         assert tracker.cleared == [upload_id]
-        assert receipt.archive.object_path.endswith("/archive.tar.age")
-        assert receipt.manifest.object_path.endswith("/manifest.yml.age")
-        assert receipt.proof.object_path.endswith("/manifest.yml.ots.age")
+        data = receipt.require_object("data-000000")
+        manifest = receipt.require_object("manifest")
+        proof = receipt.require_object("proof")
+        assert data.object_path.endswith("/objects/data-000000.age")
+        assert manifest.object_path.endswith("/manifest.yml.age")
+        assert proof.object_path.endswith("/manifest.yml.ots.age")
 
         archive_head = real_client.head_object(
             Bucket=archive_store_config.bucket,
-            Key=receipt.archive.object_path,
+            Key=data.object_path,
         )
         assert archive_head["Metadata"][ENCRYPTION_METADATA] == AGE_SCRYPT_ENCRYPTION
         manifest_object = real_client.get_object(
             Bucket=archive_store_config.bucket,
-            Key=receipt.manifest.object_path,
+            Key=manifest.object_path,
         )
         manifest_ciphertext = b"".join(_body_chunks(manifest_object["Body"]))
-        assert decrypt_age_scrypt(manifest_ciphertext, passphrase) == package.manifest_bytes
-        restored_archive = b"".join(
-            store.iter_collection_archive(
+        assert decrypt_age_scrypt(manifest_ciphertext, passphrase) == archive.manifest_bytes
+        restored_data = b"".join(
+            store.iter_archive_object(
                 collection_id="2025/20250105T030405Z__garage-encrypted",
-                object_path=receipt.archive.object_path,
+                object=ArchiveObjectIdentity(
+                    object_id=data.object_id,
+                    kind=data.kind,
+                    object_path=data.object_path,
+                    plaintext_bytes=data.plaintext_bytes,
+                    stored_bytes=data.stored_bytes,
+                    sha256=data.sha256,
+                ),
             )
         )
-        assert restored_archive == package.archive_bytes
-        assert (
-            store.read_collection_manifest(
+        assert restored_data == b"".join(archive.data_objects[0].iter_plaintext())
+        restored_manifest = b"".join(
+            store.iter_archive_object(
                 collection_id="2025/20250105T030405Z__garage-encrypted",
-                object_path=receipt.manifest.object_path,
+                object=ArchiveObjectIdentity(
+                    object_id=manifest.object_id,
+                    kind=manifest.kind,
+                    object_path=manifest.object_path,
+                    plaintext_bytes=manifest.plaintext_bytes,
+                    stored_bytes=manifest.stored_bytes,
+                    sha256=manifest.sha256,
+                ),
             )
-            == package.manifest_bytes
         )
-        assert (
-            store.read_collection_manifest_proof(
+        assert restored_manifest == archive.manifest_bytes
+        restored_proof = b"".join(
+            store.iter_archive_object(
                 collection_id="2025/20250105T030405Z__garage-encrypted",
-                object_path=receipt.proof.object_path,
+                object=ArchiveObjectIdentity(
+                    object_id=proof.object_id,
+                    kind=proof.kind,
+                    object_path=proof.object_path,
+                    plaintext_bytes=proof.plaintext_bytes,
+                    stored_bytes=proof.stored_bytes,
+                    sha256=proof.sha256,
+                ),
             )
-            == package.proof_bytes
         )
+        assert restored_proof == archive.proof_bytes
     finally:
         _abort_multipart_uploads(real_client, bucket=archive_store_config.bucket, prefix=prefix)
         _delete_prefix(real_client, bucket=archive_store_config.bucket, prefix=prefix)

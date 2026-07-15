@@ -81,15 +81,20 @@ def test_hot_fetch_start_follows_with_status(monkeypatch) -> None:
 
 def test_hot_evict_dry_run_renders_selection(monkeypatch) -> None:
     class FakeClient:
-        def evict_hot_collections(
-            self, collections: list[str], *, dry_run: bool = False
+        def evict_hot(
+            self,
+            collections: list[str],
+            *,
+            files: list[tuple[str, str]],
+            dry_run: bool = False,
         ) -> dict[str, object]:
             return {
                 "collections": collections,
+                "files": files,
                 "dry_run": dry_run,
                 "status": "would_evict",
-                "files": 2,
-                "bytes": 33,
+                "selected_files": 2,
+                "selected_bytes": 33,
                 "evicted_files": 0,
                 "evicted_bytes": 0,
                 "would_evict_files": 1,

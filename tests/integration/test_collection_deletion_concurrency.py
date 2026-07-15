@@ -22,6 +22,8 @@ from riverhog_core.catalog_db import (
 from riverhog_core.catalog_models import (
     ArchiveRestoreRecord,
     CollectionArchiveCopyRecord,
+    CollectionArchiveFileObjectRecord,
+    CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -75,23 +77,21 @@ class BlockingHotStore:
 class FakeArchiveStore:
     def __init__(self) -> None:
         self.objects = {
-            "archive/archives/opaque-docs/archive.tar.age",
+            "archive/archives/opaque-docs/objects/data-000000.age",
             "archive/archives/opaque-docs/manifest.yml.age",
             "archive/archives/opaque-docs/manifest.yml.ots.age",
         }
         self.catalog_entries: list[dict[str, object]] | None = None
 
-    def delete_collection_archive_package(
+    def delete_collection_archive(
         self,
         *,
         collection_id: str,
-        object_path: str,
-        manifest_object_path: str,
-        proof_object_path: str,
+        objects: list[Any],
     ) -> None:
         assert collection_id == "2025/20250102T030405Z__docs"
-        for path in (object_path, manifest_object_path, proof_object_path):
-            self.objects.discard(path)
+        for current in objects:
+            self.objects.discard(current.object_path)
 
     def publish_restore_catalog(
         self,
@@ -102,10 +102,10 @@ class FakeArchiveStore:
         assert generated_at.endswith("Z")
         self.catalog_entries = entries
 
-    def prepare_collection_archive_read(self, **_: object) -> ArchiveReadStatus:
+    def prepare_archive_objects_read(self, **_: object) -> ArchiveReadStatus:
         return ArchiveReadStatus(state="requested")
 
-    def get_collection_archive_read_status(self, **_: object) -> ArchiveReadStatus:
+    def get_archive_objects_read_status(self, **_: object) -> ArchiveReadStatus:
         return ArchiveReadStatus(state="requested")
 
 
@@ -148,24 +148,71 @@ def _seed(database_url: str, *, hot: bool) -> None:
                 hot=hot,
             )
         )
-        session.add(
-            CollectionArchiveCopyRecord(
-                collection_id="2025/20250102T030405Z__docs",
-                store="deep",
-                state="uploaded",
-                archive_storage_prefix="archive/archives/opaque-docs",
-                object_path="archive/archives/opaque-docs/archive.tar.age",
-                stored_bytes=100,
-                sha256="a" * 64,
-                manifest_object_path="archive/archives/opaque-docs/manifest.yml.age",
-                manifest_sha256="b" * 64,
-                manifest_stored_bytes=20,
-                ots_object_path="archive/archives/opaque-docs/manifest.yml.ots.age",
-                ots_sha256="c" * 64,
-                ots_stored_bytes=10,
-                last_verified_at="2026-07-14T00:00:00Z",
-            )
+        copy = CollectionArchiveCopyRecord(
+            collection_id="2025/20250102T030405Z__docs",
+            store="deep",
+            state="uploaded",
+            archive_storage_prefix="archive/archives/opaque-docs",
+            backend="s3",
+            storage_class="STANDARD",
+            last_uploaded_at="2026-07-14T00:00:00Z",
+            last_verified_at="2026-07-14T00:00:00Z",
         )
+        for order, (object_id, kind, path, stored_bytes, digest) in enumerate(
+            (
+                (
+                    "data-000000",
+                    "file",
+                    "archive/archives/opaque-docs/objects/data-000000.age",
+                    100,
+                    "a" * 64,
+                ),
+                (
+                    "manifest",
+                    "manifest",
+                    "archive/archives/opaque-docs/manifest.yml.age",
+                    20,
+                    "b" * 64,
+                ),
+                (
+                    "proof",
+                    "proof",
+                    "archive/archives/opaque-docs/manifest.yml.ots.age",
+                    10,
+                    "c" * 64,
+                ),
+            )
+        ):
+            obj = CollectionArchiveObjectRecord(
+                collection_id=copy.collection_id,
+                store=copy.store,
+                object_id=object_id,
+                object_order=order,
+                kind=kind,
+                object_path=path,
+                plaintext_bytes=stored_bytes - 1,
+                stored_bytes=stored_bytes,
+                sha256=digest,
+                backend="s3",
+                storage_class="STANDARD",
+                uploaded_at="2026-07-14T00:00:00Z",
+                verified_at="2026-07-14T00:00:00Z",
+            )
+            if object_id == "data-000000":
+                obj.placements.append(
+                    CollectionArchiveFileObjectRecord(
+                        collection_id=copy.collection_id,
+                        store=copy.store,
+                        path="document.txt",
+                        sequence=0,
+                        object_id=object_id,
+                        file_offset=0,
+                        bytes=len(content),
+                        member=None,
+                    )
+                )
+            copy.objects.append(obj)
+        session.add(copy)
 
 
 def _services(

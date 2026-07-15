@@ -6,6 +6,7 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -34,23 +35,37 @@ def _seed(path: Path) -> None:
                 hot=True,
             )
         )
-        session.add(
-            CollectionArchiveCopyRecord(
-                collection_id="2025/20250102T030405Z__docs",
-                store="deep",
-                state="uploaded",
-                object_path="collections/docs/archive.tar.age",
-                stored_bytes=20,
-                manifest_object_path="collections/docs/manifest.yml",
-                manifest_sha256="b" * 64,
-                manifest_stored_bytes=10,
-                ots_object_path="collections/docs/manifest.yml.ots",
-                ots_sha256="c" * 64,
-                ots_stored_bytes=5,
-                backend="s3",
-                storage_class="DEEP_ARCHIVE",
-            )
+        copy = CollectionArchiveCopyRecord(
+            collection_id="2025/20250102T030405Z__docs",
+            store="deep",
+            state="uploaded",
+            archive_storage_prefix="collections/docs",
+            backend="s3",
+            storage_class="DEEP_ARCHIVE",
+            last_uploaded_at="2026-01-01T00:00:00.000000Z",
+            last_verified_at="2026-01-01T00:00:00.000000Z",
         )
+        session.add(copy)
+        for order, (object_id, kind, size) in enumerate(
+            (("data-000000", "pack", 20), ("manifest", "manifest", 10), ("proof", "proof", 5))
+        ):
+            copy.objects.append(
+                CollectionArchiveObjectRecord(
+                    collection_id=copy.collection_id,
+                    store=copy.store,
+                    object_id=object_id,
+                    object_order=order,
+                    kind=kind,
+                    object_path=f"collections/docs/{object_id}.age",
+                    plaintext_bytes=size,
+                    stored_bytes=size,
+                    sha256=chr(ord("a") + order) * 64,
+                    backend="s3",
+                    storage_class="DEEP_ARCHIVE" if kind == "pack" else "STANDARD",
+                    uploaded_at="2026-01-01T00:00:00.000000Z",
+                    verified_at="2026-01-01T00:00:00.000000Z",
+                )
+            )
 
 
 def test_archive_report_measures_collection_objects(tmp_path: Path) -> None:
