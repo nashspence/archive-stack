@@ -1,7 +1,7 @@
 # Architecture
 
 Riverhog accepts logical collections, preserves each as a verified age-encrypted package
-in remote object storage, and materializes selected files into a fast hot cache.
+in remote object storage, and materializes complete collections into a fast hot cache.
 PostgreSQL records identity, manifests, custody evidence, and current materialization;
 object stores hold the bytes.
 
@@ -22,12 +22,11 @@ archive root without exposing collection identity.
 
 ## Retrieval
 
-A target selector names one logical file or a projected directory prefix. A fetch records
-an intended selector set. Missing selected files cause Riverhog to retrieve their
-collection archives, verify encrypted and logical bytes, and publish only the requested
-files into hot storage. Eviction deletes files from hot storage. Before doing so, Riverhog
-confirms that each affected collection's encrypted archive is still present in remote
-storage and matches its recorded checksum.
+A fetch records an exact collection set. If any file in a fetched collection is missing
+from hot storage, Riverhog retrieves and verifies its encrypted archive and materializes
+the complete collection. Eviction likewise removes complete collections from hot storage.
+Before eviction, Riverhog confirms that each collection's encrypted archive is still
+present in remote storage and matches its recorded checksum.
 
 ## Component boundaries
 
@@ -44,7 +43,5 @@ storage and matches its recorded checksum.
 - **Collection:** the logical deletion and recovery unit.
 - **Collection archive:** the verified encrypted remote package and its recovery evidence.
 - **Hot storage:** the replaceable materialized cache of verified logical files.
-- **Fetch:** a named request to make selected logical files hot.
+- **Fetch:** a named request to make exact collections hot.
 - **Archive restore:** provider retrieval and verified materialization of collection bytes.
-- **Target selector:** the shared projected-path syntax used to find, fetch, and evict
-  logical files.

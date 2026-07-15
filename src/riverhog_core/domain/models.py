@@ -1,23 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 
 from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, FetchState
-from riverhog_core.domain.types import CollectionId, FetchId, Sha256Hex, TargetStr
-
-
-@dataclass(frozen=True)
-class Target:
-    path: PurePosixPath
-    is_dir: bool
-
-    @property
-    def canonical(self) -> str:
-        canonical = str(self.path)
-        if self.is_dir:
-            canonical += "/"
-        return canonical
+from riverhog_core.domain.types import CollectionId, FetchId, Sha256Hex
 
 
 @dataclass(frozen=True)
@@ -108,7 +94,6 @@ class ArchiveRestoreSummary:
     expires_at: str | None
     completed_at: str | None
     canceled_at: str | None
-    paths: tuple[str, ...] | None
     latest_message: str | None
     warnings: tuple[str, ...]
     notification: ArchiveRestoreNotificationStatus
@@ -155,7 +140,7 @@ class CollectionListPage:
 class FetchSummary:
     id: FetchId
     name: str
-    targets: tuple[TargetStr, ...]
+    collections: tuple[CollectionId, ...]
     state: FetchState
     files: int
     bytes: int

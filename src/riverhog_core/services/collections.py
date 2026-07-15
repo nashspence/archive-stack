@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -31,7 +31,7 @@ from riverhog_core.domain.models import (
 from riverhog_core.domain.types import CollectionId, Sha256Hex
 from riverhog_core.fs_paths import (
     PathNormalizationError,
-    find_collection_id_conflict,
+    collection_id_for_upload,
     normalize_collection_id,
     normalize_relpath,
     normalize_upload_slug,
@@ -124,7 +124,7 @@ class SqlAlchemyCollectionService:
             else None
         )
         requested_collection_id = (
-            _collection_id_for_upload_timestamp(normalized_slug, normalized_upload_timestamp)
+            collection_id_for_upload(normalized_slug, normalized_upload_timestamp)
             if normalized_upload_timestamp is not None
             else None
         )
@@ -163,7 +163,6 @@ class SqlAlchemyCollectionService:
                     normalized_slug,
                 )
                 _ensure_collection_id_unused(session, normalized_collection_id)
-                _ensure_collection_upload_conflict_free(session, normalized_collection_id)
                 upload = CollectionUploadRecord(
                     collection_id=normalized_collection_id,
                     ingest_source=ingest_source,
@@ -232,7 +231,7 @@ class SqlAlchemyCollectionService:
             else None
         )
         requested_collection_id = (
-            _collection_id_for_upload_timestamp(normalized_slug, normalized_upload_timestamp)
+            collection_id_for_upload(normalized_slug, normalized_upload_timestamp)
             if normalized_upload_timestamp is not None
             else None
         )
@@ -288,7 +287,6 @@ class SqlAlchemyCollectionService:
                 normalized_slug,
             )
             _ensure_collection_id_unused(session, normalized_collection_id)
-            _ensure_collection_upload_conflict_free(session, normalized_collection_id)
             now = _utc_now()
             upload = CollectionUploadRecord(
                 collection_id=normalized_collection_id,
@@ -845,6 +843,7 @@ class SqlAlchemyCollectionService:
         q: str | None,
         sort: str = "id",
         order: str = "asc",
+        all_items: bool = False,
     ) -> CollectionListPage:
         if page < 1:
             raise BadRequest("page must be at least 1")
@@ -858,7 +857,12 @@ class SqlAlchemyCollectionService:
         with session_scope(self._session_factory) as session:
             filters: list[ColumnElement[bool]] = []
             if needle is not None:
-                filters.append(func.lower(CollectionRecord.id).like(f"%{needle}%"))
+                filters.append(
+                    func.lower(CollectionRecord.id).like(
+                        _like_pattern(needle),
+                        escape="\\",
+                    )
+                )
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
                 or 0
@@ -871,8 +875,14 @@ class SqlAlchemyCollectionService:
                     func.count(CollectionFileRecord.path).label("files"),
                     func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
                     func.coalesce(
-                        func.sum(CollectionFileRecord.bytes).filter(
-                            CollectionFileRecord.hot.is_(True)
+                        func.sum(
+                            case(
+                                (
+                                    CollectionFileRecord.hot.is_(True),
+                                    CollectionFileRecord.bytes,
+                                ),
+                                else_=0,
+                            )
                         ),
                         0,
                     ).label("hot_bytes"),
@@ -880,48 +890,54 @@ class SqlAlchemyCollectionService:
                 .group_by(CollectionFileRecord.collection_id)
                 .subquery()
             )
+            files_expr = func.coalesce(file_stats.c.files, 0)
+            bytes_expr = func.coalesce(file_stats.c.bytes, 0)
+            hot_bytes_expr = func.coalesce(file_stats.c.hot_bytes, 0)
             sort_columns = {
                 "id": CollectionRecord.id,
-                "bytes": func.coalesce(file_stats.c.bytes, 0),
-                "files": func.coalesce(file_stats.c.files, 0),
-                "hot_bytes": func.coalesce(file_stats.c.hot_bytes, 0),
+                "bytes": bytes_expr,
+                "files": files_expr,
+                "hot_bytes": hot_bytes_expr,
             }
             sort_column = sort_columns[sort]
             order_by = sort_column.desc() if order == "desc" else sort_column.asc()
-            collection_ids = list(
-                session.scalars(
-                    select(CollectionRecord.id)
-                    .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
-                    .where(*filters)
-                    .order_by(order_by, CollectionRecord.id.asc())
-                    .offset(start)
-                    .limit(per_page)
+            collections_stmt = (
+                select(
+                    CollectionRecord.id,
+                    CollectionArchiveRecord,
+                    files_expr,
+                    bytes_expr,
+                    hot_bytes_expr,
                 )
+                .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
+                .outerjoin(
+                    CollectionArchiveRecord,
+                    CollectionArchiveRecord.collection_id == CollectionRecord.id,
+                )
+                .where(*filters)
+                .order_by(order_by, CollectionRecord.id.asc())
             )
-            collections_by_id = {
-                collection.id: collection
-                for collection in session.scalars(
-                    select(CollectionRecord)
-                    .options(
-                        selectinload(CollectionRecord.files),
-                        selectinload(CollectionRecord.archive),
-                    )
-                    .where(CollectionRecord.id.in_(collection_ids))
-                ).all()
-            }
+            if not all_items:
+                collections_stmt = collections_stmt.offset(start).limit(per_page)
+            rows = session.execute(collections_stmt).all()
 
             return CollectionListPage(
-                page=page,
-                per_page=per_page,
+                page=1 if all_items else page,
+                per_page=total if all_items else per_page,
                 total=total,
-                pages=pages,
+                pages=(1 if total else 0) if all_items else pages,
                 collections=[
-                    _summary_from_records(
-                        collections_by_id[collection_id].id,
-                        collections_by_id[collection_id].files,
-                        archive=collections_by_id[collection_id].archive,
+                    CollectionSummary(
+                        id=CollectionId(collection_id),
+                        files=int(files),
+                        bytes=int(bytes_total),
+                        hot_bytes=int(hot_bytes),
+                        archive=_collection_archive_status(archive),
+                        collection_manifest=_collection_manifest_status(archive),
+                        archive_format=(archive.archive_format if archive is not None else None),
+                        compression=archive.compression if archive is not None else None,
                     )
-                    for collection_id in collection_ids
+                    for collection_id, archive, files, bytes_total, hot_bytes in rows
                 ],
             )
 
@@ -931,6 +947,11 @@ def _normalize_collection_id_or_raise(raw: str) -> str:
         return normalize_collection_id(raw)
     except PathNormalizationError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _normalize_upload_slug_or_raise(raw: str) -> str:
@@ -1018,10 +1039,6 @@ def _collection_id_upload_slug(collection_id: str) -> str | None:
     return leaf.split("__", 1)[1]
 
 
-def _collection_id_for_upload_timestamp(upload_slug: str, upload_timestamp: str) -> str:
-    return f"{upload_timestamp[:4]}/{upload_timestamp}__{upload_slug}"
-
-
 def _ensure_requested_collection_id_matches(
     existing_collection_id: str,
     requested_collection_id: str | None,
@@ -1102,7 +1119,7 @@ def _mint_collection_id(session: Session, upload_slug: str) -> str:
     current = _utc_now_dt().replace(microsecond=0)
     while True:
         stamp = current.strftime("%Y%m%dT%H%M%SZ")
-        collection_id = f"{current:%Y}/{stamp}__{upload_slug}"
+        collection_id = collection_id_for_upload(upload_slug, stamp)
         if (
             session.get(CollectionRecord, collection_id) is None
             and session.get(CollectionUploadRecord, collection_id) is None
@@ -1116,20 +1133,6 @@ def _ensure_collection_id_unused(session: Session, collection_id: str) -> None:
         raise Conflict(f"collection already exists: {collection_id}")
     if session.get(CollectionUploadRecord, collection_id) is not None:
         raise Conflict(f"collection upload already exists with different manifest: {collection_id}")
-
-
-def _ensure_collection_upload_conflict_free(session: Session, collection_id: str) -> None:
-    committed_ids = session.scalars(select(CollectionRecord.id)).all()
-    in_progress_ids = session.scalars(select(CollectionUploadRecord.collection_id)).all()
-    conflict = find_collection_id_conflict(
-        [
-            *committed_ids,
-            *(current for current in in_progress_ids if current != collection_id),
-        ],
-        collection_id,
-    )
-    if conflict is not None:
-        raise Conflict(f"collection id conflicts with existing collection: {conflict}")
 
 
 def _validate_existing_upload_manifest(

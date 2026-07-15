@@ -22,7 +22,7 @@ CONFIG = WebhookConfig(
     url="https://example.invalid/webhook",
     base_url="https://riverhog.example.invalid",
 )
-COLLECTIONS = [{"collection_id": "docs"}]
+COLLECTIONS = [{"collection_id": "2025/20250102T030405Z__docs"}]
 CONTRACT_PATH = (
     Path(__file__).resolve().parents[2]
     / "contracts"
@@ -122,7 +122,7 @@ def _all_operator_payloads() -> list[dict[str, object]]:
         build_collection_lifecycle_payload(
             config=CONFIG,
             event=event,
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             delivered_at=NOW,
             details=_collection_details(event),
         )
@@ -220,8 +220,8 @@ def test_archive_restore_started_payload_names_retrieval_and_collection() -> Non
     assert payload["retrieval_tier"] == "bulk"
     assert payload["collections"] == [
         {
-            "collection_id": "docs",
-            "collection_url": "https://riverhog.example.invalid/v1/collections/docs",
+            "collection_id": "2025/20250102T030405Z__docs",
+            "collection_url": "https://riverhog.example.invalid/v1/collections/2025/20250102T030405Z__docs",
         }
     ]
 
@@ -266,9 +266,9 @@ def test_collection_lifecycle_payload_uses_collection_identity() -> None:
     payload = build_collection_lifecycle_payload(
         config=CONFIG,
         event="collections.finalized",
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         delivered_at=NOW,
         details=_collection_details("collections.finalized"),
     )
-    assert payload["collection_id"] == "docs"
+    assert payload["collection_id"] == "2025/20250102T030405Z__docs"
     assert payload["type"] == "collection_lifecycle"

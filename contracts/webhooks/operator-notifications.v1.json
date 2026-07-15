@@ -350,7 +350,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive retrieval is ready. I'm verifying and materializing the selected files now."
+        "body_template": "Oink, archive retrieval is ready. I'm verifying and materializing the collection now."
       },
       "required_payload_fields": [
         "event",
@@ -374,7 +374,7 @@
       "canonical_notification": {
         "actor": "riverhog",
         "title_template": "{emoji} {subject_40}",
-        "body_template": "Oink, archive materialization is complete and the selected files are hot."
+        "body_template": "Oink, archive materialization is complete and the collection is hot."
       },
       "required_payload_fields": [
         "event",

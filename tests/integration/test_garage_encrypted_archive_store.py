@@ -118,7 +118,7 @@ class _MemoryMultipartTracker(ArchiveMultipartUploadTracker):
 def _large_package():
     content = bytes((i * 37 + 9) % 256 for i in range(6 * 1024 * 1024))
     return build_collection_archive_package(
-        collection_id="garage-encrypted",
+        collection_id="2025/20250105T030405Z__garage-encrypted",
         files=(
             CollectionArchiveFile(
                 path="camera/video.bin",
@@ -166,7 +166,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
     if os.environ.get("RIVERHOG_GARAGE_ARCHIVE_ENCRYPTION_TEST") != "1":
         pytest.skip("set RIVERHOG_GARAGE_ARCHIVE_ENCRYPTION_TEST=1 to run against Garage")
 
-    prefix = f"garage-encrypted-test/{uuid.uuid4().hex}"
+    prefix = f"2025/20250105T030405Z__garage-encrypted-test/{uuid.uuid4().hex}"
     archive_storage_prefix = f"{prefix}/archives/opaque"
     passphrase = os.environ.get(
         "RIVERHOG_ARCHIVE_PASSPHRASE",
@@ -192,7 +192,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
     try:
         with pytest.raises(RuntimeError, match="synthetic Garage multipart interruption"):
             store.upload_collection_archive_package(
-                collection_id="garage-encrypted",
+                collection_id="2025/20250105T030405Z__garage-encrypted",
                 package=package,
                 archive_storage_prefix=archive_storage_prefix,
                 multipart_tracker=tracker,
@@ -205,7 +205,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
 
         store._client = real_client  # type: ignore[attr-defined]
         receipt = store.upload_collection_archive_package(
-            collection_id="garage-encrypted",
+            collection_id="2025/20250105T030405Z__garage-encrypted",
             package=package,
             archive_storage_prefix=archive_storage_prefix,
             multipart_tracker=tracker,
@@ -229,21 +229,21 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
         assert decrypt_age_scrypt(manifest_ciphertext, passphrase) == package.manifest_bytes
         restored_archive = b"".join(
             store.iter_restored_collection_archive(
-                collection_id="garage-encrypted",
+                collection_id="2025/20250105T030405Z__garage-encrypted",
                 object_path=receipt.archive.object_path,
             )
         )
         assert restored_archive == package.archive_bytes
         assert (
             store.read_restored_collection_manifest(
-                collection_id="garage-encrypted",
+                collection_id="2025/20250105T030405Z__garage-encrypted",
                 object_path=receipt.manifest.object_path,
             )
             == package.manifest_bytes
         )
         assert (
             store.read_restored_collection_manifest_proof(
-                collection_id="garage-encrypted",
+                collection_id="2025/20250105T030405Z__garage-encrypted",
                 object_path=receipt.proof.object_path,
             )
             == package.proof_bytes

@@ -4,16 +4,16 @@ from riverhog_api.schemas.common import RiverhogModel
 
 
 class FileStateOut(RiverhogModel):
-    target: str
-    collection: str
-    path: str
+    logical_path: str
+    collection_id: str
+    collection_path: str
     bytes: int
     sha256: str
     hot: bool
 
 
 class FilesResponse(RiverhogModel):
-    target: str
+    path: str
     page: int
     per_page: int
     total: int

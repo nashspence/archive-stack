@@ -7,8 +7,8 @@ from sqlalchemy.orm import selectinload
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord
-from riverhog_core.domain.errors import InvalidTarget, NotFound
-from riverhog_core.domain.selectors import parse_target
+from riverhog_core.domain.errors import InvalidPath, NotFound
+from riverhog_core.domain.file_paths import parse_logical_path
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
 
@@ -48,14 +48,14 @@ class SqlAlchemyFileService:
         self._hot_store = hot_store
         self._session_factory = make_session_factory(config.database_url)
 
-    def query_by_target(
+    def query_by_path(
         self,
-        raw_target: str,
+        raw_path: str,
         *,
         page: int,
         per_page: int,
     ) -> dict[str, object]:
-        target = parse_target(raw_target)
+        logical_path = parse_logical_path(raw_path)
 
         with session_scope(self._session_factory) as session:
             all_files = session.scalars(
@@ -67,46 +67,50 @@ class SqlAlchemyFileService:
         result: list[dict[str, object]] = []
         for file_record in all_files:
             projected = f"{file_record.collection_id}/{file_record.path}"
-            if target.is_dir:
-                if not projected.startswith(target.canonical):
+            if logical_path.is_directory:
+                if not projected.startswith(logical_path.canonical):
                     continue
             else:
-                if projected != target.canonical:
+                if projected != logical_path.canonical:
                     continue
             result.append(
                 {
-                    "target": projected,
-                    "collection": file_record.collection_id,
-                    "path": file_record.path,
+                    "logical_path": projected,
+                    "collection_id": file_record.collection_id,
+                    "collection_path": file_record.path,
                     "bytes": file_record.bytes,
                     "sha256": file_record.sha256,
                     "hot": file_record.hot,
                 }
             )
-        records = sorted(result, key=lambda r: str(r["target"]))
+        records = sorted(result, key=lambda record: str(record["logical_path"]))
         return {
-            "target": target.canonical,
+            "path": logical_path.canonical,
             **_paginate_file_records(records, page=page, per_page=per_page),
         }
 
-    def get_content(self, raw_target: str) -> bytes:
-        target = parse_target(raw_target)
-        if target.is_dir:
-            raise InvalidTarget("directory selectors are not supported for content download")
+    def get_content(self, raw_path: str) -> bytes:
+        logical_path = parse_logical_path(raw_path)
+        if logical_path.is_directory:
+            raise InvalidPath("a directory path does not identify one file")
 
         with session_scope(self._session_factory) as session:
             all_files = session.scalars(
                 select(CollectionFileRecord).options(selectinload(CollectionFileRecord.collection))
             ).all()
 
-            matching = [f for f in all_files if f"{f.collection_id}/{f.path}" == target.canonical]
+            matching = [
+                file
+                for file in all_files
+                if f"{file.collection_id}/{file.path}" == logical_path.canonical
+            ]
 
             if not matching:
-                raise NotFound(f"file not found: {raw_target}")
+                raise NotFound(f"file not found: {raw_path}")
 
             file_record = matching[0]
             if not file_record.hot:
-                raise NotFound(f"file is not hot: {raw_target}")
+                raise NotFound(f"file is not hot: {raw_path}")
 
         return _read_collection_file_content(
             self._hot_store,

@@ -37,5 +37,4 @@ def test_archive_restore_schema_is_collection_materialization() -> None:
         "state",
         "collections",
         "progress",
-        "paths",
     }

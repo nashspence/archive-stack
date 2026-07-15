@@ -102,12 +102,12 @@ def _seed(path: Path, hot_store: FakeHotStore, *, archived: bool = True) -> None
     contents = {"a.txt": b"alpha", "b.txt": b"bravo"}
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         for name, content in contents.items():
-            hot_store.put_collection_file("docs", name, content)
+            hot_store.put_collection_file("2025/20250102T030405Z__docs", name, content)
             session.add(
                 CollectionFileRecord(
-                    collection_id="docs",
+                    collection_id="2025/20250102T030405Z__docs",
                     path=name,
                     bytes=len(content),
                     sha256=hashlib.sha256(content).hexdigest(),
@@ -117,7 +117,7 @@ def _seed(path: Path, hot_store: FakeHotStore, *, archived: bool = True) -> None
         if archived:
             session.add(
                 CollectionArchiveRecord(
-                    collection_id="docs",
+                    collection_id="2025/20250102T030405Z__docs",
                     state="uploaded",
                     object_path="collections/docs/archive.tar.age",
                     stored_bytes=100,
@@ -152,7 +152,10 @@ def test_fetch_start_reports_hot_selection(tmp_path: Path) -> None:
     _seed(path, hot_store)
     service = _service(path, hot_store)
 
-    fetch = service.create(name="documents", targets=["docs/"])
+    fetch = service.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
     started = service.start(str(fetch.id))
 
     assert started.state == FetchState.DONE
@@ -161,18 +164,71 @@ def test_fetch_start_reports_hot_selection(tmp_path: Path) -> None:
     assert started.missing_files == 0
 
 
+def test_fetch_list_aggregates_all_collection_totals_in_the_database(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    hot_store = FakeHotStore()
+    _seed(path, hot_store)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add(CollectionRecord(id="2025/20250103T030405Z__small"))
+        session.add(
+            CollectionFileRecord(
+                collection_id="2025/20250103T030405Z__small",
+                path="small.txt",
+                bytes=3,
+                sha256=hashlib.sha256(b"abc").hexdigest(),
+                hot=False,
+            )
+        )
+    service = _service(path, hot_store)
+    service.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
+    service.create(
+        name="small",
+        collections=["2025/20250103T030405Z__small"],
+    )
+
+    page = service.list(
+        page=2,
+        per_page=1,
+        sort="bytes",
+        order="desc",
+        all_items=True,
+    )
+    filtered = service.list(
+        page=1,
+        per_page=25,
+        q="20250103T030405Z__small",
+    )
+
+    assert page.page == 1
+    assert page.per_page == 2
+    assert [
+        (str(fetch.id), fetch.files, fetch.bytes, fetch.hot_bytes) for fetch in page.fetches
+    ] == [("fx-1", 2, 10, 10), ("fx-2", 1, 3, 0)]
+    assert [str(fetch.id) for fetch in filtered.fetches] == ["fx-2"]
+
+
 def test_fetch_start_queues_archive_materialization_for_missing_files(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     hot_store = FakeHotStore()
     _seed(path, hot_store)
-    hot_store.delete_collection_file("docs", "b.txt")
+    hot_store.delete_collection_file("2025/20250102T030405Z__docs", "b.txt")
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.get(CollectionFileRecord, {"collection_id": "docs", "path": "b.txt"}).hot = False
+        session.get(
+            CollectionFileRecord, {"collection_id": "2025/20250102T030405Z__docs", "path": "b.txt"}
+        ).hot = False
     service = _service(path, hot_store)
 
-    fetch = service.create(name="documents", targets=["docs/"])
+    fetch = service.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
     started = service.start(str(fetch.id))
 
     assert started.state == FetchState.QUEUED_ARCHIVE
@@ -185,12 +241,15 @@ def test_fetch_start_refuses_collection_with_active_deletion(tmp_path: Path) -> 
     hot_store = FakeHotStore()
     _seed(path, hot_store)
     service = _service(path, hot_store)
-    fetch = service.create(name="documents", targets=["docs/"])
+    fetch = service.create(
+        name="documents",
+        collections=["2025/20250102T030405Z__docs"],
+    )
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
             CollectionDeletionRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 challenge="delete-test",
                 plan_json="{}",
                 started_at="2026-07-14T00:00:00Z",
@@ -208,7 +267,7 @@ def test_hot_eviction_requires_complete_collection_archive_upload(tmp_path: Path
     _seed(path, hot_store, archived=False)
 
     with pytest.raises(Conflict, match="archive upload is complete"):
-        _service(path, hot_store).evict(["docs/a.txt"])
+        _service(path, hot_store).evict(["2025/20250102T030405Z__docs"])
 
 
 def test_hot_eviction_updates_store_and_catalog(tmp_path: Path) -> None:
@@ -218,17 +277,22 @@ def test_hot_eviction_updates_store_and_catalog(tmp_path: Path) -> None:
     archive_store = FakeArchiveStore()
     _seed(path, hot_store)
 
-    payload = _service(path, hot_store, archive_store).evict(["docs/a.txt"])
+    payload = _service(path, hot_store, archive_store).evict(["2025/20250102T030405Z__docs"])
 
-    assert payload["evicted_files"] == 1
-    assert archive_store.checks[0][0] == "docs"
+    assert payload["evicted_files"] == 2
+    assert archive_store.checks[0][0] == "2025/20250102T030405Z__docs"
     assert archive_store.checks[0][1].archive.sha256 == "a" * 64
     assert archive_store.checks[0][1].manifest.sha256 == "b" * 64
     assert archive_store.checks[0][1].proof.sha256 == "c" * 64
-    assert hot_store.deleted[-1] == ("docs", "a.txt")
+    assert set(hot_store.deleted) == {
+        ("2025/20250102T030405Z__docs", "a.txt"),
+        ("2025/20250102T030405Z__docs", "b.txt"),
+    }
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        row = session.get(CollectionFileRecord, {"collection_id": "docs", "path": "a.txt"})
+        row = session.get(
+            CollectionFileRecord, {"collection_id": "2025/20250102T030405Z__docs", "path": "a.txt"}
+        )
         assert row is not None and row.hot is False
 
 
@@ -239,12 +303,18 @@ def test_hot_eviction_dry_run_only_previews_selected_files(tmp_path: Path) -> No
     archive_store = FakeArchiveStore()
     _seed(path, hot_store)
 
-    payload = _service(path, hot_store, archive_store).evict(["docs/"], dry_run=True)
+    payload = _service(path, hot_store, archive_store).evict(
+        ["2025/20250102T030405Z__docs"],
+        dry_run=True,
+    )
 
     assert payload["status"] == "would_evict"
     assert payload["would_evict_files"] == 2
     assert archive_store.checks == []
-    assert set(hot_store.files) == {("docs", "a.txt"), ("docs", "b.txt")}
+    assert set(hot_store.files) == {
+        ("2025/20250102T030405Z__docs", "a.txt"),
+        ("2025/20250102T030405Z__docs", "b.txt"),
+    }
 
 
 def test_hot_eviction_keeps_hot_files_when_remote_archive_check_fails(tmp_path: Path) -> None:
@@ -255,8 +325,11 @@ def test_hot_eviction_keeps_hot_files_when_remote_archive_check_fails(tmp_path: 
     archive_store.failure = ArchivePackageVerificationError("manifest checksum changed")
     _seed(path, hot_store)
 
-    with pytest.raises(Conflict, match="does not match its upload record"):
-        _service(path, hot_store, archive_store).evict(["docs/"])
+    with pytest.raises(Conflict, match="does not match the upload record"):
+        _service(path, hot_store, archive_store).evict(["2025/20250102T030405Z__docs"])
 
-    assert set(hot_store.files) == {("docs", "a.txt"), ("docs", "b.txt")}
+    assert set(hot_store.files) == {
+        ("2025/20250102T030405Z__docs", "a.txt"),
+        ("2025/20250102T030405Z__docs", "b.txt"),
+    }
     assert hot_store.deleted == []

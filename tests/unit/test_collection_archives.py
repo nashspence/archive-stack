@@ -32,7 +32,7 @@ _PROOF_VERIFIER = FixtureProofVerifier()
 def test_collection_archive_package_uses_plain_tar_contract() -> None:
     content = b"invoice bytes"
     package = build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(
             CollectionArchiveFile(
                 path="tax/2022/invoice.pdf",
@@ -94,7 +94,7 @@ def test_collection_archive_package_uses_pax_for_long_paths() -> None:
     content = b"photo bytes"
     long_path = f"{'a' * 101}.mp4"
     package = build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(
             CollectionArchiveFile(
                 path=long_path,
@@ -115,7 +115,7 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
     content = b"receipt bytes"
     digest = hashlib.sha256(content).hexdigest()
     package = build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(
             CollectionArchiveFile(
                 path="tax/2022/receipt.pdf",
@@ -140,7 +140,7 @@ def test_manifest_and_proof_verification_use_catalog_and_manifest_digest() -> No
     verify_collection_manifest(
         manifest_bytes=package.manifest_bytes,
         expected_sha256=package.manifest_sha256,
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=expected_files,
     )
     verify_collection_manifest_proof(
@@ -173,7 +173,7 @@ def test_collection_archive_reader_streams_chunk_iterables() -> None:
         ),
     )
     package = build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=files,
         stamper=_PROOF_STAMPER,
     )
@@ -201,7 +201,7 @@ def test_collection_archive_package_from_chunk_reader_does_not_require_whole_fil
             yield chunk
 
     package = build_collection_archive_package_from_chunk_reader(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(
             CollectionArchiveExpectedFile(
                 path="large.bin",
@@ -242,7 +242,7 @@ def test_collection_archive_package_can_resume_from_ranged_file_reader() -> None
         yield content[offset:] if size is None else content[offset : offset + size]
 
     package = build_collection_archive_package_from_chunk_reader(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=files,
         read_file_chunks=read_chunks,
         read_file_chunks_range=read_range,
@@ -267,7 +267,7 @@ def test_collection_archive_package_can_reuse_prebuilt_manifest_proof_and_archiv
         sha256=digest,
     )
     original = build_collection_archive_package_from_chunk_reader(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(file,),
         read_file_chunks=lambda _path: (content,),
         stamper=_PROOF_STAMPER,
@@ -282,7 +282,7 @@ def test_collection_archive_package_can_reuse_prebuilt_manifest_proof_and_archiv
             yield chunk
 
     rebuilt = build_collection_archive_package_from_prebuilt_artifacts(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(file,),
         read_file_chunks=read_chunks,
         manifest_bytes=original.manifest_bytes,
@@ -302,7 +302,7 @@ def test_collection_archive_package_can_reuse_prebuilt_manifest_proof_and_archiv
 
 def test_collection_archive_file_verification_rejects_mismatched_members() -> None:
     package = build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=(
             CollectionArchiveFile(
                 path="a.txt",

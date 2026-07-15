@@ -18,6 +18,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionRecord,
     CollectionUploadRecord,
+    FetchCollectionRecord,
     FetchRecord,
 )
 from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
@@ -31,7 +32,6 @@ from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
 )
-from riverhog_core.services.target_selection import selected_collection_files
 
 _PLAN_TTL = timedelta(minutes=15)
 _CHALLENGE_RE = re.compile(r"^delete-(\d+)-([0-9a-f]{64})$")
@@ -219,9 +219,7 @@ class SqlAlchemyCollectionDeletionService:
 
 def require_collection_not_deleting(session: Session, collection_id: str) -> None:
     session.scalar(
-        select(CollectionRecord.id)
-        .where(CollectionRecord.id == collection_id)
-        .with_for_update()
+        select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
     )
     if session.get(CollectionDeletionRecord, collection_id) is not None:
         raise Conflict(f"collection deletion is in progress: {collection_id}")
@@ -330,9 +328,7 @@ def _build_plan(
         "hot_files": len(hot_objects),
         "hot_bytes": sum(cast(int, item["bytes"]) for item in hot_objects),
         "archive_objects": archive_objects,
-        "remote_storage_bytes": sum(
-            cast(int, item["stored_bytes"]) for item in archive_objects
-        ),
+        "remote_storage_bytes": sum(cast(int, item["stored_bytes"]) for item in archive_objects),
         "upload_files": upload_files,
         "archive_restores": [restore.restore_id for restore in restores],
         "metadata_rows": {
@@ -354,23 +350,17 @@ def _build_plan(
 
 
 def _active_fetch_ids(session: Session, collection_id: str) -> list[str]:
-    fetches = session.scalars(
-        select(FetchRecord)
-        .options(selectinload(FetchRecord.selectors))
-        .where(FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES))
-        .order_by(FetchRecord.fetch_id)
-    ).all()
-    active: list[str] = []
-    for fetch in fetches:
-        if any(
-            any(
-                file.collection_id == collection_id
-                for file in selected_collection_files(session, selector.target, missing_ok=True)
+    return list(
+        session.scalars(
+            select(FetchRecord.fetch_id)
+            .join(FetchCollectionRecord)
+            .where(
+                FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES),
+                FetchCollectionRecord.collection_id == collection_id,
             )
-            for selector in fetch.selectors
-        ):
-            active.append(fetch.fetch_id)
-    return active
+            .order_by(FetchRecord.fetch_id)
+        ).all()
+    )
 
 
 def _plan_challenge(plan: dict[str, object], expires_at: datetime) -> str:

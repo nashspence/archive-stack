@@ -34,6 +34,7 @@ def list_collections(
     q: str | None = Query(None),
     sort: str = Query("id"),
     order: str = Query("asc"),
+    all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionsResponse:
     summary = container.collections.list(
         page=page,
@@ -41,6 +42,7 @@ def list_collections(
         q=q,
         sort=sort,
         order=order,
+        all_items=all_items,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 

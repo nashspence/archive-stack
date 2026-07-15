@@ -175,14 +175,14 @@ def test_put_collection_file_stream_uses_single_put_for_small_file(
     store = _store_with_client(monkeypatch, tmp_path, client)
 
     store.put_collection_file_stream(
-        "docs",
+        "2025/20250102T030405Z__docs",
         "small.bin",
         (chunk for chunk in [b"abc", b"defg", b"hi"]),
         content_length=9,
         sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
     )
 
-    assert store.get_collection_file("docs", "small.bin") == b"abcdefghi"
+    assert store.get_collection_file("2025/20250102T030405Z__docs", "small.bin") == b"abcdefghi"
     assert client.uploaded_part_sizes == []
     assert client.completed_uploads == []
     assert client.uploads == {}
@@ -197,17 +197,17 @@ def test_put_collection_file_stream_completes_multipart_upload(
     monkeypatch.setattr("riverhog_core.stores.s3_hot_store._MIN_MULTIPART_PART_SIZE", 4)
 
     store.put_collection_file_stream(
-        "docs",
+        "2025/20250102T030405Z__docs",
         "large.bin",
         (chunk for chunk in [b"abc", b"defg", b"hi"]),
         content_length=9,
         sha256="19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f",
     )
 
-    assert store.get_collection_file("docs", "large.bin") == b"abcdefghi"
-    assert store.stat_collection_file("docs", "large.bin").bytes == 9
+    assert store.get_collection_file("2025/20250102T030405Z__docs", "large.bin") == b"abcdefghi"
+    assert store.stat_collection_file("2025/20250102T030405Z__docs", "large.bin").bytes == 9
     assert (
-        store.stat_collection_file("docs", "large.bin").sha256
+        store.stat_collection_file("2025/20250102T030405Z__docs", "large.bin").sha256
         == "19cc02f26df43cc571bc9ed7b0c4d29224a3ec229529221725ef76d021c8326f"
     )
     assert client.uploaded_part_sizes == [4, 4, 1]
@@ -230,7 +230,7 @@ def test_put_collection_file_stream_aborts_multipart_upload_after_failed_stream(
 
     with pytest.raises(ValueError, match="bad stream"):
         store.put_collection_file_stream(
-            "docs",
+            "2025/20250102T030405Z__docs",
             "large.bin",
             chunks(),
             content_length=9,
@@ -310,7 +310,7 @@ def test_put_collection_file_stream_resumes_tracked_multipart_upload(
 
     with pytest.raises(ValueError, match="network disappeared"):
         store.put_collection_file_stream_resumable(
-            "docs",
+            "2025/20250102T030405Z__docs",
             "large.bin",
             interrupted_chunks(),
             content_length=9,
@@ -323,7 +323,7 @@ def test_put_collection_file_stream_resumes_tracked_multipart_upload(
     assert len(tracker.state.parts) == 1
 
     store.put_collection_file_stream_resumable(
-        "docs",
+        "2025/20250102T030405Z__docs",
         "large.bin",
         (chunk for chunk in [b"abc", b"defg", b"hi"]),
         content_length=9,
@@ -331,7 +331,7 @@ def test_put_collection_file_stream_resumes_tracked_multipart_upload(
         multipart_tracker=tracker,
     )
 
-    assert store.get_collection_file("docs", "large.bin") == b"abcdefghi"
+    assert store.get_collection_file("2025/20250102T030405Z__docs", "large.bin") == b"abcdefghi"
     assert client.uploaded_part_sizes == [4, 4, 1]
     assert client.completed_uploads == ["upload-1"]
     assert tracker.cleared_upload_ids == ["upload-1"]

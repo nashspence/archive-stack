@@ -13,8 +13,8 @@ class BadRequest(RiverhogError):
     code = "bad_request"
 
 
-class InvalidTarget(RiverhogError):
-    code = "invalid_target"
+class InvalidPath(RiverhogError):
+    code = "invalid_path"
 
 
 class NotFound(RiverhogError):

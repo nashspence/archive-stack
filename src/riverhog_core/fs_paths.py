@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import shutil
 import unicodedata
-from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -34,23 +33,6 @@ def normalize_relpath(raw: str) -> str:
     if not parts:
         raise PathNormalizationError("path must not be empty")
     return "/".join(parts)
-
-
-def normalize_collection_id(raw: str) -> str:
-    if not raw.strip():
-        raise PathNormalizationError("collection id must not be empty")
-    candidate = raw.replace("\\", "/")
-    normalized = normalize_relpath(candidate)
-    if raw != normalized:
-        raise PathNormalizationError("collection id must be canonical")
-    return normalized
-
-
-def normalize_root_node_name(raw: str) -> str:
-    normalized = normalize_collection_id(raw)
-    if "/" in normalized:
-        raise PathNormalizationError("root node name must be a single path segment")
-    return normalized
 
 
 def normalize_upload_slug(raw: str) -> str:
@@ -84,25 +66,30 @@ def normalize_upload_timestamp(raw: str) -> str:
     return candidate
 
 
-def collection_id_ancestors(collection_id: str) -> list[str]:
-    parts = normalize_collection_id(collection_id).split("/")
-    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+def collection_id_for_upload(upload_slug: str, upload_timestamp: str) -> str:
+    slug = normalize_upload_slug(upload_slug)
+    timestamp = normalize_upload_timestamp(upload_timestamp)
+    return f"{timestamp[:4]}/{timestamp}__{slug}"
 
 
-def find_collection_id_conflict(existing_ids: Iterable[str], candidate: str) -> str | None:
-    normalized_candidate = normalize_collection_id(candidate)
-    normalized_existing = {normalize_collection_id(current) for current in existing_ids}
-
-    for ancestor in collection_id_ancestors(normalized_candidate):
-        if ancestor in normalized_existing:
-            return ancestor
-
-    prefix = f"{normalized_candidate}/"
-    for existing in sorted(normalized_existing):
-        if existing.startswith(prefix):
-            return existing
-
-    return None
+def normalize_collection_id(raw: str) -> str:
+    if not raw.strip():
+        raise PathNormalizationError("collection id must not be empty")
+    normalized = normalize_relpath(raw.replace("\\", "/"))
+    if raw != normalized:
+        raise PathNormalizationError("collection id must be canonical")
+    parts = normalized.split("/")
+    if len(parts) != 2 or "__" not in parts[1]:
+        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug")
+    year, leaf = parts
+    timestamp, slug = leaf.split("__", 1)
+    try:
+        expected = collection_id_for_upload(slug, timestamp)
+    except PathNormalizationError as exc:
+        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug") from exc
+    if year != timestamp[:4] or normalized != expected:
+        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug")
+    return normalized
 
 
 def path_parents(relpath: str) -> list[str]:

@@ -3,11 +3,9 @@ from __future__ import annotations
 import pytest
 
 from riverhog_core.fs_paths import (
-    collection_id_ancestors,
-    find_collection_id_conflict,
+    collection_id_for_upload,
     normalize_collection_id,
     normalize_relpath,
-    normalize_root_node_name,
     normalize_upload_slug,
     normalize_upload_timestamp,
     path_parents,
@@ -23,19 +21,33 @@ def test_normalize_relpath_rejects_escape() -> None:
         normalize_relpath("../x")
 
 
-def test_normalize_collection_id_accepts_nested_canonical_ids() -> None:
-    assert normalize_collection_id("tax/2022") == "tax/2022"
+def test_collection_id_for_upload_uses_year_timestamp_and_slug() -> None:
+    assert (
+        collection_id_for_upload("Family Photos", "20250712T213200Z")
+        == "2025/20250712T213200Z__family-photos"
+    )
 
 
-@pytest.mark.parametrize("raw", [" tax/2022 ", "tax//2022", "tax/./2022", "tax\\2022", "/tax/2022"])
-def test_normalize_collection_id_rejects_non_canonical_ids(raw: str) -> None:
+def test_normalize_collection_id_accepts_canonical_upload_id() -> None:
+    collection_id = "2025/20250712T213200Z__family-photos"
+    assert normalize_collection_id(collection_id) == collection_id
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2025/20250712T213200Z__Family-Photos",
+        "2024/20250712T213200Z__family-photos",
+        "2025/20250230T213200Z__family-photos",
+        "2025/20250712T213200Z__family_photos",
+        " 2025/20250712T213200Z__family-photos ",
+        "2025//20250712T213200Z__family-photos",
+        "/2025/20250712T213200Z__family-photos",
+    ],
+)
+def test_normalize_collection_id_requires_canonical_upload_id(raw: str) -> None:
     with pytest.raises(ValueError):
         normalize_collection_id(raw)
-
-
-def test_normalize_root_node_name_rejects_nested() -> None:
-    with pytest.raises(ValueError):
-        normalize_root_node_name("a/b")
 
 
 @pytest.mark.parametrize(
@@ -74,16 +86,6 @@ def test_normalize_upload_timestamp_rejects_non_canonical_or_invalid_values(
 ) -> None:
     with pytest.raises(ValueError):
         normalize_upload_timestamp(raw)
-
-
-def test_collection_id_ancestors_list_parent_prefixes() -> None:
-    assert collection_id_ancestors("tax/2022/invoices") == ["tax", "tax/2022"]
-
-
-def test_find_collection_id_conflict_reports_ancestor_or_descendant() -> None:
-    assert find_collection_id_conflict(["tax"], "tax/2022") == "tax"
-    assert find_collection_id_conflict(["tax/2022"], "tax") == "tax/2022"
-    assert find_collection_id_conflict(["docs"], "tax/2022") is None
 
 
 def test_path_parents_lists_intermediate_dirs() -> None:

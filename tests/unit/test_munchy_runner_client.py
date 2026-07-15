@@ -311,7 +311,7 @@ def test_format_encode_progress_distinguishes_file_and_input_byte_percent() -> N
 
 def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
     progress = {
-        "collection_id": "2026/camera",
+        "collection_id": "2026/20260101T000000Z__camera",
         "archive_phase": "uploading",
         "archive_uploaded_bytes": 4_000,
         "archive_total_bytes": 10_000,
@@ -336,7 +336,7 @@ def test_format_riverhog_archive_and_promotion_progress_are_separate() -> None:
 def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
     progress = riverhog_archive_progress(
         {
-            "collection_id": "2026/camera",
+            "collection_id": "2026/20260101T000000Z__camera",
             "archive_phase": "",
             "archive_uploaded_bytes": 0,
             "archive_total_bytes": 0,
@@ -701,7 +701,7 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
         "state": "running",
         "phase": "eager_archive:pipeline=3/3",
         "riverhog_upload_progress": {
-            "collection_id": "2026/camera",
+            "collection_id": "2026/20260101T000000Z__camera",
             "primary_files_uploaded": 3,
             "primary_files_total": 10,
             "percent_primary_files": 30.0,
@@ -861,7 +861,7 @@ def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
             "job_id": "job-1",
             "state": "succeeded",
             "riverhog_upload_progress": {
-                "collection_id": "2026/camera",
+                "collection_id": "2026/20260101T000000Z__camera",
                 "state": "archiving",
                 "safe_to_delete": False,
             },
@@ -870,7 +870,7 @@ def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
             "job_id": "job-1",
             "state": "succeeded",
             "riverhog_upload_progress": {
-                "collection_id": "2026/camera",
+                "collection_id": "2026/20260101T000000Z__camera",
                 "state": "finalized",
                 "safe_to_delete": True,
             },
@@ -895,7 +895,7 @@ def test_job_finished_cleanly_rejects_unfinalized_riverhog_job() -> None:
         {
             "state": "succeeded",
             "riverhog_upload_progress": {
-                "collection_id": "2026/camera",
+                "collection_id": "2026/20260101T000000Z__camera",
                 "state": "archiving",
                 "safe_to_delete": False,
             },

@@ -57,7 +57,7 @@ def format_find(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "files")]
     for file in _items(payload, "files"):
         lines.append(
-            f"- {file.get('target', 'unknown')}  {_bytes(file.get('bytes'))}  "
+            f"- {file.get('logical_path', 'unknown')}  {_bytes(file.get('bytes'))}  "
             f"hot={str(bool(file.get('hot'))).lower()}"
         )
     return "\n".join(lines)
@@ -95,9 +95,7 @@ def format_collection_summary(
     if archive_report is not None:
         totals = archive_report.get("totals")
         if isinstance(totals, Mapping):
-            lines.append(
-                f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}"
-            )
+            lines.append(f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}")
     return "\n".join(lines)
 
 
@@ -111,8 +109,7 @@ def format_collection_deletion_plan(payload: Mapping[str, object]) -> str:
     archive_restores = payload.get("archive_restores")
     archive_restore_count = (
         len(archive_restores)
-        if isinstance(archive_restores, Sequence)
-        and not isinstance(archive_restores, (str, bytes))
+        if isinstance(archive_restores, Sequence) and not isinstance(archive_restores, (str, bytes))
         else 0
     )
     lines = [
@@ -193,9 +190,9 @@ def format_fetch(payload: Mapping[str, object]) -> str:
         f"hot: {payload.get('hot_files', 0)} ({_bytes(payload.get('hot_bytes'))})",
         f"missing: {payload.get('missing_files', 0)} ({_bytes(payload.get('missing_bytes'))})",
     ]
-    targets = payload.get("targets")
-    if isinstance(targets, Sequence) and not isinstance(targets, (str, bytes)):
-        lines.append("targets: " + ", ".join(str(target) for target in targets))
+    collections = payload.get("collections")
+    if isinstance(collections, Sequence) and not isinstance(collections, (str, bytes)):
+        lines.append("collections: " + ", ".join(str(collection) for collection in collections))
     action = payload.get("next_action")
     if isinstance(action, Mapping):
         lines.append(f"next: {action.get('action', 'none')} — {action.get('reason', '')}")
@@ -250,9 +247,6 @@ def format_archive_restore(payload: Mapping[str, object]) -> str:
     ]
     if payload.get("latest_message"):
         lines.append(f"message: {payload['latest_message']}")
-    paths = payload.get("paths")
-    if isinstance(paths, Sequence) and not isinstance(paths, (str, bytes)):
-        lines.append(f"paths: {len(paths)}")
     return "\n".join(lines)
 
 

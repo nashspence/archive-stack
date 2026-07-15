@@ -17,16 +17,16 @@ JsonObject = dict[str, object]
 
 
 class FileStatePayload(TypedDict):
-    target: str
-    collection: str
-    path: str
+    logical_path: str
+    collection_id: str
+    collection_path: str
     bytes: int
     sha256: str
     hot: bool
 
 
 class FilesPayload(TypedDict):
-    target: str
+    path: str
     page: int
     per_page: int
     total: int
@@ -88,6 +88,7 @@ class CollectionService(Protocol):
         q: str | None,
         sort: str = "id",
         order: str = "asc",
+        all_items: bool = False,
     ) -> CollectionListPage: ...
 
 
@@ -133,12 +134,7 @@ class ArchiveRestoreService(Protocol):
         collection: str | None = None,
     ) -> ArchiveRestoreListPage: ...
     def get(self, restore_id: str) -> ArchiveRestoreSummary: ...
-    def create_or_resume_for_collection(
-        self,
-        collection_id: str,
-        *,
-        paths: Sequence[str] | None = None,
-    ) -> ArchiveRestoreSummary: ...
+    def create_or_resume_for_collection(self, collection_id: str) -> ArchiveRestoreSummary: ...
     def list_for_fetch(
         self,
         fetch_id: str,
@@ -157,7 +153,7 @@ class ArchiveRestoreService(Protocol):
 
 
 class FetchService(Protocol):
-    def create(self, *, name: str, targets: Sequence[str] | None = None) -> FetchSummary: ...
+    def create(self, *, name: str, collections: Sequence[str] | None = None) -> FetchSummary: ...
     def list(
         self,
         *,
@@ -167,12 +163,13 @@ class FetchService(Protocol):
         q: str | None = None,
         sort: str = "order",
         order: str = "asc",
+        all_items: bool = False,
     ) -> FetchListPage: ...
-    def add_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary: ...
-    def remove_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary: ...
+    def add_collections(self, fetch_id: str, collections: Sequence[str]) -> FetchSummary: ...
+    def remove_collections(self, fetch_id: str, collections: Sequence[str]) -> FetchSummary: ...
     def start(self, fetch_id: str) -> FetchSummary: ...
     def cancel(self, fetch_id: str) -> FetchSummary: ...
-    def evict(self, targets: Sequence[str], *, dry_run: bool = False) -> JsonObject: ...
+    def evict(self, collections: Sequence[str], *, dry_run: bool = False) -> JsonObject: ...
     def get(self, fetch_id: str) -> FetchSummary: ...
     def status(self, fetch_id: str) -> JsonObject: ...
     def files(
@@ -186,12 +183,14 @@ class FetchService(Protocol):
         q: str | None = None,
         hot: bool | None = None,
     ) -> JsonObject: ...
+
+
 class FileService(Protocol):
-    def query_by_target(
+    def query_by_path(
         self,
-        raw_target: str,
+        raw_path: str,
         *,
         page: int,
         per_page: int,
     ) -> dict[str, object]: ...
-    def get_content(self, raw_target: str) -> bytes: ...
+    def get_content(self, raw_path: str) -> bytes: ...

@@ -108,13 +108,13 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     config = RuntimeConfig(database_url=database_url)
     hot_store = MemoryHotStore()
     content = b"current archive contract\n"
-    hot_store.put_collection_file("docs", "readme.txt", content)
+    hot_store.put_collection_file("2025/20250102T030405Z__docs", "readme.txt", content)
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add(
             CollectionFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="readme.txt",
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
@@ -123,7 +123,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         )
         session.add(
             CollectionArchiveRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="uploaded",
                 object_path="collections/docs/archive.tar.age",
                 stored_bytes=100,
@@ -171,25 +171,28 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
 def test_collection_search_and_archive_report_share_current_identity(
     client: TestClient,
 ) -> None:
-    collection = client.get("/v1/collections/docs").json()
+    collection = client.get("/v1/collections/2025/20250102T030405Z__docs").json()
     search = client.get("/v1/search", params={"q": "readme"}).json()
     archive = client.get("/v1/archive").json()
 
-    assert collection["id"] == "docs"
+    assert collection["id"] == "2025/20250102T030405Z__docs"
     assert collection["archive"]["state"] == "uploaded"
-    assert search["files"][0]["target"] == "docs/readme.txt"
+    assert search["files"][0]["logical_path"] == ("2025/20250102T030405Z__docs/readme.txt")
     assert archive["totals"]["uploaded_collections"] == 1
     assert archive["totals"]["measured_storage_bytes"] == 130
 
 
-def test_hot_fetch_completes_when_selected_files_are_available(client: TestClient) -> None:
+def test_hot_fetch_completes_when_collection_is_available(client: TestClient) -> None:
     created = client.post(
         "/v1/fetches",
-        json={"name": "documentation", "targets": ["docs/"]},
+        json={
+            "name": "documentation",
+            "collections": ["2025/20250102T030405Z__docs"],
+        },
     ).json()
     started = client.post(f"/v1/fetches/{created['id']}/start").json()
     status = client.get(f"/v1/fetches/{created['id']}/status").json()
-    content = client.get("/v1/files/docs/readme.txt/content")
+    content = client.get("/v1/files/2025/20250102T030405Z__docs/readme.txt/content")
 
     assert started["state"] == "done"
     assert status["hot_files"] == 1

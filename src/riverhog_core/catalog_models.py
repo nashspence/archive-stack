@@ -49,9 +49,7 @@ class CollectionFileRecord(Base):
     hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
         Integer, default=0, nullable=True
     )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -129,9 +127,7 @@ class ArchiveRestoreRecord(Base):
     last_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
     started_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    started_notification_next_attempt_at: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
+    started_notification_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     started_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_notification_next_attempt_at: Mapped[str | None] = mapped_column(
@@ -139,21 +135,15 @@ class ArchiveRestoreRecord(Base):
     )
     completed_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     canceled_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    canceled_notification_next_attempt_at: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
+    canceled_notification_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     canceled_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_verification_state: Mapped[str | None] = mapped_column(
         String, default="pending", nullable=True
     )
-    extraction_state: Mapped[str | None] = mapped_column(
-        String, default="pending", nullable=True
-    )
+    extraction_state: Mapped[str | None] = mapped_column(String, default="pending", nullable=True)
     materialization_state: Mapped[str | None] = mapped_column(
         String, default="pending", nullable=True
     )
-    paths_json: Mapped[str | None] = mapped_column(String, nullable=True)
-
     __table_args__ = (
         Index("ix_archive_restores_state_created", "state", "created_at", "restore_id"),
     )
@@ -194,25 +184,27 @@ class FetchRecord(Base):
     name: Mapped[str] = mapped_column(String)
     fetch_order: Mapped[int] = mapped_column(Integer, unique=True)
     fetch_state: Mapped[str] = mapped_column(String)
-    selectors: Mapped[list[FetchSelectorRecord]] = relationship(
+    collections: Mapped[list[FetchCollectionRecord]] = relationship(
         back_populates="fetch",
         cascade="all, delete-orphan",
     )
 
 
-class FetchSelectorRecord(Base):
-    __tablename__ = "fetch_selectors"
+class FetchCollectionRecord(Base):
+    __tablename__ = "fetch_collections"
 
     fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
-    target: Mapped[str] = mapped_column(String, primary_key=True)
-    selector_order: Mapped[int] = mapped_column(Integer)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_order: Mapped[int] = mapped_column(Integer)
 
     __table_args__ = (
         ForeignKeyConstraint(["fetch_id"], ["fetches.fetch_id"], ondelete="CASCADE"),
-        Index("idx_fetch_selectors_order", "fetch_id", "selector_order"),
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        Index("idx_fetch_collections_order", "fetch_id", "collection_order"),
+        Index("ix_fetch_collections_collection", "collection_id", "fetch_id"),
     )
 
-    fetch: Mapped[FetchRecord] = relationship(back_populates="selectors")
+    fetch: Mapped[FetchRecord] = relationship(back_populates="collections")
 
 
 class CollectionUploadRecord(Base):
@@ -280,9 +272,7 @@ class CollectionUploadFileRecord(Base):
     hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
         Integer, default=0, nullable=True
     )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
+    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

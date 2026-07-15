@@ -34,13 +34,14 @@ from riverhog_cli.upload_progress import CollectionUploadProgress, make_collecti
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_core.fs_paths import (
     PathNormalizationError,
+    collection_id_for_upload,
     normalize_upload_slug,
     normalize_upload_timestamp,
 )
 
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
-fetch_app = typer.Typer(help="Named hot-file fetch operations.")
+fetch_app = typer.Typer(help="Named whole-collection fetch operations.")
 hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(hot_app, name="hot")
@@ -412,7 +413,9 @@ def _collection_upload_dry_run_plan(
     except PathNormalizationError as exc:
         raise typer.BadParameter(str(exc)) from exc
     collection_id = (
-        f"{normalized_timestamp}__{normalized_slug}" if normalized_timestamp is not None else None
+        collection_id_for_upload(normalized_slug, normalized_timestamp)
+        if normalized_timestamp is not None
+        else None
     )
     return {
         "dry_run": True,
@@ -990,8 +993,14 @@ _COLLECTION_SORT_FIELDS = {
     "files",
     "hot_bytes",
 }
-_FIND_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
-_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
+_FIND_SORT_FIELDS = {
+    "logical_path",
+    "collection_id",
+    "collection_path",
+    "bytes",
+    "hot",
+}
+_FETCH_FILE_SORT_FIELDS = _FIND_SORT_FIELDS
 
 
 def _collection_list_archive_payload(collection: Mapping[str, object]) -> dict[str, object] | None:
@@ -1065,6 +1074,7 @@ def _sorted_collection_page(
     query: str | None,
     sort: str,
     order: str,
+    all_items: bool = False,
 ) -> dict[str, Any]:
     if sort not in _COLLECTION_SORT_FIELDS:
         raise typer.BadParameter(
@@ -1081,6 +1091,7 @@ def _sorted_collection_page(
         q=query,
         sort=sort,
         order=normalized_order,
+        all_items=all_items,
     )
     return {
         **payload,
@@ -1100,10 +1111,20 @@ def collection_list_cmd(
         str | None,
         typer.Option("--query", "--search", help="Substring match over collection ids"),
     ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching collection"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one collection id per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List collections with archive and hot-storage summaries."""
 
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
     payload = _sorted_collection_page(
         client(),
         page=page,
@@ -1111,7 +1132,20 @@ def collection_list_cmd(
         query=query,
         sort=sort,
         order=order,
+        all_items=all_items,
     )
+    if ids:
+        collections = payload.get("collections")
+        values = collections if isinstance(collections, list) else []
+        emit(
+            "\n".join(
+                str(collection.get("id"))
+                for collection in values
+                if isinstance(collection, Mapping) and collection.get("id")
+            ),
+            json_mode=False,
+        )
+        return
     emit(
         _compact_collection_page(payload) if json_mode else format_collections(payload),
         json_mode=json_mode,
@@ -1325,11 +1359,11 @@ def upload_watch_cmd(
 def find_cmd(
     query: Annotated[
         str | None,
-        typer.Argument(help="Optional substring matched against file targets"),
+        typer.Argument(help="Optional substring matched against logical file paths"),
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "target",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "logical_path",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     collection: Annotated[
         str | None,
@@ -1341,7 +1375,7 @@ def find_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Search collection file targets."""
+    """Search logical files across collections."""
 
     if sort not in _FIND_SORT_FIELDS:
         raise typer.BadParameter(
@@ -1441,16 +1475,16 @@ def collection_delete_cmd(
 @fetch_app.command("create")
 def fetch_create_cmd(
     name: Annotated[str, typer.Option("--name", "-n", help="Human-readable fetch purpose")],
-    targets: Annotated[
+    collections: Annotated[
         list[str] | None,
-        typer.Argument(help="Optional target selectors to add immediately"),
+        typer.Argument(help="Optional collection ids to add immediately"),
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Create a named editable fetch."""
 
     api = client()
-    payload = api.create_fetch(name=name, targets=targets or [])
+    payload = api.create_fetch(name=name, collections=collections or [])
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1460,29 +1494,29 @@ def fetch_create_cmd(
 
 @hot_app.command("evict")
 def hot_evict_cmd(
-    targets: Annotated[list[str], typer.Argument(help="Target selectors to evict")],
+    collections: Annotated[list[str], typer.Argument(help="Collection ids to evict")],
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Preview selected hot files without deleting them"),
+        typer.Option("--dry-run", help="Preview complete collections without evicting them"),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Evict hot files backed by verified collection archives."""
+    """Evict complete collections backed by verified remote archives."""
 
-    payload = client().evict_hot_targets(targets, dry_run=dry_run)
+    payload = client().evict_hot_collections(collections, dry_run=dry_run)
     emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
 
 
 @fetch_app.command("add")
 def fetch_add_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    targets: Annotated[list[str], typer.Argument(help="Target selectors to add")],
+    collections: Annotated[list[str], typer.Argument(help="Collection ids to add")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Add target selectors to an editable fetch."""
+    """Add collections to an editable fetch."""
 
     api = client()
-    payload = api.add_fetch_targets(fetch_id, targets)
+    payload = api.add_fetch_collections(fetch_id, collections)
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1493,13 +1527,13 @@ def fetch_add_cmd(
 @fetch_app.command("remove")
 def fetch_remove_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
-    targets: Annotated[list[str], typer.Argument(help="Target selectors to remove")],
+    collections: Annotated[list[str], typer.Argument(help="Collection ids to remove")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Remove target selectors from an editable fetch."""
+    """Remove collections from an editable fetch."""
 
     api = client()
-    payload = api.remove_fetch_targets(fetch_id, targets)
+    payload = api.remove_fetch_collections(fetch_id, collections)
     if json_mode:
         emit(payload, json_mode=True)
         return
@@ -1513,14 +1547,24 @@ def fetches_cmd(
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     state: Annotated[str | None, typer.Option("--state", help="Filter by fetch state")] = None,
     query: Annotated[
-        str | None, typer.Option("--query", "-q", help="Search id, name, targets")
+        str | None, typer.Option("--query", "-q", help="Search id, name, or collections")
     ] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "order",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching fetch"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one fetch id per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List named fetches."""
 
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
     payload = client().list_fetches(
         page=page,
         per_page=per_page,
@@ -1528,7 +1572,20 @@ def fetches_cmd(
         query=query,
         sort=sort,
         order=order.casefold(),
+        all_items=all_items,
     )
+    if ids:
+        fetches = payload.get("fetches")
+        values = fetches if isinstance(fetches, list) else []
+        emit(
+            "\n".join(
+                str(fetch.get("id"))
+                for fetch in values
+                if isinstance(fetch, Mapping) and fetch.get("id")
+            ),
+            json_mode=False,
+        )
+        return
     emit(payload if json_mode else format_fetches(payload), json_mode=json_mode)
 
 
@@ -1551,11 +1608,11 @@ def fetch_cmd(
 def fetch_files_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     query: Annotated[
-        str | None, typer.Option("--query", "-q", help="Search selected file targets")
+        str | None, typer.Option("--query", "-q", help="Search logical file paths")
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "target",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "logical_path",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     hot: Annotated[
         bool | None,
@@ -1563,7 +1620,7 @@ def fetch_files_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List selected files for a fetch."""
+    """List files in a fetch's collections."""
 
     normalized_sort = sort.casefold()
     if normalized_sort not in _FETCH_FILE_SORT_FIELDS:
@@ -1591,7 +1648,7 @@ def fetch_start_cmd(
     fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Start a fetch, restoring archived files when needed."""
+    """Start a fetch, restoring complete collections when needed."""
 
     api = client()
     payload = api.start_fetch(fetch_id)

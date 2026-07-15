@@ -40,7 +40,7 @@ from tests.fixtures.data import DOCS_FILES
 from tests.unit.db_helpers import sqlite_url
 
 DOCS_ARCHIVE_PREFIX = "archive/archives/opaque-docs"
-LARGE_DOCS_ARCHIVE_PREFIX = "archive/archives/opaque-large-docs"
+LARGE_DOCS_ARCHIVE_PREFIX = "archive/archives/opaque-2025/20250104T030405Z__large-docs"
 
 
 class _MissingObjectError(Exception):
@@ -283,7 +283,7 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
 
 def _package() -> CollectionArchivePackage:
     return build_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         files=tuple(
             CollectionArchiveFile(
                 path=path,
@@ -299,7 +299,7 @@ def _package() -> CollectionArchivePackage:
 def _large_package(size: int = 6 * 1024 * 1024) -> CollectionArchivePackage:
     content = bytes((i * 17 + 3) % 256 for i in range(size))
     return build_collection_archive_package(
-        collection_id="large-docs",
+        collection_id="2025/20250104T030405Z__large-docs",
         files=(
             CollectionArchiveFile(
                 path="video.bin",
@@ -365,7 +365,7 @@ def test_upload_collection_archive_package_uploads_encrypted_manifest_and_proof_
     package = _package()
 
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
@@ -420,14 +420,14 @@ def test_verify_collection_archive_package_checks_each_remote_object(
         archive_work_factor=12,
     )
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=_package(),
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
     client.head_object_keys.clear()
 
     store.verify_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=_package_identity(receipt),
     )
 
@@ -450,17 +450,15 @@ def test_verify_collection_archive_package_rejects_changed_checksum(
         archive_work_factor=12,
     )
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=_package(),
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
-    client.objects[receipt.manifest.object_path]["Metadata"][COLLECTION_SHA256_METADATA] = (
-        "0" * 64
-    )
+    client.objects[receipt.manifest.object_path]["Metadata"][COLLECTION_SHA256_METADATA] = "0" * 64
 
     with pytest.raises(ArchivePackageVerificationError, match="manifest object does not match"):
         store.verify_collection_archive_package(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             package=_package_identity(receipt),
         )
 
@@ -477,7 +475,7 @@ def test_verify_collection_archive_package_requires_recovery_proof(
         archive_work_factor=12,
     )
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=_package(),
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
@@ -485,7 +483,7 @@ def test_verify_collection_archive_package_requires_recovery_proof(
 
     with pytest.raises(ArchivePackageVerificationError, match="manifest-proof object is missing"):
         store.verify_collection_archive_package(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             package=_package_identity(receipt),
         )
 
@@ -507,7 +505,7 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
     package = _package()
 
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
@@ -535,21 +533,21 @@ def test_encrypted_collection_archive_package_uploads_age_objects_and_restores_p
 
     restored_archive = b"".join(
         store.iter_restored_collection_archive(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.archive.object_path,
         )
     )
     assert restored_archive == package.archive_bytes
     assert (
         store.read_restored_collection_manifest(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.manifest.object_path,
         )
         == package.manifest_bytes
     )
     assert (
         store.read_restored_collection_manifest_proof(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.proof.object_path,
         )
         == package.proof_bytes
@@ -563,13 +561,13 @@ def test_delete_collection_archive_package_removes_and_verifies_owned_objects(
     client = _FakeS3Client()
     store = _store_with_client(monkeypatch, tmp_path, client)
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=_package(),
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
 
     store.delete_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         object_path=receipt.archive.object_path,
         manifest_object_path=receipt.manifest.object_path,
         proof_object_path=receipt.proof.object_path,
@@ -671,7 +669,7 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
 
     with pytest.raises(RuntimeError, match="synthetic upload_part failure"):
         store.upload_collection_archive_package(
-            collection_id="large-docs",
+            collection_id="2025/20250104T030405Z__large-docs",
             package=package,
             archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
             multipart_tracker=tracker,
@@ -686,7 +684,7 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     first_part = client.uploads[first_upload_id]["Parts"][1]
 
     receipt = store.upload_collection_archive_package(
-        collection_id="large-docs",
+        collection_id="2025/20250104T030405Z__large-docs",
         package=package,
         archive_storage_prefix=LARGE_DOCS_ARCHIVE_PREFIX,
         multipart_tracker=tracker,
@@ -701,7 +699,7 @@ def test_encrypted_collection_archive_package_resumes_existing_multipart_upload(
     assert client.objects[receipt.archive.object_path]["Body"].startswith(first_part)
     restored_archive = b"".join(
         store.iter_restored_collection_archive(
-            collection_id="large-docs",
+            collection_id="2025/20250104T030405Z__large-docs",
             object_path=receipt.archive.object_path,
         )
     )
@@ -723,13 +721,13 @@ def test_request_collection_archive_restore_requests_collection_manifest_and_pro
     )
     package = _package()
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
 
     status = store.request_collection_archive_restore(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         object_path=receipt.archive.object_path,
         manifest_object_path=receipt.manifest.object_path,
         proof_object_path=receipt.proof.object_path,
@@ -758,14 +756,14 @@ def test_intelligent_tiering_archive_access_is_not_treated_as_ready(
     )
     package = _package()
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
     client.objects[receipt.archive.object_path]["ArchiveStatus"] = "ARCHIVE_ACCESS"
 
     status = store.get_collection_archive_restore_status(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         object_path=receipt.archive.object_path,
         requested_at="2026-04-20T04:00:00Z",
         estimated_ready_at="2026-04-20T16:00:00Z",
@@ -783,14 +781,14 @@ def test_iter_restored_collection_archive_streams_when_ready(
     store = _store_with_client(monkeypatch, tmp_path, client)
     package = _package()
     receipt = store.upload_collection_archive_package(
-        collection_id="docs",
+        collection_id="2025/20250102T030405Z__docs",
         package=package,
         archive_storage_prefix=DOCS_ARCHIVE_PREFIX,
     )
 
     chunks = list(
         store.iter_restored_collection_archive(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             object_path=receipt.archive.object_path,
         )
     )

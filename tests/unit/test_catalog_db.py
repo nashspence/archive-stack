@@ -18,7 +18,7 @@ CURRENT_TABLES = {
     "collection_upload_files",
     "collection_uploads",
     "collections",
-    "fetch_selectors",
+    "fetch_collections",
     "fetches",
 }
 
@@ -39,10 +39,14 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     assert {column["name"] for column in inspector.get_columns("archive_restores")} >= {
         "restore_id",
         "state",
-        "paths_json",
         "archive_verification_state",
         "extraction_state",
         "materialization_state",
+    }
+    assert {column["name"] for column in inspector.get_columns("fetch_collections")} == {
+        "fetch_id",
+        "collection_id",
+        "collection_order",
     }
 
 

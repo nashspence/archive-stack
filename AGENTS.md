@@ -27,8 +27,7 @@ inventories of those surfaces to `main`; release reference is generated from a t
 Manual documentation is limited to:
 
 - [architecture](docs/architecture.md) for the current mental model and boundaries;
-- [archive operations](docs/archive-operations.md) for human custody judgment;
-- [selector grammar](docs/selector-grammar.md) for the shared tested syntax.
+- [archive operations](docs/archive-operations.md) for human custody judgment.
 
 ## Work
 

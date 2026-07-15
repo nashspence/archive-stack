@@ -35,7 +35,6 @@ class ArchiveRestoreOut(RiverhogModel):
     expires_at: str | None
     completed_at: str | None
     canceled_at: str | None = None
-    paths: list[str] | None
     latest_message: str | None
     warnings: list[str]
     notification: ArchiveRestoreNotificationStatusOut

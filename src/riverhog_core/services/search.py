@@ -12,7 +12,7 @@ from riverhog_core.domain.errors import BadRequest
 from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_id
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
+_SORT_FIELDS = {"logical_path", "collection_id", "collection_path", "bytes", "hot"}
 
 
 def _like_pattern(value: str) -> str:
@@ -25,17 +25,17 @@ def _order_expressions(
     order: str,
 ) -> tuple[ColumnElement[Any], ...]:
     direction = desc if order == "desc" else asc
-    if sort == "target":
+    if sort == "logical_path":
         return (
             direction(CollectionFileRecord.collection_id),
             direction(CollectionFileRecord.path),
         )
-    if sort == "collection":
+    if sort == "collection_id":
         return (
             direction(CollectionFileRecord.collection_id),
             asc(CollectionFileRecord.path),
         )
-    if sort == "path":
+    if sort == "collection_path":
         return (
             direction(CollectionFileRecord.path),
             asc(CollectionFileRecord.collection_id),
@@ -86,12 +86,17 @@ class SqlAlchemySearchService:
             except PathNormalizationError as exc:
                 raise BadRequest(str(exc)) from exc
 
-        target_expr = CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
+        logical_path_expr = (
+            CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
+        )
         filters: list[ColumnElement[bool]] = []
         query = q.strip() if q is not None else None
         if query:
             filters.append(
-                func.lower(target_expr).like(_like_pattern(query.casefold()), escape="\\")
+                func.lower(logical_path_expr).like(
+                    _like_pattern(query.casefold()),
+                    escape="\\",
+                )
             )
         if normalized_collection is not None:
             filters.append(CollectionFileRecord.collection_id == normalized_collection)
@@ -129,9 +134,9 @@ class SqlAlchemySearchService:
             "order": order,
             "files": [
                 {
-                    "target": f"{row.collection_id}/{row.path}",
-                    "collection": row.collection_id,
-                    "path": row.path,
+                    "logical_path": f"{row.collection_id}/{row.path}",
+                    "collection_id": row.collection_id,
+                    "collection_path": row.path,
                     "bytes": row.bytes,
                     "sha256": row.sha256,
                     "hot": row.hot,

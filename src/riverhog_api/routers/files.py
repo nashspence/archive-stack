@@ -16,12 +16,12 @@ router = APIRouter(tags=["files"])
 @router.get("/files", response_model=FilesResponse)
 def query_files(
     container: ContainerDep,
-    target: str = Query(..., min_length=1),
+    path: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
 ) -> FilesResponse:
-    payload = container.files.query_by_target(
-        target,
+    payload = container.files.query_by_path(
+        path,
         page=page,
         per_page=per_page,
     )
@@ -34,10 +34,10 @@ def query_files(
     )
 
 
-@router.get("/files/{target:path}/content")
+@router.get("/files/{path:path}/content")
 def get_file_content(
-    target: str,
+    path: str,
     container: ContainerDep,
 ) -> Response:
-    content = container.files.get_content(target)
+    content = container.files.get_content(path)
     return Response(content=content, media_type="application/octet-stream")

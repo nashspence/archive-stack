@@ -12,8 +12,8 @@ from riverhog_core.domain.errors import (
     BadRequest,
     Conflict,
     HashMismatch,
+    InvalidPath,
     InvalidState,
-    InvalidTarget,
     NotFound,
     NotYetImplemented,
     RiverhogError,
@@ -134,7 +134,7 @@ class ApiClient:
         message = error.get("message", response.text)
         exc_map: dict[str, type[RiverhogError]] = {
             "bad_request": BadRequest,
-            "invalid_target": InvalidTarget,
+            "invalid_path": InvalidPath,
             "not_found": NotFound,
             "conflict": Conflict,
             "invalid_state": InvalidState,
@@ -260,7 +260,7 @@ class ApiClient:
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "target",
+        sort: str = "logical_path",
         order: str = "asc",
         collection: str | None = None,
         hot: bool | None = None,
@@ -306,6 +306,7 @@ class ApiClient:
         q: str | None = None,
         sort: str = "id",
         order: str = "asc",
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -317,6 +318,8 @@ class ApiClient:
             params["order"] = order
         if q:
             params["q"] = q
+        if all_items:
+            params["all"] = True
         return self._json("GET", "/v1/collections", params=params)
 
     def get_archive_report(
@@ -421,6 +424,7 @@ class ApiClient:
         query: str | None = None,
         sort: str = "order",
         order: str = "asc",
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -432,23 +436,37 @@ class ApiClient:
             params["state"] = state
         if query:
             params["q"] = query
+        if all_items:
+            params["all"] = True
         return self._json("GET", "/v1/fetches", params=params)
 
-    def create_fetch(self, *, name: str, targets: Sequence[str]) -> dict[str, Any]:
-        return self._json("POST", "/v1/fetches", json={"name": name, "targets": list(targets)})
-
-    def add_fetch_targets(self, fetch_id: str, targets: Sequence[str]) -> dict[str, Any]:
+    def create_fetch(self, *, name: str, collections: Sequence[str]) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
-            json={"targets": list(targets)},
+            "/v1/fetches",
+            json={"name": name, "collections": list(collections)},
         )
 
-    def remove_fetch_targets(self, fetch_id: str, targets: Sequence[str]) -> dict[str, Any]:
+    def add_fetch_collections(
+        self,
+        fetch_id: str,
+        collections: Sequence[str],
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/collections",
+            json={"collections": list(collections)},
+        )
+
+    def remove_fetch_collections(
+        self,
+        fetch_id: str,
+        collections: Sequence[str],
+    ) -> dict[str, Any]:
         return self._json(
             "DELETE",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/targets",
-            json={"targets": list(targets)},
+            f"/v1/fetches/{quote(fetch_id, safe='/')}/collections",
+            json={"collections": list(collections)},
         )
 
     def start_fetch(self, fetch_id: str) -> dict[str, Any]:
@@ -460,16 +478,16 @@ class ApiClient:
     def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cancel")
 
-    def evict_hot_targets(
+    def evict_hot_collections(
         self,
-        targets: Sequence[str],
+        collections: Sequence[str],
         *,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/hot/evict",
-            json={"targets": list(targets), "dry_run": dry_run},
+            json={"collections": list(collections), "dry_run": dry_run},
         )
 
     def get_fetch(self, fetch_id: str) -> dict[str, Any]:
@@ -484,7 +502,7 @@ class ApiClient:
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "target",
+        sort: str = "logical_path",
         order: str = "asc",
         query: str | None = None,
         hot: bool | None = None,
@@ -526,7 +544,7 @@ class ApiClient:
 
     def query_files(
         self,
-        target: str,
+        path: str,
         *,
         page: int = 1,
         per_page: int = 25,
@@ -534,7 +552,7 @@ class ApiClient:
         return self._json(
             "GET",
             "/v1/files",
-            params={"target": target, "page": page, "per_page": per_page},
+            params={"path": path, "page": page, "per_page": per_page},
         )
 
     def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
@@ -595,8 +613,8 @@ class ApiClient:
             json={"account": account, "process": process, "dry_run": dry_run},
         )
 
-    def get_file_content(self, target: str, output: Path | None = None) -> bytes:
-        response = self._request("GET", f"/v1/files/{quote(target, safe='/')}/content")
+    def get_file_content(self, path: str, output: Path | None = None) -> bytes:
+        response = self._request("GET", f"/v1/files/{quote(path, safe='/')}/content")
         content = response.content
         if output is not None:
             output.write_bytes(content)

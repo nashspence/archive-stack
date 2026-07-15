@@ -20,4 +20,4 @@ def test_hot_fetch_help_describes_archive_materialization() -> None:
     result = runner.invoke(app, ["hot", "fetch", "start", "--help"])
 
     assert result.exit_code == 0
-    assert "restoring archived files" in result.stdout
+    assert "restoring complete collections" in result.stdout

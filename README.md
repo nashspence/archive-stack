@@ -25,7 +25,6 @@ The checked [Compose environment](.env.compose.example) and
 - [Architecture](docs/architecture.md) explains custody and component boundaries.
 - [Archive operations](docs/archive-operations.md) covers the human checks around
   durable storage, recovery, and deletion.
-- [Selector grammar](docs/selector-grammar.md) defines the shared logical-path syntax.
 
 Release-level reference documentation belongs to tagged releases. The documentation on
 `main` is intentionally limited to current context that cannot be recovered quickly from

@@ -22,10 +22,10 @@ def _config(path: Path) -> RuntimeConfig:
 def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add(
             CollectionFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="readme.txt",
                 bytes=12,
                 sha256="a" * 64,
@@ -34,7 +34,7 @@ def _seed(path: Path) -> None:
         )
         session.add(
             CollectionArchiveRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="uploaded",
                 object_path="collections/docs/archive.tar.age",
                 stored_bytes=20,

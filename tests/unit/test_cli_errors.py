@@ -37,7 +37,9 @@ def test_main_prints_json_error_for_json_mode(
 
     monkeypatch.setattr(riverhog_main, "app", fail_app)
     monkeypatch.setattr(
-        riverhog_main.sys, "argv", ["riverhog", "collection", "show", "docs", "--json"]
+        riverhog_main.sys,
+        "argv",
+        ["riverhog", "collection", "show", "2025/20250102T030405Z__docs", "--json"],
     )
 
     with pytest.raises(typer.Exit) as exc_info:

@@ -3,15 +3,16 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
+    CollectionRecord,
+    FetchCollectionRecord,
     FetchRecord,
-    FetchSelectorRecord,
 )
 from riverhog_core.domain.enums import ArchiveState, FetchState
 from riverhog_core.domain.errors import (
@@ -22,8 +23,8 @@ from riverhog_core.domain.errors import (
     ServiceUnavailable,
 )
 from riverhog_core.domain.models import FetchListPage, FetchSummary
-from riverhog_core.domain.selectors import parse_target
-from riverhog_core.domain.types import FetchId, TargetStr
+from riverhog_core.domain.types import CollectionId, FetchId
+from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_id
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchivePackageVerificationError,
@@ -33,10 +34,15 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import require_collection_not_deleting
-from riverhog_core.services.target_selection import selected_collection_files
 
 _FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
-_FETCH_FILE_SORT_FIELDS = {"target", "collection", "path", "bytes", "hot"}
+_FETCH_FILE_SORT_FIELDS = {
+    "logical_path",
+    "collection_id",
+    "collection_path",
+    "bytes",
+    "hot",
+}
 
 
 class SqlAlchemyFetchService:
@@ -50,10 +56,16 @@ class SqlAlchemyFetchService:
         self._hot_store = hot_store
         self._session_factory = make_session_factory(config.database_url)
 
-    def create(self, *, name: str, targets: Sequence[str] | None = None) -> FetchSummary:
+    def create(
+        self,
+        *,
+        name: str,
+        collections: Sequence[str] | None = None,
+    ) -> FetchSummary:
         normalized_name = _normalize_fetch_name(name)
-        canonical_targets = _canonical_targets(targets or [])
+        collection_ids = _canonical_collection_ids(collections or [])
         with session_scope(self._session_factory) as session:
+            _require_collections_exist(session, collection_ids)
             fetch_order = _next_fetch_order(session)
             fetch = FetchRecord(
                 fetch_id=f"fx-{fetch_order}",
@@ -62,7 +74,7 @@ class SqlAlchemyFetchService:
                 fetch_state=FetchState.DRAFT.value,
             )
             session.add(fetch)
-            _replace_fetch_selectors(session, fetch, canonical_targets)
+            _replace_fetch_collections(session, fetch, collection_ids)
             session.flush()
             return _fetch_summary(session, fetch)
 
@@ -75,6 +87,7 @@ class SqlAlchemyFetchService:
         q: str | None = None,
         sort: str = "order",
         order: str = "asc",
+        all_items: bool = False,
     ) -> FetchListPage:
         if page < 1:
             raise BadRequest("page must be at least 1")
@@ -87,76 +100,151 @@ class SqlAlchemyFetchService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
 
-        with session_scope(self._session_factory) as session:
-            records = list(
-                session.scalars(
-                    select(FetchRecord)
-                    .options(selectinload(FetchRecord.selectors))
-                    .order_by(FetchRecord.fetch_order, FetchRecord.fetch_id)
-                ).all()
+        stats = (
+            select(
+                FetchCollectionRecord.fetch_id.label("fetch_id"),
+                func.count(CollectionFileRecord.path).label("files"),
+                func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
+                func.coalesce(
+                    func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
+                    0,
+                ).label("hot_files"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("hot_bytes"),
             )
-            summaries = [_fetch_summary(session, record) for record in records]
-
+            .outerjoin(
+                CollectionFileRecord,
+                CollectionFileRecord.collection_id == FetchCollectionRecord.collection_id,
+            )
+            .group_by(FetchCollectionRecord.fetch_id)
+            .subquery()
+        )
+        files_expr = func.coalesce(stats.c.files, 0)
+        bytes_expr = func.coalesce(stats.c.bytes, 0)
+        hot_files_expr = func.coalesce(stats.c.hot_files, 0)
+        hot_bytes_expr = func.coalesce(stats.c.hot_bytes, 0)
+        missing_bytes_expr = bytes_expr - hot_bytes_expr
+        stmt = select(
+            FetchRecord,
+            files_expr,
+            bytes_expr,
+            hot_files_expr,
+            hot_bytes_expr,
+        ).outerjoin(stats, stats.c.fetch_id == FetchRecord.fetch_id)
         if state is not None:
-            summaries = [summary for summary in summaries if summary.state.value == state]
+            stmt = stmt.where(FetchRecord.fetch_state == state)
         if q:
-            needle = q.casefold()
-            summaries = [
-                summary
-                for summary in summaries
-                if needle in str(summary.id).casefold()
-                or needle in summary.name.casefold()
-                or any(needle in str(target).casefold() for target in summary.targets)
-            ]
-        key: Callable[[FetchSummary], str | int] = {
-            "id": lambda item: str(item.id),
-            "name": lambda item: item.name.casefold(),
-            "state": lambda item: item.state.value,
-            "order": lambda item: int(str(item.id).split("-", 1)[-1]),
-            "files": lambda item: item.files,
-            "bytes": lambda item: item.bytes,
-            "missing_bytes": lambda item: item.missing_bytes,
+            pattern = _like_pattern(q.casefold())
+            collection_match = (
+                select(FetchCollectionRecord.fetch_id)
+                .where(
+                    FetchCollectionRecord.fetch_id == FetchRecord.fetch_id,
+                    func.lower(FetchCollectionRecord.collection_id).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                )
+                .exists()
+            )
+            stmt = stmt.where(
+                or_(
+                    func.lower(FetchRecord.fetch_id).like(pattern, escape="\\"),
+                    func.lower(FetchRecord.name).like(pattern, escape="\\"),
+                    collection_match,
+                )
+            )
+        sort_expr = {
+            "id": FetchRecord.fetch_id,
+            "name": func.lower(FetchRecord.name),
+            "state": FetchRecord.fetch_state,
+            "order": FetchRecord.fetch_order,
+            "files": files_expr,
+            "bytes": bytes_expr,
+            "missing_bytes": missing_bytes_expr,
         }[sort]
-        summaries.sort(key=lambda item: (key(item), str(item.id)), reverse=order == "desc")
-        total = len(summaries)
-        start = (page - 1) * per_page
+        order_expr = sort_expr.desc() if order == "desc" else sort_expr.asc()
+        stmt = stmt.order_by(order_expr, FetchRecord.fetch_id.asc())
+
+        with session_scope(self._session_factory) as session:
+            total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+            selected_stmt = (
+                stmt if all_items else stmt.offset((page - 1) * per_page).limit(per_page)
+            )
+            rows = session.execute(selected_stmt).all()
+            fetch_ids = [row[0].fetch_id for row in rows]
+            collections_by_fetch = _collections_by_fetch(session, fetch_ids)
+            summaries = [
+                FetchSummary(
+                    id=FetchId(fetch.fetch_id),
+                    name=fetch.name,
+                    collections=tuple(
+                        CollectionId(collection_id)
+                        for collection_id in collections_by_fetch.get(fetch.fetch_id, [])
+                    ),
+                    state=FetchState(fetch.fetch_state),
+                    files=int(files),
+                    bytes=int(bytes_total),
+                    hot_files=int(hot_files),
+                    hot_bytes=int(hot_bytes),
+                    missing_files=int(files) - int(hot_files),
+                    missing_bytes=int(bytes_total) - int(hot_bytes),
+                )
+                for fetch, files, bytes_total, hot_files, hot_bytes in rows
+            ]
+
         return FetchListPage(
-            page=page,
-            per_page=per_page,
+            page=1 if all_items else page,
+            per_page=total if all_items else per_page,
             total=total,
-            pages=math.ceil(total / per_page) if total else 0,
-            fetches=summaries[start : start + per_page],
+            pages=(1 if total else 0) if all_items else math.ceil(total / per_page) if total else 0,
+            fetches=summaries,
         )
 
-    def add_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary:
-        additions = _canonical_targets(targets)
+    def add_collections(
+        self,
+        fetch_id: str,
+        collections: Sequence[str],
+    ) -> FetchSummary:
+        additions = _canonical_collection_ids(collections)
         if not additions:
-            raise BadRequest("at least one target is required")
+            raise BadRequest("at least one collection is required")
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
             _require_editable(fetch)
-            existing = [selector.target for selector in _fetch_selectors(session, fetch_id)]
-            _replace_fetch_selectors(
+            _require_collections_exist(session, additions)
+            existing = _fetch_collection_ids(session, fetch_id)
+            _replace_fetch_collections(
                 session,
                 fetch,
-                [*existing, *[target for target in additions if target not in existing]],
+                [*existing, *[item for item in additions if item not in existing]],
             )
             session.flush()
             return _fetch_summary(session, fetch)
 
-    def remove_targets(self, fetch_id: str, targets: Sequence[str]) -> FetchSummary:
-        removals = set(_canonical_targets(targets))
+    def remove_collections(
+        self,
+        fetch_id: str,
+        collections: Sequence[str],
+    ) -> FetchSummary:
+        removals = set(_canonical_collection_ids(collections))
         if not removals:
-            raise BadRequest("at least one target is required")
+            raise BadRequest("at least one collection is required")
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
             _require_editable(fetch)
             remaining = [
-                selector.target
-                for selector in _fetch_selectors(session, fetch_id)
-                if selector.target not in removals
+                collection_id
+                for collection_id in _fetch_collection_ids(session, fetch_id)
+                if collection_id not in removals
             ]
-            _replace_fetch_selectors(session, fetch, remaining)
+            _replace_fetch_collections(session, fetch, remaining)
             session.flush()
             return _fetch_summary(session, fetch)
 
@@ -164,11 +252,14 @@ class SqlAlchemyFetchService:
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
             _require_startable(fetch)
-            files = _selected_files_for_fetch(session, fetch_id)
-            if not files:
-                raise InvalidState("fetch has no matching files")
-            for collection_id in sorted({file.collection_id for file in files}):
+            collection_ids = _fetch_collection_ids(session, fetch_id)
+            if not collection_ids:
+                raise InvalidState("fetch has no collections")
+            for collection_id in collection_ids:
                 require_collection_not_deleting(session, collection_id)
+            files = _collection_files(session, collection_ids)
+            if not files:
+                raise InvalidState("fetch collections contain no files")
             fetch.fetch_state = (
                 FetchState.DONE.value
                 if all(file.hot for file in files)
@@ -186,31 +277,33 @@ class SqlAlchemyFetchService:
             session.flush()
             return _fetch_summary(session, fetch)
 
-    def evict(self, targets: Sequence[str], *, dry_run: bool = False) -> dict[str, object]:
-        canonical_targets = _canonical_targets(targets)
-        if not canonical_targets:
-            raise BadRequest("at least one target is required")
+    def evict(
+        self,
+        collections: Sequence[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        collection_ids = _canonical_collection_ids(collections)
+        if not collection_ids:
+            raise BadRequest("at least one collection is required")
         with session_scope(self._session_factory) as session:
-            selected_by_key: dict[tuple[str, str], CollectionFileRecord] = {}
-            for target in canonical_targets:
-                for record in selected_collection_files(session, target):
-                    selected_by_key[(record.collection_id, record.path)] = record
-            selected = [selected_by_key[key] for key in sorted(selected_by_key)]
+            _require_collections_exist(session, collection_ids)
+            selected = _collection_files(session, collection_ids)
             if not selected:
-                raise NotFound("target selectors matched no files")
+                raise NotFound("collections contain no files")
             packages: dict[str, CollectionArchivePackageIdentity] = {}
-            for collection_id in sorted({record.collection_id for record in selected}):
+            for collection_id in collection_ids:
                 package = _collection_archive_package_identity(session, collection_id)
                 if package is None:
                     raise Conflict(
-                        "cannot evict hot files before their collection archive upload "
-                        f"is complete: {collection_id}"
+                        "cannot evict a collection before its archive upload is complete: "
+                        f"{collection_id}"
                     )
                 packages[collection_id] = package
             would_evict = [record for record in selected if record.hot]
             if dry_run:
                 return _eviction_payload(
-                    targets=canonical_targets,
+                    collections=collection_ids,
                     selected=selected,
                     affected=would_evict,
                     dry_run=True,
@@ -223,8 +316,8 @@ class SqlAlchemyFetchService:
                     )
                 except ArchivePackageVerificationError as exc:
                     raise Conflict(
-                        "cannot evict hot files because the remote collection archive "
-                        f"does not match its upload record: {collection_id}"
+                        "cannot evict a collection because its remote archive does not match "
+                        f"the upload record: {collection_id}"
                     ) from exc
                 except Exception as exc:
                     raise ServiceUnavailable(
@@ -240,7 +333,7 @@ class SqlAlchemyFetchService:
                 record.hot = False
                 affected.append(record)
             return _eviction_payload(
-                targets=canonical_targets,
+                collections=collection_ids,
                 selected=selected,
                 affected=affected,
                 dry_run=False,
@@ -254,17 +347,17 @@ class SqlAlchemyFetchService:
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
             summary = _fetch_summary(session, fetch)
-            files = _selected_files_for_fetch(session, fetch_id, missing_ok=True)
-            target_summaries = [
+            files = _selected_files_for_fetch(session, fetch_id)
+            collection_summaries = [
                 {
-                    "target": selector.target,
-                    **_target_stats(session, selector.target),
+                    "collection": collection_id,
+                    **_collection_stats(session, collection_id),
                 }
-                for selector in _fetch_selectors(session, fetch_id)
+                for collection_id in _fetch_collection_ids(session, fetch_id)
             ]
             return {
                 **_fetch_summary_payload(summary),
-                "target_summaries": target_summaries,
+                "collection_summaries": collection_summaries,
                 "files_preview": [_file_payload(file) for file in files[:25]],
                 "next_action": _next_action(summary),
             }
@@ -285,28 +378,24 @@ class SqlAlchemyFetchService:
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
         if sort not in _FETCH_FILE_SORT_FIELDS:
-            raise BadRequest(
-                f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}"
-            )
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}")
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
 
         with session_scope(self._session_factory) as session:
             _get_fetch(session, fetch_id)
-            files = _selected_files_for_fetch(session, fetch_id, missing_ok=True)
+            files = _selected_files_for_fetch(session, fetch_id)
         if q:
             needle = q.casefold()
             files = [
-                file
-                for file in files
-                if needle in f"{file.collection_id}/{file.path}".casefold()
+                file for file in files if needle in f"{file.collection_id}/{file.path}".casefold()
             ]
         if hot is not None:
             files = [file for file in files if bool(file.hot) is hot]
         key: Callable[[CollectionFileRecord], str | int | bool] = {
-            "target": lambda file: f"{file.collection_id}/{file.path}",
-            "collection": lambda file: file.collection_id,
-            "path": lambda file: file.path,
+            "logical_path": lambda file: f"{file.collection_id}/{file.path}",
+            "collection_id": lambda file: file.collection_id,
+            "collection_path": lambda file: file.path,
             "bytes": lambda file: file.bytes,
             "hot": lambda file: file.hot,
         }[sort]
@@ -330,10 +419,15 @@ class SqlAlchemyFetchService:
         }
 
 
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
     fetch = session.scalar(
         select(FetchRecord)
-        .options(selectinload(FetchRecord.selectors))
+        .options(selectinload(FetchRecord.collections))
         .where(FetchRecord.fetch_id == fetch_id)
     )
     if fetch is None:
@@ -380,46 +474,74 @@ def _collection_archive_package_identity(
     )
 
 
-def _fetch_selectors(session: Session, fetch_id: str) -> list[FetchSelectorRecord]:
+def _fetch_collection_records(
+    session: Session,
+    fetch_id: str,
+) -> list[FetchCollectionRecord]:
     return list(
         session.scalars(
-            select(FetchSelectorRecord)
-            .where(FetchSelectorRecord.fetch_id == fetch_id)
-            .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
+            select(FetchCollectionRecord)
+            .where(FetchCollectionRecord.fetch_id == fetch_id)
+            .order_by(
+                FetchCollectionRecord.collection_order,
+                FetchCollectionRecord.collection_id,
+            )
         ).all()
     )
 
 
-def _selected_files_for_fetch(
+def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
+    return [record.collection_id for record in _fetch_collection_records(session, fetch_id)]
+
+
+def _collections_by_fetch(
     session: Session,
-    fetch_id: str,
-    *,
-    missing_ok: bool = False,
+    fetch_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {fetch_id: [] for fetch_id in fetch_ids}
+    if not fetch_ids:
+        return result
+    records = session.scalars(
+        select(FetchCollectionRecord)
+        .where(FetchCollectionRecord.fetch_id.in_(fetch_ids))
+        .order_by(
+            FetchCollectionRecord.fetch_id,
+            FetchCollectionRecord.collection_order,
+            FetchCollectionRecord.collection_id,
+        )
+    ).all()
+    for record in records:
+        result[record.fetch_id].append(record.collection_id)
+    return result
+
+
+def _collection_files(
+    session: Session,
+    collection_ids: Sequence[str],
 ) -> list[CollectionFileRecord]:
-    selected: dict[tuple[str, str], CollectionFileRecord] = {}
-    selectors = _fetch_selectors(session, fetch_id)
-    for selector in selectors:
-        for file in selected_collection_files(
-            session,
-            selector.target,
-            missing_ok=True,
-        ):
-            selected[(file.collection_id, file.path)] = file
-    files = [selected[key] for key in sorted(selected)]
-    if not files and not missing_ok:
-        raise NotFound(f"fetch targets matched no files: {fetch_id}")
-    return files
+    if not collection_ids:
+        return []
+    return list(
+        session.scalars(
+            select(CollectionFileRecord)
+            .where(CollectionFileRecord.collection_id.in_(collection_ids))
+            .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
+        ).all()
+    )
+
+
+def _selected_files_for_fetch(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
+    return _collection_files(session, _fetch_collection_ids(session, fetch_id))
 
 
 def _fetch_summary(session: Session, fetch: FetchRecord) -> FetchSummary:
-    files = _selected_files_for_fetch(session, fetch.fetch_id, missing_ok=True)
+    collection_ids = _fetch_collection_ids(session, fetch.fetch_id)
+    files = _collection_files(session, collection_ids)
     hot_files = [file for file in files if file.hot]
     return FetchSummary(
         id=FetchId(fetch.fetch_id),
         name=fetch.name,
-        targets=tuple(
-            TargetStr(selector.target) for selector in _fetch_selectors(session, fetch.fetch_id)
-        ),
+        collections=tuple(CollectionId(collection_id) for collection_id in collection_ids),
         state=FetchState(fetch.fetch_state),
         files=len(files),
         bytes=sum(int(file.bytes) for file in files),
@@ -430,20 +552,20 @@ def _fetch_summary(session: Session, fetch: FetchRecord) -> FetchSummary:
     )
 
 
-def _replace_fetch_selectors(
+def _replace_fetch_collections(
     session: Session,
     fetch: FetchRecord,
-    targets: Sequence[str],
+    collection_ids: Sequence[str],
 ) -> None:
     session.execute(
-        delete(FetchSelectorRecord).where(FetchSelectorRecord.fetch_id == fetch.fetch_id)
+        delete(FetchCollectionRecord).where(FetchCollectionRecord.fetch_id == fetch.fetch_id)
     )
-    for index, target in enumerate(targets, start=1):
+    for index, collection_id in enumerate(collection_ids, start=1):
         session.add(
-            FetchSelectorRecord(
+            FetchCollectionRecord(
                 fetch_id=fetch.fetch_id,
-                target=target,
-                selector_order=index,
+                collection_id=collection_id,
+                collection_order=index,
             )
         )
 
@@ -455,15 +577,31 @@ def _normalize_fetch_name(name: str) -> str:
     return normalized
 
 
-def _canonical_targets(targets: Sequence[str]) -> list[str]:
+def _canonical_collection_ids(collections: Sequence[str]) -> list[str]:
     canonical: list[str] = []
     seen: set[str] = set()
-    for raw_target in targets:
-        target = parse_target(raw_target)
-        if target.canonical not in seen:
-            seen.add(target.canonical)
-            canonical.append(target.canonical)
+    for raw_collection in collections:
+        try:
+            collection_id = normalize_collection_id(raw_collection)
+        except PathNormalizationError as exc:
+            raise BadRequest(str(exc)) from exc
+        if collection_id not in seen:
+            seen.add(collection_id)
+            canonical.append(collection_id)
     return canonical
+
+
+def _require_collections_exist(session: Session, collection_ids: Sequence[str]) -> None:
+    if not collection_ids:
+        return
+    existing = set(
+        session.scalars(
+            select(CollectionRecord.id).where(CollectionRecord.id.in_(collection_ids))
+        ).all()
+    )
+    missing = [collection_id for collection_id in collection_ids if collection_id not in existing]
+    if missing:
+        raise NotFound(f"collection not found: {missing[0]}")
 
 
 def _next_fetch_order(session: Session) -> int:
@@ -482,8 +620,8 @@ def _require_startable(fetch: FetchRecord) -> None:
         raise InvalidState("fetch is already started")
 
 
-def _target_stats(session: Session, target: str) -> dict[str, int]:
-    files = selected_collection_files(session, target, missing_ok=True)
+def _collection_stats(session: Session, collection_id: str) -> dict[str, int]:
+    files = _collection_files(session, [collection_id])
     hot_files = [file for file in files if file.hot]
     return {
         "files": len(files),
@@ -497,9 +635,9 @@ def _target_stats(session: Session, target: str) -> dict[str, int]:
 
 def _file_payload(file: CollectionFileRecord) -> dict[str, object]:
     return {
-        "target": f"{file.collection_id}/{file.path}",
-        "collection": file.collection_id,
-        "path": file.path,
+        "logical_path": f"{file.collection_id}/{file.path}",
+        "collection_id": file.collection_id,
+        "collection_path": file.path,
         "bytes": int(file.bytes),
         "sha256": file.sha256,
         "hot": bool(file.hot),
@@ -510,7 +648,7 @@ def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "name": summary.name,
-        "targets": [str(target) for target in summary.targets],
+        "collections": [str(collection) for collection in summary.collections],
         "state": summary.state.value,
         "files": summary.files,
         "bytes": summary.bytes,
@@ -523,23 +661,23 @@ def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
 
 def _next_action(summary: FetchSummary) -> dict[str, str]:
     if summary.state == FetchState.DRAFT:
-        return {"action": "start", "reason": "start archive materialization when needed"}
+        return {"action": "start", "reason": "restore missing collections when needed"}
     if summary.state in {FetchState.QUEUED_ARCHIVE, FetchState.RESTORING_ARCHIVE}:
-        return {"action": "wait", "reason": "archive materialization is in progress"}
+        return {"action": "wait", "reason": "collection restoration is in progress"}
     if summary.state == FetchState.FAILED:
-        return {"action": "inspect", "reason": "archive materialization failed"}
-    return {"action": "none", "reason": "selected files are hot"}
+        return {"action": "inspect", "reason": "collection restoration failed"}
+    return {"action": "none", "reason": "all collections are hot"}
 
 
 def _eviction_payload(
     *,
-    targets: list[str],
+    collections: list[str],
     selected: list[CollectionFileRecord],
     affected: list[CollectionFileRecord],
     dry_run: bool,
 ) -> dict[str, object]:
     return {
-        "targets": targets,
+        "collections": collections,
         "dry_run": dry_run,
         "status": "would_evict" if dry_run else "evicted",
         "files": len(selected),

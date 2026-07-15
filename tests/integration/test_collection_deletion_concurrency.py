@@ -42,7 +42,9 @@ _WAIT_SECONDS = 10.0
 
 class BlockingHotStore:
     def __init__(self, *, hot: bool) -> None:
-        self.files = {("docs", "document.txt"): b"archived document"} if hot else {}
+        self.files = (
+            {("2025/20250102T030405Z__docs", "document.txt"): b"archived document"} if hot else {}
+        )
         self.delete_started = threading.Event()
         self.allow_delete = threading.Event()
 
@@ -77,7 +79,7 @@ class FakeArchiveStore:
         manifest_object_path: str,
         proof_object_path: str,
     ) -> None:
-        assert collection_id == "docs"
+        assert collection_id == "2025/20250102T030405Z__docs"
         for path in (object_path, manifest_object_path, proof_object_path):
             self.objects.discard(path)
 
@@ -126,10 +128,10 @@ def _seed(database_url: str, *, hot: bool) -> None:
     content = b"archived document"
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add(
             CollectionFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="document.txt",
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
@@ -138,7 +140,7 @@ def _seed(database_url: str, *, hot: bool) -> None:
         )
         session.add(
             CollectionArchiveRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="uploaded",
                 archive_storage_prefix="archive/archives/opaque-docs",
                 object_path="archive/archives/opaque-docs/archive.tar.age",
@@ -242,7 +244,7 @@ def _start_work(
         assert fetch_id is not None
         return fetch_service.start(fetch_id)
     assert kind == "restore"
-    return restore_service.create_or_resume_for_collection("docs")
+    return restore_service.create_or_resume_for_collection("2025/20250102T030405Z__docs")
 
 
 @pytest.mark.parametrize("work_kind", ["fetch", "restore"])
@@ -252,11 +254,16 @@ def test_deletion_lock_blocks_new_collection_work(
 ) -> None:
     deletion, fetches, restores, hot_store = _services(database_url, hot=True)
     fetch_id = (
-        str(fetches.create(name="documents", targets=["docs/"]).id)
+        str(
+            fetches.create(
+                name="documents",
+                collections=["2025/20250102T030405Z__docs"],
+            ).id
+        )
         if work_kind == "fetch"
         else None
     )
-    challenge = str(deletion.plan("docs")["challenge"])
+    challenge = str(deletion.plan("2025/20250102T030405Z__docs")["challenge"])
     marker_flushed = threading.Event()
     allow_marker_commit = threading.Event()
     work_lock_attempted = threading.Event()
@@ -280,7 +287,7 @@ def test_deletion_lock_blocks_new_collection_work(
     event.listen(_service_engine(work_service), "before_cursor_execute", observe_work_lock)
     deletion_thread = threading.Thread(
         target=_thread_call,
-        args=(lambda: deletion.delete("docs", challenge=challenge),),
+        args=(lambda: deletion.delete("2025/20250102T030405Z__docs", challenge=challenge),),
         kwargs={
             "results": deletion_results,
             "errors": deletion_errors,
@@ -327,8 +334,8 @@ def test_deletion_lock_blocks_new_collection_work(
     assert cast(dict[str, object], deletion_results[0])["status"] == "deleted"
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is None
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
         if fetch_id is not None:
             fetch = session.get(FetchRecord, fetch_id)
             assert fetch is not None and fetch.fetch_state == FetchState.DRAFT.value
@@ -342,11 +349,16 @@ def test_active_collection_work_prevents_deletion_from_beginning(
 ) -> None:
     deletion, fetches, restores, hot_store = _services(database_url, hot=False)
     fetch_id = (
-        str(fetches.create(name="documents", targets=["docs/"]).id)
+        str(
+            fetches.create(
+                name="documents",
+                collections=["2025/20250102T030405Z__docs"],
+            ).id
+        )
         if work_kind == "fetch"
         else None
     )
-    challenge = str(deletion.plan("docs")["challenge"])
+    challenge = str(deletion.plan("2025/20250102T030405Z__docs")["challenge"])
     work_flushed = threading.Event()
     allow_work_commit = threading.Event()
     deletion_lock_attempted = threading.Event()
@@ -387,7 +399,7 @@ def test_active_collection_work_prevents_deletion_from_beginning(
     )
     deletion_thread = threading.Thread(
         target=_thread_call,
-        args=(lambda: deletion.delete("docs", challenge=challenge),),
+        args=(lambda: deletion.delete("2025/20250102T030405Z__docs", challenge=challenge),),
         kwargs={
             "results": deletion_results,
             "errors": deletion_errors,
@@ -421,8 +433,8 @@ def test_active_collection_work_prevents_deletion_from_beginning(
     assert "plan changed" in str(deletion_errors[0])
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is not None
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is not None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
         if fetch_id is not None:
             fetch = session.get(FetchRecord, fetch_id)
             assert fetch is not None and fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value

@@ -78,7 +78,7 @@ def test_collection_upload_dry_run_hashes_manifest_without_api(
     assert payload["dry_run"] is True
     assert payload["status"] == "would_upload"
     assert payload["normalized_slug"] == "my-trip"
-    assert payload["collection_id"] == "20260713T120000Z__my-trip"
+    assert payload["collection_id"] == "2026/20260713T120000Z__my-trip"
     assert payload["files_total"] == 1
     assert payload["bytes_total"] == 5
     assert payload["server_validation"] == "not_run"
@@ -123,7 +123,7 @@ def test_upload_collection_file_streams_chunks_from_resume_offset(
             collection_id: str,
             path: str,
         ) -> dict[str, object]:
-            assert collection_id == "2025/collection"
+            assert collection_id == "2025/20250101T000000Z__collection"
             assert path == "clip.bin"
             return {
                 "upload_url": "https://uploads.test/clip.bin",
@@ -148,7 +148,7 @@ def test_upload_collection_file_streams_chunks_from_resume_offset(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
     )
@@ -192,7 +192,7 @@ def test_upload_collection_file_honors_chunk_size_env(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
     )
@@ -252,7 +252,7 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
             collection_id: str,
             path: str,
         ) -> dict[str, object]:
-            assert collection_id == "2025/collection"
+            assert collection_id == "2025/20250101T000000Z__collection"
             return {
                 "upload_url": f"https://uploads.test/{path}",
                 "offset": 0,
@@ -283,7 +283,7 @@ def test_upload_collection_files_uses_worker_clients_when_concurrent(
 
     riverhog_main._upload_collection_files(
         FakeConcurrentUploadApi("primary"),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         root,
         [
             {"path": "a.txt", "bytes": 3, "upload_state": "pending"},
@@ -347,7 +347,7 @@ def test_upload_collection_files_reports_file_completion_after_upload(
 
     riverhog_main._upload_collection_files(
         fake_api,  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         root,
         [{"path": "a.txt", "bytes": 3, "upload_state": "pending"}],
         progress=lambda _delta: None,
@@ -377,7 +377,7 @@ def test_upload_progress_throttles_accepted_byte_rendering() -> None:
         return now
 
     progress = CollectionUploadProgress(
-        collection_id="2025/collection",
+        collection_id="2025/20250101T000000Z__collection",
         files_total=1,
         bytes_total=100,
         renderer=Renderer(),
@@ -584,7 +584,7 @@ def test_upload_collection_file_retries_after_interrupted_chunk_with_unchanged_o
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
         progress=progress.append,
@@ -639,7 +639,7 @@ def test_upload_collection_file_continues_after_lost_chunk_response(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
         progress=progress.append,
@@ -694,7 +694,7 @@ def test_upload_collection_file_resyncs_after_offset_conflict(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
         progress=progress.append,
@@ -741,7 +741,7 @@ def test_upload_collection_file_stops_after_unresolved_offset_conflict(
     with pytest.raises(RuntimeError, match="without advancing the offset"):
         riverhog_main._upload_collection_file(
             FakeApi(),  # type: ignore[arg-type]
-            "2025/collection",
+            "2025/20250101T000000Z__collection",
             source,
             {"path": "clip.bin", "bytes": len(content)},
         )
@@ -796,7 +796,7 @@ def test_upload_collection_file_retries_after_transient_http_status(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
     )
@@ -845,7 +845,7 @@ def test_upload_collection_file_retries_after_service_unavailable(
 
     riverhog_main._upload_collection_file(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         source,
         {"path": "clip.bin", "bytes": len(content)},
     )
@@ -882,7 +882,7 @@ def test_create_or_resume_file_upload_keeps_retrying_transient_errors(
 
     payload = riverhog_main._create_or_resume_collection_file_upload(
         fake_api,  # type: ignore[arg-type]
-        "2025/collection",
+        "2025/20250101T000000Z__collection",
         "clip.bin",
     )
 
@@ -915,21 +915,21 @@ def test_create_or_resume_collection_upload_retries_transient_errors(
                     request=request,
                     response=response,
                 )
-            return {"collection_id": "2025/docs", "files": []}
+            return {"collection_id": "2025/20250102T030405Z__docs", "files": []}
 
     fake_api = FakeApi()
     monkeypatch.setattr(riverhog_main.time, "sleep", lambda seconds: None)
 
     payload = riverhog_main._create_or_resume_collection_upload(
         fake_api,  # type: ignore[arg-type]
-        "docs",
+        "2025/20250102T030405Z__docs",
         [],
         ingest_source="/tmp/docs",
         upload_timestamp="20250101T000000Z",
     )
 
     assert fake_api.calls == 3
-    assert payload["collection_id"] == "2025/docs"
+    assert payload["collection_id"] == "2025/20250102T030405Z__docs"
 
 
 def test_wait_for_finalized_collection_waits_through_archiving(
@@ -970,7 +970,7 @@ def test_wait_for_finalized_collection_waits_through_archiving(
 
     payload, state = riverhog_main._wait_for_finalized_collection(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/docs",
+        "2025/20250102T030405Z__docs",
         manifest,
     )
 
@@ -995,7 +995,7 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
 
     payload, state = riverhog_main._wait_for_finalized_collection(
         FakeApi(),  # type: ignore[arg-type]
-        "2026/camera",
+        "2026/20260101T000000Z__camera",
         None,
     )
 
@@ -1011,7 +1011,9 @@ def test_wait_for_finalized_collection_retries_transient_poll_errors(
     manifest: list[riverhog_main.CollectionManifestEntry] = [
         {"path": "clip.bin", "bytes": 3, "sha256": hashlib.sha256(b"abc").hexdigest()}
     ]
-    request = httpx.Request("GET", "https://riverhog.test/v1/collections/2025/docs")
+    request = httpx.Request(
+        "GET", "https://riverhog.test/v1/collections/2025/20250102T030405Z__docs"
+    )
     response = httpx.Response(502, request=request, content=b"Bad Gateway")
 
     class FakeApi:
@@ -1037,7 +1039,7 @@ def test_wait_for_finalized_collection_retries_transient_poll_errors(
 
     payload, state = riverhog_main._wait_for_finalized_collection(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/docs",
+        "2025/20250102T030405Z__docs",
         manifest,
     )
 
@@ -1064,7 +1066,7 @@ def test_wait_for_finalized_collection_returns_failed_upload(
 
     payload, state = riverhog_main._wait_for_finalized_collection(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/docs",
+        "2025/20250102T030405Z__docs",
         [],
     )
 
@@ -1095,7 +1097,7 @@ def test_staged_collection_upload_payload_returns_archiving_session() -> None:
 
     payload = riverhog_main._staged_collection_upload_payload(
         FakeApi(),  # type: ignore[arg-type]
-        "2025/docs",
+        "2025/20250102T030405Z__docs",
         manifest,
     )
 

@@ -128,7 +128,7 @@ def build_archive_restore_started_payload(
             "estimated_ready_at": estimated_ready_at,
             "operator_urgency": "time_sensitive",
             "operator_action": "wait for automatic materialization",
-            "operator_message": "Archive retrieval has started for selected files.",
+            "operator_message": "Collection archive retrieval has started.",
             "notification": _archive_restore_notification(
                 event="archive_restore.started",
                 restore_id=restore_id,
@@ -413,9 +413,7 @@ def validate_operator_payload(payload: dict[str, object]) -> dict[str, object]:
         )
     for field in notification_fields:
         if not isinstance(notification[field], str):
-            raise ValueError(
-                f"operator notification {event} notification.{field} must be a string"
-            )
+            raise ValueError(f"operator notification {event} notification.{field} must be a string")
     for field, limit_field in (("title", "title_max_chars"), ("body", "body_max_chars")):
         if len(str(notification[field])) > _notification_int(limit_field):
             raise ValueError(f"operator notification {event} notification.{field} is too long")
@@ -438,9 +436,7 @@ def validate_operator_payload(payload: dict[str, object]) -> dict[str, object]:
     actions_by_component = event_contract.get("operator_action_by_component")
     if isinstance(actions_by_component, Mapping):
         if not all(isinstance(action, str) for action in actions_by_component.values()):
-            raise RuntimeError(
-                f"operator notification {event} component actions must be strings"
-            )
+            raise RuntimeError(f"operator notification {event} component actions must be strings")
         operator_actions.update(actions_by_component.values())
     if payload.get("operator_action") not in operator_actions:
         raise ValueError(
@@ -614,8 +610,8 @@ def _jeb_issue_subject(context: Mapping[str, object]) -> str:
 
 
 def _jeb_operator_action(*, event: str, component: str = "") -> str:
-    actions_by_component = _operator_notification_events().get(event, {}).get(
-        "operator_action_by_component"
+    actions_by_component = (
+        _operator_notification_events().get(event, {}).get("operator_action_by_component")
     )
     if isinstance(actions_by_component, Mapping) and isinstance(
         actions_by_component.get(component), str

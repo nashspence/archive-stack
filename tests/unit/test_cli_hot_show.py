@@ -15,7 +15,7 @@ def _status(fetch_id: str) -> dict[str, object]:
     return {
         "id": fetch_id,
         "name": "Docs",
-        "targets": ["docs/"],
+        "collections": ["2025/20250102T030405Z__docs"],
         "state": "done",
         "files": 3,
         "bytes": 30,
@@ -23,7 +23,7 @@ def _status(fetch_id: str) -> dict[str, object]:
         "hot_bytes": 30,
         "missing_files": 0,
         "missing_bytes": 0,
-        "next_action": {"action": "none", "reason": "selected files are hot"},
+        "next_action": {"action": "none", "reason": "all collections are hot"},
         "archive_restores": {"total": 0},
     }
 
@@ -81,11 +81,11 @@ def test_hot_fetch_start_follows_with_status(monkeypatch) -> None:
 
 def test_hot_evict_dry_run_renders_selection(monkeypatch) -> None:
     class FakeClient:
-        def evict_hot_targets(
-            self, targets: list[str], *, dry_run: bool = False
+        def evict_hot_collections(
+            self, collections: list[str], *, dry_run: bool = False
         ) -> dict[str, object]:
             return {
-                "targets": targets,
+                "collections": collections,
                 "dry_run": dry_run,
                 "status": "would_evict",
                 "files": 2,
@@ -97,7 +97,10 @@ def test_hot_evict_dry_run_renders_selection(monkeypatch) -> None:
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
-    result = runner.invoke(app, ["hot", "evict", "docs/", "--dry-run"])
+    result = runner.invoke(
+        app,
+        ["hot", "evict", "2025/20250102T030405Z__docs", "--dry-run"],
+    )
 
     assert result.exit_code == 0
     assert "hot eviction: would_evict" in result.stdout

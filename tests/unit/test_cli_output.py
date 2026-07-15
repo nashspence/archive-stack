@@ -18,7 +18,7 @@ from riverhog_cli.output import (
 def test_collection_output_leads_with_archive_and_hot_state() -> None:
     rendered = format_collection_summary(
         {
-            "id": "docs",
+            "id": "2025/20250102T030405Z__docs",
             "files": 2,
             "bytes": 100,
             "hot_bytes": 60,
@@ -26,12 +26,12 @@ def test_collection_output_leads_with_archive_and_hot_state() -> None:
         }
     )
 
-    assert "collection docs" in rendered
+    assert "collection 2025/20250102T030405Z__docs" in rendered
     assert "hot: 60 B" in rendered
     assert "archive: uploaded" in rendered
 
 
-def test_list_and_search_output_use_file_and_collection_targets() -> None:
+def test_list_and_search_output_use_logical_paths_and_collection_ids() -> None:
     collections = format_collections(
         {
             "page": 1,
@@ -39,7 +39,7 @@ def test_list_and_search_output_use_file_and_collection_targets() -> None:
             "total": 1,
             "collections": [
                 {
-                    "id": "docs",
+                    "id": "2025/20250102T030405Z__docs",
                     "files": 1,
                     "bytes": 10,
                     "hot_bytes": 10,
@@ -53,12 +53,18 @@ def test_list_and_search_output_use_file_and_collection_targets() -> None:
             "page": 1,
             "pages": 1,
             "total": 1,
-            "files": [{"target": "docs/a.txt", "bytes": 10, "hot": True}],
+            "files": [
+                {
+                    "logical_path": "2025/20250102T030405Z__docs/a.txt",
+                    "bytes": 10,
+                    "hot": True,
+                }
+            ],
         }
     )
 
-    assert "docs" in collections and "archive=uploaded" in collections
-    assert "docs/a.txt" in files and "hot=true" in files
+    assert "2025/20250102T030405Z__docs" in collections and "archive=uploaded" in collections
+    assert "2025/20250102T030405Z__docs/a.txt" in files and "hot=true" in files
 
 
 def test_fetch_output_explains_archive_progress() -> None:
@@ -72,7 +78,7 @@ def test_fetch_output_explains_archive_progress() -> None:
         "hot_bytes": 40,
         "missing_files": 1,
         "missing_bytes": 60,
-        "targets": ["docs/tax/"],
+        "collections": ["2025/20250102T030405Z__docs"],
         "next_action": {"action": "wait", "reason": "archive materialization is in progress"},
         "archive_restores": {"total": 1},
     }

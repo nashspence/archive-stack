@@ -145,7 +145,6 @@ def map_archive_restore(summary: ArchiveRestoreSummary) -> dict[str, object]:
         "expires_at": summary.expires_at,
         "completed_at": summary.completed_at,
         "canceled_at": summary.canceled_at,
-        "paths": None if summary.paths is None else list(summary.paths),
         "latest_message": summary.latest_message,
         "warnings": list(summary.warnings),
         "notification": map_archive_restore_notification(summary.notification),
@@ -175,7 +174,7 @@ def map_fetch(summary: FetchSummary) -> dict[str, object]:
     return {
         "id": str(summary.id),
         "name": summary.name,
-        "targets": [str(target) for target in summary.targets],
+        "collections": [str(collection) for collection in summary.collections],
         "state": summary.state.value,
         "files": summary.files,
         "bytes": summary.bytes,

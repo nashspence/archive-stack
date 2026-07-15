@@ -55,25 +55,25 @@ def _config(sqlite_path: Path) -> RuntimeConfig:
 def _seed_docs_collection(sqlite_path: Path) -> None:
     session_factory = make_session_factory(sqlite_url(sqlite_path))
     with session_scope(session_factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add_all(
             [
                 CollectionFileRecord(
-                    collection_id="docs",
+                    collection_id="2025/20250102T030405Z__docs",
                     path="tax/2022/receipt-456.pdf",
                     bytes=21,
                     sha256="b" * 64,
                     hot=True,
                 ),
                 CollectionFileRecord(
-                    collection_id="docs",
+                    collection_id="2025/20250102T030405Z__docs",
                     path="letters/cover.txt",
                     bytes=13,
                     sha256="a" * 64,
                     hot=True,
                 ),
                 CollectionFileRecord(
-                    collection_id="docs",
+                    collection_id="2025/20250102T030405Z__docs",
                     path="tax/2022/invoice-123.pdf",
                     bytes=21,
                     sha256="c" * 64,
@@ -83,21 +83,25 @@ def _seed_docs_collection(sqlite_path: Path) -> None:
         )
 
 
-def test_query_by_target_is_paginated_and_reports_canonical_target(tmp_path: Path) -> None:
+def test_query_by_path_is_paginated_and_reports_canonical_path(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "state.sqlite3"
     initialize_db(sqlite_url(sqlite_path))
     _seed_docs_collection(sqlite_path)
 
     service = SqlAlchemyFileService(_config(sqlite_path), _FakeHotStore())
 
-    payload = service.query_by_target("docs/", page=1, per_page=2)
+    payload = service.query_by_path(
+        "2025/20250102T030405Z__docs/",
+        page=1,
+        per_page=2,
+    )
 
-    assert payload["target"] == "docs/"
+    assert payload["path"] == "2025/20250102T030405Z__docs/"
     assert payload["page"] == 1
     assert payload["per_page"] == 2
     assert payload["total"] == 3
     assert payload["pages"] == 2
-    assert [record["target"] for record in payload["files"]] == [
-        "docs/letters/cover.txt",
-        "docs/tax/2022/invoice-123.pdf",
+    assert [record["logical_path"] for record in payload["files"]] == [
+        "2025/20250102T030405Z__docs/letters/cover.txt",
+        "2025/20250102T030405Z__docs/tax/2022/invoice-123.pdf",
     ]

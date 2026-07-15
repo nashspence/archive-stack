@@ -8,11 +8,11 @@ from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_restore_list, map_fetch, map_fetch_list
 from riverhog_api.schemas.fetches import (
     CreateFetchRequest,
+    FetchCollectionsRequest,
     FetchesResponse,
     FetchFilesResponse,
     FetchStatusResponse,
     FetchSummaryOut,
-    FetchTargetsRequest,
     HotEvictRequest,
     HotEvictResponse,
 )
@@ -35,12 +35,12 @@ def _fetch_status_payload(fetch_id: str, container: ContainerDep) -> dict[str, o
 
 
 @router.post("/hot/evict", response_model=HotEvictResponse)
-def evict_hot_targets(
+def evict_hot_collections(
     request: HotEvictRequest,
     container: ContainerDep,
 ) -> HotEvictResponse:
     return HotEvictResponse.model_validate(
-        container.fetches.evict(request.targets, dry_run=request.dry_run)
+        container.fetches.evict(request.collections, dry_run=request.dry_run)
     )
 
 
@@ -53,6 +53,7 @@ def list_fetches(
     q: str | None = Query(None),
     sort: str = Query("order"),
     order: str = Query("asc"),
+    all_items: bool = Query(False, alias="all"),
 ) -> FetchesResponse:
     return FetchesResponse.model_validate(
         map_fetch_list(
@@ -63,6 +64,7 @@ def list_fetches(
                 q=q,
                 sort=sort,
                 order=order,
+                all_items=all_items,
             )
         )
     )
@@ -74,29 +76,34 @@ def create_fetch(
     container: ContainerDep,
 ) -> FetchSummaryOut:
     return FetchSummaryOut.model_validate(
-        map_fetch(container.fetches.create(name=request.name, targets=request.targets))
+        map_fetch(
+            container.fetches.create(
+                name=request.name,
+                collections=request.collections,
+            )
+        )
     )
 
 
-@router.post("/fetches/{fetch_id}/targets", response_model=FetchSummaryOut)
-def add_fetch_targets(
+@router.post("/fetches/{fetch_id}/collections", response_model=FetchSummaryOut)
+def add_fetch_collections(
     fetch_id: str,
-    request: FetchTargetsRequest,
+    request: FetchCollectionsRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
     return FetchSummaryOut.model_validate(
-        map_fetch(container.fetches.add_targets(fetch_id, request.targets))
+        map_fetch(container.fetches.add_collections(fetch_id, request.collections))
     )
 
 
-@router.delete("/fetches/{fetch_id}/targets", response_model=FetchSummaryOut)
-def remove_fetch_targets(
+@router.delete("/fetches/{fetch_id}/collections", response_model=FetchSummaryOut)
+def remove_fetch_collections(
     fetch_id: str,
-    request: FetchTargetsRequest,
+    request: FetchCollectionsRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
     return FetchSummaryOut.model_validate(
-        map_fetch(container.fetches.remove_targets(fetch_id, request.targets))
+        map_fetch(container.fetches.remove_collections(fetch_id, request.collections))
     )
 
 
@@ -136,7 +143,13 @@ def list_fetch_files(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: Literal["target", "collection", "path", "bytes", "hot"] = Query("target"),
+    sort: Literal[
+        "logical_path",
+        "collection_id",
+        "collection_path",
+        "bytes",
+        "hot",
+    ] = Query("logical_path"),
     order: Literal["asc", "desc"] = Query("asc"),
     hot: bool | None = Query(None),
 ) -> FetchFilesResponse:

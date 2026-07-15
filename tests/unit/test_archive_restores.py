@@ -63,7 +63,7 @@ class FakeArchiveStore:
     def __init__(self, *, ready: bool = True) -> None:
         content = b"archived document"
         self.package = build_collection_archive_package(
-            collection_id="docs",
+            collection_id="2025/20250102T030405Z__docs",
             files=(
                 CollectionArchiveFile(
                     path="document.txt",
@@ -99,10 +99,10 @@ def _seed(path: Path, store: FakeArchiveStore) -> None:
     content = b"archived document"
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add(
             CollectionFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="document.txt",
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
@@ -111,7 +111,7 @@ def _seed(path: Path, store: FakeArchiveStore) -> None:
         )
         session.add(
             CollectionArchiveRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="uploaded",
                 object_path="collections/docs/archive.tar.age",
                 stored_bytes=len(store.package.archive_bytes),
@@ -138,7 +138,7 @@ def _service(
     )
 
 
-def test_archive_restore_verifies_and_materializes_selected_files(tmp_path: Path) -> None:
+def test_archive_restore_verifies_and_materializes_collection(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     archive_store = FakeArchiveStore()
@@ -146,14 +146,13 @@ def test_archive_restore_verifies_and_materializes_selected_files(tmp_path: Path
     _seed(path, archive_store)
 
     summary = _service(path, archive_store, hot_store).create_or_resume_for_collection(
-        "docs", paths=["document.txt"]
+        "2025/20250102T030405Z__docs"
     )
 
     assert summary.state == ArchiveRestoreState.COMPLETED
-    assert summary.paths == ("document.txt",)
     assert summary.progress.archive_verification == "completed"
     assert summary.progress.materialization == "completed"
-    assert hot_store.files[("docs", "document.txt")] == b"archived document"
+    assert hot_store.files[("2025/20250102T030405Z__docs", "document.txt")] == b"archived document"
     assert archive_store.cleaned == 1
 
 
@@ -165,7 +164,7 @@ def test_archive_restore_can_be_canceled_while_retrieval_is_pending(tmp_path: Pa
     _seed(path, archive_store)
     service = _service(path, archive_store, hot_store)
 
-    pending = service.create_or_resume_for_collection("docs")
+    pending = service.create_or_resume_for_collection("2025/20250102T030405Z__docs")
     canceled = service.cancel(pending.id)
 
     assert pending.state == ArchiveRestoreState.REQUESTED
@@ -183,7 +182,7 @@ def test_archive_restore_refuses_collection_with_active_deletion(tmp_path: Path)
     with session_scope(factory) as session:
         session.add(
             CollectionDeletionRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 challenge="delete-test",
                 plan_json="{}",
                 started_at="2026-07-14T00:00:00Z",
@@ -191,4 +190,6 @@ def test_archive_restore_refuses_collection_with_active_deletion(tmp_path: Path)
         )
 
     with pytest.raises(Conflict, match="deletion is in progress"):
-        _service(path, archive_store, hot_store).create_or_resume_for_collection("docs")
+        _service(path, archive_store, hot_store).create_or_resume_for_collection(
+            "2025/20250102T030405Z__docs"
+        )

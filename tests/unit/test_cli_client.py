@@ -19,7 +19,13 @@ class RecordingClient(ApiClient):
 
 def test_search_uses_current_filters() -> None:
     client = RecordingClient()
-    client.search("tax", collection="docs", hot=False, sort="path", order="desc")
+    client.search(
+        "tax",
+        collection="2025/20250102T030405Z__docs",
+        hot=False,
+        sort="collection_path",
+        order="desc",
+    )
 
     assert client.calls == [
         (
@@ -29,10 +35,10 @@ def test_search_uses_current_filters() -> None:
                 "params": {
                     "page": 1,
                     "per_page": 25,
-                    "sort": "path",
+                    "sort": "collection_path",
                     "order": "desc",
                     "q": "tax",
-                    "collection": "docs",
+                    "collection": "2025/20250102T030405Z__docs",
                     "hot": False,
                 }
             },
@@ -49,9 +55,9 @@ def test_fetch_start_is_a_single_archive_aware_action() -> None:
 
 def test_archive_restore_list_filters_collection_and_state() -> None:
     client = RecordingClient()
-    client.list_archive_restores(state="requested", collection="docs")
+    client.list_archive_restores(state="requested", collection="2025/20250102T030405Z__docs")
 
     _, path, kwargs = client.calls[0]
     assert path == "/v1/archive-restores"
     assert kwargs["params"]["state"] == "requested"
-    assert kwargs["params"]["collection"] == "docs"
+    assert kwargs["params"]["collection"] == "2025/20250102T030405Z__docs"

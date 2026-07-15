@@ -11,7 +11,7 @@ from riverhog_api.schemas.common import RiverhogModel
 class FetchSummaryOut(RiverhogModel):
     id: str
     name: str
-    targets: list[str]
+    collections: list[str]
     state: Literal["draft", "queued_archive", "restoring_archive", "done", "failed"]
     files: int
     bytes: int
@@ -31,20 +31,20 @@ class FetchesResponse(RiverhogModel):
 
 class CreateFetchRequest(RiverhogModel):
     name: str
-    targets: list[str] = Field(default_factory=list)
+    collections: list[str] = Field(default_factory=list)
 
 
-class FetchTargetsRequest(RiverhogModel):
-    targets: list[str]
+class FetchCollectionsRequest(RiverhogModel):
+    collections: list[str]
 
 
 class HotEvictRequest(RiverhogModel):
-    targets: list[str]
+    collections: list[str]
     dry_run: bool = False
 
 
 class HotEvictResponse(RiverhogModel):
-    targets: list[str]
+    collections: list[str]
     dry_run: bool
     status: str
     files: int
@@ -55,8 +55,8 @@ class HotEvictResponse(RiverhogModel):
     would_evict_bytes: int
 
 
-class FetchTargetSummaryOut(RiverhogModel):
-    target: str
+class FetchCollectionSummaryOut(RiverhogModel):
+    collection: str
     files: int
     bytes: int
     hot_files: int
@@ -66,9 +66,9 @@ class FetchTargetSummaryOut(RiverhogModel):
 
 
 class FetchFileOut(RiverhogModel):
-    target: str
-    collection: str
-    path: str
+    logical_path: str
+    collection_id: str
+    collection_path: str
     bytes: int
     sha256: str
     hot: bool
@@ -80,7 +80,7 @@ class FetchNextActionOut(RiverhogModel):
 
 
 class FetchStatusResponse(FetchSummaryOut):
-    target_summaries: list[FetchTargetSummaryOut]
+    collection_summaries: list[FetchCollectionSummaryOut]
     files_preview: list[FetchFileOut]
     next_action: FetchNextActionOut
     archive_restores: ArchiveRestoreListOut
@@ -94,6 +94,6 @@ class FetchFilesResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: Literal["target", "collection", "path", "bytes", "hot"]
+    sort: Literal["logical_path", "collection_id", "collection_path", "bytes", "hot"]
     order: Literal["asc", "desc"]
     files: list[FetchFileOut]

@@ -18,8 +18,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveRecord,
     CollectionFileRecord,
     CollectionRecord,
+    FetchCollectionRecord,
     FetchRecord,
-    FetchSelectorRecord,
 )
 from riverhog_core.collection_archives import (
     CollectionArchiveExpectedFile,
@@ -39,14 +39,12 @@ from riverhog_core.domain.models import (
     CollectionManifestStatus,
 )
 from riverhog_core.domain.types import CollectionId
-from riverhog_core.fs_paths import normalize_relpath
 from riverhog_core.operator_reminders import operator_reminder_due
 from riverhog_core.ports.archive_store import ArchiveRestoreStatus, ArchiveStore
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import require_collection_not_deleting
-from riverhog_core.services.target_selection import selected_collection_files
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_archive_restore_canceled_payload,
@@ -167,12 +165,7 @@ class SqlAlchemyArchiveRestoreService:
         with session_scope(self._session_factory) as session:
             return _restore_summary(session, _require_restore(session, restore_id), self._config)
 
-    def create_or_resume_for_collection(
-        self,
-        collection_id: str,
-        *,
-        paths: Sequence[str] | None = None,
-    ) -> ArchiveRestoreSummary:
+    def create_or_resume_for_collection(self, collection_id: str) -> ArchiveRestoreSummary:
         with session_scope(self._session_factory) as session:
             require_collection_not_deleting(session, collection_id)
             collection = _require_collection(session, collection_id)
@@ -183,15 +176,8 @@ class SqlAlchemyArchiveRestoreService:
                     session,
                     config=self._config,
                     collection=collection,
-                    paths=_normalize_paths(session, collection_id=collection_id, paths=paths),
                 )
             else:
-                _merge_paths(
-                    session,
-                    record=active,
-                    collection_id=collection_id,
-                    paths=paths,
-                )
                 record = active
             restore_id = record.restore_id
         try:
@@ -243,17 +229,15 @@ class SqlAlchemyArchiveRestoreService:
     def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
-            paths_by_collection: dict[str, set[str]] = {}
-            for file in _selected_fetch_files(session, fetch_id):
-                if not file.hot:
-                    paths_by_collection.setdefault(file.collection_id, set()).add(file.path)
-            for collection_id in sorted(paths_by_collection):
+            files = _fetch_files(session, fetch_id)
+            missing_collection_ids = {file.collection_id for file in files if not file.hot}
+            for collection_id in sorted(missing_collection_ids):
                 require_collection_not_deleting(session, collection_id)
             if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
                 fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
 
-        for collection_id, paths in sorted(paths_by_collection.items()):
-            self.create_or_resume_for_collection(collection_id, paths=sorted(paths))
+        for collection_id in sorted(missing_collection_ids):
+            self.create_or_resume_for_collection(collection_id)
 
         with session_scope(self._session_factory) as session:
             _sync_fetch_states(session, hot_store=self._hot_store)
@@ -334,9 +318,7 @@ class SqlAlchemyArchiveRestoreService:
                         ),
                         (
                             (ArchiveRestoreRecord.state == ArchiveRestoreState.READY.value)
-                            & (
-                                ArchiveRestoreRecord.materialization_state != "completed"
-                            )
+                            & (ArchiveRestoreRecord.materialization_state != "completed")
                             & (
                                 ArchiveRestoreRecord.next_poll_at.is_(None)
                                 | (ArchiveRestoreRecord.next_poll_at <= current_text)
@@ -382,7 +364,7 @@ class SqlAlchemyArchiveRestoreService:
     def repair_missing_fetch_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
-        paths_by_collection: dict[str, set[str]] = {}
+        collections_to_restore: set[str] = set()
         missing_count = 0
         with session_scope(self._session_factory) as session:
             fetches = session.scalars(
@@ -393,7 +375,7 @@ class SqlAlchemyArchiveRestoreService:
             for fetch in fetches:
                 if missing_count >= limit:
                     break
-                selected = _selected_fetch_files(session, fetch.fetch_id)
+                selected = _fetch_files(session, fetch.fetch_id)
                 listed: dict[str, dict[str, int]] = {}
                 fetch_missing = False
                 for file in selected:
@@ -410,19 +392,17 @@ class SqlAlchemyArchiveRestoreService:
                     file.hot = False
                     fetch_missing = True
                     missing_count += 1
-                    paths_by_collection.setdefault(file.collection_id, set()).add(file.path)
+                    collections_to_restore.add(file.collection_id)
                 if fetch_missing and fetch.fetch_state == FetchState.DONE.value:
                     fetch.fetch_state = FetchState.QUEUED_ARCHIVE.value
                 elif not fetch_missing and selected:
                     fetch.fetch_state = FetchState.DONE.value
 
-        for collection_id, paths in sorted(paths_by_collection.items()):
+        for collection_id in sorted(collections_to_restore):
             try:
-                self.create_or_resume_for_collection(collection_id, paths=sorted(paths))
+                self.create_or_resume_for_collection(collection_id)
             except Exception:
-                _LOG.exception(
-                    "automatic archive restore failed: collection=%s", collection_id
-                )
+                _LOG.exception("automatic archive restore failed: collection=%s", collection_id)
         if missing_count:
             with session_scope(self._session_factory) as session:
                 _sync_fetch_states(session, hot_store=self._hot_store)
@@ -464,7 +444,7 @@ class SqlAlchemyArchiveRestoreService:
                     )
                     record.next_poll_at = None
                     record.latest_message = (
-                        "Archive is ready; Riverhog is materializing the requested files."
+                        "Archive is ready; Riverhog is materializing the collection."
                     )
                     _notify_ready(session, record, self._config, current)
                 elif status.state == "expired":
@@ -531,9 +511,7 @@ class SqlAlchemyArchiveRestoreService:
                     record.archive_verification_state
                 )
                 record.extraction_state = _failed_progress_state(record.extraction_state)
-                record.materialization_state = _failed_progress_state(
-                    record.materialization_state
-                )
+                record.materialization_state = _failed_progress_state(record.materialization_state)
                 record.latest_message = f"Archive restore failed: {error}"
                 record.last_failure_notification_at = current_text
                 notify = True
@@ -628,17 +606,30 @@ def _restore_collections(session: Session, record: ArchiveRestoreRecord) -> list
     return [_require_collection(session, row.collection_id) for row in rows]
 
 
-def _selected_fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
-    selected: dict[tuple[str, str], CollectionFileRecord] = {}
-    selectors = session.scalars(
-        select(FetchSelectorRecord)
-        .where(FetchSelectorRecord.fetch_id == fetch_id)
-        .order_by(FetchSelectorRecord.selector_order, FetchSelectorRecord.target)
-    ).all()
-    for selector in selectors:
-        for file in selected_collection_files(session, selector.target, missing_ok=True):
-            selected[(file.collection_id, file.path)] = file
-    return [selected[key] for key in sorted(selected)]
+def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
+    return list(
+        session.scalars(
+            select(FetchCollectionRecord.collection_id)
+            .where(FetchCollectionRecord.fetch_id == fetch_id)
+            .order_by(
+                FetchCollectionRecord.collection_order,
+                FetchCollectionRecord.collection_id,
+            )
+        ).all()
+    )
+
+
+def _fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
+    collection_ids = _fetch_collection_ids(session, fetch_id)
+    if not collection_ids:
+        return []
+    return list(
+        session.scalars(
+            select(CollectionFileRecord)
+            .where(CollectionFileRecord.collection_id.in_(collection_ids))
+            .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path)
+        ).all()
+    )
 
 
 def _records_for_fetch(
@@ -647,29 +638,17 @@ def _records_for_fetch(
     fetch_id: str,
     state: str | None,
 ) -> list[ArchiveRestoreRecord]:
-    selected = _selected_fetch_files(session, fetch_id)
-    selected_paths: dict[str, set[str]] = {}
-    for file in selected:
-        selected_paths.setdefault(file.collection_id, set()).add(file.path)
-    if not selected_paths:
+    collection_ids = _fetch_collection_ids(session, fetch_id)
+    if not collection_ids:
         return []
     stmt = (
         select(ArchiveRestoreRecord)
         .join(ArchiveRestoreCollectionRecord)
-        .where(ArchiveRestoreCollectionRecord.collection_id.in_(selected_paths))
+        .where(ArchiveRestoreCollectionRecord.collection_id.in_(collection_ids))
     )
     if state is not None:
         stmt = stmt.where(ArchiveRestoreRecord.state == state)
-    records = session.scalars(stmt).unique().all()
-    result: list[ArchiveRestoreRecord] = []
-    for record in records:
-        paths = _paths_from_json(record.paths_json)
-        if any(
-            paths is None or bool(set(paths) & selected_paths.get(row.collection_id, set()))
-            for row in record.collections
-        ):
-            result.append(record)
-    return result
+    return list(session.scalars(stmt).unique().all())
 
 
 def _sort_records(
@@ -713,7 +692,6 @@ def _create_restore(
     *,
     config: RuntimeConfig,
     collection: CollectionRecord,
-    paths: tuple[str, ...] | None,
 ) -> ArchiveRestoreRecord:
     existing_ids = session.scalars(select(ArchiveRestoreRecord.restore_id)).all()
     restore_id = _generated_restore_id(collection.id, existing_ids=existing_ids)
@@ -735,7 +713,6 @@ def _create_restore(
         last_failure_at=None,
         last_failure=None,
         last_failure_notification_at=None,
-        paths_json=_paths_json(paths),
     )
     session.add(record)
     session.flush()
@@ -788,7 +765,7 @@ def _request_restore(
     )
     record.next_poll_at = _isoformat_z(current + config.archive_restore_sweep_interval)
     record.latest_message = (
-        "Archive retrieval requested; Riverhog will materialize the selected files when ready."
+        "Archive retrieval requested; Riverhog will materialize the collection when ready."
     )
 
 
@@ -845,13 +822,9 @@ def _materialize_restore(
     if hot_store is None:
         raise InvalidState("archive restore service has no hot store")
     for collection in _restore_collections(session, record):
-        paths = set(_materialization_paths(session, record=record, collection=collection))
-        if not paths:
-            continue
         expected_files = _expected_files(session, collection.id)
-        missing = paths - {file.path for file in expected_files}
-        if missing:
-            raise NotFound(f"collection file not found: {sorted(missing)[0]}")
+        if not expected_files:
+            continue
         archive = _require_archive_objects(collection)
         record.archive_verification_state = "in_progress"
         record.extraction_state = "in_progress"
@@ -886,7 +859,6 @@ def _materialize_restore(
         for path, content, content_length in iter_verified_collection_archive_file_chunks(
             chunks,
             files=expected_files,
-            selected_paths=paths,
         ):
             hot_store.put_collection_file_stream(
                 collection.id,
@@ -901,9 +873,10 @@ def _materialize_restore(
             if row is not None:
                 row.hot = True
             materialized.add(path)
-        if materialized != paths:
+        expected_paths = {file.path for file in expected_files}
+        if materialized != expected_paths:
             raise ValueError(
-                f"collection archive missing selected member: {sorted(paths - materialized)[0]}"
+                f"collection archive missing member: {sorted(expected_paths - materialized)[0]}"
             )
     record.extraction_state = "completed"
     record.materialization_state = "completed"
@@ -912,7 +885,7 @@ def _materialize_restore(
     record.completed_at = _isoformat_z(current)
     record.expires_at = record.completed_at
     record.next_poll_at = None
-    record.latest_message = "Requested files were verified and materialized to hot storage."
+    record.latest_message = "The collection was verified and materialized to hot storage."
     _sync_fetch_states(session, hot_store=hot_store)
     _notify_completed(session, record, config, current)
 
@@ -957,64 +930,6 @@ def _expected_files(
     )
 
 
-def _materialization_paths(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    collection: CollectionRecord,
-) -> tuple[str, ...]:
-    requested = _paths_from_json(record.paths_json)
-    if requested is not None:
-        return requested
-    return tuple(file.path for file in _expected_files(session, collection.id))
-
-
-def _normalize_paths(
-    session: Session,
-    *,
-    collection_id: str,
-    paths: Sequence[str] | None,
-) -> tuple[str, ...] | None:
-    if paths is None:
-        return None
-    normalized = tuple(dict.fromkeys(normalize_relpath(path) for path in paths))
-    if not normalized:
-        return None
-    expected = {file.path for file in _expected_files(session, collection_id)}
-    missing = sorted(set(normalized) - expected)
-    if missing:
-        raise NotFound(f"collection file not found: {missing[0]}")
-    return tuple(sorted(normalized))
-
-
-def _merge_paths(
-    session: Session,
-    *,
-    record: ArchiveRestoreRecord,
-    collection_id: str,
-    paths: Sequence[str] | None,
-) -> None:
-    incoming = _normalize_paths(session, collection_id=collection_id, paths=paths)
-    existing = _paths_from_json(record.paths_json)
-    if incoming is None or existing is None:
-        record.paths_json = None
-    else:
-        record.paths_json = _paths_json(tuple(sorted(set(existing) | set(incoming))))
-
-
-def _paths_json(paths: tuple[str, ...] | None) -> str | None:
-    return None if paths is None else json.dumps(list(paths), separators=(",", ":"))
-
-
-def _paths_from_json(raw: str | None) -> tuple[str, ...] | None:
-    if raw is None:
-        return None
-    value = json.loads(raw)
-    if not isinstance(value, list):
-        raise InvalidState("archive restore paths are corrupt")
-    return tuple(str(item) for item in value)
-
-
 def _hot_file_available_for_audit(
     hot_store: HotStore,
     file: CollectionFileRecord,
@@ -1056,7 +971,7 @@ def _sync_fetch_states(session: Session, *, hot_store: HotStore | None) -> None:
         .order_by(FetchRecord.fetch_order)
     ).all()
     for fetch in fetches:
-        files = _selected_fetch_files(session, fetch.fetch_id)
+        files = _fetch_files(session, fetch.fetch_id)
         fetch.fetch_state = (
             FetchState.DONE.value
             if files and all(_hot_file_available(hot_store, file) for file in files)
@@ -1089,7 +1004,6 @@ def _restore_summary(
         expires_at=record.expires_at,
         completed_at=record.completed_at,
         canceled_at=record.canceled_at,
-        paths=_paths_from_json(record.paths_json),
         latest_message=record.latest_message,
         warnings=tuple(str(item) for item in json.loads(record.warnings_json)),
         notification=ArchiveRestoreNotificationStatus(
@@ -1348,9 +1262,7 @@ def _notify_failure(
         )
 
 
-def _collection_payload(
-    session: Session, record: ArchiveRestoreRecord
-) -> list[dict[str, str]]:
+def _collection_payload(session: Session, record: ArchiveRestoreRecord) -> list[dict[str, str]]:
     return [
         {"collection_id": row.collection_id}
         for row in session.scalars(

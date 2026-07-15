@@ -46,8 +46,8 @@ def _ensure_schema_indexes(engine: Engine) -> None:
     statements = (
         "CREATE INDEX IF NOT EXISTS idx_collection_upload_files_collection_order "
         "ON collection_upload_files (collection_id, file_order)",
-        "CREATE INDEX IF NOT EXISTS ix_fetch_selectors_target "
-        "ON fetch_selectors (target, fetch_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fetch_collections_collection "
+        "ON fetch_collections (collection_id, fetch_id)",
         "CREATE INDEX IF NOT EXISTS ix_archive_restores_state_created "
         "ON archive_restores (state, created_at, restore_id)",
     )
@@ -68,8 +68,8 @@ def initialize_db(database_url: str) -> None:
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
+        FetchCollectionRecord,
         FetchRecord,
-        FetchSelectorRecord,
     )
 
     _ = (
@@ -83,7 +83,7 @@ def initialize_db(database_url: str) -> None:
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         FetchRecord,
-        FetchSelectorRecord,
+        FetchCollectionRecord,
     )
     engine = create_catalog_engine(database_url)
     Base.metadata.create_all(engine)

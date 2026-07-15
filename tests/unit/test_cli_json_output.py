@@ -19,7 +19,7 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
             "order": "asc",
             "collections": [
                 {
-                    "id": "docs",
+                    "id": "2025/20250102T030405Z__docs",
                     "files": 2,
                     "bytes": 100,
                     "hot_bytes": 25,
@@ -38,7 +38,7 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
 
     assert payload["collections"] == [
         {
-            "id": "docs",
+            "id": "2025/20250102T030405Z__docs",
             "files": 2,
             "bytes": 100,
             "hot_bytes": 25,

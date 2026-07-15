@@ -18,8 +18,8 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    FetchCollectionRecord,
     FetchRecord,
-    FetchSelectorRecord,
 )
 from riverhog_core.domain.errors import Conflict
 from riverhog_core.runtime_config import RuntimeConfig
@@ -53,9 +53,9 @@ class FailOnce:
 class FakeHotStore:
     def __init__(self, failures: FailOnce, *, include_unrelated: bool = False) -> None:
         self._failures = failures
-        self.files = {("docs", "readme.txt"): b"sole durable copy\n"}
+        self.files = {("2025/20250102T030405Z__docs", "readme.txt"): b"sole durable copy\n"}
         if include_unrelated:
-            self.files[("other", "keep.txt")] = b"unrelated durable copy\n"
+            self.files[("2025/20250103T030405Z__other", "keep.txt")] = b"unrelated durable copy\n"
 
     def list_collection_files(self, collection_id: str) -> list[tuple[str, int]]:
         return [
@@ -95,7 +95,7 @@ class FakeArchiveStore:
         manifest_object_path: str,
         proof_object_path: str,
     ) -> None:
-        assert collection_id == "docs"
+        assert collection_id == "2025/20250102T030405Z__docs"
         for index, path in enumerate((object_path, manifest_object_path, proof_object_path)):
             self.objects.discard(path)
             if index == 0:
@@ -137,10 +137,10 @@ def _seed(
     content = b"sole durable copy\n"
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="docs"))
+        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
         session.add(
             CollectionFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="readme.txt",
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
@@ -149,7 +149,7 @@ def _seed(
         )
         session.add(
             CollectionArchiveRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="uploaded",
                 archive_storage_prefix="archive/archives/opaque-docs",
                 object_path="archive/archives/opaque-docs/archive.tar.age",
@@ -166,13 +166,13 @@ def _seed(
         )
         session.add(
             CollectionUploadRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 state="expired",
             )
         )
         session.add(
             CollectionUploadFileRecord(
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 path="readme.txt",
                 file_order=0,
                 bytes=len(content),
@@ -195,7 +195,7 @@ def _seed(
         session.add(
             ArchiveRestoreCollectionRecord(
                 restore_id=restore_id,
-                collection_id="docs",
+                collection_id="2025/20250102T030405Z__docs",
                 collection_order=0,
             )
         )
@@ -209,18 +209,18 @@ def _seed(
                 )
             )
             session.add(
-                FetchSelectorRecord(
+                FetchCollectionRecord(
                     fetch_id="fx-1",
-                    target="docs/",
-                    selector_order=0,
+                    collection_id="2025/20250102T030405Z__docs",
+                    collection_order=0,
                 )
             )
         if include_unrelated:
             other_content = b"unrelated durable copy\n"
-            session.add(CollectionRecord(id="other"))
+            session.add(CollectionRecord(id="2025/20250103T030405Z__other"))
             session.add(
                 CollectionFileRecord(
-                    collection_id="other",
+                    collection_id="2025/20250103T030405Z__other",
                     path="keep.txt",
                     bytes=len(other_content),
                     sha256=hashlib.sha256(other_content).hexdigest(),
@@ -229,7 +229,7 @@ def _seed(
             )
             session.add(
                 CollectionArchiveRecord(
-                    collection_id="other",
+                    collection_id="2025/20250103T030405Z__other",
                     state="uploaded",
                     archive_storage_prefix="archive/archives/opaque-other",
                     object_path="archive/archives/opaque-other/archive.tar.age",
@@ -298,7 +298,7 @@ def _setup(
 def test_plan_enumerates_custody_impact_and_issues_state_bound_challenge(tmp_path: Path) -> None:
     path, service, _, hot_store, _ = _setup(tmp_path)
 
-    plan = service.plan("docs")
+    plan = service.plan("2025/20250102T030405Z__docs")
 
     assert plan["status"] == "ready"
     assert "sole durable copies" in str(plan["warning"])
@@ -318,17 +318,17 @@ def test_plan_enumerates_custody_impact_and_issues_state_bound_challenge(tmp_pat
     }
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
 
-    hot_store.files[("docs", "second.txt")] = b"changed"
+    hot_store.files[("2025/20250102T030405Z__docs", "second.txt")] = b"changed"
     with pytest.raises(Conflict, match="plan changed"):
-        service.delete("docs", challenge=str(plan["challenge"]))
+        service.delete("2025/20250102T030405Z__docs", challenge=str(plan["challenge"]))
 
 
 def test_plan_reports_active_restore_and_fetch_blockers(tmp_path: Path) -> None:
     _, service, _, _, _ = _setup(tmp_path, active_restore=True, active_fetch=True)
 
-    plan = service.plan("docs")
+    plan = service.plan("2025/20250102T030405Z__docs")
 
     assert plan["status"] == "blocked"
     assert plan["challenge"] is None
@@ -340,13 +340,13 @@ def test_plan_reports_active_restore_and_fetch_blockers(tmp_path: Path) -> None:
 
 def test_delete_removes_collection_objects_and_dependent_state(tmp_path: Path) -> None:
     path, service, archive_store, hot_store, upload_store = _setup(tmp_path)
-    plan = service.plan("docs")
+    plan = service.plan("2025/20250102T030405Z__docs")
 
-    result = service.delete("docs", challenge=str(plan["challenge"]))
+    result = service.delete("2025/20250102T030405Z__docs", challenge=str(plan["challenge"]))
 
     assert result == {
         "status": "deleted",
-        "collection_id": "docs",
+        "collection_id": "2025/20250102T030405Z__docs",
         "files": 1,
         "bytes": len(b"sole durable copy\n"),
         "remote_storage_bytes": 130,
@@ -355,13 +355,15 @@ def test_delete_removes_collection_objects_and_dependent_state(tmp_path: Path) -
     assert archive_store.catalog_entries == []
     assert hot_store.files == {}
     assert upload_store.canceled == ["http://tusd.invalid/files/docs"]
-    assert upload_store.deleted == ["/.riverhog/uploads/collections/docs/readme.txt"]
+    assert upload_store.deleted == [
+        "/.riverhog/uploads/collections/2025/20250102T030405Z__docs/readme.txt"
+    ]
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is None
-        assert session.get(CollectionUploadRecord, "docs") is None
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is None
+        assert session.get(CollectionUploadRecord, "2025/20250102T030405Z__docs") is None
         assert session.get(ArchiveRestoreRecord, "ar-complete") is None
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
 
 
 @pytest.mark.parametrize(
@@ -383,34 +385,38 @@ def test_delete_retries_after_each_external_boundary_failure(
         include_unrelated=True,
         failure_point=failure_point,
     )
-    plan = service.plan("docs")
+    plan = service.plan("2025/20250102T030405Z__docs")
     challenge = str(plan["challenge"])
 
     with pytest.raises(SyntheticBoundaryFailure, match=failure_point):
-        service.delete("docs", challenge=challenge)
+        service.delete("2025/20250102T030405Z__docs", challenge=challenge)
 
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is not None
-        assert session.get(CollectionRecord, "other") is not None
-        assert session.get(CollectionDeletionRecord, "docs") is not None
-    assert service.plan("docs")["challenge"] == challenge
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is not None
+        assert session.get(CollectionRecord, "2025/20250103T030405Z__other") is not None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is not None
+    assert service.plan("2025/20250102T030405Z__docs")["challenge"] == challenge
 
-    result = service.delete("docs", challenge=challenge)
+    result = service.delete("2025/20250102T030405Z__docs", challenge=challenge)
 
     assert result["status"] == "deleted"
-    assert hot_store.files == {("other", "keep.txt"): b"unrelated durable copy\n"}
+    assert hot_store.files == {
+        ("2025/20250103T030405Z__other", "keep.txt"): b"unrelated durable copy\n"
+    }
     assert archive_store.objects == {
         "archive/archives/opaque-other/archive.tar.age",
         "archive/archives/opaque-other/manifest.yml.age",
         "archive/archives/opaque-other/manifest.yml.ots.age",
     }
     assert archive_store.catalog_entries is not None
-    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == ["other"]
+    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == [
+        "2025/20250103T030405Z__other"
+    ]
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is None
-        assert session.get(CollectionRecord, "other") is not None
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is None
+        assert session.get(CollectionRecord, "2025/20250103T030405Z__other") is not None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
 
 
 def test_delete_retries_after_final_database_cleanup_failure(tmp_path: Path) -> None:
@@ -418,7 +424,7 @@ def test_delete_retries_after_final_database_cleanup_failure(tmp_path: Path) -> 
         tmp_path,
         include_unrelated=True,
     )
-    plan = service.plan("docs")
+    plan = service.plan("2025/20250102T030405Z__docs")
     challenge = str(plan["challenge"])
     fail_once = True
 
@@ -434,23 +440,27 @@ def test_delete_retries_after_final_database_cleanup_failure(tmp_path: Path) -> 
     event.listen(Session, "after_flush", fail_after_cleanup_flush)
     try:
         with pytest.raises(SyntheticBoundaryFailure, match="database_cleanup"):
-            service.delete("docs", challenge=challenge)
+            service.delete("2025/20250102T030405Z__docs", challenge=challenge)
     finally:
         event.remove(Session, "after_flush", fail_after_cleanup_flush)
 
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is not None
-        assert session.get(CollectionRecord, "other") is not None
-        assert session.get(CollectionDeletionRecord, "docs") is not None
-    assert hot_store.files == {("other", "keep.txt"): b"unrelated durable copy\n"}
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is not None
+        assert session.get(CollectionRecord, "2025/20250103T030405Z__other") is not None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is not None
+    assert hot_store.files == {
+        ("2025/20250103T030405Z__other", "keep.txt"): b"unrelated durable copy\n"
+    }
     assert archive_store.catalog_entries is not None
-    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == ["other"]
+    assert [entry["collection_id"] for entry in archive_store.catalog_entries] == [
+        "2025/20250103T030405Z__other"
+    ]
 
-    result = service.delete("docs", challenge=challenge)
+    result = service.delete("2025/20250102T030405Z__docs", challenge=challenge)
 
     assert result["status"] == "deleted"
     with session_scope(factory) as session:
-        assert session.get(CollectionRecord, "docs") is None
-        assert session.get(CollectionRecord, "other") is not None
-        assert session.get(CollectionDeletionRecord, "docs") is None
+        assert session.get(CollectionRecord, "2025/20250102T030405Z__docs") is None
+        assert session.get(CollectionRecord, "2025/20250103T030405Z__other") is not None
+        assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
