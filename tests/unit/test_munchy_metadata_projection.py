@@ -20,7 +20,7 @@ from munchy.metadata_projection import (
 DEFAULT_PROJECTION_CONFIG = {
     "device_make": "Apple",
     "device_model": "iPhone SE (2nd generation)",
-    "creators": ["Nash Spence"],
+    "creators": ["Example Operator"],
 }
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "munchy"
 
@@ -47,7 +47,7 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert metadata.gps.longitude == pytest.approx(-122.0303, abs=0.000001)
     assert metadata.device_make == "Apple"
     assert metadata.device_model == "iPhone SE (2nd generation)"
-    assert metadata.creators == ("Nash Spence",)
+    assert metadata.creators == ("Example Operator",)
     assert metadata.tags == ("iphone-se2",)
 
     xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
@@ -69,7 +69,7 @@ def test_immich_projection_maps_exif_date_and_dms_gps() -> None:
     assert "<digiKam:TagsList>" in xmp
     assert "<lr:hierarchicalSubject>" in xmp
     assert "<Iptc4xmpCore:Keywords>" not in xmp
-    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
+    assert "<rdf:li>Example Operator</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
     ET.fromstring(xmp)
 
@@ -386,14 +386,14 @@ def test_immich_projection_writes_hierarchical_tag_aliases() -> None:
             "exif.gps_latitude": "37.1",
             "exif.gps_longitude": "-122.1",
         },
-        tags=["device/nash-iphone-se2", "device/nash-iphone-se2", "munchy/route/video"],
+        tags=["device/example-phone", "device/example-phone", "munchy/route/video"],
     )
 
     xmp = render_immich_xmp_sidecar(metadata, metadata_date="2026-06-29T00:00:00Z")
 
-    assert xmp.count("<rdf:li>device/nash-iphone-se2</rdf:li>") == 2
+    assert xmp.count("<rdf:li>device/example-phone</rdf:li>") == 2
     assert "<lr:hierarchicalSubject>" in xmp
-    assert "<rdf:li>device|nash-iphone-se2</rdf:li>" in xmp
+    assert "<rdf:li>device|example-phone</rdf:li>" in xmp
     assert "<rdf:li>munchy|route|video</rdf:li>" in xmp
 
 
@@ -407,7 +407,7 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
             "exif.gps_latitude": "48.99950000 N",
             "exif.gps_longitude": "122.74060000 W",
         },
-        tags=["device/nash-iphone-se2"],
+        tags=["device/example-phone"],
     )
     sidecar = tmp_path / "IMG_0001.HEIC.xmp"
     sidecar.write_text(
@@ -431,11 +431,11 @@ def test_immich_xmp_sidecar_roundtrips_with_exiftool_when_available(tmp_path) ->
     assert payload["XMP-xmpDM:ShotDate"] == "2026:06:28 20:30:40-07:00"
     assert payload["XMP-tiff:Make"] == "Apple"
     assert payload["XMP-tiff:Model"] == "iPhone SE (2nd generation)"
-    assert payload["XMP-dc:Creator"] == "Nash Spence"
+    assert payload["XMP-dc:Creator"] == "Example Operator"
     assert payload["XMP-exif:GPSLongitude"] == "122 deg 44' 26.16\" W"
     assert payload["XMP-geo:Long"] == -122.7406
-    assert payload["XMP-digiKam:TagsList"] == "device/nash-iphone-se2"
-    assert payload["XMP-lr:HierarchicalSubject"] == "device|nash-iphone-se2"
+    assert payload["XMP-digiKam:TagsList"] == "device/example-phone"
+    assert payload["XMP-lr:HierarchicalSubject"] == "device|example-phone"
     assert "XMP-iptcCore:Keywords" not in payload
 
 
@@ -493,13 +493,13 @@ def test_immich_projection_requires_configured_make_model_and_creators() -> None
         project_immich_metadata(
             facts,
             device_model="iPhone SE (2nd generation)",
-            creators=["Nash Spence"],
+            creators=["Example Operator"],
         )
     with pytest.raises(MetadataProjectionError, match="device model"):
         project_immich_metadata(
             facts,
             device_make="Apple",
-            creators=["Nash Spence"],
+            creators=["Example Operator"],
         )
     with pytest.raises(MetadataProjectionError, match="creator"):
         project_immich_metadata(
@@ -571,7 +571,7 @@ def test_immich_xmp_merge_preserves_existing_fields_and_adds_projection() -> Non
             "exif.gps_latitude": "48.99950000 N",
             "exif.gps_longitude": "122.74060000 W",
         },
-        tags=["device/nash-iphone-se2"],
+        tags=["device/example-phone"],
     )
     existing = """<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
@@ -600,7 +600,7 @@ def test_immich_xmp_merge_preserves_existing_fields_and_adds_projection() -> Non
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in merged
     assert 'tiff:Make="Apple"' in merged
     assert "<rdf:li>existing-tag</rdf:li>" in merged
-    assert "<rdf:li>device/nash-iphone-se2</rdf:li>" in merged
+    assert "<rdf:li>device/example-phone</rdf:li>" in merged
     ET.fromstring(merged)
 
 

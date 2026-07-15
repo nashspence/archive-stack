@@ -670,7 +670,7 @@ job:
     device_id: camera
     target:
       enabled: true
-      destination: clover:reviews/{route_id}/{profile_id}
+      destination: review-remote:reviews/{route_id}/{profile_id}
     sweep:
       quality: 24..28:4
       max_height:
@@ -782,7 +782,7 @@ job:
     target:
       enabled: true
       method: rclone
-      destination: clover:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
+      destination: review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
     sweep:
       route_ids:
         - camera-video
@@ -849,7 +849,7 @@ groups:
     assert route["tasks"] == ["qcut_video"]
     assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
     assert route["variants"][1]["destination"] == (
-        "clover:reviews/camera/camera-video/q28/20260712T120000Z"
+        "review-remote:reviews/camera/camera-video/q28/20260712T120000Z"
     )
 
 

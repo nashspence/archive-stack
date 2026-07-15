@@ -280,7 +280,7 @@ def test_review_job_request_accepts_clip_plan_config(
             "device_id": "camera",
             "route_id": "camera-main-video",
             "profile_id": "webm-q42",
-            "target": {"enabled": True, "destination": "clover:reviews"},
+            "target": {"enabled": True, "destination": "review-remote:reviews"},
             "clip_plan": {"target_seconds": 90},
         },
     )
@@ -299,7 +299,7 @@ def test_review_job_request_accepts_clip_plan_config(
                 "device_id": "camera",
                 "route_id": "camera-main-video",
                 "profile_id": "webm-q42",
-                "target": {"enabled": True, "destination": "clover:reviews"},
+                "target": {"enabled": True, "destination": "review-remote:reviews"},
                 "clip_plan": {"min_seconds": 10, "max_seconds": 9},
             },
         )
@@ -319,7 +319,10 @@ def test_review_job_request_accepts_general_sweep_config(
         },
         review={
             "device_id": "camera",
-            "target": {"enabled": True, "destination": "clover:reviews/{route_id}/{profile_id}"},
+            "target": {
+                "enabled": True,
+                "destination": "review-remote:reviews/{route_id}/{profile_id}",
+            },
             "sweep": {
                 "axes": {
                     "archive.max_height": [720, 1080],
@@ -367,7 +370,7 @@ def test_review_job_storage_hint_uses_review_target_destination(
             "device_id": "camera",
             "route_id": "camera-main-video",
             "profile_id": "webm-q42",
-            "target": {"enabled": True, "destination": "clover:reviews"},
+            "target": {"enabled": True, "destination": "review-remote:reviews"},
         },
     )
 
@@ -405,7 +408,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
                 "output_mode": "video",
                 "tasks": ["archive_video"],
                 "metadata_projection": {
-                    "creators": ["Nash Spence", "Katie Spence", "Nash Spence"],
+                    "creators": ["Example Operator", "Example Collaborator", "Example Operator"],
                     "device": {
                         "make": " Apple ",
                         "model": " iPhone SE (2nd generation) ",
@@ -414,7 +417,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
                         "latitude": 48.999527523960296,
                         "longitude": -122.74040765142755,
                     },
-                    "tags": ["device/nash-iphone-se2", "device/nash-iphone-se2"],
+                    "tags": ["device/example-phone", "device/example-phone"],
                     "include_context_tags": False,
                 },
             }
@@ -423,7 +426,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
 
     projection = runner.group_dump(req.groups["phone-video"])["metadata_projection"]
 
-    assert projection["creators"] == ["Nash Spence", "Katie Spence"]
+    assert projection["creators"] == ["Example Operator", "Example Collaborator"]
     assert projection["device"] == {
         "make": "Apple",
         "model": "iPhone SE (2nd generation)",
@@ -432,7 +435,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
         "latitude": 48.999527523960296,
         "longitude": -122.74040765142755,
     }
-    assert projection["tags"] == ["device/nash-iphone-se2"]
+    assert projection["tags"] == ["device/example-phone"]
     assert projection["include_context_tags"] is False
 
 
@@ -849,7 +852,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                             "make": "Apple",
                             "model": "iPhone SE (2nd generation)",
                         },
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                         "tags": [],
                     },
                     "route_id": "iphone-video",
@@ -874,7 +877,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
             "metadata_projection": {
                 "enabled": True,
                 "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
                 "tags": ["iphone-se2"],
             },
         }
@@ -898,7 +901,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert 'tiff:Make="Apple"' in xmp
     assert 'tiff:Model="iPhone SE (2nd generation)"' in xmp
     assert 'geo:lat="37.3317"' in xmp
-    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
+    assert "<rdf:li>Example Operator</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
     assert "<rdf:li>munchy/collection/phone-collection-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/video</rdf:li>" in xmp
@@ -944,7 +947,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
                             "make": "Apple",
                             "model": "iPhone SE (2nd generation)",
                         },
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                         "tags": [],
                     },
                     "route_id": "iphone-video",
@@ -961,7 +964,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
             "metadata_projection": {
                 "enabled": True,
                 "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
             },
         }
     }
@@ -1031,7 +1034,7 @@ def test_metadata_projection_still_fails_for_missing_unhanded_output(
                         "gps": {"latitude": 37.3317, "longitude": -122.0301},
                         "gps_source": "exif.gps_latitude+exif.gps_longitude",
                         "device": {"make": "Apple", "model": "iPhone"},
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                     },
                     "resolved_group_rel": "iphone/video/IMG_0001.MOV",
                 }
@@ -1088,7 +1091,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
                             "make": "Apple",
                             "model": "iPhone SE (2nd generation)",
                         },
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                         "tags": [],
                     },
                     "route_id": "iphone-photo",
@@ -1122,7 +1125,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
             "metadata_projection": {
                 "enabled": True,
                 "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
             },
         }
     }
@@ -1212,7 +1215,7 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
             "metadata_projection": {
                 "allow_missing_gps": True,
                 "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
                 "capture_date_sources": [
                     {"type": "embedded"},
                     {"type": "filesystem_birthtime"},
@@ -1432,7 +1435,7 @@ def test_metadata_projection_can_use_configured_gps(
                     "longitude": -122.74040765142755,
                 },
                 "device": {"make": "Reolink", "model": "E1 Pro"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
             }
         },
     )
@@ -1478,7 +1481,7 @@ def test_metadata_projection_path_regex_fallback_survives_exiftool_failure(
                     "longitude": -122.74040765142755,
                 },
                 "device": {"make": "Reolink", "model": "Duo 3V PoE"},
-                "creators": ["Nash Spence"],
+                "creators": ["Example Operator"],
             }
         },
     )
@@ -1499,7 +1502,7 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
         },
         device_make="Apple",
         device_model="iPhone SE (2nd generation)",
-        creators=["Nash Spence"],
+        creators=["Example Operator"],
     )
 
     assert runner.audio_container_metadata_args(metadata) == [
@@ -1508,9 +1511,9 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
         "-metadata",
         "creation_time=2026-06-28T20:30:40-07:00",
         "-metadata",
-        "ARTIST=Nash Spence",
+        "ARTIST=Example Operator",
         "-metadata",
-        "CREATOR=Nash Spence",
+        "CREATOR=Example Operator",
         "-metadata",
         "MAKE=Apple",
         "-metadata",
@@ -1537,7 +1540,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         "max_parallel_encodes": 3,
         "metadata_projection": {
             "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-            "creators": ["Nash Spence"],
+            "creators": ["Example Operator"],
         },
     }
     file_state = {
@@ -1550,7 +1553,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
             "gps": {"latitude": 37.3317, "longitude": -122.0301},
             "gps_source": "exif.gps_latitude+exif.gps_longitude",
             "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-            "creators": ["Nash Spence"],
+            "creators": ["Example Operator"],
             "tags": [],
         },
     }
@@ -1579,7 +1582,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         "make": "Apple",
         "model": "iPhone SE (2nd generation)",
     }
-    assert payload["container_metadata"]["IMG_0001.MOV"]["creators"] == ["Nash Spence"]
+    assert payload["container_metadata"]["IMG_0001.MOV"]["creators"] == ["Example Operator"]
 
 
 def test_eager_gpu_projection_reads_materialized_original_name(
@@ -1623,7 +1626,7 @@ def test_eager_gpu_projection_reads_materialized_original_name(
         "metadata_projection": {
             "gps": {"latitude": 48.9995, "longitude": -122.7404},
             "device": {"make": "Reolink", "model": "Duo 3V PoE"},
-            "creators": ["Nash Spence"],
+            "creators": ["Example Operator"],
         },
     }
     payloads: list[dict[str, object]] = []
@@ -2487,7 +2490,7 @@ def test_routing_preflight_reports_sidecar_evidence(
                             "make": "Apple",
                             "model": "iPhone SE (2nd generation)",
                         },
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                     },
                 }
             },
@@ -2564,7 +2567,7 @@ def test_routing_preflight_keeps_metadata_projection_diagnostic_by_default(
                     "metadata_projection": {
                         "gps": {"latitude": 48.9995, "longitude": -122.7404},
                         "device": {"make": "Reolink", "model": "E1 Pro"},
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                     },
                 }
             },
@@ -2609,7 +2612,7 @@ def test_routing_preflight_can_enforce_metadata_projection(
                     "metadata_projection": {
                         "gps": {"latitude": 48.9995, "longitude": -122.7404},
                         "device": {"make": "Reolink", "model": "E1 Pro"},
-                        "creators": ["Nash Spence"],
+                        "creators": ["Example Operator"],
                     },
                 }
             },
@@ -2896,7 +2899,7 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         "metadata_projection": {
             "allow_missing_gps": True,
             "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
-            "creators": ["Nash Spence"],
+            "creators": ["Example Operator"],
             "capture_date_sources": [
                 {"type": "embedded"},
                 {"type": "filesystem_birthtime"},
@@ -2967,9 +2970,9 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
             "-metadata",
             "creation_time=2026-06-28T20:30:40+00:00",
             "-metadata",
-            "ARTIST=Nash Spence",
+            "ARTIST=Example Operator",
             "-metadata",
-            "CREATOR=Nash Spence",
+            "CREATOR=Example Operator",
             "-metadata",
             "MAKE=eSonic",
             "-metadata",
@@ -3020,12 +3023,12 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
         "metadata_projection": {
             "allow_missing_gps": True,
             "device": {"make": "eSonic", "model": "MEMOQ SR-600"},
-            "creators": ["Nash Spence"],
+            "creators": ["Example Operator"],
             "capture_date_sources": [
                 {"type": "embedded"},
                 {"type": "filesystem_birthtime"},
             ],
-            "tags": ["device/esonic-memoq-sr600-nash"],
+            "tags": ["device/esonic-memoq-sr600-example"],
         },
     }
 
@@ -3099,8 +3102,8 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     assert 'tiff:Make="eSonic"' in xmp
     assert 'tiff:Model="MEMOQ SR-600"' in xmp
     assert "geo:lat=" not in xmp
-    assert "<rdf:li>Nash Spence</rdf:li>" in xmp
-    assert "<rdf:li>device/esonic-memoq-sr600-nash</rdf:li>" in xmp
+    assert "<rdf:li>Example Operator</rdf:li>" in xmp
+    assert "<rdf:li>device/esonic-memoq-sr600-example</rdf:li>" in xmp
     assert "<rdf:li>munchy/collection/esonic-collection-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/voice</rdf:li>" in xmp
     assert updated["files"][0]["metadata_projection_sidecar"] == (
@@ -3177,13 +3180,13 @@ def test_riverhog_collection_notify_omits_runner_event_filters(
         {
             "notify": {
                 "enabled": True,
-                "recipients": ["nash", "katie"],
+                "recipients": ["operator", "collaborator"],
                 "events": ["job.succeeded", "job.issue"],
             }
         }
     )
 
-    assert notify == {"enabled": True, "recipients": ["nash", "katie"]}
+    assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
 
 
 def test_notification_payload_identifies_munchy_with_canonical_emoji(
@@ -5343,7 +5346,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "riverhog": {"enabled": True, "wait": "staged"},
         "notify": {
             "enabled": True,
-            "recipients": ["nash", "katie"],
+            "recipients": ["operator", "collaborator"],
             "events": ["job.succeeded", "job.issue"],
         },
     }
@@ -5373,7 +5376,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             assert slug == "camera-archive"
             assert ingest_source == str(archive_dir)
             assert upload_timestamp == "20260101T000000Z"
-            assert notify == {"enabled": True, "recipients": ["nash", "katie"]}
+            assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
             return self.payload(state="open")
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
@@ -7063,7 +7066,7 @@ def test_run_job_runs_review_sweep_as_one_job(
                 "device_id": "camera",
                 "target": {
                     "enabled": True,
-                    "destination": "clover:reviews/{route_id}/{profile_id}",
+                    "destination": "review-remote:reviews/{route_id}/{profile_id}",
                 },
                 "sweep": {"quality": [24, 28], "route_ids": ["video-4k"]},
             },

@@ -296,7 +296,9 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
                 "target": {
                     "enabled": True,
                     "method": "rclone",
-                    "destination": "clover:reviews/{device_id}/{route_id}/{profile_id}/{run_id}",
+                    "destination": (
+                        "review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
+                    ),
                 },
                 "sweep": {"quality": "24..28:4"},
             },
@@ -347,5 +349,5 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
     assert route["route_id"] == "camera-video"
     assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
     assert route["variants"][0]["destination"] == (
-        "clover:reviews/camera/camera-video/q24/20260712T120000Z"
+        "review-remote:reviews/camera/camera-video/q24/20260712T120000Z"
     )

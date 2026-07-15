@@ -310,8 +310,8 @@ def test_env_config_supports_per_account_munchy_notify(tmp_path: Path) -> None:
     env = {
         **env_for(tmp_path, accounts="front-door,phone"),
         "JEB_NOTIFY_ENABLED": "true",
-        "JEB_NOTIFY_RECIPIENTS": "nash",
-        "JEB_ACCOUNT_FRONT_DOOR_NOTIFY_RECIPIENTS": "nash,katie",
+        "JEB_NOTIFY_RECIPIENTS": "operator",
+        "JEB_ACCOUNT_FRONT_DOOR_NOTIFY_RECIPIENTS": "operator,collaborator",
         "JEB_ACCOUNT_PHONE_NOTIFY_ENABLED": "false",
         "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
     }
@@ -319,8 +319,8 @@ def test_env_config_supports_per_account_munchy_notify(tmp_path: Path) -> None:
     config = config_from_env(env)
 
     assert [collection.notify for collection in config.accounts] == [
-        {"enabled": True, "recipients": ["nash", "katie"]},
-        {"enabled": False, "recipients": ["nash"]},
+        {"enabled": True, "recipients": ["operator", "collaborator"]},
+        {"enabled": False, "recipients": ["operator"]},
     ]
     assert config.notify.webhook_urls == {}
 
@@ -330,14 +330,14 @@ def test_env_config_loads_named_notify_webhook_map(tmp_path: Path) -> None:
         {
             **env_for(tmp_path, accounts="camera"),
             "JEB_NOTIFY_ENABLED": "true",
-            "JEB_NOTIFY_RECIPIENTS": "nash,katie",
-            "RIVERHOG_NOTIFY_WEBHOOKS": '{"nash":"http://nash.test","katie":"http://katie.test"}',
+            "JEB_NOTIFY_RECIPIENTS": "operator,collaborator",
+            "RIVERHOG_NOTIFY_WEBHOOKS": '{"operator":"http://operator.test","collaborator":"http://collaborator.test"}',
         }
     )
 
     assert config.notify.webhook_urls == {
-        "nash": "http://nash.test",
-        "katie": "http://katie.test",
+        "operator": "http://operator.test",
+        "collaborator": "http://collaborator.test",
     }
 
 
@@ -527,8 +527,8 @@ def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path)
         {
             **env_for(tmp_path, accounts="camera"),
             "JEB_NOTIFY_ENABLED": "true",
-            "JEB_NOTIFY_RECIPIENTS": "nash",
-            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "JEB_NOTIFY_RECIPIENTS": "operator",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "operator,collaborator",
             "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
         }
     )
@@ -552,7 +552,10 @@ def test_munchy_payload_uses_account_group_paths_without_routing(tmp_path: Path)
     assert request.job_payload["collection_slug"] == "camera"
     assert request.job_payload["tasks"] == ["archive_video"]
     assert request.job_payload["groups"] == {}
-    assert request.job_payload["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+    assert request.job_payload["notify"] == {
+        "enabled": True,
+        "recipients": ["operator", "collaborator"],
+    }
     assert request.job_payload["riverhog_upload_session_on_failure"] == "cancel"
     assert "routing" not in request.job_payload
 
@@ -720,8 +723,8 @@ def test_jeb_attempt_alerts_use_account_notify_recipients(tmp_path: Path) -> Non
         {
             **env_for(tmp_path, accounts="camera"),
             "JEB_NOTIFY_ENABLED": "true",
-            "JEB_NOTIFY_RECIPIENTS": "nash",
-            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "JEB_NOTIFY_RECIPIENTS": "operator",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "operator,collaborator",
             "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
         }
     )
@@ -735,7 +738,10 @@ def test_jeb_attempt_alerts_use_account_notify_recipients(tmp_path: Path) -> Non
 
     collector.notify_failed_attempt(batch_id)
 
-    assert notifier.calls[0]["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+    assert notifier.calls[0]["notify"] == {
+        "enabled": True,
+        "recipients": ["operator", "collaborator"],
+    }
 
 
 def test_jeb_routing_preflight_alerts_use_account_notify_recipients(tmp_path: Path) -> None:
@@ -743,8 +749,8 @@ def test_jeb_routing_preflight_alerts_use_account_notify_recipients(tmp_path: Pa
         {
             **env_for(tmp_path, accounts="camera"),
             "JEB_NOTIFY_ENABLED": "true",
-            "JEB_NOTIFY_RECIPIENTS": "nash",
-            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "nash,katie",
+            "JEB_NOTIFY_RECIPIENTS": "operator",
+            "JEB_ACCOUNT_CAMERA_NOTIFY_RECIPIENTS": "operator,collaborator",
             "RIVERHOG_OPERATOR_WEBHOOK_URL": "http://webhook.test",
         }
     )
@@ -774,7 +780,10 @@ def test_jeb_routing_preflight_alerts_use_account_notify_recipients(tmp_path: Pa
 
     collector.notify_routing_preflight_failures(account_id="camera")
 
-    assert notifier.calls[0]["notify"] == {"enabled": True, "recipients": ["nash", "katie"]}
+    assert notifier.calls[0]["notify"] == {
+        "enabled": True,
+        "recipients": ["operator", "collaborator"],
+    }
 
 
 def test_jeb_status_marks_accounts_with_failed_routing_preflight(
@@ -833,8 +842,8 @@ def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
         NotifySettings(
             enabled=True,
             webhook_urls={
-                "nash": "http://nash.test",
-                "katie": "http://katie.test",
+                "operator": "http://operator.test",
+                "collaborator": "http://collaborator.test",
             },
         )
     )
@@ -853,13 +862,13 @@ def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
         message="target failed",
         component="target",
         severity="critical",
-        notify={"enabled": True, "recipients": ["nash", "katie"]},
+        notify={"enabled": True, "recipients": ["operator", "collaborator"]},
     )
 
     assert ok
     assert calls == [
-        ("http://nash.test", "nash"),
-        ("http://katie.test", "katie"),
+        ("http://operator.test", "operator"),
+        ("http://collaborator.test", "collaborator"),
     ]
 
 
@@ -877,7 +886,7 @@ def test_jeb_webhook_notifier_does_not_fallback_for_missing_named_recipient(
         NotifySettings(
             enabled=True,
             url="http://operator.test",
-            webhook_urls={"nash": "http://nash.test"},
+            webhook_urls={"operator": "http://operator.test"},
         )
     )
 
@@ -895,7 +904,7 @@ def test_jeb_webhook_notifier_does_not_fallback_for_missing_named_recipient(
         message="target failed",
         component="target",
         severity="critical",
-        notify={"enabled": True, "recipients": ["katie"]},
+        notify={"enabled": True, "recipients": ["collaborator"]},
     )
 
     assert not ok

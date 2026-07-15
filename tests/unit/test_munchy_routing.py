@@ -26,7 +26,7 @@ def test_routing_uses_ordered_predicates_and_output_directory() -> None:
                 "into": "iphone-se2/video",
                 "when": {
                     "all": [
-                        {"path": {"prefix": "nash-iphone-se2", "suffix": ".mov"}},
+                        {"path": {"prefix": "example-phone", "suffix": ".mov"}},
                         {"fact": "path.stem", "regex": "^IMG_[0-9]{4}$"},
                     ]
                 },
@@ -35,14 +35,14 @@ def test_routing_uses_ordered_predicates_and_output_directory() -> None:
                 "id": "iphone-library-review",
                 "group": "library-review",
                 "into": "iphone-se2/downloads",
-                "when": {"path": {"prefix": "nash-iphone-se2"}},
+                "when": {"path": {"prefix": "example-phone"}},
             },
         ]
     }
 
-    native = match_route(routing, "nash-iphone-se2/IMG_0001.MOV")
-    saved = match_route(routing, "nash-iphone-se2/imported/clip.mp4")
-    other_source = match_route(routing, "katie-pixel-8/imported/clip.mp4")
+    native = match_route(routing, "example-phone/IMG_0001.MOV")
+    saved = match_route(routing, "example-phone/imported/clip.mp4")
+    other_source = match_route(routing, "example-other-phone/imported/clip.mp4")
 
     assert native is not None
     assert native.route_id == "iphone-native-video"
