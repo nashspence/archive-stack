@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from tests.unit.db_helpers import sqlite_url
@@ -58,3 +58,17 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="SQLAlchemy URL"):
         create_catalog_engine(str(tmp_path / "catalog.sqlite3"))
+
+
+def test_initialize_db_requires_exact_current_schema(tmp_path: Path) -> None:
+    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    initialize_db(database_url)
+    engine = create_catalog_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE collection_files ADD COLUMN unexpected TEXT"))
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"unexpected column collection_files\.unexpected",
+    ):
+        initialize_db(database_url)

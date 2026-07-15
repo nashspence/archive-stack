@@ -221,6 +221,9 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
+        assert compose["services"][service]["environment"][
+            "RIVERHOG_ARCHIVE_STORE_B2_PREFIX"
+        ] == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-archive}"
 
     example_names = {
         line.split("=", 1)[0]

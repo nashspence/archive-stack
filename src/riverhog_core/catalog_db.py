@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -56,6 +56,32 @@ def _ensure_schema_indexes(engine: Engine) -> None:
             connection.execute(text(statement))
 
 
+def _assert_schema_matches_models(engine: Engine) -> None:
+    inspector = inspect(engine)
+    expected = {
+        table.name: {column.name for column in table.columns}
+        for table in Base.metadata.sorted_tables
+    }
+    actual_tables = set(inspector.get_table_names())
+    differences: list[str] = []
+    for table_name in sorted(actual_tables - set(expected)):
+        differences.append(f"unexpected table {table_name}")
+    for table_name in sorted(set(expected) - actual_tables):
+        differences.append(f"missing table {table_name}")
+    for table_name in sorted(actual_tables & set(expected)):
+        actual_columns = {
+            str(column["name"]) for column in inspector.get_columns(table_name)
+        }
+        for column_name in sorted(actual_columns - expected[table_name]):
+            differences.append(f"unexpected column {table_name}.{column_name}")
+        for column_name in sorted(expected[table_name] - actual_columns):
+            differences.append(f"missing column {table_name}.{column_name}")
+    if differences:
+        raise RuntimeError(
+            "catalog schema does not match current models: " + "; ".join(differences)
+        )
+
+
 def initialize_db(database_url: str) -> None:
     """Create the current catalog schema."""
     from riverhog_core.catalog_models import (  # noqa: PLC0415
@@ -90,6 +116,7 @@ def initialize_db(database_url: str) -> None:
     engine = create_catalog_engine(database_url)
     Base.metadata.create_all(engine)
     _ensure_schema_indexes(engine)
+    _assert_schema_matches_models(engine)
 
 
 def make_session_factory(database_url: str) -> sessionmaker[Session]:
