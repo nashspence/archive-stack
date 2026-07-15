@@ -148,6 +148,57 @@ def format_collection_deletion_result(payload: Mapping[str, object]) -> str:
     )
 
 
+def format_archive_copy_retirement_plan(payload: Mapping[str, object]) -> str:
+    target = payload.get("target_copy")
+    target_copy = target if isinstance(target, Mapping) else {}
+    retained = _items(payload, "retained_copies")
+    objects = target_copy.get("objects")
+    object_count = (
+        len(objects)
+        if isinstance(objects, Sequence) and not isinstance(objects, (str, bytes))
+        else 0
+    )
+    lines = [
+        str(payload.get("warning", "DANGER: This archive copy retirement is permanent.")),
+        "",
+        f"archive copy retirement plan: {payload.get('collection_id', 'unknown')}",
+        f"store: {payload.get('store', 'unknown')}",
+        f"status: {payload.get('status', 'unknown')}",
+        f"remote storage: {_bytes(target_copy.get('remote_storage_bytes'))}",
+        f"archive objects: {object_count}",
+        "retained copies: "
+        + (
+            ", ".join(str(copy.get("store", "unknown")) for copy in retained)
+            if retained
+            else "none"
+        ),
+    ]
+    blockers = payload.get("blockers")
+    if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
+        lines.extend(f"blocked: {blocker}" for blocker in blockers)
+    if payload.get("verification_note"):
+        lines.append(f"verification: {payload['verification_note']}")
+    if payload.get("billing_note"):
+        lines.append(f"billing: {payload['billing_note']}")
+    if payload.get("expires_at"):
+        lines.append(f"plan expires: {payload['expires_at']}")
+    if payload.get("challenge"):
+        lines.append(f"confirmation challenge: {payload['challenge']}")
+    return "\n".join(lines)
+
+
+def format_archive_copy_retirement_result(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"archive copy retirement: {payload.get('status', 'unknown')}",
+        f"collection: {payload.get('collection_id', 'unknown')}",
+        f"store: {payload.get('store', 'unknown')}",
+        f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
+    ]
+    if payload.get("verified_store"):
+        lines.append(f"verified retained store: {payload['verified_store']}")
+    return "\n".join(lines)
+
+
 def format_collection_upload(payload: Mapping[str, object]) -> str:
     lines = [
         f"collection upload {payload.get('collection_id', 'unknown')}",

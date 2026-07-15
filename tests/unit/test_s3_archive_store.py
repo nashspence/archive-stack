@@ -631,7 +631,7 @@ def test_publish_restore_catalog_writes_generic_readme_and_encrypted_catalog(
     agents = client.objects["archive/AGENTS.md"]["Body"].decode("utf-8")
     assert "sole durable copies" in readme
     assert "permanently destroy the only recoverable copy" in readme
-    assert "guarded collection deletion" in readme
+    assert "guarded archive workflows" in readme
     assert "S3 credentials, token, or S3 login/session" in readme
     assert "will fail until the CLI is authenticated" in readme
     assert "AWS_SESSION_TOKEN" in readme

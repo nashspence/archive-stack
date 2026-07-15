@@ -11,6 +11,9 @@ from riverhog_core.catalog_db import initialize_db
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
+from riverhog_core.services.archive_copy_retirements import (
+    SqlAlchemyArchiveCopyRetirementService,
+)
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
@@ -19,6 +22,7 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
 from riverhog_core.services.interfaces import (
+    ArchiveCopyRetirementService,
     ArchiveCopyService,
     ArchiveReportingService,
     ArchiveRestoreService,
@@ -43,6 +47,7 @@ class ServiceContainer:
     search: SearchService
     archive_uploads: ArchiveUploadService
     archive_copies: ArchiveCopyService
+    archive_copy_retirements: ArchiveCopyRetirementService
     archive_reporting: ArchiveReportingService
     archive_restores: ArchiveRestoreService
     fetches: FetchService
@@ -56,10 +61,7 @@ def default_container() -> ServiceContainer:
     ensure_bucket_exists(config)
     hot_store = S3HotStore(config)
     archive_stores = ArchiveStoreRegistry(
-        {
-            name: S3ArchiveStore(config, store)
-            for name, store in config.archive_stores.items()
-        },
+        {name: S3ArchiveStore(config, store) for name, store in config.archive_stores.items()},
         default_store=config.default_archive_store,
     )
     upload_store = TusdUploadStore(config)
@@ -85,6 +87,10 @@ def default_container() -> ServiceContainer:
             config,
             archive_stores,
             proof_verifier=proof_verifier,
+        ),
+        archive_copy_retirements=SqlAlchemyArchiveCopyRetirementService(
+            config,
+            archive_stores,
         ),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
         archive_restores=SqlAlchemyArchiveRestoreService(

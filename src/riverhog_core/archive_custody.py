@@ -24,8 +24,8 @@ and do not mean that an object is unused.
 - Deletion, movement, renaming, overwriting, lifecycle expiration, storage-class
   changes, and object-version removal are mutations.
 - Use `catalog/collections.yml.age` to map collections to opaque archive objects.
-- Use Riverhog's guarded collection deletion workflow for an authorized
-  collection deletion. Do not mutate archive objects directly as a shortcut.
+- Use Riverhog's guarded archive workflows for authorized collection or archive-copy
+  retirement. Do not mutate archive objects directly as a shortcut.
 
 Do not write collection identities, personal information, credentials, private
 topology, or decrypted archive content into this plaintext file or nearby logs.

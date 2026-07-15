@@ -1522,8 +1522,8 @@ def _bucket_recovery_readme() -> str:
 
 Listing and reading these objects are safe inspection operations. Deletion,
 movement, overwriting, lifecycle expiration, storage-class changes, and object-
-version removal are mutations. Use Riverhog's guarded collection deletion
-workflow when an accepted collection is intentionally being removed.
+version removal are mutations. Use Riverhog's guarded archive workflows for an
+authorized collection deletion or archive-copy retirement.
 
 This bucket or prefix stores encrypted archive packages. Object paths are opaque
 on purpose so that bucket listings, access logs, and screenshots

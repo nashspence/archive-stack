@@ -356,6 +356,35 @@ class ApiClient:
             payload["source_store"] = source_store
         return self._json("POST", "/v1/archive/copies", json=payload)
 
+    def plan_archive_copy_retirement(
+        self,
+        collection_id: str,
+        *,
+        store: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/v1/archive/copies/retirement-plan",
+            json={"collection_id": collection_id, "store": store},
+        )
+
+    def retire_archive_copy(
+        self,
+        collection_id: str,
+        *,
+        store: str,
+        challenge: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/v1/archive/copies/retire",
+            json={
+                "collection_id": collection_id,
+                "store": store,
+                "challenge": challenge,
+            },
+        )
+
     def list_archive_restores(
         self,
         *,

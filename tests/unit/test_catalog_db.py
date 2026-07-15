@@ -10,6 +10,7 @@ from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
     "archive_copy_jobs",
+    "archive_copy_retirements",
     "archive_restore_collections",
     "archive_restores",
     "archive_usage_snapshots",

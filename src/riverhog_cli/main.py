@@ -19,6 +19,8 @@ from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
     format_archive_copy_job,
+    format_archive_copy_retirement_plan,
+    format_archive_copy_retirement_result,
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_summary,
@@ -1532,6 +1534,80 @@ def archive_copy_cmd(
         source_store=source_store,
     )
     emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
+
+
+@archive_app.command("retire")
+def archive_retire_cmd(
+    collection_id: Annotated[str, typer.Argument(help="Exact collection id")],
+    store: Annotated[
+        str,
+        typer.Option("--store", help="Archive store whose copy will be retired"),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "--plan",
+            help="Show the retirement plan and confirmation challenge without deleting",
+        ),
+    ] = False,
+    confirm: Annotated[
+        str | None,
+        typer.Option(
+            "--confirm",
+            help="Short-lived confirmation challenge returned by a prior plan",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Permanently retire one collection copy after verifying another store."""
+
+    if dry_run and confirm is not None:
+        raise typer.BadParameter("--dry-run and --confirm cannot be used together")
+    api = client()
+    if dry_run:
+        payload = api.plan_archive_copy_retirement(collection_id, store=store)
+        emit(
+            payload if json_mode else format_archive_copy_retirement_plan(payload),
+            json_mode=json_mode,
+        )
+        return
+    if confirm is not None:
+        payload = api.retire_archive_copy(
+            collection_id,
+            store=store,
+            challenge=confirm,
+        )
+        emit(
+            payload if json_mode else format_archive_copy_retirement_result(payload),
+            json_mode=json_mode,
+        )
+        return
+    if json_mode:
+        raise typer.BadParameter("--json requires --dry-run or --confirm")
+
+    plan = api.plan_archive_copy_retirement(collection_id, store=store)
+    emit(format_archive_copy_retirement_plan(plan), json_mode=False)
+    blockers = plan.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        raise typer.Exit(1)
+    challenge = plan.get("challenge")
+    if not isinstance(challenge, str) or not challenge:
+        raise typer.BadParameter("server did not return an archive copy retirement challenge")
+    typed_id = typer.prompt("Type the complete collection id to retire from this store")
+    if typed_id != collection_id:
+        typer.echo("Collection id did not match; nothing was retired.", err=True)
+        raise typer.Exit(1)
+    typed_store = typer.prompt("Type the archive store to retire")
+    if typed_store != store:
+        typer.echo("Archive store did not match; nothing was retired.", err=True)
+        raise typer.Exit(1)
+    payload = api.retire_archive_copy(
+        collection_id,
+        store=store,
+        challenge=challenge,
+    )
+    emit(format_archive_copy_retirement_result(payload), json_mode=False)
 
 
 @fetch_app.command("create")

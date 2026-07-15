@@ -15,6 +15,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
+    ArchiveCopyRetirementRecord,
     ArchiveRestoreCollectionRecord,
     ArchiveRestoreRecord,
     CollectionArchiveCopyRecord,
@@ -224,6 +225,16 @@ class SqlAlchemyCollectionDeletionService:
                         for source_store, destination_store in active_copy_jobs
                     )
                 )
+            active_retirements = session.scalars(
+                select(ArchiveCopyRetirementRecord.store)
+                .where(ArchiveCopyRetirementRecord.collection_id == collection_id)
+                .order_by(ArchiveCopyRetirementRecord.store)
+            ).all()
+            if active_retirements:
+                raise Conflict(
+                    "archive copy retirement became active during collection deletion: "
+                    + ", ".join(active_retirements)
+                )
             restores = session.scalars(
                 select(ArchiveRestoreRecord)
                 .join(ArchiveRestoreCollectionRecord)
@@ -239,14 +250,6 @@ class SqlAlchemyCollectionDeletionService:
                 session.delete(collection)
             session.delete(active)
         return _deletion_result(plan, status="deleted")
-
-
-def require_collection_not_deleting(session: Session, collection_id: str) -> None:
-    session.scalar(
-        select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
-    )
-    if session.get(CollectionDeletionRecord, collection_id) is not None:
-        raise Conflict(f"collection deletion is in progress: {collection_id}")
 
 
 def _build_plan(
@@ -277,8 +280,7 @@ def _build_plan(
                 ),
                 0,
             ),
-        )
-        .where(CollectionArchiveCopyRecord.collection_id == collection_id)
+        ).where(CollectionArchiveCopyRecord.collection_id == collection_id)
     ).one()
     if not archives or any(
         archive.state != "uploaded"
@@ -328,6 +330,11 @@ def _build_plan(
         .where(ArchiveCopyJobRecord.collection_id == collection_id)
         .order_by(ArchiveCopyJobRecord.destination_store)
     ).all()
+    archive_copy_retirements = session.scalars(
+        select(ArchiveCopyRetirementRecord.store)
+        .where(ArchiveCopyRetirementRecord.collection_id == collection_id)
+        .order_by(ArchiveCopyRetirementRecord.store)
+    ).all()
     blockers: list[str] = []
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
@@ -336,6 +343,9 @@ def _build_plan(
     blockers.extend(
         f"archive copy is active: {source_store} -> {destination_store}"
         for source_store, destination_store in archive_copy_jobs
+    )
+    blockers.extend(
+        f"archive copy retirement is active: {store}" for store in archive_copy_retirements
     )
 
     file_rows = session.execute(
@@ -362,10 +372,7 @@ def _build_plan(
         for file in file_rows
     ]
     hot_listing = hot_store.list_collection_files(collection_id)
-    hot_objects = [
-        {"path": file.path, "bytes": file.bytes}
-        for file in hot_listing.files
-    ]
+    hot_objects = [{"path": file.path, "bytes": file.bytes} for file in hot_listing.files]
     upload_file_rows = session.execute(
         select(
             CollectionUploadFileRecord.path,
@@ -420,6 +427,7 @@ def _build_plan(
             "collection_files": int(file_count),
             "collection_archive_copies": int(archive_copy_count),
             "archive_copy_jobs": len(archive_copy_jobs),
+            "archive_copy_retirements": len(archive_copy_retirements),
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
             "archive_restores": restore_count,

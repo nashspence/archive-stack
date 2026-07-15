@@ -28,7 +28,7 @@ from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDele
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from riverhog_core.services.files import SqlAlchemyFileService
-from riverhog_core.services.interfaces import ArchiveCopyService
+from riverhog_core.services.interfaces import ArchiveCopyRetirementService, ArchiveCopyService
 from riverhog_core.services.search import SqlAlchemySearchService
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.db_helpers import sqlite_url
@@ -171,6 +171,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         search=SqlAlchemySearchService(config),
         archive_uploads=cast(SqlAlchemyArchiveUploadService, IdleArchiveUploadService()),
         archive_copies=cast(ArchiveCopyService, IdleArchiveCopyService()),
+        archive_copy_retirements=cast(ArchiveCopyRetirementService, unused),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
         archive_restores=SqlAlchemyArchiveRestoreService(
             config,
@@ -199,9 +200,9 @@ def test_collection_search_and_archive_report_share_current_identity(
     archive = client.get("/v1/archive").json()
 
     assert collection["id"] == "2025/20250102T030405Z__docs"
-    assert [
-        (copy["store"], copy["state"]) for copy in collection["archive_copies"]
-    ] == [("deep", "uploaded")]
+    assert [(copy["store"], copy["state"]) for copy in collection["archive_copies"]] == [
+        ("deep", "uploaded")
+    ]
     assert search["files"][0]["logical_path"] == ("2025/20250102T030405Z__docs/readme.txt")
     assert archive["totals"]["uploaded_collections"] == 1
     assert archive["totals"]["measured_storage_bytes"] == 130

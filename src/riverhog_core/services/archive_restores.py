@@ -46,7 +46,7 @@ from riverhog_core.ports.archive_store import ArchiveReadStatus
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.collection_deletions import require_collection_not_deleting
+from riverhog_core.services.collection_custody import require_collection_custody_idle
 from riverhog_core.webhooks import (
     WebhookConfig,
     build_archive_restore_canceled_payload,
@@ -166,7 +166,7 @@ class SqlAlchemyArchiveRestoreService:
 
     def create_or_resume_for_collection(self, collection_id: str) -> ArchiveRestoreSummary:
         with session_scope(self._session_factory) as session:
-            require_collection_not_deleting(session, collection_id)
+            require_collection_custody_idle(session, collection_id)
             collection = _require_collection(session, collection_id)
             archive_copy = _require_collection_archive_uploaded(collection, self._config)
             active = _active_restore_for_collection(session, collection_id)
@@ -257,7 +257,7 @@ class SqlAlchemyArchiveRestoreService:
                 ).all()
             )
             for collection_id in missing_collection_ids:
-                require_collection_not_deleting(session, collection_id)
+                require_collection_custody_idle(session, collection_id)
             if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
                 fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
 
@@ -651,29 +651,25 @@ def _restore_collections(
     record: ArchiveRestoreRecord,
 ) -> list[_RestoreCollection]:
     rows = session.execute(
-            select(CollectionRecord, CollectionArchiveCopyRecord)
-            .join(
-                ArchiveRestoreCollectionRecord,
-                ArchiveRestoreCollectionRecord.collection_id == CollectionRecord.id,
-            )
-            .join(
-                CollectionArchiveCopyRecord,
-                and_(
-                    CollectionArchiveCopyRecord.collection_id == CollectionRecord.id,
-                    CollectionArchiveCopyRecord.store
-                    == ArchiveRestoreCollectionRecord.archive_store,
-                ),
-            )
-            .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
-            .order_by(
-                ArchiveRestoreCollectionRecord.collection_order,
-                ArchiveRestoreCollectionRecord.collection_id,
-            )
-        ).all()
-    return [
-        _RestoreCollection(collection=row[0], archive_copy=row[1])
-        for row in rows
-    ]
+        select(CollectionRecord, CollectionArchiveCopyRecord)
+        .join(
+            ArchiveRestoreCollectionRecord,
+            ArchiveRestoreCollectionRecord.collection_id == CollectionRecord.id,
+        )
+        .join(
+            CollectionArchiveCopyRecord,
+            and_(
+                CollectionArchiveCopyRecord.collection_id == CollectionRecord.id,
+                CollectionArchiveCopyRecord.store == ArchiveRestoreCollectionRecord.archive_store,
+            ),
+        )
+        .where(ArchiveRestoreCollectionRecord.restore_id == record.restore_id)
+        .order_by(
+            ArchiveRestoreCollectionRecord.collection_order,
+            ArchiveRestoreCollectionRecord.collection_id,
+        )
+    ).all()
+    return [_RestoreCollection(collection=row[0], archive_copy=row[1]) for row in rows]
 
 
 def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
@@ -1010,10 +1006,7 @@ def _hot_file_available_for_audit(
     if listing is None:
         try:
             hot_listing = hot_store.list_collection_files(file.collection_id)
-            listing = {
-                listed_file.path: listed_file.bytes
-                for listed_file in hot_listing.files
-            }
+            listing = {listed_file.path: listed_file.bytes for listed_file in hot_listing.files}
         except Exception:
             return _hot_file_available(hot_store, file)
         listed_hot_files[file.collection_id] = listing

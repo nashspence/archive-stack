@@ -31,6 +31,24 @@ class CollectionDeletionRecord(Base):
     started_at: Mapped[str] = mapped_column(String)
 
 
+class ArchiveCopyRetirementRecord(Base):
+    __tablename__ = "archive_copy_retirements"
+
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    challenge: Mapped[str] = mapped_column(String)
+    plan_json: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
 class CollectionFileRecord(Base):
     __tablename__ = "collection_files"
 

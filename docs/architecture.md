@@ -15,9 +15,10 @@ configured default archive store and retain a hot materialization unless the cal
 explicitly selects another store or archive-only storage.
 
 Archive stores are the durable authority. Upload staging is temporary ingest state, and
-hot storage is a replaceable materialization for browsing and direct access. A collection
-is immutable while present; changing the retained set means accepting a new collection or
-deliberately deleting an existing collection as a whole.
+hot storage is a replaceable materialization for browsing and direct access. A collection's
+logical contents are immutable while present; changing them means accepting a new collection
+or deliberately deleting the existing collection. Its verified archive-copy set can change
+through guarded copy and retirement operations.
 
 An archive copy job reads and verifies an existing copy, streams the package through
 decryption and destination encryption, verifies the destination, and records the new copy.

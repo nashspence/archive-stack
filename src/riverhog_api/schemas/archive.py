@@ -43,3 +43,54 @@ class ArchiveCopyJobOut(RiverhogModel):
     ready_at: str | None
     expires_at: str | None
     failure: str | None
+
+
+class ArchiveCopyRetirementRequest(RiverhogModel):
+    collection_id: str
+    store: str
+
+
+class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
+    challenge: str
+
+
+class ArchiveCopyRetirementObjectOut(RiverhogModel):
+    kind: Literal["archive", "manifest", "proof"]
+    object_path: str
+    stored_bytes: int
+
+
+class ArchiveCopyRetirementTargetOut(RiverhogModel):
+    store: str
+    last_verified_at: str
+    remote_storage_bytes: int
+    objects: list[ArchiveCopyRetirementObjectOut]
+
+
+class ArchiveCopyRetirementRetainedOut(RiverhogModel):
+    store: str
+    last_verified_at: str
+    remote_storage_bytes: int
+
+
+class ArchiveCopyRetirementPlanOut(RiverhogModel):
+    status: Literal["ready", "blocked", "retiring"]
+    collection_id: str
+    store: str
+    warning: str
+    expires_at: str
+    challenge: str | None
+    target_copy: ArchiveCopyRetirementTargetOut
+    retained_copies: list[ArchiveCopyRetirementRetainedOut]
+    retired_restore_records: list[str]
+    blockers: list[str]
+    verification_note: str
+    billing_note: str
+
+
+class ArchiveCopyRetirementResultOut(RiverhogModel):
+    status: Literal["retired", "already_absent"]
+    collection_id: str
+    store: str
+    remote_storage_bytes: int
+    verified_store: str | None

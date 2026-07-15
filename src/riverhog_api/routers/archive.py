@@ -4,7 +4,14 @@ from fastapi import APIRouter, Query
 
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_usage_report
-from riverhog_api.schemas.archive import ArchiveCopyJobOut, CreateArchiveCopyRequest
+from riverhog_api.schemas.archive import (
+    ArchiveCopyJobOut,
+    ArchiveCopyRetirementPlanOut,
+    ArchiveCopyRetirementRequest,
+    ArchiveCopyRetirementResultOut,
+    CreateArchiveCopyRequest,
+    RetireArchiveCopyRequest,
+)
 from riverhog_api.schemas.archive_usage import ArchiveUsageReportOut
 
 router = APIRouter(tags=["archive"])
@@ -20,6 +27,39 @@ def create_archive_copy(
             request.collection_id,
             destination_store=request.destination_store,
             source_store=request.source_store,
+        )
+    )
+
+
+@router.post(
+    "/archive/copies/retirement-plan",
+    response_model=ArchiveCopyRetirementPlanOut,
+)
+def plan_archive_copy_retirement(
+    request: ArchiveCopyRetirementRequest,
+    container: ContainerDep,
+) -> ArchiveCopyRetirementPlanOut:
+    return ArchiveCopyRetirementPlanOut.model_validate(
+        container.archive_copy_retirements.plan(
+            request.collection_id,
+            store=request.store,
+        )
+    )
+
+
+@router.post(
+    "/archive/copies/retire",
+    response_model=ArchiveCopyRetirementResultOut,
+)
+def retire_archive_copy(
+    request: RetireArchiveCopyRequest,
+    container: ContainerDep,
+) -> ArchiveCopyRetirementResultOut:
+    return ArchiveCopyRetirementResultOut.model_validate(
+        container.archive_copy_retirements.retire(
+            request.collection_id,
+            store=request.store,
+            challenge=request.challenge,
         )
     )
 

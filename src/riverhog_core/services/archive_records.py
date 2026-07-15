@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.catalog_models import CollectionArchiveCopyRecord
-from riverhog_core.ports.archive_store import CollectionArchiveUploadReceipt
+from riverhog_core.ports.archive_store import (
+    ArchiveObjectIdentity,
+    CollectionArchivePackageIdentity,
+    CollectionArchiveUploadReceipt,
+)
 
 
 def apply_archive_receipt(
@@ -31,3 +35,49 @@ def apply_archive_receipt(
     archive.ots_sha256 = receipt.proof_sha256
     archive.ots_stored_bytes = receipt.proof.stored_bytes
     archive.ots_uploaded_at = receipt.proof.uploaded_at
+
+
+def archive_copy_is_complete(archive: CollectionArchiveCopyRecord) -> bool:
+    return bool(
+        archive.state == "uploaded"
+        and archive.object_path
+        and archive.stored_bytes is not None
+        and archive.sha256
+        and archive.manifest_object_path
+        and archive.manifest_stored_bytes is not None
+        and archive.manifest_sha256
+        and archive.ots_object_path
+        and archive.ots_stored_bytes is not None
+        and archive.ots_sha256
+        and archive.last_verified_at
+    )
+
+
+def archive_copy_identity(
+    archive: CollectionArchiveCopyRecord,
+) -> CollectionArchivePackageIdentity:
+    return CollectionArchivePackageIdentity(
+        archive=ArchiveObjectIdentity(
+            object_path=str(archive.object_path),
+            stored_bytes=int(archive.stored_bytes or 0),
+            sha256=str(archive.sha256),
+        ),
+        manifest=ArchiveObjectIdentity(
+            object_path=str(archive.manifest_object_path),
+            stored_bytes=int(archive.manifest_stored_bytes or 0),
+            sha256=str(archive.manifest_sha256),
+        ),
+        proof=ArchiveObjectIdentity(
+            object_path=str(archive.ots_object_path),
+            stored_bytes=int(archive.ots_stored_bytes or 0),
+            sha256=str(archive.ots_sha256),
+        ),
+    )
+
+
+def archive_copy_stored_bytes(archive: CollectionArchiveCopyRecord) -> int:
+    return (
+        int(archive.stored_bytes or 0)
+        + int(archive.manifest_stored_bytes or 0)
+        + int(archive.ots_stored_bytes or 0)
+    )

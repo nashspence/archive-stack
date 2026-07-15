@@ -35,7 +35,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.ports.hot_store import HotStore
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.collection_deletions import require_collection_not_deleting
+from riverhog_core.services.collection_custody import require_collection_custody_idle
 
 _FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
 _FETCH_FILE_SORT_FIELDS = {
@@ -210,7 +210,7 @@ class SqlAlchemyFetchService:
             if not collection_ids:
                 raise InvalidState("fetch has no collections")
             for collection_id in collection_ids:
-                require_collection_not_deleting(session, collection_id)
+                require_collection_custody_idle(session, collection_id)
             summary = _fetch_summary(session, fetch_id)
             if summary.files == 0:
                 raise InvalidState("fetch collections contain no files")
@@ -242,6 +242,8 @@ class SqlAlchemyFetchService:
             raise BadRequest("at least one collection is required")
         with session_scope(self._session_factory) as session:
             _require_collections_exist(session, collection_ids)
+            for collection_id in collection_ids:
+                require_collection_custody_idle(session, collection_id)
             selected_files, selected_bytes = _collection_file_stats(session, collection_ids)
             if selected_files == 0:
                 raise NotFound("collections contain no files")
@@ -276,9 +278,7 @@ class SqlAlchemyFetchService:
                 failures: list[Exception] = []
                 for store_name, package in copies:
                     try:
-                        self._archive_stores.require(
-                            store_name
-                        ).verify_collection_archive_package(
+                        self._archive_stores.require(store_name).verify_collection_archive_package(
                             collection_id=collection_id,
                             package=package,
                         )

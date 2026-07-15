@@ -323,6 +323,7 @@ def test_plan_enumerates_custody_impact_and_issues_state_bound_challenge(tmp_pat
         "collection_files": 1,
         "collection_archive_copies": 1,
         "archive_copy_jobs": 0,
+        "archive_copy_retirements": 0,
         "collection_uploads": 1,
         "collection_upload_files": 1,
         "archive_restores": 1,

@@ -69,9 +69,7 @@ def _assert_schema_matches_models(engine: Engine) -> None:
     for table_name in sorted(set(expected) - actual_tables):
         differences.append(f"missing table {table_name}")
     for table_name in sorted(actual_tables & set(expected)):
-        actual_columns = {
-            str(column["name"]) for column in inspector.get_columns(table_name)
-        }
+        actual_columns = {str(column["name"]) for column in inspector.get_columns(table_name)}
         for column_name in sorted(actual_columns - expected[table_name]):
             differences.append(f"unexpected column {table_name}.{column_name}")
         for column_name in sorted(expected[table_name] - actual_columns):
@@ -86,6 +84,7 @@ def initialize_db(database_url: str) -> None:
     """Create the current catalog schema."""
     from riverhog_core.catalog_models import (  # noqa: PLC0415
         ArchiveCopyJobRecord,
+        ArchiveCopyRetirementRecord,
         ArchiveRestoreCollectionRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
@@ -101,6 +100,7 @@ def initialize_db(database_url: str) -> None:
 
     _ = (
         ArchiveCopyJobRecord,
+        ArchiveCopyRetirementRecord,
         ArchiveRestoreCollectionRecord,
         ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,

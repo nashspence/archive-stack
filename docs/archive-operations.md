@@ -36,6 +36,13 @@ The background job verifies the source, prepares it for reading when necessary, 
 new encrypted destination copy without using hot storage, and records the copy only after
 destination verification. The source copy remains intact.
 
+Use `riverhog archive retire --help` to remove one exact collection-and-store copy. Inspect
+the plan and confirm the exact collection, selected store, retained verification candidates,
+affected objects and bytes, blockers, warning, and short-lived challenge. Execution first
+requires a different complete copy to pass current remote verification. It then removes the
+selected package, manifest, and proof, refreshes the affected encrypted catalogs, and records
+the resulting usage snapshot.
+
 ## Collection deletion
 
 Use `riverhog collection delete --help` for the current command interface. Always inspect

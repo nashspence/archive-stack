@@ -34,8 +34,13 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
-from riverhog_core.services.archive_records import apply_archive_receipt
+from riverhog_core.services.archive_records import (
+    apply_archive_receipt,
+    archive_copy_identity,
+    archive_copy_is_complete,
+)
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
+from riverhog_core.services.collection_custody import require_collection_custody_idle
 from riverhog_core.webhooks import utcnow
 
 _LOG = logging.getLogger(__name__)
@@ -86,6 +91,7 @@ class SqlAlchemyArchiveCopyService:
         destination_archive_store = self._archive_stores.require(destination)
         current_text = _isoformat_z(utcnow())
         with session_scope(self._session_factory) as session:
+            require_collection_custody_idle(session, normalized_collection_id)
             collection = session.get(CollectionRecord, normalized_collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
@@ -230,7 +236,7 @@ class SqlAlchemyArchiveCopyService:
 
         source_store.verify_collection_archive_package(
             collection_id=collection_id,
-            package=_copy_identity(source_copy),
+            package=archive_copy_identity(source_copy),
         )
         expected_files = self._expected_files(collection_id)
         manifest_bytes = source_store.read_collection_manifest(
@@ -418,42 +424,9 @@ def _required_copy(
     store: str,
 ) -> CollectionArchiveCopyRecord:
     copy = session.get(CollectionArchiveCopyRecord, (collection_id, store))
-    if (
-        copy is None
-        or copy.state != ArchiveState.UPLOADED.value
-        or not copy.object_path
-        or copy.stored_bytes is None
-        or not copy.sha256
-        or not copy.manifest_object_path
-        or copy.manifest_stored_bytes is None
-        or not copy.manifest_sha256
-        or not copy.ots_object_path
-        or copy.ots_stored_bytes is None
-        or not copy.ots_sha256
-        or not copy.last_verified_at
-    ):
+    if copy is None or not archive_copy_is_complete(copy):
         raise InvalidState(f"source archive copy is incomplete: {collection_id} in {store}")
     return copy
-
-
-def _copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchivePackageIdentity:
-    return CollectionArchivePackageIdentity(
-        archive=ArchiveObjectIdentity(
-            object_path=str(copy.object_path),
-            stored_bytes=int(copy.stored_bytes or 0),
-            sha256=str(copy.sha256),
-        ),
-        manifest=ArchiveObjectIdentity(
-            object_path=str(copy.manifest_object_path),
-            stored_bytes=int(copy.manifest_stored_bytes or 0),
-            sha256=str(copy.manifest_sha256),
-        ),
-        proof=ArchiveObjectIdentity(
-            object_path=str(copy.ots_object_path),
-            stored_bytes=int(copy.ots_stored_bytes or 0),
-            sha256=str(copy.ots_sha256),
-        ),
-    )
 
 
 def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchivePackageIdentity:
