@@ -467,6 +467,9 @@ def test_munchy_av1_image_identifies_its_riverhog_revision() -> None:
 
     assert "ARG RIVERHOG_REVISION=unknown" in dockerfile
     assert 'LABEL org.opencontainers.image.revision="${RIVERHOG_REVISION}"' in dockerfile
+    assert dockerfile.index("COPY services/munchy-av1-nvenc/app app") < dockerfile.index(
+        "ARG RIVERHOG_REVISION=unknown"
+    )
     assert "RIVERHOG_REVISION: ${RIVERHOG_REVISION:-unknown}" in compose
 
 

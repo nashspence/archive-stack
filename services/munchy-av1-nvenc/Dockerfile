@@ -49,9 +49,6 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git \
 
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 
-ARG RIVERHOG_REVISION=unknown
-LABEL org.opencontainers.image.revision="${RIVERHOG_REVISION}"
-
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_ROOT_USER_ACTION=ignore \
@@ -76,6 +73,9 @@ COPY config /riverhog/config
 COPY src /riverhog/src
 
 COPY services/munchy-av1-nvenc/app app
+
+ARG RIVERHOG_REVISION=unknown
+LABEL org.opencontainers.image.revision="${RIVERHOG_REVISION}"
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
