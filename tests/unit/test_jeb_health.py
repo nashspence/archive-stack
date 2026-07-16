@@ -158,6 +158,23 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
 
         listed = read_json(base)
         assert [source["id"] for source in listed["sources"]] == ["phone"]
+        assert listed["page"] == 1
+        assert listed["per_page"] == 25
+        assert listed["total"] == 1
+        assert listed["pages"] == 1
+        assert "policy" not in listed["sources"][0]
+        filtered = read_json(
+            f"{base}?q=PHO&enabled=true&adapter=tus&target=munchy"
+            "&sort=updated_at&order=desc&all=true"
+        )
+        assert filtered["total"] == 1
+        assert filtered["page"] == 1
+        assert filtered["per_page"] == 1
+        assert filtered["filters"] == {
+            "enabled": True,
+            "adapter": "tus",
+            "target": "munchy",
+        }
         status, disabled = request_json("POST", f"{base}/phone/disable", {})
         assert status == 200
         assert disabled["enabled"] is False

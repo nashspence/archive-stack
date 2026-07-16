@@ -35,6 +35,7 @@ def test_jeb_api_forwards_attempt_query_to_service(monkeypatch: pytest.MonkeyPat
         collection_slug="weekly",
         target="archive",
         q="metadata",
+        all_items=True,
     )
 
     assert payload == {"attempts": [], "page": 2}
@@ -53,8 +54,59 @@ def test_jeb_api_forwards_attempt_query_to_service(monkeypatch: pytest.MonkeyPat
                 "state": "failed",
                 "target": "archive",
                 "terminal": "all",
+                "all": "true",
             },
             None,
+        )
+    ]
+
+
+def test_jeb_api_forwards_source_list_query_to_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert json_payload is None
+        captured.append((method, path, params))
+        return {"sources": [], "page": 1}
+
+    monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
+
+    payload = jeb_router.list_jeb_sources(
+        page=2,
+        per_page=10,
+        sort="target",
+        order="desc",
+        q="camera",
+        enabled=False,
+        adapter="tus",
+        target="munchy",
+        all_items=True,
+    )
+
+    assert payload == {"sources": [], "page": 1}
+    assert captured == [
+        (
+            "GET",
+            "/v1/jeb/sources",
+            {
+                "page": 2,
+                "per_page": 10,
+                "sort": "target",
+                "order": "desc",
+                "q": "camera",
+                "enabled": "false",
+                "adapter": "tus",
+                "target": "munchy",
+                "all": "true",
+            },
         )
     ]
 

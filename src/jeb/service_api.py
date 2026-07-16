@@ -227,6 +227,12 @@ def _bool(params: dict[str, list[str]], key: str, default: bool) -> bool:
     raise ValueError(f"{key} must be true or false")
 
 
+def _optional_bool(params: dict[str, list[str]], key: str) -> bool | None:
+    if _first(params, key) is None:
+        return None
+    return _bool(params, key, False)
+
+
 def _terminal(params: dict[str, list[str]]) -> TerminalFilter:
     value = _first(params, "terminal", "active") or "active"
     if value not in {"active", "terminal", "all"}:
@@ -357,12 +363,17 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     _response(
                         self,
                         HTTPStatus.OK,
-                        {
-                            "sources": [
-                                source.summary()
-                                for source in state.collector.source_registry.list()
-                            ]
-                        },
+                        state.collector.source_registry.list_page(
+                            page=_positive_int(params, "page", 1),
+                            per_page=_positive_int(params, "per_page", 25),
+                            sort=_first(params, "sort", "id") or "id",
+                            order=_first(params, "order", "asc") or "asc",
+                            query=_first(params, "q") or _first(params, "query"),
+                            enabled=_optional_bool(params, "enabled"),
+                            adapter=_first(params, "adapter"),
+                            target=_first(params, "target"),
+                            all_items=_bool(params, "all", False),
+                        ),
                     )
                     return
                 source_id = _source_path(split.path)
@@ -403,6 +414,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             source=_first(params, "source"),
                             collection_slug=_first(params, "collection_slug"),
                             target=_first(params, "target"),
+                            all_items=_bool(params, "all", False),
                         ),
                     )
                     return

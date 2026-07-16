@@ -14,12 +14,25 @@ from typing import Any, Literal, cast
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
+from jeb.listing import MAX_LIST_PAGE_SIZE
 from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 Cadence = Literal["weekly", "monthly", "seasonal", "manual"]
 Cleanup = Literal["never", "after_target_success"]
 SOURCE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 INGRESS_ADAPTERS = frozenset({"ftp", "tus"})
+SOURCE_LIST_SORT_FIELDS = frozenset(
+    {
+        "cadence",
+        "collection_slug",
+        "created_at",
+        "enabled",
+        "id",
+        "policy_revision",
+        "target",
+        "updated_at",
+    }
+)
 DEFAULT_INCLUDE_EXTENSIONS = frozenset(
     {".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"}
 )
@@ -220,6 +233,136 @@ class SourceRegistry:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM sources ORDER BY id").fetchall()
             return [self._source(connection, row) for row in rows]
+
+    def list_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "id",
+        order: str = "asc",
+        query: str | None = None,
+        enabled: bool | None = None,
+        adapter: str | None = None,
+        target: str | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        if page < 1:
+            raise SourceRegistryError("page must be >= 1")
+        if not 1 <= per_page <= MAX_LIST_PAGE_SIZE:
+            raise SourceRegistryError(
+                f"per_page must be between 1 and {MAX_LIST_PAGE_SIZE}"
+            )
+        if sort not in SOURCE_LIST_SORT_FIELDS:
+            raise SourceRegistryError(
+                "sort must be one of: " + ", ".join(sorted(SOURCE_LIST_SORT_FIELDS))
+            )
+        if order not in {"asc", "desc"}:
+            raise SourceRegistryError("order must be asc or desc")
+        if adapter is not None and adapter not in INGRESS_ADAPTERS:
+            raise SourceRegistryError(
+                "adapter must be one of: " + ", ".join(sorted(INGRESS_ADAPTERS))
+            )
+
+        clauses: list[str] = []
+        values: list[object] = []
+        if query:
+            like = f"%{_sqlite_like_literal(query.casefold())}%"
+            clauses.append(
+                """
+                (
+                    lower(id) LIKE ? ESCAPE '\\'
+                    OR lower(collection_slug) LIKE ? ESCAPE '\\'
+                    OR lower(target) LIKE ? ESCAPE '\\'
+                    OR lower(cadence) LIKE ? ESCAPE '\\'
+                    OR lower(adapters_json) LIKE ? ESCAPE '\\'
+                )
+                """
+            )
+            values.extend((like,) * 5)
+        if enabled is not None:
+            clauses.append("enabled = ?")
+            values.append(int(enabled))
+        if adapter is not None:
+            clauses.append("EXISTS (SELECT 1 FROM json_each(adapters_json) WHERE value = ?)")
+            values.append(adapter)
+        if target is not None:
+            clauses.append("target = ?")
+            values.append(target)
+
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        sort_sql = {
+            "cadence": "cadence",
+            "collection_slug": "collection_slug",
+            "created_at": "created_at",
+            "enabled": "enabled",
+            "id": "id",
+            "policy_revision": "policy_revision",
+            "target": "target",
+            "updated_at": "updated_at",
+        }[sort]
+        order_sql = order.upper()
+        selected_sql = f"""
+            SELECT
+                id,
+                enabled,
+                adapters_json,
+                collection_slug,
+                target,
+                cadence,
+                policy_revision,
+                created_at,
+                updated_at
+            FROM sources
+            {where}
+            ORDER BY {sort_sql} {order_sql}, id ASC
+        """
+        with self.connect() as connection:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM sources {where}",
+                values,
+            ).fetchone()
+            total = int(total_row["total"] if total_row is not None else 0)
+            if all_items:
+                rows = connection.execute(selected_sql, values).fetchall()
+            else:
+                rows = connection.execute(
+                    f"{selected_sql} LIMIT ? OFFSET ?",
+                    [*values, per_page, (page - 1) * per_page],
+                ).fetchall()
+        result_page = 1 if all_items else page
+        result_per_page = total if all_items else per_page
+        result_pages = (
+            (1 if total else 0) if all_items else (total + per_page - 1) // per_page
+        )
+        return {
+            "page": result_page,
+            "per_page": result_per_page,
+            "total": total,
+            "pages": result_pages,
+            "sort": sort,
+            "order": order,
+            "query": query,
+            "filters": {
+                "enabled": enabled,
+                "adapter": adapter,
+                "target": target,
+            },
+            "sources": [
+                {
+                    "id": str(row["id"]),
+                    "enabled": bool(row["enabled"]),
+                    "adapters": list(json.loads(row["adapters_json"])),
+                    "collection_slug": str(row["collection_slug"]),
+                    "target": str(row["target"]),
+                    "cadence": str(row["cadence"]),
+                    "policy_revision": int(row["policy_revision"]),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in rows
+            ],
+        }
 
     def get(self, source_id: str) -> SourceConfig:
         normalized_id = _source_id(source_id)
@@ -505,6 +648,10 @@ def _settings(
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _sqlite_like_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _json_object(value: object, name: str) -> dict[str, Any]:

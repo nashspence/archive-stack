@@ -80,9 +80,22 @@ class FakeJebApi:
             "operation": None if not process else {"id": "op-archive"},
         }
 
-    def list_jeb_sources(self) -> dict[str, Any]:
-        self.calls.append(("source-list", {}))
-        return {"sources": [{"id": "camera", "enabled": True, "adapters": ["ftp"]}]}
+    def list_jeb_sources(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("source-list", kwargs))
+        return {
+            "page": 1,
+            "pages": 1,
+            "per_page": 1,
+            "total": 1,
+            "sources": [
+                {
+                    "id": "camera",
+                    "enabled": True,
+                    "adapters": ["ftp"],
+                    "target": "munchy",
+                }
+            ],
+        }
 
     def add_jeb_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("source-add", payload))
@@ -120,7 +133,7 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    assert jeb_cli.main(["attempts", "--terminal", "all", "--source", "camera"]) == 0
+    assert jeb_cli.main(["attempt", "list", "--terminal", "all", "--source", "camera"]) == 0
 
     assert fake.calls == [
         (
@@ -136,10 +149,79 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
                 "state": None,
                 "target": None,
                 "terminal": "all",
+                "all_items": False,
             },
         )
     ]
     assert "Jeb attempts: 0 (page 1/0)" in capsys.readouterr().out
+
+
+def test_jeb_remote_cli_lists_ids_and_forwards_list_filters(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert (
+        jeb_cli.main(
+            [
+                "source",
+                "list",
+                "--query",
+                "cam",
+                "--enabled",
+                "--adapter",
+                "ftp",
+                "--target",
+                "munchy",
+                "--sort",
+                "updated_at",
+                "--order",
+                "desc",
+                "--all",
+                "--ids",
+            ]
+        )
+        == 0
+    )
+
+    assert fake.calls == [
+        (
+            "source-list",
+            {
+                "page": 1,
+                "per_page": 25,
+                "sort": "updated_at",
+                "order": "desc",
+                "query": "cam",
+                "enabled": True,
+                "adapter": "ftp",
+                "target": "munchy",
+                "all_items": True,
+            },
+        )
+    ]
+    assert capsys.readouterr().out == "camera\n"
+
+
+def test_jeb_remote_cli_formats_source_page(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["source", "list"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Jeb sources: 1 (page 1/1)" in output
+    assert "- camera  state=enabled  adapters=ftp  target=munchy" in output
+
+
+def test_jeb_remote_cli_attempt_ids_request_all_matches(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["attempt", "list", "--terminal", "all", "--all", "--ids"]) == 0
+
+    assert fake.calls[0][0] == "attempts"
+    assert fake.calls[0][1]["all_items"] is True
+    assert capsys.readouterr().out == "\n"
 
 
 def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

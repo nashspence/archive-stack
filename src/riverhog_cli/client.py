@@ -671,6 +671,7 @@ class ApiClient:
         collection_slug: str | None = None,
         target: str | None = None,
         query: str | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -688,6 +689,8 @@ class ApiClient:
         }.items():
             if value is not None:
                 params[key] = value
+        if all_items:
+            params["all"] = True
         return self._json("GET", "/v1/jeb/attempts", params=params)
 
     def check_jeb_config(self) -> dict[str, Any]:
@@ -709,8 +712,36 @@ class ApiClient:
             json={"source": source, "process": process, "dry_run": dry_run},
         )
 
-    def list_jeb_sources(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/jeb/sources")
+    def list_jeb_sources(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "id",
+        order: str = "asc",
+        query: str | None = None,
+        enabled: bool | None = None,
+        adapter: str | None = None,
+        target: str | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        for key, value in {
+            "q": query,
+            "enabled": None if enabled is None else str(enabled).lower(),
+            "adapter": adapter,
+            "target": target,
+        }.items():
+            if value is not None:
+                params[key] = value
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/jeb/sources", params=params)
 
     def get_jeb_source(self, source_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/jeb/sources/{quote(source_id, safe='')}")

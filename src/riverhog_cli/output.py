@@ -334,6 +334,36 @@ def format_jeb_attempts(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_jeb_sources(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "Jeb sources")]
+    for source in _items(payload, "sources"):
+        raw_adapters = source.get("adapters")
+        adapters = (
+            ",".join(str(adapter) for adapter in raw_adapters)
+            if isinstance(raw_adapters, Sequence) and not isinstance(raw_adapters, (str, bytes))
+            else "none"
+        )
+        lines.append(
+            f"- {source.get('id', 'unknown')}  "
+            f"state={'enabled' if source.get('enabled') else 'disabled'}  "
+            f"adapters={adapters}  target={source.get('target', 'unknown')}"
+        )
+    return "\n".join(lines)
+
+
+def format_list_ids(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    id_key: str = "id",
+) -> str:
+    return "\n".join(
+        str(item[id_key])
+        for item in _items(payload, key)
+        if item.get(id_key) is not None and item.get(id_key) != ""
+    )
+
+
 def format_jeb_status(payload: Mapping[str, object]) -> str:
     sources = _items(payload, "sources")
     batches = payload.get("batches")

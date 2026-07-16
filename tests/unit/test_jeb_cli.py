@@ -134,7 +134,8 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert (
         jeb_main(
             [
-                "attempts",
+                "attempt",
+                "list",
                 "--terminal",
                 "all",
                 "--sort",
@@ -158,19 +159,38 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert payload["attempts"][0]["source_id"] == "camera"
     assert payload["attempts"][0]["total_bytes"] == 6
 
-    assert jeb_main(["attempts", "--terminal", "all", "--source", "phone", "--json"]) == 0
+    assert (
+        jeb_main(["attempt", "list", "--terminal", "all", "--source", "phone", "--json"])
+        == 0
+    )
 
     filtered = json.loads(capsys.readouterr().out)
     assert filtered["total"] == 1
     assert filtered["filters"]["source"] == "phone"
     assert filtered["attempts"][0]["source_id"] == "phone"
 
-    assert jeb_main(["attempts", "--terminal", "all", "--query", "camera", "--json"]) == 0
+    assert (
+        jeb_main(["attempt", "list", "--terminal", "all", "--query", "camera", "--json"])
+        == 0
+    )
 
     queried = json.loads(capsys.readouterr().out)
     assert queried["total"] == 1
     assert queried["query"] == "camera"
     assert queried["attempts"][0]["source_id"] == "camera"
+
+    assert jeb_main(["attempt", "list", "--terminal", "all", "--all", "--json"]) == 0
+
+    all_attempts = json.loads(capsys.readouterr().out)
+    assert all_attempts["page"] == 1
+    assert all_attempts["per_page"] == 2
+    assert all_attempts["pages"] == 1
+    assert all_attempts["total"] == 2
+
+    assert jeb_main(["attempt", "list", "--terminal", "all", "--all", "--ids"]) == 0
+
+    ids = capsys.readouterr().out.splitlines()
+    assert ids == [attempt["attempt_id"] for attempt in all_attempts["attempts"]]
 
 
 def test_jeb_attempts_source_filter_treats_slug_as_literal(
@@ -187,7 +207,12 @@ def test_jeb_attempts_source_filter_treats_slug_as_literal(
     assert jeb_main(["archive-now", "--source", "frontxdoor", "--no-process"]) == 0
     capsys.readouterr()
 
-    assert jeb_main(["attempts", "--terminal", "all", "--source", "front_door", "--json"]) == 0
+    assert (
+        jeb_main(
+            ["attempt", "list", "--terminal", "all", "--source", "front_door", "--json"]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["total"] == 1

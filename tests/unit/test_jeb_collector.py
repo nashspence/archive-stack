@@ -161,6 +161,54 @@ def test_source_policy_revisions_and_ftp_projection_are_registry_owned(tmp_path:
     assert [row["revision"] for row in revisions] == [1, 2]
 
 
+def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> None:
+    collector = collector_from_env(env_for(tmp_path))
+    collector.source_registry.set_enabled("phone", False)
+    collector.source_registry.update(
+        "phone",
+        {
+            "adapters": ["tus"],
+            "collection_slug": "mobile",
+            "target": "review",
+            "cadence": "manual",
+        },
+    )
+
+    page = collector.source_registry.list_page(
+        page=1,
+        per_page=1,
+        sort="id",
+        order="desc",
+    )
+
+    assert page["total"] == 2
+    assert page["pages"] == 2
+    assert page["per_page"] == 1
+    assert [source["id"] for source in page["sources"]] == ["phone"]
+    assert "policy" not in page["sources"][0]
+
+    filtered = collector.source_registry.list_page(
+        query="MOBILE",
+        enabled=False,
+        adapter="tus",
+        target="review",
+        all_items=True,
+    )
+
+    assert filtered["page"] == 1
+    assert filtered["per_page"] == 1
+    assert filtered["pages"] == 1
+    assert filtered["filters"] == {
+        "enabled": False,
+        "adapter": "tus",
+        "target": "review",
+    }
+    assert [source["id"] for source in filtered["sources"]] == ["phone"]
+
+    with pytest.raises(SourceRegistryError, match="between 1 and 100"):
+        collector.source_registry.list_page(per_page=101)
+
+
 def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path))
 

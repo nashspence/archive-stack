@@ -9,11 +9,8 @@ import httpx
 import yaml
 
 from jeb.collector import ATTEMPT_LIST_SORT_FIELDS
-from jeb.service_cli import (
-    MAX_PER_PAGE,
-    per_page_value,
-    positive_int,
-)
+from jeb.listing import add_list_output_arguments, add_list_query_arguments
+from jeb.sources import SOURCE_LIST_SORT_FIELDS
 from munchy.job_authoring import load_munchy_job_config, munchy_job_defaults_from_config
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
@@ -22,7 +19,9 @@ from riverhog_cli.output import (
     format_jeb_attempts,
     format_jeb_config_check,
     format_jeb_operation,
+    format_jeb_sources,
     format_jeb_status,
+    format_list_ids,
 )
 from riverhog_core.domain.errors import RiverhogError
 
@@ -37,7 +36,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_attempts(args: argparse.Namespace) -> int:
+def cmd_attempt_list(args: argparse.Namespace) -> int:
     payload = client().list_jeb_attempts(
         page=args.page,
         per_page=args.per_page,
@@ -49,7 +48,11 @@ def cmd_attempts(args: argparse.Namespace) -> int:
         collection_slug=args.collection_slug,
         target=args.target,
         query=args.query,
+        all_items=args.all,
     )
+    if args.ids:
+        emit(format_list_ids(payload, "attempts", id_key="attempt_id"), json_mode=False)
+        return 0
     emit(payload if args.json else format_jeb_attempts(payload), json_mode=args.json)
     return 0
 
@@ -115,20 +118,21 @@ def source_credential(args: argparse.Namespace) -> str | None:
 
 
 def cmd_source_list(args: argparse.Namespace) -> int:
-    payload = client().list_jeb_sources()
-    if args.json:
-        emit(payload, json_mode=True)
+    payload = client().list_jeb_sources(
+        page=args.page,
+        per_page=args.per_page,
+        sort=args.sort,
+        order=args.order,
+        query=args.query,
+        enabled=args.enabled,
+        adapter=args.adapter,
+        target=args.target,
+        all_items=args.all,
+    )
+    if args.ids:
+        emit(format_list_ids(payload, "sources"), json_mode=False)
         return 0
-    sources = payload.get("sources")
-    if not isinstance(sources, list) or not sources:
-        print("No Jeb sources enrolled.")
-        return 0
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        adapters = ",".join(str(item) for item in source.get("adapters", []))
-        state = "enabled" if source.get("enabled") else "disabled"
-        print(f"{source.get('id')}\t{state}\t{adapters}")
+    emit(payload if args.json else format_jeb_sources(payload), json_mode=args.json)
     return 0
 
 
@@ -255,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "commands:\n"
             "  status        show read-only collector status\n"
-            "  attempts      list processing attempts\n"
+            "  attempt       inspect processing attempts\n"
             "  check-config  validate deployed Jeb configuration\n"
             "  once          request one scheduler pass\n"
             "  archive-now   archive one source immediately\n"
@@ -274,43 +278,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.set_defaults(func=cmd_status)
 
-    attempts = sub.add_parser("attempts", help="list processing attempts")
-    attempts.add_argument("--page", type=positive_int, default=1, help="Page number.")
-    attempts.add_argument(
-        "--per-page",
-        type=per_page_value,
-        default=25,
-        help=f"Rows per page, up to {MAX_PER_PAGE}.",
+    attempt = sub.add_parser("attempt", help="inspect processing attempts")
+    attempt_sub = attempt.add_subparsers(dest="attempt_command", required=True)
+    attempt_list = attempt_sub.add_parser("list", help="list processing attempts")
+    add_list_query_arguments(
+        attempt_list,
+        sort_fields=ATTEMPT_LIST_SORT_FIELDS,
+        default_sort="updated_at",
+        default_order="desc",
+        query_help=(
+            "Search attempt, batch, job, collection, target, state, timestamp, or error."
+        ),
     )
-    attempts.add_argument(
-        "--sort",
-        choices=sorted(ATTEMPT_LIST_SORT_FIELDS),
-        default="updated_at",
-        help="Sort field.",
-    )
-    attempts.add_argument(
-        "--order",
-        choices=("asc", "desc"),
-        default="desc",
-        help="Sort order.",
-    )
-    attempts.add_argument(
+    attempt_list.add_argument(
         "--terminal",
         choices=("active", "terminal", "all"),
         default="active",
         help="Show active, terminal, or all attempts.",
     )
-    attempts.add_argument("--state", help="Filter by attempt state.")
-    attempts.add_argument("--source", help="Filter by source slug.")
-    attempts.add_argument("--collection-slug", help="Filter by output collection slug.")
-    attempts.add_argument("--target", help="Filter by target name.")
-    attempts.add_argument(
-        "--query",
-        "-q",
-        help="Search attempt, batch, job, collection, target, state, timestamp, or error.",
-    )
-    attempts.add_argument("--json", action="store_true", help="Emit JSON.")
-    attempts.set_defaults(func=cmd_attempts)
+    attempt_list.add_argument("--state", help="Filter by attempt state.")
+    attempt_list.add_argument("--source", help="Filter by source slug.")
+    attempt_list.add_argument("--collection-slug", help="Filter by output collection slug.")
+    attempt_list.add_argument("--target", help="Filter by target name.")
+    add_list_output_arguments(attempt_list, noun="attempt")
+    attempt_list.set_defaults(func=cmd_attempt_list)
 
     check_config = sub.add_parser("check-config", help="validate deployed Jeb configuration")
     check_config.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -338,7 +329,36 @@ def build_parser() -> argparse.ArgumentParser:
     source = sub.add_parser("source", help="manage enrolled sources")
     source_sub = source.add_subparsers(dest="source_command", required=True)
     source_list = source_sub.add_parser("list", help="list sources")
-    source_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    add_list_query_arguments(
+        source_list,
+        sort_fields=SOURCE_LIST_SORT_FIELDS,
+        default_sort="id",
+        default_order="asc",
+        query_help="Search source, collection slug, target, cadence, or adapter.",
+    )
+    source_state = source_list.add_mutually_exclusive_group()
+    source_state.add_argument(
+        "--enabled",
+        dest="enabled",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Show enabled sources.",
+    )
+    source_state.add_argument(
+        "--disabled",
+        dest="enabled",
+        action="store_const",
+        const=False,
+        help="Show disabled sources.",
+    )
+    source_list.add_argument(
+        "--adapter",
+        choices=("ftp", "tus"),
+        help="Filter by enabled ingress adapter.",
+    )
+    source_list.add_argument("--target", help="Filter by target name.")
+    add_list_output_arguments(source_list, noun="source")
     source_list.set_defaults(func=cmd_source_list)
     source_show = source_sub.add_parser("show", help="show one source")
     source_show.add_argument("source")

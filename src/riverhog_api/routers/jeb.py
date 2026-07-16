@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
+from jeb.listing import MAX_LIST_PAGE_SIZE
 from riverhog_core.domain.errors import BadRequest, InvalidState, RiverhogError, ServiceUnavailable
 from riverhog_core.runtime_config import parse_duration
 
@@ -115,8 +116,34 @@ def get_jeb_status(include_backlog: bool = Query(True)) -> dict[str, Any]:
 
 
 @router.get("/jeb/sources")
-def list_jeb_sources() -> dict[str, Any]:
-    return _request_jeb_service("GET", "/v1/jeb/sources")
+def list_jeb_sources(
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=MAX_LIST_PAGE_SIZE)] = 25,
+    sort: str = Query("id"),
+    order: Literal["asc", "desc"] = Query("asc"),
+    q: str | None = Query(None),
+    enabled: bool | None = Query(None),
+    adapter: Literal["ftp", "tus"] | None = Query(None),
+    target: str | None = Query(None),
+    all_items: Annotated[bool, Query(alias="all")] = False,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "page": page,
+        "per_page": per_page,
+        "sort": sort,
+        "order": order,
+    }
+    for key, value in {
+        "q": q,
+        "enabled": None if enabled is None else str(enabled).lower(),
+        "adapter": adapter,
+        "target": target,
+    }.items():
+        if value is not None:
+            params[key] = value
+    if all_items:
+        params["all"] = "true"
+    return _request_jeb_service("GET", "/v1/jeb/sources", params=params)
 
 
 @router.post("/jeb/sources", status_code=201)
@@ -197,7 +224,7 @@ def remove_jeb_source(source_id: str, request: JebSourceRemoveRequest) -> dict[s
 @router.get("/jeb/attempts")
 def list_jeb_attempts(
     page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=500)] = 25,
+    per_page: Annotated[int, Query(ge=1, le=MAX_LIST_PAGE_SIZE)] = 25,
     sort: str = Query("updated_at"),
     order: Literal["asc", "desc"] = Query("desc"),
     terminal: Literal["active", "terminal", "all"] = Query("active"),
@@ -206,6 +233,7 @@ def list_jeb_attempts(
     collection_slug: str | None = Query(None),
     target: str | None = Query(None),
     q: str | None = Query(None),
+    all_items: Annotated[bool, Query(alias="all")] = False,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {
         "page": page,
@@ -223,6 +251,8 @@ def list_jeb_attempts(
     }.items():
         if value is not None:
             params[key] = value
+    if all_items:
+        params["all"] = "true"
     return _request_jeb_service("GET", "/v1/jeb/attempts", params=params)
 
 

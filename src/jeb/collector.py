@@ -27,6 +27,7 @@ from jeb.ingress import (
     reap_stale_incomplete_tus_uploads,
     scan_incomplete_tus_uploads,
 )
+from jeb.listing import MAX_LIST_PAGE_SIZE
 from jeb.sources import Cadence, SourceConfig, SourceRegistry, SourceRegistryError
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.preflight import (
@@ -86,7 +87,7 @@ SOURCE_PURGE_WARNING = (
 )
 ATTEMPT_LIST_SORT_FIELDS = frozenset(
     {
-        "attempt",
+        "attempt_number",
         "bytes",
         "collection_slug",
         "collection_timestamp",
@@ -749,11 +750,12 @@ class Collector:
         source: str | None = None,
         collection_slug: str | None = None,
         target: str | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         if page < 1:
             raise ValueError("page must be >= 1")
-        if not 1 <= per_page <= 500:
-            raise ValueError("per_page must be between 1 and 500")
+        if not 1 <= per_page <= MAX_LIST_PAGE_SIZE:
+            raise ValueError(f"per_page must be between 1 and {MAX_LIST_PAGE_SIZE}")
         if sort not in ATTEMPT_LIST_SORT_FIELDS:
             raise ValueError("sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS)))
         if order not in {"asc", "desc"}:
@@ -836,7 +838,7 @@ class Collector:
             {where}
         """
         sort_sql = {
-            "attempt": "a.attempt_number",
+            "attempt_number": "a.attempt_number",
             "bytes": "b.total_bytes",
             "collection_slug": "b.collection_slug",
             "collection_timestamp": "b.collection_timestamp",
@@ -855,17 +857,19 @@ class Collector:
                 values,
             ).fetchone()
             total = int(total_row["total"] if total_row is not None else 0)
-            rows = [
-                dict(row)
-                for row in conn.execute(
-                    f"""
-                    {attempts_sql}
-                    ORDER BY {sort_sql} {order_sql}, a.id {order_sql}
-                    LIMIT ? OFFSET ?
-                    """,
+            selected_sql = f"""
+                {attempts_sql}
+                ORDER BY {sort_sql} {order_sql}, a.id {order_sql}
+            """
+            selected_rows = (
+                conn.execute(selected_sql, values).fetchall()
+                if all_items
+                else conn.execute(
+                    f"{selected_sql} LIMIT ? OFFSET ?",
                     [*values, per_page, offset],
                 ).fetchall()
-            ]
+            )
+            rows = [dict(row) for row in selected_rows]
             staged_counts = self._staged_file_counts_by_attempt(
                 conn,
                 [str(row["id"]) for row in rows],
@@ -873,11 +877,16 @@ class Collector:
             for row in rows:
                 row["staged_file_count"] = staged_counts.get(str(row["id"]), 0)
         attempts = [self._attempt_summary(row) for row in rows]
+        result_page = 1 if all_items else page
+        result_per_page = total if all_items else per_page
+        result_pages = (
+            (1 if total else 0) if all_items else (total + per_page - 1) // per_page
+        )
         return {
-            "page": page,
-            "per_page": per_page,
+            "page": result_page,
+            "per_page": result_per_page,
             "total": total,
-            "pages": (total + per_page - 1) // per_page if total else 0,
+            "pages": result_pages,
             "sort": sort,
             "order": order,
             "terminal": terminal,
