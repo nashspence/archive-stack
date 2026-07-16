@@ -67,6 +67,7 @@ def test_jeb_tus_proxy_streams_bounded_upload_chunks() -> None:
     assert config.count("client_max_body_size 128m;") == 2
     for directive in (
         "client_body_timeout 75s;",
+        "client_body_buffer_size 16m;",
         "send_timeout 75s;",
         "proxy_buffering off;",
         "proxy_request_buffering off;",
