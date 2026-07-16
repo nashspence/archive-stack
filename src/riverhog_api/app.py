@@ -161,6 +161,7 @@ async def _run_archive_upload_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
+    operation_lock: asyncio.Lock,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
     startup_failed_retry_audit = True
@@ -181,12 +182,13 @@ async def _run_archive_upload_reaper(
                     "queued in background; "
                     "API startup is not blocked"
                 )
-            await asyncio.to_thread(
-                _process_archive_uploads,
-                container,
-                startup_failed_retry_audit=current_startup_failed_retry_audit,
-                startup_restore_catalog_refresh=current_startup_failed_retry_audit,
-            )
+            async with operation_lock:
+                await asyncio.to_thread(
+                    _process_archive_uploads,
+                    container,
+                    startup_failed_retry_audit=current_startup_failed_retry_audit,
+                    startup_restore_catalog_refresh=current_startup_failed_retry_audit,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
@@ -198,6 +200,7 @@ async def _run_archive_multipart_reaper(
     *,
     sweep_interval: timedelta,
     max_age: timedelta,
+    operation_lock: asyncio.Lock,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
     first_run = True
@@ -211,11 +214,12 @@ async def _run_archive_multipart_reaper(
             container = container_provider()
             if container is None:
                 continue
-            await asyncio.to_thread(
-                _abort_incomplete_archive_multipart_uploads,
-                container,
-                max_age=max_age,
-            )
+            async with operation_lock:
+                await asyncio.to_thread(
+                    _abort_incomplete_archive_multipart_uploads,
+                    container,
+                    max_age=max_age,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
@@ -306,6 +310,7 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if container_provider is None:
             get_or_create_container()
+        archive_operation_lock = asyncio.Lock()
         upload_task = asyncio.create_task(
             _run_upload_expiry_reaper(
                 get_or_create_container,
@@ -316,6 +321,7 @@ def create_app(
             _run_archive_upload_reaper(
                 get_or_create_container,
                 sweep_interval=archive_sweep_interval,
+                operation_lock=archive_operation_lock,
             )
         )
         archive_multipart_task = asyncio.create_task(
@@ -323,6 +329,7 @@ def create_app(
                 get_or_create_container,
                 sweep_interval=archive_multipart_sweep_interval,
                 max_age=config.archive_multipart_max_age,
+                operation_lock=archive_operation_lock,
             )
         )
         archive_restore_task = asyncio.create_task(

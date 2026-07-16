@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -37,3 +38,40 @@ def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> Non
 
     assert aborted == 2
     assert service.initiated_before == datetime(2026, 7, 13, 12, tzinfo=UTC)
+
+
+def test_archive_multipart_sweep_waits_for_archive_operations() -> None:
+    async def exercise() -> None:
+        service = _ArchiveUploadService()
+        container = cast(
+            ServiceContainer,
+            SimpleNamespace(archive_uploads=service),
+        )
+        operation_lock = asyncio.Lock()
+        await operation_lock.acquire()
+        task = asyncio.create_task(
+            api_app._run_archive_multipart_reaper(
+                lambda: container,
+                sweep_interval=timedelta(days=1),
+                max_age=timedelta(days=3),
+                operation_lock=operation_lock,
+            )
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert service.initiated_before is None
+
+        operation_lock.release()
+        for _ in range(100):
+            if service.initiated_before is not None:
+                break
+            await asyncio.sleep(0.001)
+        assert service.initiated_before is not None
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise())
