@@ -57,3 +57,22 @@ def test_jeb_service_image_runs_service_entrypoint() -> None:
     dockerfile = (REPO / "services" / "jeb" / "Dockerfile").read_text()
 
     assert 'CMD ["python", "-m", "jeb.service_cli", "run"]' in dockerfile
+
+
+def test_jeb_tus_proxy_streams_bounded_upload_chunks() -> None:
+    config = (
+        REPO / "services" / "jeb" / "adapters" / "tus" / "nginx.conf"
+    ).read_text(encoding="utf-8")
+
+    assert config.count("client_max_body_size 128m;") == 2
+    for directive in (
+        "client_body_timeout 75s;",
+        "send_timeout 75s;",
+        "proxy_buffering off;",
+        "proxy_request_buffering off;",
+        "proxy_connect_timeout 240s;",
+        "proxy_http_version 1.1;",
+        "proxy_read_timeout 240s;",
+        "proxy_send_timeout 240s;",
+    ):
+        assert directive in config
