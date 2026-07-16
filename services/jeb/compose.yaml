@@ -105,7 +105,4 @@ services:
       - type: bind
         source: ${JEB_LANDING_HOST_DIR:-./runtime/landing}
         target: /landing
-      - type: bind
-        source: ${JEB_FTP_STATE_HOST_DIR:-./runtime/ftp}
-        target: /etc/pure-ftpd/passwd
     command: ["/usr/local/bin/bootstrap-users"]

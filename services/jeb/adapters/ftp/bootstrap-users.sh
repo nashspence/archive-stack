@@ -29,14 +29,9 @@ create_user() {
     mkdir -p "$home"
     chown -R "$FTP_UID:$FTP_GID" "$home"
 
-    if pure-pw show "$username" -f "$PASSWD_FILE" >/dev/null 2>&1; then
-        printf '%s\n%s\n' "$password" "$password" |
-            pure-pw passwd "$username" -f "$PASSWD_FILE" >/dev/null
-    else
-        printf '%s\n%s\n' "$password" "$password" |
-            pure-pw useradd "$username" -f "$PASSWD_FILE" \
-                -u "$FTP_UID" -g "$FTP_GID" -d "$home" >/dev/null
-    fi
+    printf '%s\n%s\n' "$password" "$password" |
+        pure-pw useradd "$username" -f "$PASSWD_FILE" \
+            -u "$FTP_UID" -g "$FTP_GID" -d "$home" >/dev/null
 }
 
 if [ -z "$JEB_FTP_ACCOUNTS" ]; then
@@ -50,6 +45,7 @@ if [ -z "$PUBLICHOST" ]; then
 fi
 
 mkdir -p "$(dirname "$PASSWD_FILE")"
+rm -f "$PASSWD_FILE" /etc/pure-ftpd/pureftpd.pdb
 
 old_ifs="$IFS"
 IFS=","

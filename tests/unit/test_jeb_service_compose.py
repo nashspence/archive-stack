@@ -39,6 +39,10 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
     assert services["jeb-tus"]["ports"] == ["${JEB_TUS_PORT:-1081}:1081"]
     for service_name in ("jeb", "jeb-ftp", "jeb-tusd"):
         assert any(volume["target"] == "/landing" for volume in services[service_name]["volumes"])
+    assert {volume["target"] for volume in services["jeb-ftp"]["volumes"]} == {
+        "/landing",
+        "/usr/local/bin/bootstrap-users",
+    }
 
     bootstrap = REPO / "services" / "jeb" / "adapters" / "ftp" / "bootstrap-users.sh"
     assert bootstrap.is_file()
@@ -46,6 +50,7 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
     bootstrap_source = bootstrap.read_text(encoding="utf-8")
     assert "JEB_FTP_ACCOUNTS" in bootstrap_source
     assert "JEB_ACCOUNT_%s_PASSWORD" in bootstrap_source
+    assert 'rm -f "$PASSWD_FILE"' in bootstrap_source
 
 
 def test_jeb_service_image_runs_service_entrypoint() -> None:
