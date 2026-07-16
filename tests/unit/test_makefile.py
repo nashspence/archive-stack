@@ -12,6 +12,10 @@ import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, SequenceNode
 
+from riverhog_api.routers.jeb import (
+    DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS,
+    DEFAULT_JEB_SERVICE_URL,
+)
 from riverhog_core.runtime_config import load_runtime_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -191,10 +195,14 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
 
 
 def test_compose_services_publish_every_static_runtime_setting() -> None:
-    runtime_path = REPO_ROOT / "src" / "riverhog_core" / "runtime_config.py"
-    runtime_tree = ast.parse(runtime_path.read_text(encoding="utf-8"))
+    runtime_trees = (
+        ast.parse(path.read_text(encoding="utf-8"))
+        for package in (REPO_ROOT / "src" / "riverhog_core", REPO_ROOT / "src" / "riverhog_api")
+        for path in package.rglob("*.py")
+    )
     runtime_names = {
         node.args[0].value
+        for runtime_tree in runtime_trees
         for node in ast.walk(runtime_tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -238,6 +246,11 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         value = str(raw_value)
         match = re.fullmatch(r"\$\{[A-Z0-9_]+:?-([^}]*)\}", value)
         compose_environment[name] = match.group(1) if match else value
+
+    assert compose_environment["RIVERHOG_JEB_URL"] == DEFAULT_JEB_SERVICE_URL
+    assert float(compose_environment["RIVERHOG_JEB_TIMEOUT_SECONDS"]) == (
+        DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS
+    )
 
     with patch.dict(os.environ, {}, clear=True):
         runtime_defaults = asdict(load_runtime_config())
