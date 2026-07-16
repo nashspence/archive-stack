@@ -5,15 +5,32 @@ from pathlib import Path
 
 import yaml
 
+from jeb.collector import config_from_env, parse_duration
+
 REPO = Path(__file__).resolve().parents[2]
 
 
-def test_jeb_compose_exposes_readiness_healthcheck() -> None:
+def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     compose = yaml.safe_load((REPO / "services" / "jeb" / "compose.yaml").read_text())
     service = compose["services"]["jeb"]
 
     assert service["environment"]["JEB_HEALTH_HOST"] == "0.0.0.0"
     assert service["environment"]["JEB_HEALTH_PORT"] == "8081"
+    runtime = config_from_env(
+        {
+            "JEB_ACCOUNTS": "example",
+            "JEB_LANDING_DIR": str(tmp_path / "landing"),
+            "JEB_STATE_DIR": str(tmp_path / "state"),
+            "JEB_MUNCHY_URL": "http://munchy.invalid",
+        }
+    )
+    assert service["environment"]["JEB_TUSD_BASE_URL"] == (
+        "${JEB_TUSD_BASE_URL:-" + runtime.ingress.tusd_base_url + "}"
+    )
+    max_age_default = service["environment"]["JEB_TUS_INCOMPLETE_MAX_AGE"].removeprefix(
+        "${JEB_TUS_INCOMPLETE_MAX_AGE:-"
+    ).removesuffix("}")
+    assert parse_duration(max_age_default) == runtime.ingress.tus_incomplete_max_age_seconds
     assert all(
         volume.get("target", "").startswith(("/landing", "/state")) for volume in service["volumes"]
     )

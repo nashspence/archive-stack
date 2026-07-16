@@ -343,6 +343,14 @@ def format_jeb_status(payload: Mapping[str, object]) -> str:
             f"- {account.get('id', account.get('account_id', 'unknown'))}  "
             f"state={account.get('state', 'unknown')}"
         )
+    incomplete = payload.get("incomplete_tus_uploads")
+    if isinstance(incomplete, Mapping):
+        lines.append(
+            "TUS incomplete: "
+            f"{incomplete.get('total', 0)} ({_bytes(incomplete.get('bytes'))}), "
+            f"stale={incomplete.get('stale', 0)}, "
+            f"oldest={incomplete.get('oldest_age_seconds', 0)}s"
+        )
     return "\n".join(lines)
 
 

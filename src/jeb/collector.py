@@ -20,7 +20,11 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 
-from jeb.ingress import JebIngressConfig
+from jeb.ingress import (
+    JebIngressConfig,
+    incomplete_tus_upload_status,
+    reap_stale_incomplete_tus_uploads,
+)
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.job_authoring import (
     MunchyJobAuthoringError,
@@ -661,6 +665,20 @@ class Collector:
     def run_once(self) -> None:
         with self.operation_lock:
             self.init_db()
+            reap = reap_stale_incomplete_tus_uploads(self.config.ingress)
+            if reap["terminated"] or reap["already_absent"]:
+                LOG.info(
+                    "terminated %s stale incomplete TUS upload(s); %s already absent",
+                    reap["terminated"],
+                    reap["already_absent"],
+                )
+            if reap["failed"] or reap["scan_error"]:
+                LOG.warning(
+                    "incomplete TUS upload cleanup was not fully successful: "
+                    "failed=%s scan_error=%s",
+                    reap["failed"],
+                    reap["scan_error"],
+                )
             self.resolve_inactive_routing_preflight_failures()
             for attempt_id in self.active_attempt_ids():
                 self.process_attempt(attempt_id)
@@ -923,6 +941,7 @@ class Collector:
                 "total": len(active_preflight_failures),
                 "failures": active_preflight_failures,
             },
+            "incomplete_tus_uploads": incomplete_tus_upload_status(self.config.ingress),
         }
 
     def batch_state_counts(self) -> dict[str, int]:
@@ -3266,6 +3285,11 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         )
         for account in ingress_accounts
     }
+    tus_incomplete_max_age_seconds = parse_duration(
+        env_value_from(values, "JEB_TUS_INCOMPLETE_MAX_AGE", "14d")
+    )
+    if tus_incomplete_max_age_seconds < 1:
+        raise ValueError("JEB_TUS_INCOMPLETE_MAX_AGE must be positive")
     ingress = JebIngressConfig(
         landing_dir=landing_dir,
         tus_staging_dir=Path(
@@ -3278,6 +3302,16 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
                 or str(landing_dir / ".ingress" / "tus")
             )
         ),
+        tusd_base_url=(
+            env_value_from(
+                values,
+                "JEB_TUSD_BASE_URL",
+                "http://jeb-tusd:1080/jeb/files/",
+            )
+            or "http://jeb-tusd:1080/jeb/files/"
+        ).rstrip("/")
+        + "/",
+        tus_incomplete_max_age_seconds=tus_incomplete_max_age_seconds,
         ftp_accounts=ftp_accounts,
         tus_accounts=tus_accounts,
         account_passwords=account_passwords,

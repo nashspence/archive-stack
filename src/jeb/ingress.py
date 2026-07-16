@@ -7,14 +7,19 @@ import hmac
 import json
 import os
 import secrets
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from urllib.parse import urljoin
+
+import httpx
 
 TUS_ACCOUNT_METADATA = "jeb_account"
 TUS_PATH_METADATA = "jeb_path"
 TUS_SIGNATURE_METADATA = "jeb_signature"
+TUS_VERSION = "1.0.0"
 
 
 class JebIngressError(RuntimeError):
@@ -33,6 +38,8 @@ class JebIngressCollisionError(JebIngressError):
 class JebIngressConfig:
     landing_dir: Path
     tus_staging_dir: Path
+    tusd_base_url: str = "http://jeb-tusd:1080/jeb/files/"
+    tus_incomplete_max_age_seconds: int = 14 * 86_400
     ftp_accounts: tuple[str, ...] = ()
     tus_accounts: tuple[str, ...] = ()
     account_passwords: Mapping[str, str] = field(default_factory=dict, repr=False)
@@ -60,6 +67,173 @@ class PreparedTusUpload:
             TUS_PATH_METADATA: self.relative_path,
             TUS_SIGNATURE_METADATA: self.signature,
         }
+
+
+@dataclass(frozen=True)
+class IncompleteTusUpload:
+    upload_id: str
+    bytes: int
+    age_seconds: int
+
+
+@dataclass(frozen=True)
+class IncompleteTusUploadScan:
+    uploads: tuple[IncompleteTusUpload, ...]
+    invalid_records: int = 0
+    scan_error: str | None = None
+
+
+def scan_incomplete_tus_uploads(
+    config: JebIngressConfig,
+    *,
+    now: float | None = None,
+) -> IncompleteTusUploadScan:
+    if not config.tus_accounts or not config.tus_staging_dir.exists():
+        return IncompleteTusUploadScan(uploads=())
+    observed_at = time.time() if now is None else now
+    uploads: list[IncompleteTusUpload] = []
+    invalid_records = 0
+    try:
+        info_paths = sorted(config.tus_staging_dir.glob("*.info"))
+    except OSError as exc:
+        return IncompleteTusUploadScan(
+            uploads=(),
+            scan_error=exc.__class__.__name__,
+        )
+    for info_path in info_paths:
+        try:
+            payload = json.loads(info_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError("upload record must be an object")
+            upload_id = str(payload.get("ID") or "")
+            if (
+                upload_id != info_path.name.removesuffix(".info")
+                or len(upload_id) != 32
+                or any(character not in "0123456789abcdef" for character in upload_id)
+            ):
+                raise ValueError("upload record has an invalid ID")
+            size = _upload_size(payload.get("Size"))
+            offset = _upload_size(payload.get("Offset"))
+            if offset >= size:
+                continue
+            metadata = payload.get("MetaData")
+            if not isinstance(metadata, Mapping):
+                raise ValueError("upload record has no metadata")
+            account = str(metadata.get(TUS_ACCOUNT_METADATA) or "")
+            relative_path = normalize_landing_path(metadata.get(TUS_PATH_METADATA))
+            signature = str(metadata.get(TUS_SIGNATURE_METADATA) or "")
+            expected_signature = _upload_signature(
+                password=config.tus_password(account),
+                upload_id=upload_id,
+                account=account,
+                relative_path=relative_path,
+                size=size,
+            )
+            if not signature or not secrets.compare_digest(signature, expected_signature):
+                raise ValueError("upload record is not authentic")
+            source = config.tus_staging_dir / upload_id
+            source_stat = source.stat()
+            if not source.is_file():
+                raise ValueError("upload data is not a file")
+            latest_activity = max(info_path.stat().st_mtime, source_stat.st_mtime)
+            uploads.append(
+                IncompleteTusUpload(
+                    upload_id=upload_id,
+                    bytes=max(offset, source_stat.st_size),
+                    age_seconds=max(0, int(observed_at - latest_activity)),
+                )
+            )
+        except (JebIngressError, OSError, ValueError):
+            invalid_records += 1
+    return IncompleteTusUploadScan(
+        uploads=tuple(uploads),
+        invalid_records=invalid_records,
+    )
+
+
+def incomplete_tus_upload_status(
+    config: JebIngressConfig,
+    *,
+    now: float | None = None,
+) -> dict[str, object]:
+    scan = scan_incomplete_tus_uploads(config, now=now)
+    stale = [
+        upload
+        for upload in scan.uploads
+        if upload.age_seconds >= config.tus_incomplete_max_age_seconds
+    ]
+    return {
+        "total": len(scan.uploads),
+        "bytes": sum(upload.bytes for upload in scan.uploads),
+        "oldest_age_seconds": max(
+            (upload.age_seconds for upload in scan.uploads),
+            default=0,
+        ),
+        "stale": len(stale),
+        "stale_bytes": sum(upload.bytes for upload in stale),
+        "max_age_seconds": config.tus_incomplete_max_age_seconds,
+        "invalid_records": scan.invalid_records,
+        "scan_error": scan.scan_error,
+    }
+
+
+def reap_stale_incomplete_tus_uploads(
+    config: JebIngressConfig,
+    *,
+    now: float | None = None,
+    client: httpx.Client | None = None,
+) -> dict[str, object]:
+    scan = scan_incomplete_tus_uploads(config, now=now)
+    stale = [
+        upload
+        for upload in scan.uploads
+        if upload.age_seconds >= config.tus_incomplete_max_age_seconds
+    ]
+    terminated = 0
+    already_absent = 0
+    failed = 0
+    result: dict[str, object] = {
+        "candidates": len(stale),
+        "candidate_bytes": sum(upload.bytes for upload in stale),
+        "terminated": terminated,
+        "already_absent": already_absent,
+        "failed": failed,
+        "invalid_records": scan.invalid_records,
+        "scan_error": scan.scan_error,
+    }
+    if not stale:
+        return result
+    owned_client = client is None
+    active_client = client or httpx.Client(timeout=10.0)
+    try:
+        for upload in stale:
+            upload_url = urljoin(
+                config.tusd_base_url.rstrip("/") + "/",
+                upload.upload_id,
+            )
+            try:
+                response = active_client.delete(
+                    upload_url,
+                    headers={"Tus-Resumable": TUS_VERSION},
+                )
+                if response.status_code == 404:
+                    already_absent += 1
+                    continue
+                response.raise_for_status()
+                terminated += 1
+            except httpx.HTTPError:
+                failed += 1
+    finally:
+        if owned_client:
+            active_client.close()
+    result.update(
+        {
+            "terminated": terminated,
+            "already_absent": already_absent,
+            "failed": failed,
+        }
+    )
+    return result
 
 
 def authenticate_tus_account(config: JebIngressConfig, authorization: str | None) -> str:

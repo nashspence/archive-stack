@@ -85,6 +85,16 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         assert isinstance(accounts, list)
         assert accounts[0]["id"] == "phone"
         assert accounts[0]["eligible_files"] == 1
+        assert status["incomplete_tus_uploads"] == {
+            "total": 0,
+            "bytes": 0,
+            "oldest_age_seconds": 0,
+            "stale": 0,
+            "stale_bytes": 0,
+            "max_age_seconds": 14 * 86_400,
+            "invalid_records": 0,
+            "scan_error": None,
+        }
     finally:
         server.shutdown()
         server.server_close()

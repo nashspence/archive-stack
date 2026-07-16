@@ -10,6 +10,8 @@ services:
     environment:
       JEB_HEALTH_HOST: 0.0.0.0
       JEB_HEALTH_PORT: "8081"
+      JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/jeb/files/}
+      JEB_TUS_INCOMPLETE_MAX_AGE: ${JEB_TUS_INCOMPLETE_MAX_AGE:-14d}
     healthcheck:
       test:
         - CMD

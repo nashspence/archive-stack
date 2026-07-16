@@ -199,3 +199,4 @@ def test_jeb_status_json_reports_accounts_backlog_and_active_attempts(
     assert payload["active_attempts"]["total"] == 1
     assert payload["active_attempts"]["attempts"][0]["state"] == "batching"
     assert payload["routing_preflight_failures"]["total"] == 0
+    assert payload["incomplete_tus_uploads"]["total"] == 0
