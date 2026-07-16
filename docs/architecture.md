@@ -31,6 +31,8 @@ Every stored object is independently age encrypted and checksummed. No encrypted
 exceed 32 GiB; Riverhog derives the plaintext segment ceiling from the exact age framing
 overhead. The manifest and proof are independently readable standard-class objects. Archive
 object keys are opaque, and plaintext archive-root guidance contains no collection identity.
+Riverhog validates the manifest/proof binding without requiring a Bitcoin node during
+recovery; the timestamp evidence remains available for independent chain audit.
 
 An archive copy job reads and verifies every source object, writes and verifies an equivalent
 destination object set, then records the new copy. It does not materialize files in hot
@@ -40,9 +42,9 @@ storage. Source reads are prepared only when the selected store requires retriev
 
 A fetch records an exact set of logical files. Collection arguments are a convenience that
 select every file in each named collection. Riverhog prepares and reads only the data objects
-mapped to missing selected files, verifies the manifest, proof, object checksums, and file
-checksums, then materializes those files. A shared small-file pack is fetched once when any
-of its members is selected.
+mapped to missing selected files, validates the manifest/proof binding, verifies object and
+file checksums, then materializes those files. A shared small-file pack is fetched once when
+any of its members is selected.
 
 Eviction accepts the same collection-or-file selection boundary. Before removing a hot file,
 Riverhog verifies a recorded archive copy containing its required data objects, manifest,

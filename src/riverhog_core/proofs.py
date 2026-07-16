@@ -24,15 +24,34 @@ class ProofVerifier(Protocol):
     def verify(self, *, manifest_bytes: bytes, proof_bytes: bytes) -> None: ...
 
 
-def _is_pending_blockchain_confirmation(stdout: str, stderr: str) -> bool:
+def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
     lines = [
         line.strip() for output in (stdout, stderr) for line in output.splitlines() if line.strip()
     ]
-    return bool(lines) and all(
-        line.startswith("Calendar ")
-        and line.endswith(": Pending confirmation in Bitcoin blockchain")
+    def pending(line: str) -> bool:
+        return line.startswith("Calendar ") and line.endswith(
+            ": Pending confirmation in Bitcoin blockchain"
+        )
+
+    def attestation(line: str) -> bool:
+        return line.startswith("Got ") and " attestation(s) from " in line
+
+    def bitcoin_disabled(line: str) -> bool:
+        return line == "Not checking Bitcoin attestation; Bitcoin disabled"
+
+    def manual_check(line: str) -> bool:
+        return line.startswith(
+            "To verify manually, check that Bitcoin block "
+        ) and " has merkleroot " in line
+    allowed = all(
+        pending(line) or attestation(line) or bitcoin_disabled(line) or manual_check(line)
         for line in lines
     )
+    has_deferred_status = any(pending(line) or bitcoin_disabled(line) for line in lines)
+    disabled_checks_are_described = not any(bitcoin_disabled(line) for line in lines) or any(
+        manual_check(line) for line in lines
+    )
+    return bool(lines) and allowed and has_deferred_status and disabled_checks_are_described
 
 
 @dataclass(frozen=True)
@@ -75,7 +94,7 @@ class CommandProofVerifier:
                 text=True,
                 check=False,
             )
-        if proc.returncode != 0 and not _is_pending_blockchain_confirmation(
+        if proc.returncode != 0 and not _is_nonfatal_timestamp_status(
             proc.stdout,
             proc.stderr,
         ):

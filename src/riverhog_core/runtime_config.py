@@ -276,7 +276,7 @@ class RuntimeConfig:
     archive_restore_ready_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     archive_restore_retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
-    ots_verify_command: tuple[str, ...] = ("ots",)
+    ots_verify_command: tuple[str, ...] = ("ots", "--no-bitcoin")
     public_base_url: str | None = None
 
     def __post_init__(self) -> None:
@@ -595,7 +595,7 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_OTS_STAMP_COMMAND",
     )
     ots_verify_command = _parse_command(
-        os.getenv("RIVERHOG_OTS_VERIFY_COMMAND", "ots"),
+        os.getenv("RIVERHOG_OTS_VERIFY_COMMAND", "ots --no-bitcoin"),
         name="RIVERHOG_OTS_VERIFY_COMMAND",
     )
     archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ

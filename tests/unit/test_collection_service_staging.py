@@ -199,7 +199,7 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
         )
         assert second is not None
         second.uploaded_bytes = 5
-        second.upload_expires_at = "2026-07-16T00:00:00Z"
+        second.upload_expires_at = "2099-07-16T00:00:00Z"
 
     progress = service.get_upload("2025/20250103T000000Z__progress")
 
@@ -213,7 +213,7 @@ def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> N
     assert progress["uploaded_bytes"] == 15
     assert progress["hot_materialized_bytes"] == 10
     assert progress["missing_bytes"] == 15
-    assert progress["upload_state_expires_at"] == "2026-07-16T00:00:00Z"
+    assert progress["upload_state_expires_at"] == "2099-07-16T00:00:00Z"
 
 
 def test_upload_session_persists_hot_retention_choice(tmp_path: Path) -> None:

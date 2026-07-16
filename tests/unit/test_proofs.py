@@ -56,6 +56,32 @@ def test_command_proof_verifier_accepts_pending_blockchain_confirmation(
     )
 
 
+def test_command_proof_verifier_accepts_locally_validated_timestamp_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "riverhog_core.proofs.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=(
+                "Got 1 attestation(s) from https://example.invalid\n"
+                "Calendar https://pending.invalid: "
+                "Pending confirmation in Bitcoin blockchain\n"
+                "Not checking Bitcoin attestation; Bitcoin disabled\n"
+                "To verify manually, check that Bitcoin block 123 "
+                "has merkleroot abcdef\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    CommandProofVerifier(_COMMAND).verify(
+        manifest_bytes=b"schema: unit/v1\n",
+        proof_bytes=b"locally validated proof",
+    )
+
+
 def test_command_proof_verifier_rejects_other_pending_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
