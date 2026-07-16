@@ -10,13 +10,15 @@ import secrets
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin
 
 import httpx
 
-TUS_ACCOUNT_METADATA = "jeb_account"
+from jeb.sources import SourceRegistry, SourceRegistryError
+
+TUS_SOURCE_METADATA = "jeb_source"
 TUS_PATH_METADATA = "jeb_path"
 TUS_SIGNATURE_METADATA = "jeb_signature"
 TUS_VERSION = "1.0.0"
@@ -40,30 +42,22 @@ class JebIngressConfig:
     tus_staging_dir: Path
     tusd_base_url: str = "http://jeb-tusd:1080/jeb/files/"
     tus_incomplete_max_age_seconds: int = 14 * 86_400
-    ftp_accounts: tuple[str, ...] = ()
-    tus_accounts: tuple[str, ...] = ()
-    account_passwords: Mapping[str, str] = field(default_factory=dict, repr=False)
-
-    def tus_password(self, account: str) -> str:
-        if account not in self.tus_accounts:
-            raise JebIngressAuthenticationError("Jeb TUS account is not enabled")
-        password = self.account_passwords.get(account, "")
-        if not password:
-            raise JebIngressAuthenticationError("Jeb TUS account has no password")
-        return password
+    ftp_projection: Path = Path("/state/ingress/ftp/passwd")
+    ftp_uid: int = 1000
+    ftp_gid: int = 1000
 
 
 @dataclass(frozen=True)
 class PreparedTusUpload:
     upload_id: str
-    account: str
+    source: str
     relative_path: str
     size: int
     signature: str
 
     def hook_metadata(self) -> dict[str, str]:
         return {
-            TUS_ACCOUNT_METADATA: self.account,
+            TUS_SOURCE_METADATA: self.source,
             TUS_PATH_METADATA: self.relative_path,
             TUS_SIGNATURE_METADATA: self.signature,
         }
@@ -72,6 +66,7 @@ class PreparedTusUpload:
 @dataclass(frozen=True)
 class IncompleteTusUpload:
     upload_id: str
+    source_id: str
     bytes: int
     age_seconds: int
 
@@ -85,10 +80,11 @@ class IncompleteTusUploadScan:
 
 def scan_incomplete_tus_uploads(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
     now: float | None = None,
 ) -> IncompleteTusUploadScan:
-    if not config.tus_accounts or not config.tus_staging_dir.exists():
+    if not config.tus_staging_dir.exists():
         return IncompleteTusUploadScan(uploads=())
     observed_at = time.time() if now is None else now
     uploads: list[IncompleteTusUpload] = []
@@ -119,31 +115,32 @@ def scan_incomplete_tus_uploads(
             metadata = payload.get("MetaData")
             if not isinstance(metadata, Mapping):
                 raise ValueError("upload record has no metadata")
-            account = str(metadata.get(TUS_ACCOUNT_METADATA) or "")
+            source_id = str(metadata.get(TUS_SOURCE_METADATA) or "")
             relative_path = normalize_landing_path(metadata.get(TUS_PATH_METADATA))
             signature = str(metadata.get(TUS_SIGNATURE_METADATA) or "")
             expected_signature = _upload_signature(
-                password=config.tus_password(account),
+                signing_key=registry.signing_key(source_id),
                 upload_id=upload_id,
-                account=account,
+                source=source_id,
                 relative_path=relative_path,
                 size=size,
             )
             if not signature or not secrets.compare_digest(signature, expected_signature):
                 raise ValueError("upload record is not authentic")
-            source = config.tus_staging_dir / upload_id
-            source_stat = source.stat()
-            if not source.is_file():
+            upload_file = config.tus_staging_dir / upload_id
+            source_stat = upload_file.stat()
+            if not upload_file.is_file():
                 raise ValueError("upload data is not a file")
             latest_activity = max(info_path.stat().st_mtime, source_stat.st_mtime)
             uploads.append(
                 IncompleteTusUpload(
                     upload_id=upload_id,
+                    source_id=source_id,
                     bytes=max(offset, source_stat.st_size),
                     age_seconds=max(0, int(observed_at - latest_activity)),
                 )
             )
-        except (JebIngressError, OSError, ValueError):
+        except (JebIngressError, OSError, SourceRegistryError, ValueError):
             invalid_records += 1
     return IncompleteTusUploadScan(
         uploads=tuple(uploads),
@@ -153,10 +150,11 @@ def scan_incomplete_tus_uploads(
 
 def incomplete_tus_upload_status(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
     now: float | None = None,
 ) -> dict[str, object]:
-    scan = scan_incomplete_tus_uploads(config, now=now)
+    scan = scan_incomplete_tus_uploads(config, registry, now=now)
     stale = [
         upload
         for upload in scan.uploads
@@ -179,11 +177,12 @@ def incomplete_tus_upload_status(
 
 def reap_stale_incomplete_tus_uploads(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
     now: float | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, object]:
-    scan = scan_incomplete_tus_uploads(config, now=now)
+    scan = scan_incomplete_tus_uploads(config, registry, now=now)
     stale = [
         upload
         for upload in scan.uploads
@@ -236,38 +235,36 @@ def reap_stale_incomplete_tus_uploads(
     return result
 
 
-def authenticate_tus_account(config: JebIngressConfig, authorization: str | None) -> str:
-    account, supplied_password = _basic_credentials(authorization)
+def authenticate_tus_source(registry: SourceRegistry, authorization: str | None) -> str:
+    source, supplied_password = _basic_credentials(authorization)
     try:
-        expected_password = config.tus_password(account)
-    except JebIngressAuthenticationError as exc:
+        registry.authenticate(source, supplied_password, adapter="tus")
+    except SourceRegistryError as exc:
         raise JebIngressAuthenticationError("invalid Jeb ingress credentials") from exc
-    if not secrets.compare_digest(supplied_password, expected_password):
-        raise JebIngressAuthenticationError("invalid Jeb ingress credentials")
-    return account
+    return source
 
 
 def prepare_tus_upload(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
     authorization: str | None,
     metadata: Mapping[str, object],
     size: object,
 ) -> PreparedTusUpload:
-    account = authenticate_tus_account(config, authorization)
+    source = authenticate_tus_source(registry, authorization)
     parsed_size = _upload_size(size)
     relative_path = normalize_landing_path(metadata.get("path") or metadata.get("filename"))
     upload_id = uuid.uuid4().hex
-    password = config.tus_password(account)
     return PreparedTusUpload(
         upload_id=upload_id,
-        account=account,
+        source=source,
         relative_path=relative_path,
         size=parsed_size,
         signature=_upload_signature(
-            password=password,
+            signing_key=registry.signing_key(source),
             upload_id=upload_id,
-            account=account,
+            source=source,
             relative_path=relative_path,
             size=parsed_size,
         ),
@@ -276,6 +273,7 @@ def prepare_tus_upload(
 
 def publish_tus_upload(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
     upload: Mapping[str, object],
 ) -> Path:
@@ -289,13 +287,13 @@ def publish_tus_upload(
     metadata = upload.get("MetaData")
     if not isinstance(metadata, Mapping):
         raise JebIngressError("Jeb TUS upload metadata is missing")
-    account = str(metadata.get(TUS_ACCOUNT_METADATA) or "")
+    source_id = str(metadata.get(TUS_SOURCE_METADATA) or "")
     relative_path = normalize_landing_path(metadata.get(TUS_PATH_METADATA))
     signature = str(metadata.get(TUS_SIGNATURE_METADATA) or "")
     expected_signature = _upload_signature(
-        password=config.tus_password(account),
+        signing_key=registry.signing_key(source_id),
         upload_id=upload_id,
-        account=account,
+        source=source_id,
         relative_path=relative_path,
         size=size,
     )
@@ -307,15 +305,20 @@ def publish_tus_upload(
         raise JebIngressError("Jeb TUS ingress requires filestore staging")
     expected_source = (config.tus_staging_dir / upload_id).resolve()
     expected_info = (config.tus_staging_dir / f"{upload_id}.info").resolve()
-    source = Path(str(storage.get("Path") or "")).resolve()
+    staged_file = Path(str(storage.get("Path") or "")).resolve()
     info = Path(str(storage.get("InfoPath") or "")).resolve()
-    if source != expected_source or info != expected_info:
+    if staged_file != expected_source or info != expected_info:
         raise JebIngressError("Jeb TUS upload escaped its staging directory")
 
-    destination = _landing_destination(config, account=account, relative_path=relative_path)
+    destination = _landing_destination(
+        config,
+        registry,
+        source=source_id,
+        relative_path=relative_path,
+    )
     return JebLandingPublisher(config).publish(
         upload_id=upload_id,
-        source=source,
+        source=staged_file,
         info=info,
         destination=destination,
         size=size,
@@ -457,16 +460,21 @@ def normalize_landing_path(raw: object) -> str:
 
 def _landing_destination(
     config: JebIngressConfig,
+    registry: SourceRegistry,
     *,
-    account: str,
+    source: str,
     relative_path: str,
 ) -> Path:
-    if account not in config.tus_accounts:
-        raise JebIngressAuthenticationError("Jeb TUS account is not enabled")
-    destination = (config.landing_dir / account / PurePosixPath(relative_path)).resolve()
-    account_root = (config.landing_dir / account).resolve()
-    if not destination.is_relative_to(account_root):
-        raise JebIngressError("Jeb TUS upload escaped its account landing directory")
+    try:
+        configured = registry.get(source)
+    except SourceRegistryError as exc:
+        raise JebIngressAuthenticationError("Jeb TUS source is not enabled") from exc
+    if not configured.enabled or "tus" not in configured.adapters:
+        raise JebIngressAuthenticationError("Jeb TUS source is not enabled")
+    destination = (config.landing_dir / source / PurePosixPath(relative_path)).resolve()
+    source_root = (config.landing_dir / source).resolve()
+    if not destination.is_relative_to(source_root):
+        raise JebIngressError("Jeb TUS upload escaped its source landing directory")
     return destination
 
 
@@ -478,10 +486,10 @@ def _basic_credentials(authorization: str | None) -> tuple[str, str]:
         decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
     except (binascii.Error, UnicodeDecodeError) as exc:
         raise JebIngressAuthenticationError("invalid Jeb ingress credentials") from exc
-    account, separator, password = decoded.partition(":")
-    if not separator or not account or not password:
+    source, separator, password = decoded.partition(":")
+    if not separator or not source or not password:
         raise JebIngressAuthenticationError("invalid Jeb ingress credentials")
-    return account, password
+    return source, password
 
 
 def _upload_size(raw: object) -> int:
@@ -503,11 +511,11 @@ def _upload_size(raw: object) -> int:
 
 def _upload_signature(
     *,
-    password: str,
+    signing_key: str,
     upload_id: str,
-    account: str,
+    source: str,
     relative_path: str,
     size: int,
 ) -> str:
-    message = "\0".join((upload_id, account, relative_path, str(size))).encode("utf-8")
-    return hmac.new(password.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    message = "\0".join((upload_id, source, relative_path, str(size))).encode("utf-8")
+    return hmac.new(signing_key.encode("utf-8"), message, hashlib.sha256).hexdigest()

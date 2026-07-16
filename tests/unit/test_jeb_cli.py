@@ -9,16 +9,33 @@ from jeb.collector import Collector, config_from_env
 from jeb.service_cli import main as jeb_main
 
 
-def jeb_env(tmp_path: Path, *, accounts: str = "phone") -> dict[str, str]:
+def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
     return {
-        "JEB_ACCOUNTS": accounts,
+        "TEST_SOURCE_IDS": sources,
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "http://munchy.invalid",
-        "JEB_INCLUDE_EXTENSIONS": ".txt",
-        "JEB_STABLE_AGE": "0s",
-        "JEB_CADENCE": "weekly",
     }
+
+
+def enroll(env: dict[str, str]) -> dict[str, str]:
+    runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
+    collector = Collector(config_from_env(runtime_env))
+    for source_id in env["TEST_SOURCE_IDS"].split(","):
+        collector.add_source(
+            source_id,
+            adapters=("tus",),
+            policy={
+                "workflow_mode": "collection_archive",
+                "output_mode": "video",
+                "tasks": ["archive_video"],
+                "collection_archive": {"destination": "riverhog"},
+            },
+            credential=f"{source_id}-password",
+            stable_seconds=0,
+            include_extensions=(".txt",),
+        )
+    return runtime_env
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -33,13 +50,13 @@ def test_jeb_archive_now_starts_batch_without_processing(
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path)
+    env = enroll(jeb_env(tmp_path))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
 
-    assert jeb_main(["archive-now", "--account", "phone", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "phone", "--no-process"]) == 0
 
     output = capsys.readouterr().out
     assert "jeb archive" in output
@@ -55,41 +72,42 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path)
+    env = enroll(jeb_env(tmp_path))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
 
-    assert jeb_main(["archive-now", "--account", "phone", "--dry-run"]) == 0
+    assert jeb_main(["archive-now", "--source", "phone", "--dry-run"]) == 0
 
     output = capsys.readouterr().out
     assert "Jeb archive plan: phone" in output
-    assert "collections: 0" in output
+    assert "eligible files: 1" in output
     collector = Collector(config_from_env(env))
     collector.init_db()
     assert collector.active_attempt_ids() == []
     assert collector.list_attempts(terminal="all")["total"] == 0
 
 
-def test_jeb_archive_now_reports_unknown_account_concisely(
+def test_jeb_archive_now_reports_unknown_source_concisely(
     tmp_path: Path,
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path)
+    env = enroll(jeb_env(tmp_path))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
-    assert jeb_main(["archive-now", "--account", "missing", "--no-process"]) == 1
+    assert jeb_main(["archive-now", "--source", "missing", "--no-process"]) == 1
 
     captured = capsys.readouterr()
-    assert "account 'missing' is not in the active Jeb env" in captured.err
+    assert "source 'missing' is not enrolled" in captured.err
 
 
 def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None:
     env = jeb_env(tmp_path)
-    for key, value in env.items():
+    runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
+    for key, value in runtime_env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
@@ -104,13 +122,13 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path, accounts="phone,camera")
+    env = enroll(jeb_env(tmp_path, sources="phone,camera"))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt", b"p")
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt", b"camera")
-    assert jeb_main(["archive-now", "--account", "phone", "--no-process"]) == 0
-    assert jeb_main(["archive-now", "--account", "camera", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "phone", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "camera", "--no-process"]) == 0
     capsys.readouterr()
 
     assert (
@@ -137,63 +155,63 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert payload["total"] == 2
     assert payload["pages"] == 2
     assert payload["sort"] == "bytes"
-    assert payload["attempts"][0]["account_id"] == "camera"
+    assert payload["attempts"][0]["source_id"] == "camera"
     assert payload["attempts"][0]["total_bytes"] == 6
 
-    assert jeb_main(["attempts", "--terminal", "all", "--account", "phone", "--json"]) == 0
+    assert jeb_main(["attempts", "--terminal", "all", "--source", "phone", "--json"]) == 0
 
     filtered = json.loads(capsys.readouterr().out)
     assert filtered["total"] == 1
-    assert filtered["filters"]["account"] == "phone"
-    assert filtered["attempts"][0]["account_id"] == "phone"
+    assert filtered["filters"]["source"] == "phone"
+    assert filtered["attempts"][0]["source_id"] == "phone"
 
     assert jeb_main(["attempts", "--terminal", "all", "--query", "camera", "--json"]) == 0
 
     queried = json.loads(capsys.readouterr().out)
     assert queried["total"] == 1
     assert queried["query"] == "camera"
-    assert queried["attempts"][0]["account_id"] == "camera"
+    assert queried["attempts"][0]["source_id"] == "camera"
 
 
-def test_jeb_attempts_account_filter_treats_slug_as_literal(
+def test_jeb_attempts_source_filter_treats_slug_as_literal(
     tmp_path: Path,
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path, accounts="front_door,frontxdoor")
+    env = enroll(jeb_env(tmp_path, sources="front_door,frontxdoor"))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     write_stable_file(tmp_path / "landing" / "front_door" / "note.txt", b"under")
     write_stable_file(tmp_path / "landing" / "frontxdoor" / "note.txt", b"plain")
-    assert jeb_main(["archive-now", "--account", "front_door", "--no-process"]) == 0
-    assert jeb_main(["archive-now", "--account", "frontxdoor", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "front_door", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "frontxdoor", "--no-process"]) == 0
     capsys.readouterr()
 
-    assert jeb_main(["attempts", "--terminal", "all", "--account", "front_door", "--json"]) == 0
+    assert jeb_main(["attempts", "--terminal", "all", "--source", "front_door", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["total"] == 1
-    assert payload["attempts"][0]["account_id"] == "front_door"
+    assert payload["attempts"][0]["source_id"] == "front_door"
 
 
-def test_jeb_status_json_reports_accounts_backlog_and_active_attempts(
+def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
     tmp_path: Path,
     capsys,
     monkeypatch,
 ) -> None:
-    env = jeb_env(tmp_path)
+    env = enroll(jeb_env(tmp_path))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt", b"notes")
-    assert jeb_main(["archive-now", "--account", "phone", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "phone", "--no-process"]) == 0
     capsys.readouterr()
 
     assert jeb_main(["status", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["accounts"][0]["id"] == "phone"
-    assert payload["accounts"][0]["eligible_files"] == 1
-    assert payload["accounts"][0]["eligible_bytes"] == 5
+    assert payload["sources"][0]["id"] == "phone"
+    assert payload["sources"][0]["eligible_files"] == 1
+    assert payload["sources"][0]["eligible_bytes"] == 5
     assert payload["batches"]["active"] == 1
     assert payload["batches"]["states"] == {"batching": 1}
     assert payload["active_attempts"]["total"] == 1

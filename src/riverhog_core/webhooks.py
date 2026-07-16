@@ -588,9 +588,9 @@ def _munchy_job_subject(job: Mapping[str, object]) -> str:
 
 
 def _jeb_issue_subject(context: Mapping[str, object]) -> str:
-    account_id = str(context.get("account_id") or "")
-    if account_id:
-        return account_id
+    source_id = str(context.get("source_id") or "")
+    if source_id:
+        return source_id
     collection_slug = str(context.get("collection_slug") or "")
     if collection_slug:
         return _collection_subject(collection_slug)
@@ -790,7 +790,7 @@ def build_jeb_event_payload(
         "detailed_message": message,
         "attempt_id": str(context.get("id") or "") if context.get("batch_id") else "",
         "batch_id": str(context.get("batch_id") or ""),
-        "account_id": str(context.get("account_id") or ""),
+        "source_id": str(context.get("source_id") or ""),
         "target_name": str(context.get("target_name") or ""),
         "target_type": str(context.get("target_type") or ""),
         "collection_slug": str(context.get("collection_slug") or ""),

@@ -20,10 +20,11 @@ from jeb.collector import (
 from jeb.ingress import (
     JebIngressAuthenticationError,
     JebIngressError,
-    authenticate_tus_account,
+    authenticate_tus_source,
     prepare_tus_upload,
     publish_tus_upload,
 )
+from jeb.sources import SourceRegistryError
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class JebServiceOperation:
     id: str
     operation: str
     started_at: str
-    account: str | None
+    source: str | None
     attempt_id: str | None
     thread: threading.Thread
 
@@ -44,8 +45,8 @@ class JebServiceOperation:
             "operation": self.operation,
             "started_at": self.started_at,
         }
-        if self.account is not None:
-            payload["account"] = self.account
+        if self.source is not None:
+            payload["source"] = self.source
         if self.attempt_id is not None:
             payload["attempt_id"] = self.attempt_id
         return payload
@@ -70,7 +71,7 @@ class JebServiceOperations:
         *,
         operation: str,
         run: Callable[[], None],
-        account: str | None = None,
+        source: str | None = None,
         attempt_id: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
@@ -101,7 +102,7 @@ class JebServiceOperations:
                 id=operation_id,
                 operation=operation,
                 started_at=event_timestamp(),
-                account=account,
+                source=source,
                 attempt_id=attempt_id,
                 thread=thread,
             )
@@ -115,7 +116,7 @@ class JebServiceOperations:
         operation: str,
         prepare: Callable[[], str | None],
         run: Callable[[str], None],
-        account: str | None = None,
+        source: str | None = None,
     ) -> tuple[str | None, dict[str, Any] | None]:
         with self._lock:
             self._prune_locked()
@@ -148,7 +149,7 @@ class JebServiceOperations:
                 id=operation_id,
                 operation=operation,
                 started_at=event_timestamp(),
-                account=account,
+                source=source,
                 attempt_id=attempt_id,
                 thread=thread,
             )
@@ -272,6 +273,34 @@ def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
     }
 
 
+def _source_path(path: str, *, action: str | None = None) -> str | None:
+    prefix = "/v1/jeb/sources/"
+    if not path.startswith(prefix):
+        return None
+    remainder = path.removeprefix(prefix)
+    if action is None:
+        return remainder if remainder and "/" not in remainder else None
+    suffix = f"/{action}"
+    if not remainder.endswith(suffix):
+        return None
+    source_id = remainder.removesuffix(suffix)
+    return source_id if source_id and "/" not in source_id else None
+
+
+def _sequence(payload: Mapping[str, Any], key: str) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a JSON array")
+    return [str(item) for item in value]
+
+
+def _mapping(payload: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a JSON object")
+    return dict(value)
+
+
 def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -279,9 +308,10 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
             params = parse_qs(split.query, keep_blank_values=True)
             try:
                 if split.path == "/internal/ingress/tus/auth":
+                    state.collector.init_db()
                     try:
-                        authenticate_tus_account(
-                            state.collector.config.ingress,
+                        authenticate_tus_source(
+                            state.collector.source_registry,
                             self.headers.get("Authorization"),
                         )
                     except JebIngressAuthenticationError:
@@ -297,26 +327,51 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     _response(self, HTTPStatus.OK, {"service": "jeb", "status": "ok"})
                     return
                 if split.path == "/health/ready":
+                    state.collector.init_db()
+                    sources = state.collector.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
                         {
                             "service": "jeb",
-                            "account_count": len(state.collector.config.accounts),
+                            "source_count": len(sources),
                             "status": "ok",
                         },
                     )
                     return
                 if split.path == "/v1/jeb/config/check":
                     state.collector.init_db()
+                    sources = state.collector.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
                         {
                             "status": "ok",
-                            "account_count": len(state.collector.config.accounts),
-                            "accounts": [account.id for account in state.collector.config.accounts],
+                            "source_count": len(sources),
+                            "sources": [source.id for source in sources],
                         },
+                    )
+                    return
+                if split.path == "/v1/jeb/sources":
+                    state.collector.init_db()
+                    _response(
+                        self,
+                        HTTPStatus.OK,
+                        {
+                            "sources": [
+                                source.summary()
+                                for source in state.collector.source_registry.list()
+                            ]
+                        },
+                    )
+                    return
+                source_id = _source_path(split.path)
+                if source_id is not None:
+                    state.collector.init_db()
+                    _response(
+                        self,
+                        HTTPStatus.OK,
+                        state.collector.source_registry.get(source_id).summary(),
                     )
                     return
                 if split.path == "/v1/jeb/status":
@@ -345,7 +400,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             query=_first(params, "q") or _first(params, "query"),
                             terminal=_terminal(params),
                             state=_first(params, "state"),
-                            account=_first(params, "account"),
+                            source=_first(params, "source"),
                             collection_slug=_first(params, "collection_slug"),
                             target=_first(params, "target"),
                         ),
@@ -372,6 +427,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         try:
                             prepared = prepare_tus_upload(
                                 state.collector.config.ingress,
+                                state.collector.source_registry,
                                 authorization=self.headers.get("Authorization"),
                                 metadata=metadata,
                                 size=upload.get("Size"),
@@ -404,9 +460,101 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     if hook_type == "post-finish":
                         publish_tus_upload(
                             state.collector.config.ingress,
+                            state.collector.source_registry,
                             upload=upload,
                         )
                     _response(self, HTTPStatus.OK, {})
+                    return
+                if split.path == "/v1/jeb/sources":
+                    payload = _json_body(self)
+                    source_id = str(payload.get("id") or "").strip()
+                    if not source_id:
+                        raise ValueError("id is required")
+                    source_config, credential = state.collector.add_source(
+                        source_id,
+                        adapters=_sequence(payload, "adapters"),
+                        policy=_mapping(payload, "policy"),
+                        credential=(
+                            str(payload["credential"])
+                            if payload.get("credential") is not None
+                            else None
+                        ),
+                        enabled=_payload_bool(payload, "enabled", True),
+                        stable_seconds=int(payload.get("stable_seconds", 600)),
+                        include_extensions=(
+                            _sequence(payload, "include_extensions")
+                            if "include_extensions" in payload
+                            else ()
+                        ),
+                        collection_slug=(
+                            str(payload["collection_slug"])
+                            if payload.get("collection_slug") is not None
+                            else None
+                        ),
+                        target=str(payload.get("target") or "munchy"),
+                        notify=(
+                            _mapping(payload, "notify") if "notify" in payload else None
+                        ),
+                        threshold_bytes=int(payload.get("threshold_bytes", 0)),
+                        cleanup=cast(
+                            Literal["never", "after_target_success"],
+                            str(payload.get("cleanup") or "after_target_success"),
+                        ),
+                        cadence=cast(
+                            Literal["weekly", "monthly", "seasonal", "manual"],
+                            str(payload.get("cadence") or "weekly"),
+                        ),
+                        weekday=int(payload.get("weekday", 0)),
+                        hour=int(payload.get("hour", 3)),
+                        minute=int(payload.get("minute", 0)),
+                    )
+                    created_payload: dict[str, Any] = {"source": source_config.summary()}
+                    if credential is not None:
+                        created_payload["credential"] = credential
+                    _response(self, HTTPStatus.CREATED, created_payload)
+                    return
+                for action, enabled in (("enable", True), ("disable", False)):
+                    selected_source = _source_path(split.path, action=action)
+                    if selected_source is not None:
+                        state.collector.init_db()
+                        source_config = state.collector.source_registry.set_enabled(
+                            selected_source,
+                            enabled,
+                        )
+                        _response(self, HTTPStatus.OK, source_config.summary())
+                        return
+                selected_source = _source_path(split.path, action="credential")
+                if selected_source is not None:
+                    payload = _json_body(self)
+                    state.collector.init_db()
+                    source_config, credential = state.collector.source_registry.rotate_credential(
+                        selected_source,
+                        credential=(
+                            str(payload["credential"])
+                            if payload.get("credential") is not None
+                            else None
+                        ),
+                    )
+                    credential_payload: dict[str, Any] = {"source": source_config.summary()}
+                    if credential is not None:
+                        credential_payload["credential"] = credential
+                    _response(self, HTTPStatus.OK, credential_payload)
+                    return
+                selected_source = _source_path(split.path, action="removal-plan")
+                if selected_source is not None:
+                    if state.operations.active_summary() is not None:
+                        raise UnrecoverableJebError(
+                            "a Jeb operation is running; request the removal plan again later"
+                        )
+                    payload = _json_body(self)
+                    _response(
+                        self,
+                        HTTPStatus.OK,
+                        state.collector.source_removal_plan(
+                            selected_source,
+                            purge=_payload_bool(payload, "purge", False),
+                        ),
+                    )
                     return
                 if split.path == "/v1/jeb/once":
                     state.collector.init_db()
@@ -422,9 +570,9 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 if split.path == "/v1/jeb/archive-now":
                     payload = _json_body(self)
-                    account = str(payload.get("account") or "").strip()
-                    if not account:
-                        raise ValueError("account is required")
+                    source = str(payload.get("source") or "").strip()
+                    if not source:
+                        raise ValueError("source is required")
                     process = _payload_bool(payload, "process", True)
                     dry_run = _payload_bool(payload, "dry_run", False)
                     state.collector.init_db()
@@ -432,27 +580,27 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         _response(
                             self,
                             HTTPStatus.OK,
-                            state.collector.archive_plan(account_id=account, process=process),
+                            state.collector.archive_plan(source_id=source, process=process),
                         )
                         return
                     archive_operation: dict[str, Any] | None = None
                     if process:
                         attempt_id, archive_operation = state.operations.prepare_and_start(
                             operation="archive-now",
-                            account=account,
+                            source=source,
                             prepare=lambda: state.collector.archive_now(
-                                account_id=account,
+                                source_id=source,
                                 process=False,
                             ),
                             run=state.collector.process_attempt,
                         )
                     else:
-                        attempt_id = state.collector.archive_now(account_id=account, process=False)
+                        attempt_id = state.collector.archive_now(source_id=source, process=False)
                     if attempt_id is None:
                         _response(
                             self,
                             HTTPStatus.OK,
-                            {"status": "no_eligible_files", "account": account},
+                            {"status": "no_eligible_files", "source": source},
                         )
                         return
                     attempt = state.collector.load_attempt(attempt_id)
@@ -461,7 +609,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         HTTPStatus.ACCEPTED,
                         {
                             "status": "started",
-                            "account": account,
+                            "source": source,
                             "attempt_id": attempt_id,
                             "batch_id": str(attempt["batch_id"]),
                             "operation": archive_operation,
@@ -480,6 +628,52 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     code="ingress_failed",
                     message=str(exc),
                 )
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            split = urlsplit(self.path)
+            try:
+                source_id = _source_path(split.path)
+                if source_id is None:
+                    _response(
+                        self,
+                        HTTPStatus.NOT_FOUND,
+                        {"service": "jeb", "status": "not_found"},
+                    )
+                    return
+                payload = _json_body(self)
+                source = state.collector.update_source(source_id, payload)
+                _response(self, HTTPStatus.OK, source.summary())
+            except (SourceRegistryError, ValueError) as exc:
+                _handle_bad_request(self, exc)
+            except UnrecoverableJebError as exc:
+                _handle_invalid_state(self, exc)
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            split = urlsplit(self.path)
+            try:
+                source_id = _source_path(split.path)
+                if source_id is None:
+                    _response(
+                        self,
+                        HTTPStatus.NOT_FOUND,
+                        {"service": "jeb", "status": "not_found"},
+                    )
+                    return
+                if state.operations.active_summary() is not None:
+                    raise UnrecoverableJebError(
+                        "a Jeb operation is running; source removal cannot begin"
+                    )
+                payload = _json_body(self)
+                challenge = str(payload.get("challenge") or "")
+                _response(
+                    self,
+                    HTTPStatus.OK,
+                    state.collector.remove_source(source_id, challenge=challenge),
+                )
+            except (SourceRegistryError, ValueError) as exc:
+                _handle_bad_request(self, exc)
+            except UnrecoverableJebError as exc:
+                _handle_invalid_state(self, exc)
 
         def log_message(self, _format: str, *_args: object) -> None:
             return

@@ -201,8 +201,8 @@
       "operator_urgency": "time_sensitive",
       "operator_action": "inspect Jeb issue details",
       "operator_action_by_component": {
-        "routing": "fix Munchy routing, then run Jeb archive-now for the account",
-        "munchy_preflight": "repair Munchy routing preflight, then run Jeb archive-now for the account"
+        "routing": "fix Munchy routing, then run Jeb archive-now for the source",
+        "munchy_preflight": "repair Munchy routing preflight, then run Jeb archive-now for the source"
       },
       "canonical_notification": {
         "actor": "jeb",
@@ -214,7 +214,7 @@
         "type",
         "source",
         "actor",
-        "account_id",
+        "source_id",
         "target_name",
         "target_type",
         "delivered_at",

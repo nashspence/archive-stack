@@ -19,18 +19,26 @@ from jeb.ingress import (
 
 def jeb_env(tmp_path: Path) -> dict[str, str]:
     return {
-        "JEB_ACCOUNTS": "phone",
-        "JEB_TUS_ACCOUNTS": "phone",
-        "JEB_ACCOUNT_PHONE_PASSWORD": "phone-password",
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "http://munchy.invalid",
-        "JEB_CADENCE": "manual",
     }
 
 
-def basic_authorization(account: str, password: str) -> str:
-    encoded = base64.b64encode(f"{account}:{password}".encode()).decode()
+def collector_for(env: dict[str, str]) -> Collector:
+    collector = Collector(config_from_env(env))
+    collector.add_source(
+        "phone",
+        adapters=("tus",),
+        policy={"workflow_mode": "collection_archive"},
+        credential="phone-password",
+        cadence="manual",
+    )
+    return collector
+
+
+def basic_authorization(source: str, password: str) -> str:
+    encoded = base64.b64encode(f"{source}:{password}".encode()).decode()
     return f"Basic {encoded}"
 
 
@@ -45,6 +53,7 @@ def write_upload(
     ingress = collector.config.ingress
     prepared = prepare_tus_upload(
         ingress,
+        collector.source_registry,
         authorization=basic_authorization("phone", "phone-password"),
         metadata={"path": f"notes/{offset}.txt"},
         size=size,
@@ -74,14 +83,12 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     tmp_path: Path,
 ) -> None:
     now = 2_000_000_000.0
-    collector = Collector(
-        config_from_env(
-            {
-                **jeb_env(tmp_path),
-                "JEB_TUSD_BASE_URL": "http://tusd.test/jeb/files/",
-                "JEB_TUS_INCOMPLETE_MAX_AGE": "14d",
-            }
-        )
+    collector = collector_for(
+        {
+            **jeb_env(tmp_path),
+            "JEB_TUSD_BASE_URL": "http://tusd.test/jeb/files/",
+            "JEB_TUS_INCOMPLETE_MAX_AGE": "14d",
+        }
     )
     old_id = write_upload(
         collector,
@@ -107,7 +114,11 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     invalid = collector.config.ingress.tus_staging_dir / f"{'f' * 32}.info"
     invalid.write_text("{}", encoding="utf-8")
 
-    status = incomplete_tus_upload_status(collector.config.ingress, now=now)
+    status = incomplete_tus_upload_status(
+        collector.config.ingress,
+        collector.source_registry,
+        now=now,
+    )
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -120,6 +131,7 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     client = httpx.Client(transport=httpx.MockTransport(handler))
     result = reap_stale_incomplete_tus_uploads(
         collector.config.ingress,
+        collector.source_registry,
         now=now,
         client=client,
     )
@@ -147,11 +159,11 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
 
 
 def test_jeb_scheduler_runs_incomplete_tus_cleanup(monkeypatch, tmp_path: Path) -> None:
-    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    collector = collector_for(jeb_env(tmp_path))
     calls: list[object] = []
 
-    def reap(config):
-        calls.append(config)
+    def reap(config, registry):
+        calls.append((config, registry))
         return {
             "terminated": 0,
             "already_absent": 0,
@@ -163,7 +175,7 @@ def test_jeb_scheduler_runs_incomplete_tus_cleanup(monkeypatch, tmp_path: Path) 
 
     collector.run_once()
 
-    assert calls == [collector.config.ingress]
+    assert calls == [(collector.config.ingress, collector.source_registry)]
 
 
 def test_jeb_tus_cleanup_defaults_are_bounded(tmp_path: Path) -> None:

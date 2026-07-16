@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from gogurt.core import load_gogurt_actions
 from jeb.collector import config_from_env
 from munchy.job_authoring import (
@@ -51,13 +53,14 @@ def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) ->
     )
     assert "archive example-camera" in completed.stdout
 
-    jeb_config = config_from_env(_parse_env_example(EXAMPLE_ROOT / "jeb/jeb.env"))
-    assert [account.id for account in jeb_config.accounts] == [
-        "example-camera",
-        "example-phone",
-    ]
-    assert jeb_config.ingress.ftp_accounts == ("example-camera",)
-    assert jeb_config.ingress.tus_accounts == ("example-camera", "example-phone")
+    jeb_env = _parse_env_example(EXAMPLE_ROOT / "jeb/jeb.env")
+    assert jeb_env == {"JEB_FTP_PUBLIC_HOST": "127.0.0.1"}
+    jeb_config = config_from_env(jeb_env)
+    assert jeb_config.targets["munchy"].url == "http://munchy-runner:8080"
+    compose = yaml.safe_load((REPO_ROOT / "services/jeb/compose.yaml").read_text())
+    assert compose["services"]["jeb-ftp"]["environment"]["JEB_FTP_PUBLIC_HOST"] == (
+        "${JEB_FTP_PUBLIC_HOST:-127.0.0.1}"
+    )
 
     profile = load_encode_profile(EXAMPLE_ROOT / "munchy/av1-nvenc-profile.yaml")
     assert profile.name == "example-camera"

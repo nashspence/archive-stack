@@ -18,7 +18,6 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["environment"]["JEB_HEALTH_PORT"] == "8081"
     runtime = config_from_env(
         {
-            "JEB_ACCOUNTS": "example",
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
             "JEB_MUNCHY_URL": "http://munchy.invalid",
@@ -58,16 +57,17 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
         assert any(volume["target"] == "/landing" for volume in services[service_name]["volumes"])
     assert {volume["target"] for volume in services["jeb-ftp"]["volumes"]} == {
         "/landing",
-        "/usr/local/bin/bootstrap-users",
+        "/state",
+        "/usr/local/bin/run-jeb-ftp",
     }
 
-    bootstrap = REPO / "services" / "jeb" / "adapters" / "ftp" / "bootstrap-users.sh"
-    assert bootstrap.is_file()
-    assert os.access(bootstrap, os.X_OK)
-    bootstrap_source = bootstrap.read_text(encoding="utf-8")
-    assert "JEB_FTP_ACCOUNTS" in bootstrap_source
-    assert "JEB_ACCOUNT_%s_PASSWORD" in bootstrap_source
-    assert 'rm -f "$PASSWD_FILE"' in bootstrap_source
+    adapter = REPO / "services" / "jeb" / "adapters" / "ftp" / "run-adapter.sh"
+    assert adapter.is_file()
+    assert os.access(adapter, os.X_OK)
+    adapter_source = adapter.read_text(encoding="utf-8")
+    assert "JEB_FTP_PROJECTION" in adapter_source
+    assert "pure-pw mkdb" in adapter_source
+    assert "sha256sum" in adapter_source
 
 
 def test_jeb_service_image_runs_service_entrypoint() -> None:

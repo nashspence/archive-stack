@@ -31,7 +31,7 @@ def test_jeb_api_forwards_attempt_query_to_service(monkeypatch: pytest.MonkeyPat
         order="asc",
         terminal="all",
         state="failed",
-        account="camera",
+        source="camera",
         collection_slug="weekly",
         target="archive",
         q="metadata",
@@ -43,7 +43,7 @@ def test_jeb_api_forwards_attempt_query_to_service(monkeypatch: pytest.MonkeyPat
             "GET",
             "/v1/jeb/attempts",
             {
-                "account": "camera",
+                "source": "camera",
                 "collection_slug": "weekly",
                 "order": "asc",
                 "page": 2,
@@ -74,7 +74,7 @@ def test_jeb_api_forwards_action_payloads_to_service(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
 
-    request = jeb_router.JebArchiveNowRequest(account="camera", process=False)
+    request = jeb_router.JebArchiveNowRequest(source="camera", process=False)
     response = Response()
     assert jeb_router.archive_jeb_now(request, response) == {
         "status": "started",
@@ -86,8 +86,60 @@ def test_jeb_api_forwards_action_payloads_to_service(monkeypatch: pytest.MonkeyP
             "POST",
             "/v1/jeb/archive-now",
             None,
-            {"account": "camera", "process": False, "dry_run": False},
+            {"source": "camera", "process": False, "dry_run": False},
         )
+    ]
+
+
+def test_jeb_api_forwards_source_management(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        _ = params
+        captured.append((method, path, json_payload))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
+
+    add = jeb_router.JebSourceAddRequest(
+        id="front-door",
+        adapters=["tus"],
+        policy={"workflow_mode": "review"},
+    )
+    jeb_router.add_jeb_source(add)
+    jeb_router.disable_jeb_source("front-door")
+    jeb_router.plan_jeb_source_removal(
+        "front-door",
+        jeb_router.JebSourceRemovalPlanRequest(purge=True),
+    )
+
+    assert captured == [
+        (
+            "POST",
+            "/v1/jeb/sources",
+            {
+                "id": "front-door",
+                "adapters": ["tus"],
+                "policy": {"workflow_mode": "review"},
+                "enabled": True,
+                "stable_seconds": 600,
+                "target": "munchy",
+                "threshold_bytes": 0,
+                "cleanup": "after_target_success",
+                "cadence": "weekly",
+                "weekday": 0,
+                "hour": 3,
+                "minute": 0,
+            },
+        ),
+        ("POST", "/v1/jeb/sources/front-door/disable", None),
+        ("POST", "/v1/jeb/sources/front-door/removal-plan", {"purge": True}),
     ]
 
 
@@ -106,7 +158,7 @@ def test_jeb_api_forwards_dry_run_and_returns_ok(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(jeb_router, "_request_jeb_service", fake_request)
 
-    request = jeb_router.JebArchiveNowRequest(account="camera", dry_run=True)
+    request = jeb_router.JebArchiveNowRequest(source="camera", dry_run=True)
     response = Response()
 
     assert jeb_router.archive_jeb_now(request, response) == {
@@ -119,7 +171,7 @@ def test_jeb_api_forwards_dry_run_and_returns_ok(monkeypatch: pytest.MonkeyPatch
             "POST",
             "/v1/jeb/archive-now",
             None,
-            {"account": "camera", "process": True, "dry_run": True},
+            {"source": "camera", "process": True, "dry_run": True},
         )
     ]
 

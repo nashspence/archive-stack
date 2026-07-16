@@ -169,7 +169,7 @@ def _all_operator_payloads() -> list[dict[str, object]]:
         context={
             "id": "attempt-1",
             "batch_id": "batch-1",
-            "account_id": "example-camera",
+            "source_id": "example-camera",
             "target_name": "munchy",
             "target_type": "munchy",
             "state": "failed",

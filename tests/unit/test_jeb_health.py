@@ -38,16 +38,52 @@ def post_json(
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def request_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    request = urllib.request.Request(
+        url,
+        data=None if payload is None else json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 def jeb_env(tmp_path: Path) -> dict[str, str]:
     return {
-        "JEB_ACCOUNTS": "phone",
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "http://munchy.invalid",
-        "JEB_INCLUDE_EXTENSIONS": ".txt",
-        "JEB_STABLE_AGE": "0s",
-        "JEB_CADENCE": "weekly",
     }
+
+
+def collector_for(
+    env: dict[str, str],
+    *,
+    target_runners=None,
+) -> Collector:
+    collector = Collector(config_from_env(env), target_runners=target_runners)
+    collector.add_source(
+        "phone",
+        adapters=("tus",),
+        policy={
+            "workflow_mode": "collection_archive",
+            "output_mode": "video",
+            "tasks": ["archive_video"],
+            "collection_archive": {"destination": "riverhog"},
+        },
+        credential="phone-password",
+        stable_seconds=0,
+        include_extensions=(".txt",),
+    )
+    return collector
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -57,16 +93,15 @@ def write_stable_file(path: Path, content: bytes = b"notes") -> None:
     os.utime(path, (old, old))
 
 
-def basic_authorization(account: str, password: str) -> str:
-    encoded = base64.b64encode(f"{account}:{password}".encode()).decode()
+def basic_authorization(source: str, password: str) -> str:
+    encoded = base64.b64encode(f"{source}:{password}".encode()).decode()
     return f"Basic {encoded}"
 
 
 def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
-    collector = Collector(config_from_env(env))
-    collector.init_db()
+    collector = collector_for(env)
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
@@ -77,14 +112,14 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         }
         assert read_json(f"http://{host}:{port}/health/ready") == {
             "service": "jeb",
-            "account_count": 1,
+            "source_count": 1,
             "status": "ok",
         }
         status = read_json(f"http://{host}:{port}/v1/jeb/status")
-        accounts = status["accounts"]
-        assert isinstance(accounts, list)
-        assert accounts[0]["id"] == "phone"
-        assert accounts[0]["eligible_files"] == 1
+        sources = status["sources"]
+        assert isinstance(sources, list)
+        assert sources[0]["id"] == "phone"
+        assert sources[0]["eligible_files"] == 1
         assert status["incomplete_tus_uploads"] == {
             "total": 0,
             "bytes": 0,
@@ -100,13 +135,70 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
+    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    collector.init_db()
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+        base = f"http://{host}:{port}/v1/jeb/sources"
+        status, created = request_json(
+            "POST",
+            base,
+            {
+                "id": "phone",
+                "adapters": ["ftp", "tus"],
+                "policy": {"workflow_mode": "collection_archive"},
+                "credential": "phone-password",
+                "cadence": "manual",
+            },
+        )
+        assert status == 201
+        assert "credential" not in created
+
+        listed = read_json(base)
+        assert [source["id"] for source in listed["sources"]] == ["phone"]
+        status, disabled = request_json("POST", f"{base}/phone/disable", {})
+        assert status == 200
+        assert disabled["enabled"] is False
+        status, updated = request_json(
+            "PATCH",
+            f"{base}/phone",
+            {"collection_slug": "mobile", "cadence": "weekly"},
+        )
+        assert status == 200
+        assert updated["collection_slug"] == "mobile"
+        status, rotated = request_json(
+            "POST",
+            f"{base}/phone/credential",
+            {"credential": "replacement-password"},
+        )
+        assert status == 200
+        assert "credential" not in rotated
+
+        status, plan = request_json("POST", f"{base}/phone/removal-plan", {"purge": False})
+        assert status == 200
+        assert plan["status"] == "ready"
+        status, removed = request_json(
+            "DELETE",
+            f"{base}/phone",
+            {"challenge": plan["challenge"]},
+        )
+        assert status == 200
+        assert removed == {
+            "status": "removed",
+            "source": "phone",
+            "purged": False,
+            "files": 0,
+            "bytes": 0,
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Path) -> None:
-    env = {
-        **jeb_env(tmp_path),
-        "JEB_TUS_ACCOUNTS": "phone",
-        "JEB_ACCOUNT_PHONE_PASSWORD": "phone-password",
-    }
-    collector = Collector(config_from_env(env))
+    collector = collector_for(jeb_env(tmp_path))
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
@@ -145,7 +237,7 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         info = staging / f"{upload_id}.info"
         source.write_bytes(b"notes")
         info.write_text("{}", encoding="utf-8")
-        assert collector.eligible_files(collector.account_by_id("phone")) == []
+        assert collector.eligible_files(collector.source_by_id("phone")) == []
 
         finished = {
             "Type": "post-finish",
@@ -178,7 +270,7 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         assert not info.exists()
         assert [
             item.rel.as_posix()
-            for item in collector.eligible_files(collector.account_by_id("phone"))
+            for item in collector.eligible_files(collector.source_by_id("phone"))
         ] == ["notes/note.txt"]
     finally:
         server.shutdown()
@@ -186,14 +278,14 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
 
 
 def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Path) -> None:
-    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    collector = collector_for(jeb_env(tmp_path))
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
 
         status, payload = post_json(
             f"http://{host}:{port}/v1/jeb/archive-now",
-            {"account": "phone", "process": "false"},
+            {"source": "phone", "process": "false"},
         )
 
         assert status == 400
@@ -215,20 +307,20 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
             processed.set()
             raise AssertionError("dry-run must not process a batch")
 
-    collector = Collector(config_from_env(env), target_runners={"munchy": FailingRunner()})
+    collector = collector_for(env, target_runners={"munchy": FailingRunner()})
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
 
         status, payload = post_json(
             f"http://{host}:{port}/v1/jeb/archive-now",
-            {"account": "phone", "dry_run": True},
+            {"source": "phone", "dry_run": True},
         )
 
         assert status == 200
         assert payload["status"] == "would_process"
         assert payload["dry_run"] is True
-        assert payload["account"] == "phone"
+        assert payload["source"] == "phone"
         assert payload["file_count"] == 1
         assert payload["total_bytes"] == 5
         assert payload["batch_id"]
@@ -253,25 +345,25 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
             collector.set_attempt_state(attempt_id, "target_complete")
             processed.set()
 
-    collector = Collector(config_from_env(env), target_runners={"munchy": CompleteRunner()})
+    collector = collector_for(env, target_runners={"munchy": CompleteRunner()})
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
 
         status, payload = post_json(
             f"http://{host}:{port}/v1/jeb/archive-now",
-            {"account": "phone"},
+            {"source": "phone"},
         )
 
         assert status == 202
         assert payload["status"] == "started"
-        assert payload["account"] == "phone"
+        assert payload["source"] == "phone"
         assert payload["batch_id"]
         assert payload["attempt_id"]
         operation = payload["operation"]
         assert isinstance(operation, dict)
         assert operation["operation"] == "archive-now"
-        assert operation["account"] == "phone"
+        assert operation["source"] == "phone"
         assert operation["attempt_id"] == payload["attempt_id"]
         assert processed.wait(timeout=5)
         assert processed_attempt_ids == [payload["attempt_id"]]
@@ -281,7 +373,7 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
 
 
 def test_jeb_service_api_unknown_paths_are_not_healthy(tmp_path: Path) -> None:
-    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    collector = collector_for(jeb_env(tmp_path))
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]

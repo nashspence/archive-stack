@@ -148,11 +148,11 @@ def test_jeb_output_remains_concise() -> None:
             "page": 1,
             "pages": 1,
             "total": 1,
-            "attempts": [{"attempt_id": "ja-1", "account_id": "camera", "state": "complete"}],
+            "attempts": [{"attempt_id": "ja-1", "source_id": "camera", "state": "complete"}],
         }
     )
-    status = format_jeb_status({"accounts": [{"account_id": "camera", "state": "ready"}]})
-    plan = format_jeb_archive_plan({"account_id": "camera", "collections_total": 1})
+    status = format_jeb_status({"sources": [{"id": "camera", "enabled": True}]})
+    plan = format_jeb_archive_plan({"source_id": "camera", "file_count": 1})
 
     assert "ja-1" in attempts
     assert "camera" in status

@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             "commands:\n"
             "  run           run continuously and process eligible batches\n"
             "  once          discover and process one scheduler pass\n"
-            "  archive-now   archive one account immediately\n"
+            "  archive-now   archive one source immediately\n"
             "  status        show read-only collector status\n"
             "  attempts      list processing attempts\n"
             "  check-config  validate env configuration and initialize state"
@@ -78,9 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("once", help="discover and process one scheduler pass")
     archive_now = sub.add_parser(
         "archive-now",
-        help="archive one account immediately",
+        help="archive one source immediately",
     )
-    archive_now.add_argument("--account", required=True, help="Account slug to archive.")
+    archive_now.add_argument("--source", required=True, help="Source slug to archive.")
     archive_now.add_argument(
         "--no-process",
         action="store_true",
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Show active, terminal, or all attempts.",
     )
     attempts.add_argument("--state", help="Filter by attempt state.")
-    attempts.add_argument("--account", help="Filter by account slug.")
+    attempts.add_argument("--source", help="Filter by source slug.")
     attempts.add_argument("--collection-slug", help="Filter by output collection slug.")
     attempts.add_argument("--target", help="Filter by target name.")
     attempts.add_argument(
@@ -144,12 +144,13 @@ def main(argv: list[str] | None = None) -> int:
     collector = Collector(config_from_env())
     if command == "check-config":
         collector.init_db()
+        sources = collector.source_registry.list()
         emit(
             format_jeb_config_check(
                 {
                     "status": "ok",
-                    "account_count": len(collector.config.accounts),
-                    "accounts": [account.id for account in collector.config.accounts],
+                    "source_count": len(sources),
+                    "sources": [source.id for source in sources],
                 }
             ),
             json_mode=False,
@@ -170,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             try:
                 payload = collector.archive_plan(
-                    account_id=args.account,
+                    source_id=args.source,
                     process=not args.no_process,
                 )
             except UnrecoverableJebError as exc:
@@ -180,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         try:
             attempt_id = collector.archive_now(
-                account_id=args.account,
+                source_id=args.source,
                 process=not args.no_process,
             )
         except UnrecoverableJebError as exc:
@@ -189,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         if attempt_id is None:
             emit(
                 format_jeb_operation(
-                    {"status": "no_eligible_files", "account": args.account},
+                    {"status": "no_eligible_files", "source": args.source},
                     title="jeb archive",
                 ),
                 json_mode=False,
@@ -200,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             format_jeb_operation(
                 {
                     "status": "processed" if not args.no_process else "staged",
-                    "account": args.account,
+                    "source": args.source,
                     "attempt_id": attempt_id,
                     "batch_id": str(attempt["batch_id"]),
                 },
@@ -224,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             query=args.query,
             terminal=args.terminal,
             state=args.state,
-            account=args.account,
+            source=args.source,
             collection_slug=args.collection_slug,
             target=args.target,
         )

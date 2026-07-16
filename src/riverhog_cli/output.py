@@ -328,20 +328,28 @@ def format_jeb_attempts(payload: Mapping[str, object]) -> str:
     for attempt in _items(payload, "attempts"):
         lines.append(
             f"- {attempt.get('id', attempt.get('attempt_id', 'unknown'))}  "
-            f"account={attempt.get('account_id', attempt.get('account', 'unknown'))}  "
+            f"source={attempt.get('source_id', attempt.get('source', 'unknown'))}  "
             f"state={attempt.get('state', 'unknown')}"
         )
     return "\n".join(lines)
 
 
 def format_jeb_status(payload: Mapping[str, object]) -> str:
-    accounts = _items(payload, "accounts")
-    attempts = _items(payload, "attempts")
-    lines = [f"Jeb status: accounts={len(accounts)} attempts={len(attempts)}"]
-    for account in accounts:
+    sources = _items(payload, "sources")
+    batches = payload.get("batches")
+    active_attempts = payload.get("active_attempts")
+    attempt_count = 0
+    if isinstance(active_attempts, Mapping):
+        attempt_count = int(active_attempts.get("total") or 0)
+    lines = [f"Jeb status: sources={len(sources)} active_attempts={attempt_count}"]
+    for source in sources:
         lines.append(
-            f"- {account.get('id', account.get('account_id', 'unknown'))}  "
-            f"state={account.get('state', 'unknown')}"
+            f"- {source.get('id', source.get('source_id', 'unknown'))}  "
+            f"state={'enabled' if source.get('enabled') else 'disabled'}"
+        )
+    if isinstance(batches, Mapping):
+        lines.append(
+            f"batches: total={batches.get('total', 0)} active={batches.get('active', 0)}"
         )
     incomplete = payload.get("incomplete_tus_uploads")
     if isinstance(incomplete, Mapping):
@@ -356,8 +364,9 @@ def format_jeb_status(payload: Mapping[str, object]) -> str:
 
 def format_jeb_archive_plan(payload: Mapping[str, object]) -> str:
     lines = [
-        f"Jeb archive plan: {payload.get('account', payload.get('account_id', 'unknown'))}",
-        f"collections: {payload.get('collections', payload.get('collections_total', 0))}",
+        f"Jeb archive plan: {payload.get('source', payload.get('source_id', 'unknown'))}",
+        f"eligible files: {payload.get('file_count', 0)}",
+        f"eligible bytes: {payload.get('bytes', 0)}",
     ]
     if payload.get("period_start") or payload.get("period_end"):
         lines.append(f"period: {payload.get('period_start')} — {payload.get('period_end')}")

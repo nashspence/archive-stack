@@ -667,7 +667,7 @@ class ApiClient:
         order: str = "desc",
         terminal: str = "active",
         state: str | None = None,
-        account: str | None = None,
+        source: str | None = None,
         collection_slug: str | None = None,
         target: str | None = None,
         query: str | None = None,
@@ -681,7 +681,7 @@ class ApiClient:
         }
         for key, value in {
             "state": state,
-            "account": account,
+            "source": source,
             "collection_slug": collection_slug,
             "target": target,
             "q": query,
@@ -699,14 +699,73 @@ class ApiClient:
     def archive_jeb_now(
         self,
         *,
-        account: str,
+        source: str,
         process: bool = True,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/jeb/archive-now",
-            json={"account": account, "process": process, "dry_run": dry_run},
+            json={"source": source, "process": process, "dry_run": dry_run},
+        )
+
+    def list_jeb_sources(self) -> dict[str, Any]:
+        return self._json("GET", "/v1/jeb/sources")
+
+    def get_jeb_source(self, source_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/jeb/sources/{quote(source_id, safe='')}")
+
+    def add_jeb_source(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._json("POST", "/v1/jeb/sources", json=dict(payload))
+
+    def update_jeb_source(
+        self,
+        source_id: str,
+        changes: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._json(
+            "PATCH",
+            f"/v1/jeb/sources/{quote(source_id, safe='')}",
+            json=dict(changes),
+        )
+
+    def set_jeb_source_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
+        action = "enable" if enabled else "disable"
+        return self._json(
+            "POST",
+            f"/v1/jeb/sources/{quote(source_id, safe='')}/{action}",
+        )
+
+    def rotate_jeb_source_credential(
+        self,
+        source_id: str,
+        *,
+        credential: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {} if credential is None else {"credential": credential}
+        return self._json(
+            "POST",
+            f"/v1/jeb/sources/{quote(source_id, safe='')}/credential",
+            json=payload,
+        )
+
+    def plan_jeb_source_removal(
+        self,
+        source_id: str,
+        *,
+        purge: bool,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/jeb/sources/{quote(source_id, safe='')}/removal-plan",
+            json={"purge": purge},
+        )
+
+    def remove_jeb_source(self, source_id: str, *, challenge: str) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/jeb/sources/{quote(source_id, safe='')}",
+            json={"challenge": challenge},
         )
 
     def get_file_content(self, path: str, output: Path | None = None) -> bytes:

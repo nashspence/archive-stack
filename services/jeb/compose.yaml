@@ -92,19 +92,25 @@ services:
   jeb-ftp:
     image: stilliard/pure-ftpd:trixie-latest
     restart: unless-stopped
-    env_file:
-      - ../../config/examples/jeb/jeb.env
+    depends_on:
+      jeb:
+        condition: service_healthy
     ports:
       - "${JEB_FTP_PORT:-21}:21"
       - "${JEB_FTP_PASSIVE_PORT_START:-30000}-${JEB_FTP_PASSIVE_PORT_END:-30039}:30000-30039"
     environment:
       FTP_PASSIVE_PORTS: ${JEB_FTP_PASSIVE_PORT_START:-30000}:${JEB_FTP_PASSIVE_PORT_END:-30039}
+      JEB_FTP_PUBLIC_HOST: ${JEB_FTP_PUBLIC_HOST:-127.0.0.1}
     volumes:
       - type: bind
-        source: ./adapters/ftp/bootstrap-users.sh
-        target: /usr/local/bin/bootstrap-users
+        source: ./adapters/ftp/run-adapter.sh
+        target: /usr/local/bin/run-jeb-ftp
         read_only: true
       - type: bind
         source: ${JEB_LANDING_HOST_DIR:-./runtime/landing}
         target: /landing
-    command: ["/usr/local/bin/bootstrap-users"]
+      - type: bind
+        source: ${JEB_STATE_HOST_DIR:-./runtime/state}
+        target: /state
+        read_only: true
+    command: ["/usr/local/bin/run-jeb-ftp"]

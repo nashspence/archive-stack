@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Query, Response
@@ -17,9 +18,40 @@ DEFAULT_JEB_TIMEOUT = timedelta(minutes=5)
 
 
 class JebArchiveNowRequest(BaseModel):
-    account: str = Field(min_length=1)
+    source: str = Field(min_length=1)
     process: bool = True
     dry_run: bool = False
+
+
+class JebSourceAddRequest(BaseModel):
+    id: str = Field(min_length=1)
+    adapters: list[str] = Field(min_length=1)
+    policy: dict[str, Any]
+    credential: str | None = None
+    enabled: bool = True
+    stable_seconds: int = Field(600, ge=0)
+    include_extensions: list[str] | None = None
+    collection_slug: str | None = None
+    target: str = "munchy"
+    notify: dict[str, Any] | None = None
+    threshold_bytes: int = Field(0, ge=0)
+    cleanup: Literal["never", "after_target_success"] = "after_target_success"
+    cadence: Literal["weekly", "monthly", "seasonal", "manual"] = "weekly"
+    weekday: int = Field(0, ge=0, le=6)
+    hour: int = Field(3, ge=0, le=23)
+    minute: int = Field(0, ge=0, le=59)
+
+
+class JebSourceCredentialRequest(BaseModel):
+    credential: str | None = None
+
+
+class JebSourceRemovalPlanRequest(BaseModel):
+    purge: bool = False
+
+
+class JebSourceRemoveRequest(BaseModel):
+    challenge: str = Field(min_length=1)
 
 
 def _jeb_service_url() -> str:
@@ -82,6 +114,86 @@ def get_jeb_status(include_backlog: bool = Query(True)) -> dict[str, Any]:
     )
 
 
+@router.get("/jeb/sources")
+def list_jeb_sources() -> dict[str, Any]:
+    return _request_jeb_service("GET", "/v1/jeb/sources")
+
+
+@router.post("/jeb/sources", status_code=201)
+def add_jeb_source(request: JebSourceAddRequest) -> dict[str, Any]:
+    return _request_jeb_service(
+        "POST",
+        "/v1/jeb/sources",
+        json_payload=request.model_dump(exclude_none=True),
+    )
+
+
+@router.get("/jeb/sources/{source_id}")
+def get_jeb_source(source_id: str) -> dict[str, Any]:
+    return _request_jeb_service(
+        "GET",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}",
+    )
+
+
+@router.patch("/jeb/sources/{source_id}")
+def update_jeb_source(source_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+    return _request_jeb_service(
+        "PATCH",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}",
+        json_payload=changes,
+    )
+
+
+@router.post("/jeb/sources/{source_id}/enable")
+def enable_jeb_source(source_id: str) -> dict[str, Any]:
+    return _request_jeb_service(
+        "POST",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}/enable",
+    )
+
+
+@router.post("/jeb/sources/{source_id}/disable")
+def disable_jeb_source(source_id: str) -> dict[str, Any]:
+    return _request_jeb_service(
+        "POST",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}/disable",
+    )
+
+
+@router.post("/jeb/sources/{source_id}/credential")
+def rotate_jeb_source_credential(
+    source_id: str,
+    request: JebSourceCredentialRequest,
+) -> dict[str, Any]:
+    return _request_jeb_service(
+        "POST",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}/credential",
+        json_payload=request.model_dump(exclude_none=True),
+    )
+
+
+@router.post("/jeb/sources/{source_id}/removal-plan")
+def plan_jeb_source_removal(
+    source_id: str,
+    request: JebSourceRemovalPlanRequest,
+) -> dict[str, Any]:
+    return _request_jeb_service(
+        "POST",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}/removal-plan",
+        json_payload=request.model_dump(),
+    )
+
+
+@router.delete("/jeb/sources/{source_id}")
+def remove_jeb_source(source_id: str, request: JebSourceRemoveRequest) -> dict[str, Any]:
+    return _request_jeb_service(
+        "DELETE",
+        f"/v1/jeb/sources/{quote(source_id, safe='')}",
+        json_payload=request.model_dump(),
+    )
+
+
 @router.get("/jeb/attempts")
 def list_jeb_attempts(
     page: Annotated[int, Query(ge=1)] = 1,
@@ -90,7 +202,7 @@ def list_jeb_attempts(
     order: Literal["asc", "desc"] = Query("desc"),
     terminal: Literal["active", "terminal", "all"] = Query("active"),
     state: str | None = Query(None),
-    account: str | None = Query(None),
+    source: str | None = Query(None),
     collection_slug: str | None = Query(None),
     target: str | None = Query(None),
     q: str | None = Query(None),
@@ -104,7 +216,7 @@ def list_jeb_attempts(
     }
     for key, value in {
         "state": state,
-        "account": account,
+        "source": source,
         "collection_slug": collection_slug,
         "target": target,
         "q": q,
