@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import ast
 import os
+import re
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, SequenceNode
+
+from riverhog_core.runtime_config import load_runtime_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -148,7 +154,6 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         name
         for name in compose["services"]["app"]["environment"]
         if name.startswith("RIVERHOG_")
-        or name in {"INCOMPLETE_UPLOAD_TTL", "UPLOAD_EXPIRY_SWEEP_INTERVAL"}
     }
     dynamic_archive_store_names = {
         name
@@ -183,6 +188,88 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     }
     compose_owned_names = {"COMPOSE_PROJECT_NAME"}
     assert all(name in compose_text or name in compose_owned_names for name in example_names)
+
+
+def test_compose_services_publish_every_static_runtime_setting() -> None:
+    runtime_path = REPO_ROOT / "src" / "riverhog_core" / "runtime_config.py"
+    runtime_tree = ast.parse(runtime_path.read_text(encoding="utf-8"))
+    runtime_names = {
+        node.args[0].value
+        for node in ast.walk(runtime_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "getenv"}
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and node.args[0].value.startswith("RIVERHOG_")
+    }
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+
+    assert runtime_names
+    for service in ("app", "test"):
+        assert runtime_names <= set(compose["services"][service]["environment"])
+
+
+def test_compose_override_example_contains_no_default_assignments() -> None:
+    assignments = [
+        line
+        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert assignments == []
+
+
+def test_compose_host_interpolation_is_complete_without_an_env_file() -> None:
+    expressions = re.findall(
+        r"(?<!\$)\$\{([^}]+)\}",
+        COMPOSE_FILE.read_text(encoding="utf-8"),
+    )
+
+    assert expressions
+    assert all("-" in expression for expression in expressions)
+
+
+def test_compose_policy_defaults_match_runtime_defaults() -> None:
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    compose_environment: dict[str, str] = {}
+    for name, raw_value in compose["services"]["app"]["environment"].items():
+        value = str(raw_value)
+        match = re.fullmatch(r"\$\{[A-Z0-9_]+:?-([^}]*)\}", value)
+        compose_environment[name] = match.group(1) if match else value
+
+    with patch.dict(os.environ, {}, clear=True):
+        runtime_defaults = asdict(load_runtime_config())
+    with patch.dict(os.environ, compose_environment, clear=True):
+        compose_defaults = asdict(load_runtime_config())
+
+    topology_fields = {
+        "database_url",
+        "public_base_url",
+        "s3_access_key_id",
+        "s3_endpoint_url",
+        "s3_region",
+        "s3_secret_access_key",
+        "tusd_base_url",
+        "upload_staging_root",
+    }
+    archive_topology_fields = {
+        "access_key_id",
+        "bucket",
+        "endpoint_url",
+        "region",
+        "secret_access_key",
+    }
+    for defaults in (runtime_defaults, compose_defaults):
+        for store in defaults["archive_stores"].values():
+            for field in archive_topology_fields:
+                store.pop(field)
+    for field in topology_fields:
+        runtime_defaults.pop(field)
+        compose_defaults.pop(field)
+
+    assert compose_defaults == runtime_defaults
 
 
 def test_compose_services_publish_the_archive_runtime_configuration() -> None:
@@ -220,6 +307,16 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_RESTORE_LATENCY",
         "RIVERHOG_ARCHIVE_RESTORE_READY_TTL",
         "RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
+        "RIVERHOG_API_TOKEN",
+        "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
+        "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
+        "RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
+        "RIVERHOG_NOTIFY_WEBHOOKS",
+        "RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS",
+        "RIVERHOG_TUSD_PUBLIC_SIGNING_SECRET",
+        "RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS",
+        "RIVERHOG_INCOMPLETE_UPLOAD_TTL",
+        "RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
@@ -228,12 +325,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "RIVERHOG_ARCHIVE_STORE_B2_PREFIX"
         ] == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-archive}"
 
-    example_names = {
-        line.split("=", 1)[0]
-        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
-    }
-    assert required <= example_names
 
 
 @pytest.mark.parametrize(

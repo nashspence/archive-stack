@@ -10,11 +10,11 @@ ensure_compose_image test
 access_key_id="$(compose_env_value RIVERHOG_S3_ACCESS_KEY_ID GK000000000000000000000001)"
 secret_access_key="$(compose_env_value RIVERHOG_S3_SECRET_ACCESS_KEY 1111111111111111111111111111111111111111111111111111111111111111)"
 bucket="$(compose_env_value RIVERHOG_S3_BUCKET riverhog)"
-archive_access_key_id="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_ACCESS_KEY_ID "${access_key_id}")"
+archive_access_key_id="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_ACCESS_KEY_ID GK000000000000000000000002)"
 archive_secret_access_key="$(
-  compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_SECRET_ACCESS_KEY "${secret_access_key}"
+  compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_SECRET_ACCESS_KEY 2222222222222222222222222222222222222222222222222222222222222222
 )"
-archive_bucket="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_BUCKET "${bucket}")"
+archive_bucket="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_BUCKET riverhog-archive)"
 
 compose up --detach garage
 

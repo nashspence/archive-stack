@@ -72,6 +72,18 @@ def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatc
     assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 
 
+def test_load_runtime_config_parses_upload_lifecycle_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_INCOMPLETE_UPLOAD_TTL", "12h")
+    monkeypatch.setenv("RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL", "45s")
+
+    config = load_runtime_config()
+
+    assert config.incomplete_upload_ttl == timedelta(hours=12)
+    assert config.upload_expiry_sweep_interval == timedelta(seconds=45)
+
+
 def test_load_runtime_config_parses_archive_restore_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

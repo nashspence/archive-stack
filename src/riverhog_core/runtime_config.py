@@ -496,12 +496,9 @@ def load_runtime_config() -> RuntimeConfig:
         raise ValueError(f"unsupported RIVERHOG_OBJECT_STORE {object_store!r}: expected 's3'")
 
     database_url_raw = os.getenv("RIVERHOG_DATABASE_URL", "").strip()
-    sqlite_path_raw = os.getenv("RIVERHOG_DB_PATH", "").strip()
-    if sqlite_path_raw:
-        raise ValueError("RIVERHOG_DB_PATH has been removed; set RIVERHOG_DATABASE_URL")
-    ttl_raw = os.getenv("INCOMPLETE_UPLOAD_TTL", "24h")
+    ttl_raw = os.getenv("RIVERHOG_INCOMPLETE_UPLOAD_TTL", "24h")
     session_idle_ttl_raw = os.getenv("RIVERHOG_UPLOAD_SESSION_IDLE_TTL", "168h")
-    sweep_raw = os.getenv("UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
+    sweep_raw = os.getenv("RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
     log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
 
     database_url = database_url_raw or DEFAULT_DATABASE_URL

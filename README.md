@@ -17,7 +17,7 @@ Use `make help` for development and validation commands. Use each installed comm
 `--help` output for its current interface. A running API publishes its current OpenAPI
 document at `/openapi.json`.
 
-The checked [Compose environment](.env.compose.example) and
+The minimal [Compose override example](.env.compose.example) and
 [example configurations](config/examples/) are fake, executable starting points.
 
 ## Context
