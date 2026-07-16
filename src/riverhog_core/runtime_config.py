@@ -20,6 +20,7 @@ DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
+DEFAULT_ARCHIVE_OBJECT_CONCURRENCY = 4
 DEFAULT_HOT_MATERIALIZATION_CONCURRENCY = 8
 DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
@@ -253,6 +254,7 @@ class RuntimeConfig:
     )
     archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
     archive_multipart_concurrency: int = DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY
+    archive_object_concurrency: int = DEFAULT_ARCHIVE_OBJECT_CONCURRENCY
     hot_materialization_concurrency: int = DEFAULT_HOT_MATERIALIZATION_CONCURRENCY
     hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
     archive_encryption: str = "age_scrypt"
@@ -344,6 +346,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
         if self.archive_multipart_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY must be >= 1")
+        if self.archive_object_concurrency < 1:
+            raise ValueError("RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY must be >= 1")
         if self.hot_materialization_concurrency < 1:
             raise ValueError("RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY must be >= 1")
         if self.hot_single_put_max_bytes < 0:
@@ -527,6 +531,14 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         minimum=1,
     )
+    archive_object_concurrency = _parse_int(
+        os.getenv(
+            "RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
+            str(DEFAULT_ARCHIVE_OBJECT_CONCURRENCY),
+        ),
+        name="RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
+        minimum=1,
+    )
     hot_materialization_concurrency = _parse_int(
         os.getenv(
             "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
@@ -658,6 +670,7 @@ def load_runtime_config() -> RuntimeConfig:
         archive_stores=archive_stores,
         archive_multipart_part_bytes=archive_multipart_part_bytes,
         archive_multipart_concurrency=archive_multipart_concurrency,
+        archive_object_concurrency=archive_object_concurrency,
         hot_materialization_concurrency=hot_materialization_concurrency,
         hot_single_put_max_bytes=hot_single_put_max_bytes,
         archive_encryption=archive_encryption,

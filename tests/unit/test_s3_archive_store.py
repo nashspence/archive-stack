@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -12,6 +14,8 @@ import pytest
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.archive_objects import (
     STORED_OBJECT_LIMIT,
+    CollectionArchive,
+    CollectionArchiveDataObject,
     CollectionArchiveSourceFile,
     build_collection_archive,
 )
@@ -158,6 +162,25 @@ class _FakeS3Client:
         self.objects[Key]["Restore"] = 'ongoing-request="true"'
 
 
+class _TrackingS3Client(_FakeS3Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self._active_lock = threading.Lock()
+        self.active_puts = 0
+        self.max_active_puts = 0
+
+    def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> None:
+        with self._active_lock:
+            self.active_puts += 1
+            self.max_active_puts = max(self.max_active_puts, self.active_puts)
+        try:
+            time.sleep(0.05)
+            super().put_object(Bucket=Bucket, Key=Key, Body=Body, **kwargs)
+        finally:
+            with self._active_lock:
+                self.active_puts -= 1
+
+
 class _Tracker(ArchiveMultipartUploadTracker):
     def __init__(self) -> None:
         self.states: dict[str, ArchiveMultipartUploadState] = {}
@@ -250,6 +273,32 @@ def _archive(content: bytes = b"hello"):
     )
 
 
+def _multi_object_archive() -> CollectionArchive:
+    contents = (b"first", b"second", b"third")
+    objects = tuple(
+        CollectionArchiveDataObject(
+            object_id=f"data-{index:06d}",
+            kind="pack",
+            plaintext_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            placements=(),
+            _chunks=lambda content=content: iter((content,)),
+        )
+        for index, content in enumerate(contents)
+    )
+    manifest = b"schema: test/v1\n"
+    proof = b"test proof\n"
+    return CollectionArchive(
+        collection_id=COLLECTION_ID,
+        files=(),
+        data_objects=objects,
+        manifest_bytes=manifest,
+        manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+        proof_bytes=proof,
+        proof_sha256=hashlib.sha256(proof).hexdigest(),
+    )
+
+
 def _identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdentity:
     objects = receipt.objects
     return CollectionArchiveIdentity(
@@ -292,6 +341,42 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
         assert len(plaintext) == current.plaintext_bytes
         assert hashlib.sha256(plaintext).hexdigest() == current.sha256
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
+
+
+@pytest.mark.parametrize(
+    ("multipart_part_bytes", "expected_max_active_puts"),
+    ((64 * 1024 * 1024, 3), (1, 1)),
+)
+def test_upload_concurrently_submits_only_one_part_sized_objects(
+    monkeypatch,
+    tmp_path: Path,
+    multipart_part_bytes: int,
+    expected_max_active_puts: int,
+) -> None:
+    client = _TrackingS3Client()
+    store = _store(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_multipart_part_bytes=multipart_part_bytes,
+        archive_object_concurrency=3,
+        archive_work_factor=1,
+    )
+
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=_multi_object_archive(),
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+
+    assert [current.object_id for current in receipt.objects] == [
+        "data-000000",
+        "data-000001",
+        "data-000002",
+        "manifest",
+        "proof",
+    ]
+    assert client.max_active_puts == expected_max_active_puts
 
 
 def test_upload_resumes_each_data_object_independently(monkeypatch, tmp_path: Path) -> None:

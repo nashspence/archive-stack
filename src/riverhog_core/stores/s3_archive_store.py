@@ -26,6 +26,7 @@ from riverhog_core.archive_object_paths import (
     archive_store_object_path,
 )
 from riverhog_core.archive_objects import (
+    PACK_PAYLOAD_LIMIT,
     STORED_OBJECT_LIMIT,
     CollectionArchive,
     CollectionArchiveDataObject,
@@ -340,23 +341,49 @@ class S3ArchiveStore:
             raise ValueError("collection archive id mismatch")
         storage_prefix = archive_storage_prefix or self.new_collection_archive_storage_prefix()
         receipts: list[ArchiveObjectUploadReceipt] = []
-        for current in archive.data_objects:
-            receipts.append(
-                self._put_archive_object(
-                    collection_id=collection_id,
+
+        def upload_data_object(current: CollectionArchiveDataObject) -> ArchiveObjectUploadReceipt:
+            return self._put_archive_object(
+                collection_id=collection_id,
+                object_id=current.object_id,
+                kind=current.kind,
+                object_key=self._collection_object_key(
                     object_id=current.object_id,
-                    kind=current.kind,
-                    object_key=self._collection_object_key(
-                        object_id=current.object_id,
-                        archive_storage_prefix=storage_prefix,
-                    ),
-                    content=current.iter_plaintext(),
-                    plaintext_bytes=current.plaintext_bytes,
-                    sha256=current.sha256,
-                    data_object=current,
-                    multipart_tracker=multipart_tracker,
-                )
+                    archive_storage_prefix=storage_prefix,
+                ),
+                content=current.iter_plaintext(),
+                plaintext_bytes=current.plaintext_bytes,
+                sha256=current.sha256,
+                data_object=current,
+                multipart_tracker=multipart_tracker,
             )
+
+        one_part_limit = min(
+            PACK_PAYLOAD_LIMIT,
+            max(0, self._config.archive_multipart_part_bytes - 1024 * 1024),
+        )
+        concurrent_batch: list[CollectionArchiveDataObject] = []
+
+        def flush_concurrent_batch() -> None:
+            if not concurrent_batch:
+                return
+            if self._config.archive_object_concurrency == 1 or len(concurrent_batch) == 1:
+                receipts.extend(upload_data_object(current) for current in concurrent_batch)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=self._config.archive_object_concurrency,
+                    thread_name_prefix="riverhog-archive-object",
+                ) as executor:
+                    receipts.extend(executor.map(upload_data_object, concurrent_batch))
+            concurrent_batch.clear()
+
+        for current in archive.data_objects:
+            if current.plaintext_bytes <= one_part_limit:
+                concurrent_batch.append(current)
+                continue
+            flush_concurrent_batch()
+            receipts.append(upload_data_object(current))
+        flush_concurrent_batch()
         for object_id, kind, content, sha256 in (
             ("manifest", "manifest", archive.manifest_bytes, archive.manifest_sha256),
             ("proof", "proof", archive.proof_bytes, archive.proof_sha256),
