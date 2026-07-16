@@ -55,7 +55,8 @@ and proof.
 - Riverhog owns custody, search, retrieval, and hot-cache state.
 - Munchy owns media discovery, routing, transformation, metadata projection, and assembly
   before custody.
-- Jeb owns watched-drop scheduling and submission to Munchy.
+- Jeb owns transport-neutral landing accounts, watched-drop scheduling, and submission to
+  Munchy. Ingress adapters publish completed files into account landing directories.
 - Gogurt maps mounted-volume markers to configured operator actions.
 - Downstream private configuration owns real devices, accounts, destinations, recipients,
   remotes, credentials, and deployment topology.

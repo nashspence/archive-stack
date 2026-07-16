@@ -1,17 +1,18 @@
 #!/usr/bin/env sh
 set -eu
 
-FTP_UID="${FTP_UID:-${FTPD_UID:-1000}}"
-FTP_GID="${FTP_GID:-${FTPD_GID:-1000}}"
-FTP_ROOT="${FTP_ROOT:-/home/ftpusers}"
+FTP_UID="${JEB_FTP_UID:-1000}"
+FTP_GID="${JEB_FTP_GID:-1000}"
+FTP_ROOT="${JEB_LANDING_DIR:-/landing}"
 PASSWD_FILE="${PASSWD_FILE:-/etc/pure-ftpd/passwd/pureftpd.passwd}"
-FTPD_USERS="${FTPD_USERS:-}"
-FTPD_MAX_CLIENTS="${FTPD_MAX_CLIENTS:-40}"
-FTPD_MAX_CONNECTIONS="${FTPD_MAX_CONNECTIONS:-8}"
-PUBLICHOST="${FTPD_PUBLICHOST:-${PUBLICHOST:-}}"
+JEB_ACCOUNTS="${JEB_ACCOUNTS:-}"
+JEB_FTP_ACCOUNTS="${JEB_FTP_ACCOUNTS:-}"
+JEB_FTP_MAX_CLIENTS="${JEB_FTP_MAX_CLIENTS:-40}"
+JEB_FTP_MAX_CONNECTIONS="${JEB_FTP_MAX_CONNECTIONS:-8}"
+PUBLICHOST="${JEB_FTP_PUBLIC_HOST:-}"
 
 password_var_for_user() {
-    printf 'FTPD_PASSWORD_%s' "$(printf '%s' "$1" | tr '[:lower:].-' '[:upper:]__' | tr -c 'A-Z0-9_' '_')"
+    printf 'JEB_ACCOUNT_%s_PASSWORD' "$(printf '%s' "$1" | tr '[:lower:].-' '[:upper:]__' | tr -c 'A-Z0-9_' '_')"
 }
 
 create_user() {
@@ -38,13 +39,13 @@ create_user() {
     fi
 }
 
-if [ -z "$FTPD_USERS" ]; then
-    echo "FTPD_USERS must list at least one FTP user" >&2
+if [ -z "$JEB_FTP_ACCOUNTS" ]; then
+    echo "JEB_FTP_ACCOUNTS must list at least one Jeb account" >&2
     exit 1
 fi
 
 if [ -z "$PUBLICHOST" ]; then
-    echo "PUBLICHOST or FTPD_PUBLICHOST must be set" >&2
+    echo "JEB_FTP_PUBLIC_HOST must be set" >&2
     exit 1
 fi
 
@@ -52,17 +53,24 @@ mkdir -p "$(dirname "$PASSWD_FILE")"
 
 old_ifs="$IFS"
 IFS=","
-for username in $FTPD_USERS; do
+for username in $JEB_FTP_ACCOUNTS; do
     username="$(printf '%s' "$username" | sed 's/^ *//; s/ *$//')"
     [ -z "$username" ] && continue
+    case ",$JEB_ACCOUNTS," in
+        *",$username,"*) ;;
+        *)
+            echo "JEB_FTP_ACCOUNTS contains unknown Jeb account: $username" >&2
+            exit 1
+            ;;
+    esac
     create_user "$username"
 done
 IFS="$old_ifs"
 
 pure-pw mkdb /etc/pure-ftpd/pureftpd.pdb -f "$PASSWD_FILE"
 exec /run.sh \
-    -c "$FTPD_MAX_CLIENTS" \
-    -C "$FTPD_MAX_CONNECTIONS" \
+    -c "$JEB_FTP_MAX_CLIENTS" \
+    -C "$JEB_FTP_MAX_CONNECTIONS" \
     -l puredb:/etc/pure-ftpd/pureftpd.pdb \
     -E \
     -j \

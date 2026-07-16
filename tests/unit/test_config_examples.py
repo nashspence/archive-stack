@@ -56,6 +56,8 @@ def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) ->
         "example-camera",
         "example-phone",
     ]
+    assert jeb_config.ingress.ftp_accounts == ("example-camera",)
+    assert jeb_config.ingress.tus_accounts == ("example-camera", "example-phone")
 
     profile = load_encode_profile(EXAMPLE_ROOT / "munchy/av1-nvenc-profile.yaml")
     assert profile.name == "example-camera"

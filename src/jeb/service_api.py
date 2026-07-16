@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,6 +16,13 @@ from jeb.collector import (
     Collector,
     UnrecoverableJebError,
     event_timestamp,
+)
+from jeb.ingress import (
+    JebIngressAuthenticationError,
+    JebIngressError,
+    authenticate_tus_account,
+    prepare_tus_upload,
+    publish_tus_upload,
 )
 
 TerminalFilter = Literal["active", "terminal", "all"]
@@ -165,6 +172,19 @@ def _response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict
     handler.wfile.write(body)
 
 
+def _empty_response(
+    handler: BaseHTTPRequestHandler,
+    status: HTTPStatus,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> None:
+    handler.send_response(int(status))
+    for name, value in (headers or {}).items():
+        handler.send_header(name, value)
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
+
+
 def _error(
     handler: BaseHTTPRequestHandler,
     status: HTTPStatus,
@@ -241,12 +261,38 @@ def _handle_invalid_state(handler: BaseHTTPRequestHandler, exc: UnrecoverableJeb
     _error(handler, HTTPStatus.CONFLICT, code="invalid_state", message=str(exc))
 
 
+def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
+    return {
+        "RejectUpload": True,
+        "HTTPResponse": {
+            "StatusCode": int(status),
+            "Body": message,
+            "Header": {"Content-Type": "text/plain"},
+        },
+    }
+
+
 def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             split = urlsplit(self.path)
             params = parse_qs(split.query, keep_blank_values=True)
             try:
+                if split.path == "/internal/ingress/tus/auth":
+                    try:
+                        authenticate_tus_account(
+                            state.collector.config.ingress,
+                            self.headers.get("Authorization"),
+                        )
+                    except JebIngressAuthenticationError:
+                        _empty_response(
+                            self,
+                            HTTPStatus.UNAUTHORIZED,
+                            headers={"WWW-Authenticate": 'Basic realm="Jeb ingress"'},
+                        )
+                    else:
+                        _empty_response(self, HTTPStatus.NO_CONTENT)
+                    return
                 if split.path == "/health/live":
                     _response(self, HTTPStatus.OK, {"service": "jeb", "status": "ok"})
                     return
@@ -312,6 +358,56 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             split = urlsplit(self.path)
             try:
+                if split.path == "/internal/ingress/tus/hooks":
+                    payload = _json_body(self)
+                    hook_type = str(payload.get("Type") or "")
+                    event = payload.get("Event")
+                    upload = event.get("Upload") if isinstance(event, Mapping) else None
+                    if not isinstance(upload, Mapping):
+                        raise JebIngressError("Jeb TUS hook is missing its upload record")
+                    if hook_type == "pre-create":
+                        metadata = upload.get("MetaData")
+                        if not isinstance(metadata, Mapping):
+                            metadata = {}
+                        try:
+                            prepared = prepare_tus_upload(
+                                state.collector.config.ingress,
+                                authorization=self.headers.get("Authorization"),
+                                metadata=metadata,
+                                size=upload.get("Size"),
+                            )
+                        except JebIngressAuthenticationError as exc:
+                            _response(
+                                self,
+                                HTTPStatus.OK,
+                                _tus_rejection(HTTPStatus.UNAUTHORIZED, str(exc)),
+                            )
+                            return
+                        except JebIngressError as exc:
+                            _response(
+                                self,
+                                HTTPStatus.OK,
+                                _tus_rejection(HTTPStatus.BAD_REQUEST, str(exc)),
+                            )
+                            return
+                        _response(
+                            self,
+                            HTTPStatus.OK,
+                            {
+                                "ChangeFileInfo": {
+                                    "ID": prepared.upload_id,
+                                    "MetaData": prepared.hook_metadata(),
+                                }
+                            },
+                        )
+                        return
+                    if hook_type == "post-finish":
+                        publish_tus_upload(
+                            state.collector.config.ingress,
+                            upload=upload,
+                        )
+                    _response(self, HTTPStatus.OK, {})
+                    return
                 if split.path == "/v1/jeb/once":
                     state.collector.init_db()
                     operation_summary = state.operations.start(
@@ -377,6 +473,13 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                 _handle_bad_request(self, exc)
             except UnrecoverableJebError as exc:
                 _handle_invalid_state(self, exc)
+            except JebIngressError as exc:
+                _error(
+                    self,
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    code="ingress_failed",
+                    message=str(exc),
+                )
 
         def log_message(self, _format: str, *_args: object) -> None:
             return

@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol, cast
 
 import httpx
 
+from jeb.ingress import JebIngressConfig
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.job_authoring import (
     MunchyJobAuthoringError,
@@ -316,6 +317,7 @@ class AccountConfig:
 @dataclass(frozen=True)
 class JebConfig:
     collector: CollectorSettings
+    ingress: JebIngressConfig
     notify: NotifySettings
     targets: Mapping[str, TargetConfig]
     accounts: tuple[AccountConfig, ...]
@@ -3053,6 +3055,22 @@ def account_env_name(account: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", account.upper())
 
 
+def ingress_accounts_from_env(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    accounts: Sequence[str],
+) -> tuple[str, ...]:
+    enabled = env_csv(env, name)
+    duplicates = sorted({account for account in enabled if enabled.count(account) > 1})
+    if duplicates:
+        raise ValueError(f"{name} has duplicate account(s): " + ", ".join(duplicates))
+    unknown = sorted(set(enabled) - set(accounts))
+    if unknown:
+        raise ValueError(f"{name} has unknown Jeb account(s): " + ", ".join(unknown))
+    return enabled
+
+
 def env_bool(env: Mapping[str, str], name: str, default: bool = False) -> bool:
     value = env.get(name)
     if value is None or not value.strip():
@@ -3230,6 +3248,41 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         if not SAFE_NAME.fullmatch(account):
             raise ValueError(f"JEB account must be a safe slug: {account!r}")
 
+    ftp_accounts = ingress_accounts_from_env(
+        values,
+        "JEB_FTP_ACCOUNTS",
+        accounts=accounts,
+    )
+    tus_accounts = ingress_accounts_from_env(
+        values,
+        "JEB_TUS_ACCOUNTS",
+        accounts=accounts,
+    )
+    ingress_accounts = tuple(dict.fromkeys((*ftp_accounts, *tus_accounts)))
+    account_passwords = {
+        account: required_env(
+            values,
+            f"JEB_ACCOUNT_{account_env_name(account)}_PASSWORD",
+        )
+        for account in ingress_accounts
+    }
+    ingress = JebIngressConfig(
+        landing_dir=landing_dir,
+        tus_staging_dir=Path(
+            os.path.expandvars(
+                env_value_from(
+                    values,
+                    "JEB_TUS_STAGING_DIR",
+                    str(landing_dir / ".ingress" / "tus"),
+                )
+                or str(landing_dir / ".ingress" / "tus")
+            )
+        ),
+        ftp_accounts=ftp_accounts,
+        tus_accounts=tus_accounts,
+        account_passwords=account_passwords,
+    )
+
     preflight_repair = env_value_from(values, "JEB_PREFLIGHT_REPAIR", "safe_remux") or "safe_remux"
     if preflight_repair not in {"off", "safe_remux"}:
         raise ValueError("JEB_PREFLIGHT_REPAIR must be off or safe_remux")
@@ -3353,6 +3406,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     }
     return JebConfig(
         collector=collector,
+        ingress=ingress,
         notify=notify,
         targets={"munchy": target},
         accounts=account_configs,

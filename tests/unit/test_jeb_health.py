@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -18,11 +19,16 @@ def read_json(url: str) -> dict[str, object]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def post_json(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, object]]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, object]]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     try:
@@ -51,6 +57,11 @@ def write_stable_file(path: Path, content: bytes = b"notes") -> None:
     os.utime(path, (old, old))
 
 
+def basic_authorization(account: str, password: str) -> str:
+    encoded = base64.b64encode(f"{account}:{password}".encode()).decode()
+    return f"Basic {encoded}"
+
+
 def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
@@ -74,6 +85,91 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         assert isinstance(accounts, list)
         assert accounts[0]["id"] == "phone"
         assert accounts[0]["eligible_files"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Path) -> None:
+    env = {
+        **jeb_env(tmp_path),
+        "JEB_TUS_ACCOUNTS": "phone",
+        "JEB_ACCOUNT_PHONE_PASSWORD": "phone-password",
+    }
+    collector = Collector(config_from_env(env))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+        authorization = basic_authorization("phone", "phone-password")
+        auth_request = urllib.request.Request(
+            f"http://{host}:{port}/internal/ingress/tus/auth",
+            headers={"Authorization": authorization},
+        )
+        with urllib.request.urlopen(auth_request, timeout=5) as response:
+            assert response.status == 204
+
+        status, prepared = post_json(
+            f"http://{host}:{port}/internal/ingress/tus/hooks",
+            {
+                "Type": "pre-create",
+                "Event": {
+                    "Upload": {
+                        "Size": 5,
+                        "Offset": 0,
+                        "MetaData": {"filename": "notes/note.txt"},
+                    }
+                },
+            },
+            headers={"Authorization": authorization},
+        )
+        assert status == 200
+        change = prepared["ChangeFileInfo"]
+        assert isinstance(change, dict)
+        upload_id = str(change["ID"])
+        metadata = change["MetaData"]
+        assert isinstance(metadata, dict)
+
+        staging = collector.config.ingress.tus_staging_dir
+        staging.mkdir(parents=True)
+        source = staging / upload_id
+        info = staging / f"{upload_id}.info"
+        source.write_bytes(b"notes")
+        info.write_text("{}", encoding="utf-8")
+        assert collector.eligible_files(collector.account_by_id("phone")) == []
+
+        finished = {
+            "Type": "post-finish",
+            "Event": {
+                "Upload": {
+                    "ID": upload_id,
+                    "Size": 5,
+                    "Offset": 5,
+                    "MetaData": metadata,
+                    "Storage": {
+                        "Type": "filestore",
+                        "Path": str(source),
+                        "InfoPath": str(info),
+                    },
+                }
+            },
+        }
+        assert post_json(
+            f"http://{host}:{port}/internal/ingress/tus/hooks",
+            finished,
+        ) == (200, {})
+        assert post_json(
+            f"http://{host}:{port}/internal/ingress/tus/hooks",
+            finished,
+        ) == (200, {})
+
+        destination = tmp_path / "landing" / "phone" / "notes" / "note.txt"
+        assert destination.read_bytes() == b"notes"
+        assert not source.exists()
+        assert not info.exists()
+        assert [
+            item.rel.as_posix()
+            for item in collector.eligible_files(collector.account_by_id("phone"))
+        ] == ["notes/note.txt"]
     finally:
         server.shutdown()
         server.server_close()
