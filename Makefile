@@ -6,11 +6,12 @@ FILES ?= .
 TESTS ?= tests/unit
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py
+TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -33,6 +34,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make postgres-concurrency Run collection deletion race tests against disposable Postgres.' \
+		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
@@ -47,6 +49,8 @@ help:
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		"  POSTGRES_TESTS='...'   Select the disposable Postgres test file." \
+		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
+		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
@@ -77,6 +81,13 @@ spec:
 
 postgres-concurrency:
 	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_collection_deletion_concurrency.sh
+
+tus-throughput:
+	@if [[ -z "$(TUS_URL)" ]]; then \
+		printf '%s\n' 'TUS_URL is required, for example TUS_URL=https://host/files/' >&2; \
+		exit 2; \
+	fi
+	$(call UV_CMD,python scripts/tus_throughput.py "$(TUS_URL)" $(args))
 
 stop-spec:
 	@./scripts/stop_spec.sh

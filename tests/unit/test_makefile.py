@@ -347,6 +347,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("SPEC_TESTS=tests/harness/test_spec_harness.py", "args=-k garage"),
             "python -m pytest -q tests/harness/test_spec_harness.py -k garage",
         ),
+        (
+            "tus-throughput",
+            ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
+            "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
+        ),
     ],
 )
 def test_atomic_local_targets_run_in_locked_uv_environment(
@@ -642,9 +647,11 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make ruff-fix" in completed.stdout
     assert "make stop-spec" in completed.stdout
     assert "make test" in completed.stdout
+    assert "make tus-throughput" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "FILES='...'" in completed.stdout
     assert "TESTS='...'" in completed.stdout
+    assert "TUS_URL=https://..." in completed.stdout
     assert "fast" not in completed.stdout
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == []
