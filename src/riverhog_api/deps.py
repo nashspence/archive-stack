@@ -61,8 +61,7 @@ def default_container() -> ServiceContainer:
     ensure_bucket_exists(config)
     hot_store = S3HotStore(config)
     archive_stores = ArchiveStoreRegistry(
-        {name: S3ArchiveStore(config, store) for name, store in config.archive_stores.items()},
-        default_store=config.default_archive_store,
+        {name: S3ArchiveStore(config, store) for name, store in config.archive_stores.items()}
     )
     upload_store = TusdUploadStore(config)
     proof_stamper = CommandProofStamper(config.ots_stamp_command)

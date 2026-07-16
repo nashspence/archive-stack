@@ -231,7 +231,6 @@ def _services(
     archive_store = FakeArchiveStore()
     archive_stores = ArchiveStoreRegistry(
         {"deep": cast(Any, archive_store)},
-        default_store="deep",
     )
     return (
         SqlAlchemyCollectionDeletionService(

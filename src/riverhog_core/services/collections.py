@@ -49,7 +49,7 @@ from riverhog_core.services.notification_routing import (
 )
 from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
-    post_collection_operator_webhook,
+    post_collection_webhooks,
 )
 from riverhog_core.services.resumable_uploads import (
     UploadLifecycleState,
@@ -101,7 +101,7 @@ class SqlAlchemyCollectionService:
         self._config = config
         self._hot_store = hot_store
         self._upload_store = upload_store
-        self._upload_ttl = config.incomplete_upload_ttl
+        self._upload_file_ttl = config.upload_file_ttl
         self._upload_session_idle_ttl = config.upload_session_idle_ttl
         self._session_factory = make_session_factory(config.database_url)
 
@@ -317,7 +317,7 @@ class SqlAlchemyCollectionService:
             )
 
     def _normalize_archive_store(self, value: str | None) -> str:
-        store = value or self._config.default_archive_store
+        store = value or self._config.archive_write_store
         try:
             self._config.archive_store(store)
         except ValueError as exc:
@@ -364,7 +364,7 @@ class SqlAlchemyCollectionService:
                 target_path=target_path,
                 length=file_record.bytes,
                 upload_store=self._upload_store,
-                ttl=self._upload_ttl,
+                ttl=self._upload_file_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
 
@@ -405,7 +405,7 @@ class SqlAlchemyCollectionService:
                     staged_notify = _decode_collection_notify_json(upload.notify_json)
             payload = _collection_upload_file_registration_payload(upload, file_record)
         if staged_webhook_details is not None:
-            _post_collection_operator_webhook(
+            _post_collection_webhooks(
                 self._config,
                 event="collections.upload_staged",
                 collection_id=normalized_collection_id,
@@ -477,7 +477,7 @@ class SqlAlchemyCollectionService:
                 return _finalized_collection_upload_payload(
                     session,
                     collection,
-                    archive_store=self._config.default_archive_store,
+                    archive_store=self._config.archive_write_store,
                 )
 
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
@@ -523,7 +523,7 @@ class SqlAlchemyCollectionService:
                 collection=None,
             )
         if staged_webhook_details is not None:
-            _post_collection_operator_webhook(
+            _post_collection_webhooks(
                 self._config,
                 event="collections.upload_staged",
                 collection_id=normalized_collection_id,
@@ -655,7 +655,7 @@ class SqlAlchemyCollectionService:
                 target_path=target_path,
                 length=file_record.bytes,
                 upload_store=self._upload_store,
-                ttl=self._upload_ttl,
+                ttl=self._upload_file_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
 
@@ -724,7 +724,7 @@ class SqlAlchemyCollectionService:
                 if content_digest != file_record.sha256:
                     raise HashMismatch("sha256 did not match expected file hash")
             else:
-                file_record.upload_expires_at = upload_expiry_timestamp(self._upload_ttl)
+                file_record.upload_expires_at = upload_expiry_timestamp(self._upload_file_ttl)
 
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session, normalized_collection_id
@@ -741,7 +741,7 @@ class SqlAlchemyCollectionService:
                 "expires_at": file_record.upload_expires_at,
             }
         if staged_webhook_details is not None:
-            _post_collection_operator_webhook(
+            _post_collection_webhooks(
                 self._config,
                 event="collections.upload_staged",
                 collection_id=normalized_collection_id,
@@ -1535,7 +1535,7 @@ def _collection_upload_stats(
     }
 
 
-def _post_collection_operator_webhook(
+def _post_collection_webhooks(
     config: RuntimeConfig,
     *,
     event: str,
@@ -1543,7 +1543,7 @@ def _post_collection_operator_webhook(
     details: dict[str, object] | None = None,
     notify: Mapping[str, object] | None = None,
 ) -> None:
-    post_collection_operator_webhook(
+    post_collection_webhooks(
         config=config,
         event=event,
         collection_id=collection_id,

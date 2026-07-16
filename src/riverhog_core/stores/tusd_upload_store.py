@@ -25,7 +25,7 @@ class _TusdHttpUploadStore:
     def __init__(self, config: RuntimeConfig) -> None:
         self._tusd_base_url = config.tusd_base_url.rstrip("/")
         self._hook_secret = config.tusd_hook_secret
-        self._append_timeout_seconds = config.tusd_append_timeout_seconds
+        self._append_timeout_seconds = config.tusd_append_timeout.total_seconds()
         self._clients = threading.local()
 
     def _metadata_header(self, target_path: str) -> str:

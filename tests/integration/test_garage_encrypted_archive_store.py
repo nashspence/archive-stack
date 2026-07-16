@@ -178,15 +178,14 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
     )
     base_config = load_runtime_config()
     archive_store_config = replace(
-        base_config.archive_store(base_config.default_archive_store),
+        base_config.archive_store(base_config.archive_write_store),
         prefix=prefix,
     )
     config = replace(
         base_config,
         archive_stores={archive_store_config.name: archive_store_config},
-        archive_encryption="age_scrypt",
         archive_passphrase=passphrase,
-        archive_work_factor=12,
+        archive_scrypt_work_factor=12,
         archive_multipart_part_bytes=5 * 1024 * 1024,
         archive_multipart_concurrency=1,
     )

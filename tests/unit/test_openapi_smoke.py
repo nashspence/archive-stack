@@ -49,6 +49,9 @@ def test_collection_upload_requests_retain_hot_storage_by_default() -> None:
         "title": "Retain Hot",
         "default": True,
     }
-    assert schemas["CreateOrResumeCollectionUploadSessionRequest"]["properties"][
-        "retain_hot"
-    ]["default"] is True
+    assert (
+        schemas["CreateOrResumeCollectionUploadSessionRequest"]["properties"]["retain_hot"][
+            "default"
+        ]
+        is True
+    )

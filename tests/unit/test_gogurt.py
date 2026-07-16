@@ -74,8 +74,7 @@ def test_render_gogurt_triggers_removes_only_generated_files(tmp_path: Path) -> 
         text=True,
     )
     assert (
-        f"{GOGURT_EMOJI} gogurt launching: "
-        "route=example-camera-card action=fake-archive-device"
+        f"{GOGURT_EMOJI} gogurt launching: route=example-camera-card action=fake-archive-device"
     ) in autorun.stderr
     assert f"mount={tmp_path / 'mount'}" in autorun.stderr
     assert f"archive example-camera from {tmp_path / 'mount'}" in autorun.stdout

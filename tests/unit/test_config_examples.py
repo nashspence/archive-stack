@@ -35,9 +35,7 @@ def _parse_env_example(path: Path) -> dict[str, str]:
 
 def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) -> None:
     checked_files = {
-        path.relative_to(EXAMPLE_ROOT)
-        for path in EXAMPLE_ROOT.rglob("*")
-        if path.is_file()
+        path.relative_to(EXAMPLE_ROOT) for path in EXAMPLE_ROOT.rglob("*") if path.is_file()
     }
     assert checked_files == EXAMPLE_FILES
 
@@ -75,6 +73,4 @@ def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) ->
     review_plan = build_review_sweep_plan(source=source, config_path=review_config)
     assert review_plan["ok"] is True
     assert review_plan["variants_total"] == 8
-    assert str(review_plan["routes"][0]["variants"][0]["destination"]).startswith(
-        "review-remote:"
-    )
+    assert str(review_plan["routes"][0]["variants"][0]["destination"]).startswith("review-remote:")

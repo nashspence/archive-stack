@@ -34,7 +34,7 @@ def _service(path: Path):
     hot_store = MemoryHotStore({(COLLECTION_ID, name): content for name, content in FILES.items()})
     service = SqlAlchemyCollectionDeletionService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}, default_store="deep"),
+        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
         as_hot_store(hot_store),
         cast(UploadStore, NoopUploadStore()),
     )

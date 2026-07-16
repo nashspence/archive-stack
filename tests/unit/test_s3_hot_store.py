@@ -160,13 +160,12 @@ class _FakeListObjectsV2Paginator:
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        object_store="s3",
-        s3_endpoint_url="http://example.invalid:9000",
-        s3_region="us-east-1",
-        s3_bucket="riverhog",
-        s3_access_key_id="test-access",
-        s3_secret_access_key="test-secret",
-        s3_force_path_style=True,
+        hot_store_endpoint_url="http://example.invalid:9000",
+        hot_store_region="us-east-1",
+        hot_store_bucket="riverhog",
+        hot_store_access_key_id="test-access",
+        hot_store_secret_access_key="test-secret",
+        hot_store_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
@@ -182,7 +181,7 @@ def _store_with_client(
     **config_overrides: object,
 ) -> S3HotStore:
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_hot_store.create_s3_client",
+        "riverhog_core.stores.s3_hot_store.create_hot_store_client",
         lambda config: client,
     )
     return S3HotStore(_config(tmp_path, **config_overrides))

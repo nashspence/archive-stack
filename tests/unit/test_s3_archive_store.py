@@ -180,10 +180,7 @@ class _FakeS3Client:
                 if str(upload["Key"]).startswith(Prefix)
                 and (
                     str(upload["Key"]) > KeyMarker
-                    or (
-                        str(upload["Key"]) == KeyMarker
-                        and upload_id > UploadIdMarker
-                    )
+                    or (str(upload["Key"]) == KeyMarker and upload_id > UploadIdMarker)
                 )
             ),
             key=lambda upload: (str(upload["Key"]), str(upload["UploadId"])),
@@ -281,20 +278,18 @@ class _Tracker(ArchiveMultipartUploadTracker):
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        object_store="s3",
-        s3_endpoint_url="http://example.invalid:9000",
-        s3_region="us-east-1",
-        s3_bucket="riverhog",
-        s3_access_key_id="test-access",
-        s3_secret_access_key="test-secret",
-        s3_force_path_style=True,
+        hot_store_endpoint_url="http://example.invalid:9000",
+        hot_store_region="us-east-1",
+        hot_store_bucket="riverhog",
+        hot_store_access_key_id="test-access",
+        hot_store_secret_access_key="test-secret",
+        hot_store_force_path_style=True,
         archive_passphrase="test-archive-passphrase",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
     store_fields = {
         "archive_backend": "backend",
         "archive_storage_class": "storage_class",
-        "archive_read_mode": "read_mode",
     }
     store_overrides = {
         store_fields[name]: overrides.pop(name) for name in tuple(overrides) if name in store_fields
@@ -422,7 +417,7 @@ def test_upload_concurrently_submits_only_one_part_sized_objects(
         client,
         archive_multipart_part_bytes=multipart_part_bytes,
         archive_object_concurrency=3,
-        archive_work_factor=1,
+        archive_scrypt_work_factor=1,
     )
 
     receipt = store.upload_collection_archive(
@@ -511,9 +506,9 @@ def test_incomplete_multipart_sweep_aborts_only_stale_owned_uploads(
     ]
     assert set(client.uploads) == {"cutoff", "fresh", "other"}
     assert len(client.multipart_list_requests) == 2
-    assert {
-        str(request["Prefix"]) for request in client.multipart_list_requests
-    } == {"archive/archives/"}
+    assert {str(request["Prefix"]) for request in client.multipart_list_requests} == {
+        "archive/archives/"
+    }
 
 
 def test_read_preparation_requests_only_selected_deep_objects(monkeypatch, tmp_path: Path) -> None:
@@ -524,7 +519,6 @@ def test_read_preparation_requests_only_selected_deep_objects(monkeypatch, tmp_p
         client,
         archive_backend="aws",
         archive_storage_class="DEEP_ARCHIVE",
-        archive_read_mode="aws",
     )
     receipt = store.upload_collection_archive(
         collection_id=COLLECTION_ID,

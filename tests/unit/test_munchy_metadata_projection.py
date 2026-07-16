@@ -269,10 +269,7 @@ def test_immich_projection_can_use_configured_sidecar_capture_date_fact() -> Non
     )
 
     assert metadata.capture_date == "2026-06-28T20:30:40-07:00"
-    assert (
-        metadata.capture_date_source
-        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
-    )
+    assert metadata.capture_date_source == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
 
 
 def test_immich_projection_can_use_configured_sidecar_capture_date_fallbacks() -> None:
@@ -280,9 +277,7 @@ def test_immich_projection_can_use_configured_sidecar_capture_date_fallbacks() -
         {
             "sidecars.ids": ["camera_xml"],
             "sidecars.camera_xml.facts.exiftool.tags.vendor_creation_date": "",
-            "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": (
-                "2026-06-28T20:30:40Z"
-            ),
+            "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": ("2026-06-28T20:30:40Z"),
             "exif.gps_latitude": "37.1",
             "exif.gps_longitude": "-122.1",
         },
@@ -299,10 +294,7 @@ def test_immich_projection_can_use_configured_sidecar_capture_date_fallbacks() -
     )
 
     assert metadata.capture_date == "2026-06-28T20:30:40Z"
-    assert (
-        metadata.capture_date_source
-        == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
-    )
+    assert metadata.capture_date_source == "sidecar:camera_xml:exiftool.tags.vendor_capture_date"
 
 
 def test_immich_projection_configured_sidecar_capture_date_must_parse() -> None:
@@ -310,9 +302,7 @@ def test_immich_projection_configured_sidecar_capture_date_must_parse() -> None:
         project_test_metadata(
             {
                 "sidecars.ids": ["camera_xml"],
-                "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": (
-                    "not a date"
-                ),
+                "sidecars.camera_xml.facts.exiftool.tags.vendor_capture_date": ("not a date"),
                 "exif.gps_latitude": "37.1",
                 "exif.gps_longitude": "-122.1",
             },
@@ -535,9 +525,7 @@ def test_immich_projection_writes_multiple_creators_and_container_metadata() -> 
     assert "<dc:creator>" in xmp
     assert "<rdf:li>Alice Example</rdf:li>" in xmp
     assert "<rdf:li>Bob Example</rdf:li>" in xmp
-    assert xmp.index("<rdf:li>Alice Example</rdf:li>") < xmp.index(
-        "<rdf:li>Bob Example</rdf:li>"
-    )
+    assert xmp.index("<rdf:li>Alice Example</rdf:li>") < xmp.index("<rdf:li>Bob Example</rdf:li>")
     assert ffmpeg_container_metadata_args(metadata) == [
         "-metadata",
         "DATE=2026-06-28T20:30:40-07:00",

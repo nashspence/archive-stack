@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.stores.s3_support import create_archive_s3_client, create_s3_client
+from riverhog_core.stores.s3_support import create_archive_s3_client, create_hot_store_client
 
 EXPECTED_LIFECYCLE_CONFIGURATION = {
     "Rules": [
@@ -38,13 +38,13 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
 
 
 def _lifecycle_targets(config) -> list[tuple[object, str]]:
-    targets: list[tuple[object, str]] = [(create_s3_client(config), config.s3_bucket)]
+    targets: list[tuple[object, str]] = [(create_hot_store_client(config), config.hot_store_bucket)]
     storage_signature = (
-        config.s3_endpoint_url,
-        config.s3_region,
-        config.s3_bucket,
-        config.s3_access_key_id,
-        config.s3_force_path_style,
+        config.hot_store_endpoint_url,
+        config.hot_store_region,
+        config.hot_store_bucket,
+        config.hot_store_access_key_id,
+        config.hot_store_force_path_style,
     )
     seen = {storage_signature}
     for store in config.archive_stores.values():

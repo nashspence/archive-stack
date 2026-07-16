@@ -50,7 +50,7 @@ from riverhog_core.services.collections import (
 )
 from riverhog_core.services.notification_routing import (
     decode_collection_notify_json,
-    post_collection_operator_webhook,
+    post_collection_webhooks,
 )
 from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.webhooks import post_webhook
@@ -410,7 +410,7 @@ class SqlAlchemyArchiveUploadService:
                 upload_files=upload_files,
             )
             self._publish_restore_catalog()
-            self._post_collection_operator_webhook(
+            self._post_collection_webhooks(
                 event="collections.finalized",
                 collection_id=collection_id,
                 details={
@@ -785,14 +785,14 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _post_collection_operator_webhook(
+    def _post_collection_webhooks(
         self,
         *,
         event: str,
         collection_id: str,
         details: dict[str, object] | None = None,
     ) -> None:
-        post_collection_operator_webhook(
+        post_collection_webhooks(
             config=self._config,
             event=event,
             collection_id=collection_id,
@@ -898,7 +898,7 @@ class SqlAlchemyArchiveUploadService:
         failed_at: str,
         next_retry_at: str,
     ) -> None:
-        self._post_collection_operator_webhook(
+        self._post_collection_webhooks(
             event="collections.archive_retrying",
             collection_id=collection_id,
             details={
@@ -918,7 +918,7 @@ class SqlAlchemyArchiveUploadService:
         error: str,
         failed_at: str,
     ) -> None:
-        self._post_collection_operator_webhook(
+        self._post_collection_webhooks(
             event="collections.archive_failed",
             collection_id=collection_id,
             details={

@@ -181,7 +181,6 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     unused = cast(object, object())
     archive_stores = ArchiveStoreRegistry(
         {"deep": cast(ArchiveStore, unused)},
-        default_store="deep",
     )
     container = ServiceContainer(
         collections=SqlAlchemyCollectionService(

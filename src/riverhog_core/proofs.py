@@ -28,6 +28,7 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
     lines = [
         line.strip() for output in (stdout, stderr) for line in output.splitlines() if line.strip()
     ]
+
     def pending(line: str) -> bool:
         return line.startswith("Calendar ") and line.endswith(
             ": Pending confirmation in Bitcoin blockchain"
@@ -40,9 +41,11 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
         return line == "Not checking Bitcoin attestation; Bitcoin disabled"
 
     def manual_check(line: str) -> bool:
-        return line.startswith(
-            "To verify manually, check that Bitcoin block "
-        ) and " has merkleroot " in line
+        return (
+            line.startswith("To verify manually, check that Bitcoin block ")
+            and " has merkleroot " in line
+        )
+
     allowed = all(
         pending(line) or attestation(line) or bitcoin_disabled(line) or manual_check(line)
         for line in lines

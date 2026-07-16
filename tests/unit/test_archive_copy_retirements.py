@@ -42,7 +42,6 @@ def _service(path: Path):
         name="b2",
         backend="b2",
         storage_class="STANDARD",
-        read_mode="auto",
     )
     config = replace(
         config,
@@ -55,7 +54,6 @@ def _service(path: Path):
         config,
         ArchiveStoreRegistry(
             {"deep": as_archive_store(deep_store), "b2": as_archive_store(b2_store)},
-            default_store="deep",
         ),
     )
     return config, deep_store, b2_store, service

@@ -41,13 +41,13 @@ def _create_s3_client(
     )
 
 
-def create_s3_client(config: RuntimeConfig) -> Any:
+def create_hot_store_client(config: RuntimeConfig) -> Any:
     return _create_s3_client(
-        endpoint_url=config.s3_endpoint_url,
-        region=config.s3_region,
-        access_key_id=config.s3_access_key_id,
-        secret_access_key=config.s3_secret_access_key,
-        force_path_style=config.s3_force_path_style,
+        endpoint_url=config.hot_store_endpoint_url,
+        region=config.hot_store_region,
+        access_key_id=config.hot_store_access_key_id,
+        secret_access_key=config.hot_store_secret_access_key,
+        force_path_style=config.hot_store_force_path_style,
         max_pool_connections=config.s3_max_pool_connections,
     )
 
@@ -90,11 +90,11 @@ def _ensure_bucket_exists(client: Any, *, bucket: str, region: str) -> None:
 
 def ensure_bucket_exists(config: RuntimeConfig) -> None:
     _ensure_bucket_exists(
-        create_s3_client(config),
-        bucket=config.s3_bucket,
-        region=config.s3_region,
+        create_hot_store_client(config),
+        bucket=config.hot_store_bucket,
+        region=config.hot_store_region,
     )
-    seen = {(config.s3_endpoint_url, config.s3_bucket)}
+    seen = {(config.hot_store_endpoint_url, config.hot_store_bucket)}
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:
@@ -108,19 +108,19 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
 
 
 def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> None:
-    client = create_s3_client(config)
+    client = create_hot_store_client(config)
     for prefix in prefixes:
         paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=config.s3_bucket, Prefix=prefix):
+        for page in paginator.paginate(Bucket=config.hot_store_bucket, Prefix=prefix):
             contents = page.get("Contents", [])
             if not contents:
                 continue
             client.delete_objects(
-                Bucket=config.s3_bucket,
+                Bucket=config.hot_store_bucket,
                 Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
             )
 
-    seen = {(config.s3_endpoint_url, config.s3_bucket)}
+    seen = {(config.hot_store_endpoint_url, config.hot_store_bucket)}
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:

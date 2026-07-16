@@ -13,10 +13,10 @@ import yaml
 from yaml.nodes import MappingNode, Node, SequenceNode
 
 from riverhog_api.routers.jeb import (
-    DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS,
     DEFAULT_JEB_SERVICE_URL,
+    DEFAULT_JEB_TIMEOUT,
 )
-from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.runtime_config import load_runtime_config, parse_duration
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -155,24 +155,14 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         for path in package.rglob("*.py")
     )
     configured_names = {
-        name
-        for name in compose["services"]["app"]["environment"]
-        if name.startswith("RIVERHOG_")
+        name for name in compose["services"]["app"]["environment"] if name.startswith("RIVERHOG_")
     }
     dynamic_archive_store_names = {
-        name
-        for name in configured_names
-        if name.startswith("RIVERHOG_ARCHIVE_STORE_")
+        name for name in configured_names if name.startswith("RIVERHOG_ARCHIVE_STORE_")
     }
-    assert all(
-        name in runtime_source
-        for name in configured_names - dynamic_archive_store_names
-    )
+    assert all(name in runtime_source for name in configured_names - dynamic_archive_store_names)
     assert "RIVERHOG_ARCHIVE_STORE_" in runtime_source
-    assert {
-        name.rsplit("_", 1)[-1]
-        for name in dynamic_archive_store_names
-    } <= {
+    assert {name.rsplit("_", 1)[-1] for name in dynamic_archive_store_names} <= {
         "URL",
         "REGION",
         "BUCKET",
@@ -182,7 +172,6 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         "PREFIX",
         "BACKEND",
         "CLASS",
-        "MODE",
     }
 
     example_names = {
@@ -248,9 +237,7 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         compose_environment[name] = match.group(1) if match else value
 
     assert compose_environment["RIVERHOG_JEB_URL"] == DEFAULT_JEB_SERVICE_URL
-    assert float(compose_environment["RIVERHOG_JEB_TIMEOUT_SECONDS"]) == (
-        DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS
-    )
+    assert parse_duration(compose_environment["RIVERHOG_JEB_TIMEOUT"]) == DEFAULT_JEB_TIMEOUT
 
     with patch.dict(os.environ, {}, clear=True):
         runtime_defaults = asdict(load_runtime_config())
@@ -260,10 +247,10 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
     topology_fields = {
         "database_url",
         "public_base_url",
-        "s3_access_key_id",
-        "s3_endpoint_url",
-        "s3_region",
-        "s3_secret_access_key",
+        "hot_store_access_key_id",
+        "hot_store_endpoint_url",
+        "hot_store_region",
+        "hot_store_secret_access_key",
         "tusd_base_url",
         "upload_staging_root",
     }
@@ -288,7 +275,7 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
 def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     required = {
         "RIVERHOG_ARCHIVE_STORES",
-        "RIVERHOG_DEFAULT_ARCHIVE_STORE",
+        "RIVERHOG_ARCHIVE_WRITE_STORE",
         "RIVERHOG_ARCHIVE_READ_ORDER",
         "RIVERHOG_ARCHIVE_STORE_DEEP_ENDPOINT_URL",
         "RIVERHOG_ARCHIVE_STORE_DEEP_REGION",
@@ -299,7 +286,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORE_DEEP_PREFIX",
         "RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND",
         "RIVERHOG_ARCHIVE_STORE_DEEP_STORAGE_CLASS",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_READ_MODE",
         "RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL",
         "RIVERHOG_ARCHIVE_STORE_B2_BUCKET",
         "RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID",
@@ -310,34 +296,33 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE",
         "RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL",
         "RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
-        "RIVERHOG_ARCHIVE_ENCRYPTION",
         "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE",
         "RIVERHOG_ARCHIVE_PASSPHRASE",
-        "RIVERHOG_ARCHIVE_WORK_FACTOR",
+        "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
         "RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
         "RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL",
-        "RIVERHOG_ARCHIVE_RESTORE_LATENCY",
-        "RIVERHOG_ARCHIVE_RESTORE_READY_TTL",
+        "RIVERHOG_ARCHIVE_RESTORE_ESTIMATED_LATENCY",
+        "RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL",
         "RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
         "RIVERHOG_API_TOKEN",
         "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
         "RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
-        "RIVERHOG_NOTIFY_WEBHOOKS",
-        "RIVERHOG_NOTIFY_DEFAULT_RECIPIENTS",
+        "RIVERHOG_COLLECTION_WEBHOOKS",
+        "RIVERHOG_COLLECTION_WEBHOOK_DEFAULT_RECIPIENTS",
         "RIVERHOG_TUSD_PUBLIC_SIGNING_SECRET",
-        "RIVERHOG_TUSD_APPEND_TIMEOUT_SECONDS",
-        "RIVERHOG_INCOMPLETE_UPLOAD_TTL",
+        "RIVERHOG_TUSD_APPEND_TIMEOUT",
+        "RIVERHOG_UPLOAD_FILE_TTL",
         "RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
-        assert compose["services"][service]["environment"][
-            "RIVERHOG_ARCHIVE_STORE_B2_PREFIX"
-        ] == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-archive}"
-
+        assert (
+            compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_B2_PREFIX"]
+            == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-archive}"
+        )
 
 
 @pytest.mark.parametrize(

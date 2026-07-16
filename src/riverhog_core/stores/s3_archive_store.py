@@ -252,7 +252,7 @@ class S3ArchiveStore:
     def max_plaintext_object_bytes(self) -> int:
         session = ResumableAgeScryptSession.create(
             self._config.archive_passphrase,
-            log_n=self._config.archive_work_factor,
+            log_n=self._config.archive_scrypt_work_factor,
         )
         return max_age_plaintext_object_bytes(age_prefix_len=len(session.age_prefix))
 
@@ -357,7 +357,7 @@ class S3ArchiveStore:
             expected_bytes=expected_bytes,
             expected_sha256=expected_sha256,
         )
-        if self._requires_aws_read_preparation():
+        if self._uses_aws_restore_api():
             _validate_aws_storage_class(
                 object_key=object_key,
                 head=head,
@@ -485,7 +485,7 @@ class S3ArchiveStore:
                     kind=expected.kind,
                     expected=expected,
                 )
-                if self._requires_aws_read_preparation():
+                if self._uses_aws_restore_api():
                     _validate_aws_storage_class(
                         object_key=expected.object_path,
                         head=head,
@@ -565,7 +565,7 @@ class S3ArchiveStore:
         ciphertext = encrypt_age_scrypt(
             catalog_bytes,
             self._config.archive_passphrase,
-            log_n=self._config.archive_work_factor,
+            log_n=self._config.archive_scrypt_work_factor,
         )
         self._client.put_object(
             Bucket=self._bucket,
@@ -634,7 +634,7 @@ class S3ArchiveStore:
         if data_object is not None:
             age_session = ResumableAgeScryptSession.create(
                 self._config.archive_passphrase,
-                log_n=self._config.archive_work_factor,
+                log_n=self._config.archive_scrypt_work_factor,
                 plaintext_size=plaintext_bytes,
             )
             content_length = age_ciphertext_len_for_plaintext_len(
@@ -647,7 +647,7 @@ class S3ArchiveStore:
             content = encrypt_age_scrypt(
                 plaintext,
                 self._config.archive_passphrase,
-                log_n=self._config.archive_work_factor,
+                log_n=self._config.archive_scrypt_work_factor,
             )
             content_length = len(content)
         if content_length > STORED_OBJECT_LIMIT:
@@ -671,7 +671,7 @@ class S3ArchiveStore:
             }
         }
         if (
-            self._requires_aws_read_preparation()
+            self._uses_aws_restore_api()
             and _configured_s3_storage_class(storage_class) != "STANDARD"
         ):
             extra_args["StorageClass"] = storage_class
@@ -1365,10 +1365,9 @@ class S3ArchiveStore:
                 ready_at=requested_at,
                 message="Collection archive object is immediately readable.",
             )
-        if self._store.read_mode == "auto" and not self._requires_aws_read_preparation():
+        if not self._uses_aws_restore_api():
             raise RuntimeError(
-                "archive object read preparation requires an AWS S3 archive backend or "
-                "a store READ_MODE of aws"
+                "archive object read preparation requires an AWS archive store backend"
             )
         try:
             self._client.restore_object(
@@ -1501,13 +1500,8 @@ class S3ArchiveStore:
         _ = collection_id, objects
         return
 
-    def _requires_aws_read_preparation(self) -> bool:
-        endpoint = self._store.endpoint_url.casefold()
-        return (
-            self._store.read_mode == "aws"
-            or self._store.backend.casefold() == "aws"
-            or "amazonaws.com" in endpoint
-        )
+    def _uses_aws_restore_api(self) -> bool:
+        return self._store.backend.casefold() == "aws"
 
 
 def _combine_fetch_materialization_statuses(

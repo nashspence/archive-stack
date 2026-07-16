@@ -32,7 +32,7 @@ def _service(path: Path, *, ready: bool = True):
     hot_store = MemoryHotStore()
     service = SqlAlchemyArchiveRestoreService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}, default_store="deep"),
+        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
         as_hot_store(hot_store),
         proof_verifier=FixtureProofVerifier(),
     )

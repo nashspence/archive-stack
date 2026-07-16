@@ -13,7 +13,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing, HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.stores.s3_support import create_s3_client
+from riverhog_core.stores.s3_support import create_hot_store_client
 
 _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
 _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
@@ -72,8 +72,8 @@ def _validate_recorded_parts_exist_remotely(
 
 class S3HotStore:
     def __init__(self, config: RuntimeConfig) -> None:
-        self._bucket = config.s3_bucket
-        self._client = create_s3_client(config)
+        self._bucket = config.hot_store_bucket
+        self._client = create_hot_store_client(config)
         self._single_put_max_bytes = config.hot_single_put_max_bytes
 
     def _key(self, collection_id: str, path: str) -> str:

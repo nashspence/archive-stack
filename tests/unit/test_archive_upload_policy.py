@@ -82,7 +82,7 @@ def _process(
 ) -> None:
     service = SqlAlchemyArchiveUploadService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}, default_store="deep"),
+        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
         as_hot_store(hot_store) if hot_store is not None else None,
         upload_store=upload_store,  # type: ignore[arg-type]
         proof_stamper=FixtureProofStamper(),

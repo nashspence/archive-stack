@@ -417,12 +417,12 @@ def test_upload_collection_via_session_registers_files_before_completion(
         def create_or_resume_collection_upload_session(
             self,
             slug: str,
-                *,
-                ingest_source: str | None = None,
-                upload_timestamp: str | None = None,
-                archive_store: str | None = None,
-                retain_hot: bool = True,
-            ) -> dict[str, object]:
+            *,
+            ingest_source: str | None = None,
+            upload_timestamp: str | None = None,
+            archive_store: str | None = None,
+            retain_hot: bool = True,
+        ) -> dict[str, object]:
             assert slug == "photos 2024"
             assert ingest_source == str(root)
             assert upload_timestamp == "20250712T213200Z"
@@ -1002,9 +1002,7 @@ def test_wait_for_finalized_collection_supports_reattach_without_manifest(
                 "bytes": 1234,
                 "hot_files": 0,
                 "hot_bytes": 0,
-                    "archive_copies": [
-                        {"store": "deep", "state": "uploaded", "stored_bytes": 567}
-                    ],
+                "archive_copies": [{"store": "deep", "state": "uploaded", "stored_bytes": 567}],
             }
 
     monkeypatch.setattr(riverhog_main, "_upload_finalize_timeout_seconds", lambda: 1.0)

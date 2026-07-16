@@ -14,8 +14,7 @@ def test_jeb_compose_exposes_readiness_healthcheck() -> None:
     assert service["environment"]["JEB_HEALTH_HOST"] == "0.0.0.0"
     assert service["environment"]["JEB_HEALTH_PORT"] == "8081"
     assert all(
-        volume.get("target", "").startswith(("/landing", "/state"))
-        for volume in service["volumes"]
+        volume.get("target", "").startswith(("/landing", "/state")) for volume in service["volumes"]
     )
     healthcheck = service["healthcheck"]
     assert healthcheck["test"][:3] == ["CMD", "python", "-c"]

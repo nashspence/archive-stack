@@ -277,7 +277,7 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
             "allow_conversion_only_container": True,
             "artifact_drops": [
                 {"selector": " Stream:7 ", "reason": "not useful after stabilization"}
-            ]
+            ],
         },
     }
 

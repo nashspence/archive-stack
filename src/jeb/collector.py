@@ -62,7 +62,7 @@ from riverhog_core.operator_reminders import (
     operator_reminder_due,
     reminder_zone,
 )
-from riverhog_core.runtime_config import parse_notify_webhook_map
+from riverhog_core.runtime_config import parse_collection_webhooks
 from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.webhooks import (
     WebhookConfig,
@@ -3286,7 +3286,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         enabled=env_bool(values, "JEB_NOTIFY_ENABLED", False),
         url=notify_url or "",
         base_url=env_value_from(values, "JEB_NOTIFY_BASE_URL", "") or "",
-        webhook_urls=parse_notify_webhook_map(values),
+        webhook_urls=parse_collection_webhooks(values),
         recipients=env_csv(values, "JEB_NOTIFY_RECIPIENTS"),
         timeout_seconds=float(parse_duration(env_value_from(values, "JEB_NOTIFY_TIMEOUT"), 10)),
         reminder_interval_seconds=parse_duration(
@@ -3298,7 +3298,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     )
     if notify.enabled and not (notify.url or notify.webhook_urls):
         raise ValueError(
-            "RIVERHOG_OPERATOR_WEBHOOK_URL or RIVERHOG_NOTIFY_WEBHOOKS is required "
+            "RIVERHOG_OPERATOR_WEBHOOK_URL or RIVERHOG_COLLECTION_WEBHOOKS is required "
             "when JEB_NOTIFY_ENABLED=true"
         )
 

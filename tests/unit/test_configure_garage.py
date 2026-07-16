@@ -28,13 +28,12 @@ class _FakeS3Client:
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        object_store="s3",
-        s3_endpoint_url="http://example.invalid:9000",
-        s3_region="us-east-1",
-        s3_bucket="riverhog",
-        s3_access_key_id="test-access",
-        s3_secret_access_key="test-secret",
-        s3_force_path_style=True,
+        hot_store_endpoint_url="http://example.invalid:9000",
+        hot_store_region="us-east-1",
+        hot_store_bucket="riverhog",
+        hot_store_access_key_id="test-access",
+        hot_store_secret_access_key="test-secret",
+        hot_store_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
@@ -52,16 +51,16 @@ def test_lifecycle_targets_uses_archive_bucket_when_distinct(tmp_path: Path) -> 
     hot_client = _FakeS3Client()
     archive_client = _FakeS3Client()
 
-    original_hot = configure_garage.create_s3_client
+    original_hot = configure_garage.create_hot_store_client
     original_archive = configure_garage.create_archive_s3_client
-    configure_garage.create_s3_client = lambda current: hot_client  # type: ignore[assignment]
+    configure_garage.create_hot_store_client = lambda current: hot_client  # type: ignore[assignment]
     configure_garage.create_archive_s3_client = (  # type: ignore[assignment]
         lambda current, store: archive_client
     )
     try:
         targets = configure_garage._lifecycle_targets(config)
     finally:
-        configure_garage.create_s3_client = original_hot  # type: ignore[assignment]
+        configure_garage.create_hot_store_client = original_hot  # type: ignore[assignment]
         configure_garage.create_archive_s3_client = original_archive  # type: ignore[assignment]
 
     assert targets == [

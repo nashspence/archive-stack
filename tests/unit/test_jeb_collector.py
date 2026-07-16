@@ -335,7 +335,7 @@ def test_env_config_loads_named_notify_webhook_map(tmp_path: Path) -> None:
             **env_for(tmp_path, accounts="camera"),
             "JEB_NOTIFY_ENABLED": "true",
             "JEB_NOTIFY_RECIPIENTS": "operator,collaborator",
-            "RIVERHOG_NOTIFY_WEBHOOKS": '{"operator":"http://operator.test","collaborator":"http://collaborator.test"}',
+            "RIVERHOG_COLLECTION_WEBHOOKS": '{"operator":"http://operator.test","collaborator":"http://collaborator.test"}',
         }
     )
 

@@ -26,7 +26,7 @@ def _service(path: Path, *, hot: bool):
     )
     service = SqlAlchemyFetchService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}, default_store="deep"),
+        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
         as_hot_store(hot_store),
     )
     return config, archive_store, hot_store, service

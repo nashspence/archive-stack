@@ -25,7 +25,6 @@ def _service(path: Path, *, source_ready: bool = True):
         name="b2",
         backend="b2",
         storage_class="STANDARD",
-        read_mode="auto",
     )
     config = replace(
         config,
@@ -40,7 +39,6 @@ def _service(path: Path, *, source_ready: bool = True):
                 "deep": as_archive_store(source),
                 "b2": as_archive_store(destination),
             },
-            default_store="deep",
         ),
         proof_verifier=FixtureProofVerifier(),
     )

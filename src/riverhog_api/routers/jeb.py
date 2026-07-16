@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -8,10 +9,11 @@ from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from riverhog_core.domain.errors import BadRequest, InvalidState, RiverhogError, ServiceUnavailable
+from riverhog_core.runtime_config import parse_duration
 
 router = APIRouter(tags=["jeb"])
 DEFAULT_JEB_SERVICE_URL = "http://riverhog-jeb:8081"
-DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS = 300.0
+DEFAULT_JEB_TIMEOUT = timedelta(minutes=5)
 
 
 class JebArchiveNowRequest(BaseModel):
@@ -25,13 +27,13 @@ def _jeb_service_url() -> str:
 
 
 def _jeb_service_timeout() -> float:
-    raw = os.getenv("RIVERHOG_JEB_TIMEOUT_SECONDS", str(DEFAULT_JEB_SERVICE_TIMEOUT_SECONDS))
+    raw = os.getenv("RIVERHOG_JEB_TIMEOUT", "5m")
     try:
-        value = float(raw)
+        value = parse_duration(raw).total_seconds()
     except ValueError as exc:
-        raise BadRequest("RIVERHOG_JEB_TIMEOUT_SECONDS must be a positive number") from exc
+        raise BadRequest("RIVERHOG_JEB_TIMEOUT must be a positive duration") from exc
     if value <= 0:
-        raise BadRequest("RIVERHOG_JEB_TIMEOUT_SECONDS must be a positive number")
+        raise BadRequest("RIVERHOG_JEB_TIMEOUT must be a positive duration")
     return value
 
 

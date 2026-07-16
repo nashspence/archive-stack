@@ -14,13 +14,12 @@ from tests.unit.db_helpers import sqlite_url
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     return RuntimeConfig(
-        object_store="s3",
-        s3_endpoint_url="http://example.invalid:9000",
-        s3_region="us-east-1",
-        s3_bucket="riverhog",
-        s3_access_key_id="test-access",
-        s3_secret_access_key="test-secret",
-        s3_force_path_style=True,
+        hot_store_endpoint_url="http://example.invalid:9000",
+        hot_store_region="us-east-1",
+        hot_store_bucket="riverhog",
+        hot_store_access_key_id="test-access",
+        hot_store_secret_access_key="test-secret",
+        hot_store_force_path_style=True,
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),

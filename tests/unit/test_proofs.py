@@ -44,8 +44,7 @@ def test_command_proof_verifier_accepts_pending_blockchain_confirmation(
             returncode=1,
             stdout="",
             stderr=(
-                "Calendar https://example.invalid: "
-                "Pending confirmation in Bitcoin blockchain\n"
+                "Calendar https://example.invalid: Pending confirmation in Bitcoin blockchain\n"
             ),
         ),
     )

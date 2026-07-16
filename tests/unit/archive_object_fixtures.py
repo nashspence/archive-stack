@@ -160,10 +160,9 @@ def seed_archive_copy(
                     name=store,
                     backend=backend,
                     storage_class=storage_class,
-                    read_mode="auto",
                 )
             },
-            default_archive_store=store,
+            archive_write_store=store,
             archive_read_order=(store,),
         ),
         current,

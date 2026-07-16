@@ -82,7 +82,7 @@ def collection_notification_recipients(
     notify: Mapping[str, object] | None,
 ) -> list[str]:
     if notify is None:
-        return list(config.notify_default_recipients)
+        return list(config.collection_webhook_default_recipients)
     if not bool(notify.get("enabled", True)):
         return []
     raw_recipients = notify.get("recipients") or []
@@ -91,7 +91,7 @@ def collection_notification_recipients(
     return [normalize_notify_recipient(item) for item in raw_recipients]
 
 
-def post_collection_operator_webhook(
+def post_collection_webhooks(
     config: RuntimeConfig,
     *,
     event: str,
@@ -102,38 +102,24 @@ def post_collection_operator_webhook(
     log: logging.Logger,
 ) -> None:
     recipients = collection_notification_recipients(config, notify)
-    if recipients:
-        for recipient in recipients:
-            url = config.notify_webhook_urls.get(recipient)
-            if not url:
-                log.warning(
-                    "collection notification recipient %s has no configured webhook",
-                    recipient,
-                )
-                continue
-            _post_collection_webhook_payload(
-                url=url,
-                config=config,
-                event=event,
-                collection_id=collection_id,
-                details=details,
-                recipient=recipient,
-                post=post,
-                log=log,
+    for recipient in recipients:
+        url = config.collection_webhook_urls.get(recipient)
+        if not url:
+            log.warning(
+                "collection notification recipient %s has no configured webhook",
+                recipient,
             )
-        return
-    if notify is not None or not config.operator_webhook_url:
-        return
-    _post_collection_webhook_payload(
-        url=config.operator_webhook_url,
-        config=config,
-        event=event,
-        collection_id=collection_id,
-        details=details,
-        recipient=None,
-        post=post,
-        log=log,
-    )
+            continue
+        _post_collection_webhook_payload(
+            url=url,
+            config=config,
+            event=event,
+            collection_id=collection_id,
+            details=details,
+            recipient=recipient,
+            post=post,
+            log=log,
+        )
 
 
 def _post_collection_webhook_payload(
@@ -151,7 +137,7 @@ def _post_collection_webhook_payload(
         webhook_config = WebhookConfig(
             url=url,
             base_url=config.public_base_url or "",
-            timeout_seconds=config.operator_webhook_timeout.total_seconds(),
+            timeout_seconds=config.webhook_timeout.total_seconds(),
         )
         payload = build_collection_lifecycle_payload(
             config=webhook_config,

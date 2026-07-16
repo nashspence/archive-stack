@@ -521,7 +521,7 @@ class SqlAlchemyArchiveRestoreService:
                     record.state = ArchiveRestoreState.READY.value
                     record.ready_at = status.ready_at or current_text
                     record.expires_at = status.expires_at or format_utc_timestamp(
-                        current + self._config.archive_restore_ready_ttl
+                        current + self._config.archive_restore_availability_ttl
                     )
                     record.next_poll_at = None
                     record.latest_message = (
@@ -918,7 +918,7 @@ def _request_restore(
     if not bindings:
         raise InvalidState("archive restore has no files")
     requested_at = format_utc_timestamp(current)
-    estimated_ready_at = format_utc_timestamp(current + config.archive_restore_latency)
+    estimated_ready_at = format_utc_timestamp(current + config.archive_restore_estimated_latency)
     statuses = [
         archive_stores.require(binding.archive_copy.store).prepare_archive_objects_read(
             collection_id=binding.collection.id,
@@ -1306,10 +1306,11 @@ def _manifest_status(
 
 def _build_warnings(config: RuntimeConfig) -> tuple[str, ...]:
     return (
-        f"Archive retrieval may take {_format_timedelta(config.archive_restore_latency)}.",
+        "Archive retrieval may take "
+        f"{_format_timedelta(config.archive_restore_estimated_latency)}.",
         "Riverhog verifies the manifest, proof, archive objects, and selected files.",
         "Temporary retrieval availability expires after "
-        f"{_format_timedelta(config.archive_restore_ready_ttl)}.",
+        f"{_format_timedelta(config.archive_restore_availability_ttl)}.",
     )
 
 
@@ -1528,7 +1529,7 @@ def _webhook_config(config: RuntimeConfig) -> WebhookConfig:
     return WebhookConfig(
         url=config.operator_webhook_url or "",
         base_url=config.public_base_url or "",
-        timeout_seconds=config.operator_webhook_timeout.total_seconds(),
+        timeout_seconds=config.webhook_timeout.total_seconds(),
         retry_seconds=config.operator_webhook_retry_delay.total_seconds(),
         reminder_interval_seconds=config.operator_webhook_reminder_interval.total_seconds(),
         reminder_time=config.operator_webhook_reminder_time,
@@ -1547,7 +1548,7 @@ def _generated_restore_id(session: Session, collection_id: str) -> str:
 
 
 def _restore_hold_days(config: RuntimeConfig) -> int:
-    return max(ceil(config.archive_restore_ready_ttl.total_seconds() / 86400), 1)
+    return max(ceil(config.archive_restore_availability_ttl.total_seconds() / 86400), 1)
 
 
 def _format_timedelta(value: timedelta) -> str:

@@ -129,4 +129,3 @@ def test_review_sweep_explicit_variant_profile_id_controls_profile_name() -> Non
 
     assert variants[0]["encode_profile"]["name"] == "q40"
     assert variants[0]["encode_profile"]["archive"]["quality"] == 40
-

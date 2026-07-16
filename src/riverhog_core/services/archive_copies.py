@@ -192,7 +192,7 @@ class SqlAlchemyArchiveCopyService:
                     hold_days=_read_hold_days(self._config),
                     requested_at=current_text,
                     estimated_ready_at=format_utc_timestamp(
-                        current + self._config.archive_restore_latency
+                        current + self._config.archive_restore_estimated_latency
                     ),
                 )
                 job.read_requested_at = current_text
@@ -432,4 +432,4 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
 
 
 def _read_hold_days(config: RuntimeConfig) -> int:
-    return max(1, int(config.archive_restore_ready_ttl.total_seconds() // 86400) + 1)
+    return max(1, int(config.archive_restore_availability_ttl.total_seconds() // 86400) + 1)
