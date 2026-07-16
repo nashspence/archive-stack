@@ -6,7 +6,7 @@ import re
 import secrets
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
 
@@ -255,6 +255,61 @@ class S3ArchiveStore:
             log_n=self._config.archive_work_factor,
         )
         return max_age_plaintext_object_bytes(age_prefix_len=len(session.age_prefix))
+
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int:
+        if initiated_before.tzinfo is None:
+            raise ValueError("multipart upload cutoff must be timezone-aware")
+        cutoff = initiated_before.astimezone(UTC)
+        archive_prefix = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
+        request: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Prefix": archive_prefix,
+        }
+        aborted = 0
+        while True:
+            response = cast(
+                dict[str, Any],
+                self._client.list_multipart_uploads(**request),
+            )
+            for upload in response.get("Uploads") or ():
+                if not isinstance(upload, dict):
+                    continue
+                object_key = str(upload.get("Key", ""))
+                upload_id = str(upload.get("UploadId", ""))
+                initiated_at = upload.get("Initiated")
+                if not object_key or not upload_id or not isinstance(initiated_at, datetime):
+                    _LOG.warning(
+                        "ignoring incomplete archive multipart upload with invalid listing metadata"
+                    )
+                    continue
+                if initiated_at.tzinfo is None:
+                    _LOG.warning(
+                        "ignoring incomplete archive multipart upload with naive initiation time"
+                    )
+                    continue
+                if initiated_at.astimezone(UTC) >= cutoff:
+                    continue
+                self._client.abort_multipart_upload(
+                    Bucket=self._bucket,
+                    Key=object_key,
+                    UploadId=upload_id,
+                )
+                aborted += 1
+
+            if not response.get("IsTruncated"):
+                return aborted
+            next_key_marker = str(response.get("NextKeyMarker", ""))
+            next_upload_id_marker = str(response.get("NextUploadIdMarker", ""))
+            if not next_key_marker or not next_upload_id_marker:
+                raise RuntimeError(
+                    "multipart upload listing returned incomplete pagination markers"
+                )
+            request["KeyMarker"] = next_key_marker
+            request["UploadIdMarker"] = next_upload_id_marker
 
     def _collection_object_key(
         self,

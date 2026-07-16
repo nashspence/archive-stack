@@ -45,6 +45,18 @@ def test_load_runtime_config_parses_archive_encryption(
     assert config.archive_work_factor == 12
 
 
+def test_load_runtime_config_parses_archive_multipart_safeguards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE", "96h")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL", "2h")
+
+    config = load_runtime_config()
+
+    assert config.archive_multipart_max_age == timedelta(hours=96)
+    assert config.archive_multipart_sweep_interval == timedelta(hours=2)
+
+
 def test_load_runtime_config_requires_archive_encryption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

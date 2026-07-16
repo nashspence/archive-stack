@@ -26,6 +26,7 @@ from riverhog_api.routers.search import router as search_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 from riverhog_core.domain.errors import RiverhogError
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.timestamps import utc_now
 
 _LOG = logging.getLogger(__name__)
 
@@ -111,6 +112,16 @@ def _process_archive_uploads(
     container.archive_copies.process_due(limit=1)
 
 
+def _abort_incomplete_archive_multipart_uploads(
+    container: ServiceContainer,
+    *,
+    max_age: timedelta,
+) -> int:
+    return container.archive_uploads.abort_incomplete_multipart_uploads(
+        initiated_before=utc_now() - max_age
+    )
+
+
 def _process_archive_restores(
     container: ServiceContainer,
     *,
@@ -182,6 +193,35 @@ async def _run_archive_upload_reaper(
             _LOG.exception("archive upload reaper sweep failed")
 
 
+async def _run_archive_multipart_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    sweep_interval: timedelta,
+    max_age: timedelta,
+) -> None:
+    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    first_run = True
+    while True:
+        try:
+            if first_run:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            first_run = False
+            container = container_provider()
+            if container is None:
+                continue
+            await asyncio.to_thread(
+                _abort_incomplete_archive_multipart_uploads,
+                container,
+                max_age=max_age,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("archive multipart upload reaper sweep failed")
+
+
 async def _run_archive_restore_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
@@ -221,6 +261,7 @@ def create_app(
     container_provider: Callable[[], ServiceContainer] | None = None,
     upload_expiry_reaper_interval: float | None = None,
     archive_upload_reaper_interval: float | None = None,
+    archive_multipart_reaper_interval: float | None = None,
     archive_restore_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
@@ -239,6 +280,11 @@ def create_app(
         timedelta(seconds=archive_upload_reaper_interval)
         if archive_upload_reaper_interval is not None
         else config.archive_upload_sweep_interval
+    )
+    archive_multipart_sweep_interval = (
+        timedelta(seconds=archive_multipart_reaper_interval)
+        if archive_multipart_reaper_interval is not None
+        else config.archive_multipart_sweep_interval
     )
     archive_restore_sweep_interval = (
         timedelta(seconds=archive_restore_reaper_interval)
@@ -272,6 +318,13 @@ def create_app(
                 sweep_interval=archive_sweep_interval,
             )
         )
+        archive_multipart_task = asyncio.create_task(
+            _run_archive_multipart_reaper(
+                get_or_create_container,
+                sweep_interval=archive_multipart_sweep_interval,
+                max_age=config.archive_multipart_max_age,
+            )
+        )
         archive_restore_task = asyncio.create_task(
             _run_archive_restore_reaper(
                 get_or_create_container,
@@ -283,11 +336,14 @@ def create_app(
         finally:
             upload_task.cancel()
             archive_task.cancel()
+            archive_multipart_task.cancel()
             archive_restore_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await archive_multipart_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_restore_task
 

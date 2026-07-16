@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from riverhog_core.archive_objects import CollectionArchive
@@ -134,6 +135,12 @@ class ArchiveStore(Protocol):
     def new_collection_archive_storage_prefix(self) -> str: ...
 
     def max_plaintext_object_bytes(self) -> int: ...
+
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int: ...
 
     def upload_collection_archive(
         self,

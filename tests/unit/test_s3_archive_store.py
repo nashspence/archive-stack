@@ -62,6 +62,9 @@ class _FakeS3Client:
         self.fail_after_parts: int | None = None
         self.uploaded_parts = 0
         self.next_upload = 1
+        self.aborted_uploads: list[tuple[str, str]] = []
+        self.multipart_page_size: int | None = None
+        self.multipart_list_requests: list[dict[str, object]] = []
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         _ = Bucket
@@ -83,7 +86,12 @@ class _FakeS3Client:
         _ = Bucket
         upload_id = f"upload-{self.next_upload}"
         self.next_upload += 1
-        self.uploads[upload_id] = {"Key": Key, "Parts": {}, "Args": kwargs}
+        self.uploads[upload_id] = {
+            "Key": Key,
+            "Parts": {},
+            "Args": kwargs,
+            "Initiated": datetime(2026, 1, 1, tzinfo=UTC),
+        }
         return {"UploadId": upload_id}
 
     def upload_part(
@@ -145,8 +153,62 @@ class _FakeS3Client:
             **upload["Args"],
         }
 
-    def abort_multipart_upload(self, **_: object) -> None:
-        return
+    def list_multipart_uploads(
+        self,
+        *,
+        Bucket: str,
+        Prefix: str,
+        KeyMarker: str = "",
+        UploadIdMarker: str = "",
+    ) -> dict[str, object]:
+        self.multipart_list_requests.append(
+            {
+                "Bucket": Bucket,
+                "Prefix": Prefix,
+                "KeyMarker": KeyMarker,
+                "UploadIdMarker": UploadIdMarker,
+            }
+        )
+        uploads = sorted(
+            (
+                {
+                    "Key": str(upload["Key"]),
+                    "UploadId": upload_id,
+                    "Initiated": upload["Initiated"],
+                }
+                for upload_id, upload in self.uploads.items()
+                if str(upload["Key"]).startswith(Prefix)
+                and (
+                    str(upload["Key"]) > KeyMarker
+                    or (
+                        str(upload["Key"]) == KeyMarker
+                        and upload_id > UploadIdMarker
+                    )
+                )
+            ),
+            key=lambda upload: (str(upload["Key"]), str(upload["UploadId"])),
+        )
+        page_size = self.multipart_page_size or len(uploads)
+        page = uploads[:page_size]
+        response: dict[str, object] = {
+            "IsTruncated": len(page) < len(uploads),
+            "Uploads": page,
+        }
+        if len(page) < len(uploads):
+            response["NextKeyMarker"] = page[-1]["Key"]
+            response["NextUploadIdMarker"] = page[-1]["UploadId"]
+        return response
+
+    def abort_multipart_upload(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+    ) -> None:
+        _ = Bucket
+        self.aborted_uploads.append((Key, UploadId))
+        self.uploads.pop(UploadId, None)
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
         _ = Bucket
@@ -406,6 +468,52 @@ def test_upload_resumes_each_data_object_independently(monkeypatch, tmp_path: Pa
         cast(bytes, client.objects[data.object_path]["Body"]),
         "test-archive-passphrase",
     ) == b"".join(archive.data_objects[0].iter_plaintext())
+
+
+def test_incomplete_multipart_sweep_aborts_only_stale_owned_uploads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    client.multipart_page_size = 2
+    client.uploads = {
+        "old-a": {
+            "Key": "archive/archives/a/objects/data-000000.age",
+            "Initiated": datetime(2026, 7, 1, tzinfo=UTC),
+        },
+        "old-b": {
+            "Key": "archive/archives/b/objects/data-000000.age",
+            "Initiated": datetime(2026, 7, 2, tzinfo=UTC),
+        },
+        "cutoff": {
+            "Key": "archive/archives/c/objects/data-000000.age",
+            "Initiated": datetime(2026, 7, 10, tzinfo=UTC),
+        },
+        "fresh": {
+            "Key": "archive/archives/d/objects/data-000000.age",
+            "Initiated": datetime(2026, 7, 11, tzinfo=UTC),
+        },
+        "other": {
+            "Key": "unrelated/archive-object.age",
+            "Initiated": datetime(2026, 7, 1, tzinfo=UTC),
+        },
+    }
+    store = _store(monkeypatch, tmp_path, client)
+
+    aborted = store.abort_incomplete_multipart_uploads(
+        initiated_before=datetime(2026, 7, 10, tzinfo=UTC)
+    )
+
+    assert aborted == 2
+    assert client.aborted_uploads == [
+        ("archive/archives/a/objects/data-000000.age", "old-a"),
+        ("archive/archives/b/objects/data-000000.age", "old-b"),
+    ]
+    assert set(client.uploads) == {"cutoff", "fresh", "other"}
+    assert len(client.multipart_list_requests) == 2
+    assert {
+        str(request["Prefix"]) for request in client.multipart_list_requests
+    } == {"archive/archives/"}
 
 
 def test_read_preparation_requests_only_selected_deep_objects(monkeypatch, tmp_path: Path) -> None:

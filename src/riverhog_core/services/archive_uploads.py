@@ -142,6 +142,32 @@ class SqlAlchemyArchiveUploadService:
     def publish_restore_catalog(self) -> int:
         return self._publish_restore_catalog()
 
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int:
+        aborted = 0
+        for store_name, archive_store in self._archive_stores.items():
+            try:
+                store_aborted = archive_store.abort_incomplete_multipart_uploads(
+                    initiated_before=initiated_before
+                )
+            except Exception:
+                _LOG.exception(
+                    "incomplete archive multipart upload sweep failed: store=%s",
+                    store_name,
+                )
+                continue
+            aborted += store_aborted
+            if store_aborted:
+                _LOG.warning(
+                    "aborted incomplete archive multipart uploads: store=%s count=%s",
+                    store_name,
+                    store_aborted,
+                )
+        return aborted
+
     def process_due_uploads(self, *, limit: int = 1) -> int:
         if limit < 1:
             return 0

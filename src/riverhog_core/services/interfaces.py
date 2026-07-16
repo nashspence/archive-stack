@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol, TypedDict
 
 from riverhog_core.domain.models import (
@@ -118,6 +119,11 @@ class SearchService(Protocol):
 class ArchiveUploadService(Protocol):
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
     def publish_restore_catalog(self) -> int: ...
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int: ...
     def process_due_uploads(self, *, limit: int = 1) -> int: ...
 
 

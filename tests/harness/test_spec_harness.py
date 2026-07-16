@@ -103,6 +103,9 @@ class IdleArchiveUploadService:
     def publish_restore_catalog(self) -> int:
         return 0
 
+    def abort_incomplete_multipart_uploads(self, **_: object) -> int:
+        return 0
+
     def process_due_uploads(self, *, limit: int = 1) -> int:
         _ = limit
         return 0

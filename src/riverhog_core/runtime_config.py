@@ -254,6 +254,10 @@ class RuntimeConfig:
     )
     archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
     archive_multipart_concurrency: int = DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY
+    archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
+    archive_multipart_sweep_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=6)
+    )
     archive_object_concurrency: int = DEFAULT_ARCHIVE_OBJECT_CONCURRENCY
     hot_materialization_concurrency: int = DEFAULT_HOT_MATERIALIZATION_CONCURRENCY
     hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
@@ -346,6 +350,10 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
         if self.archive_multipart_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY must be >= 1")
+        if self.archive_multipart_max_age.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE must be > 0")
+        if self.archive_multipart_sweep_interval.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL must be > 0")
         if self.archive_object_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY must be >= 1")
         if self.hot_materialization_concurrency < 1:
@@ -531,6 +539,12 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         minimum=1,
     )
+    archive_multipart_max_age = _parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE", "72h")
+    )
+    archive_multipart_sweep_interval = _parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL", "6h")
+    )
     archive_object_concurrency = _parse_int(
         os.getenv(
             "RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
@@ -670,6 +684,8 @@ def load_runtime_config() -> RuntimeConfig:
         archive_stores=archive_stores,
         archive_multipart_part_bytes=archive_multipart_part_bytes,
         archive_multipart_concurrency=archive_multipart_concurrency,
+        archive_multipart_max_age=archive_multipart_max_age,
+        archive_multipart_sweep_interval=archive_multipart_sweep_interval,
         archive_object_concurrency=archive_object_concurrency,
         hot_materialization_concurrency=hot_materialization_concurrency,
         hot_single_put_max_bytes=hot_single_put_max_bytes,
