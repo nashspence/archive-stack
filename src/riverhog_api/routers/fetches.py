@@ -190,6 +190,7 @@ def list_fetch_files(
     ] = Query("logical_path"),
     order: Literal["asc", "desc"] = Query("asc"),
     hot: bool | None = Query(None),
+    all_items: bool = Query(False, alias="all"),
 ) -> FetchFilesResponse:
     return FetchFilesResponse.model_validate(
         container.fetches.files(
@@ -200,5 +201,6 @@ def list_fetch_files(
             sort=sort,
             order=order,
             hot=hot,
+            all_items=all_items,
         )
     )

@@ -310,3 +310,19 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(
     output = capsys.readouterr().out
     assert "Jeb source removal plan: camera" in output
     assert "DANGER:" in output
+
+
+def test_remote_cli_closes_its_shared_api_client(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    closed: list[bool] = []
+
+    class ClosingApi(FakeJebApi):
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(jeb_cli, "_API_CLIENT", ClosingApi())
+
+    assert jeb_cli.main(["status", "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["sources"] == []
+    assert closed == [True]
+    assert jeb_cli._API_CLIENT is None

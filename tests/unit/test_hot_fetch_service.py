@@ -53,6 +53,29 @@ def test_fetch_selection_is_persisted_as_files_and_aggregated_in_sql(tmp_path: P
         ]
 
 
+def test_fetch_files_can_return_every_database_match(tmp_path: Path) -> None:
+    _config, _archive_store, _hot_store, service = _service(tmp_path / "catalog.sqlite3", hot=False)
+    fetch = service.create(name="all files", collections=(COLLECTION_ID,))
+
+    payload = service.files(
+        fetch.id,
+        page=9,
+        per_page=1,
+        sort="collection_path",
+        order="asc",
+        all_items=True,
+    )
+
+    assert payload["page"] == 1
+    assert payload["per_page"] == 2
+    assert payload["total"] == 2
+    assert payload["pages"] == 1
+    assert [file["collection_path"] for file in payload["files"]] == [
+        "one.txt",
+        "two.txt",
+    ]
+
+
 def test_file_eviction_verifies_exact_archive_coverage_then_removes_one_hot_file(
     tmp_path: Path,
 ) -> None:

@@ -384,6 +384,7 @@ class SqlAlchemyFetchService:
         order: str,
         q: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, object]:
         if page < 1:
             raise BadRequest("page must be at least 1")
@@ -406,19 +407,20 @@ class SqlAlchemyFetchService:
         with session_scope(self._session_factory) as session:
             _get_fetch(session, fetch_id)
             total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
-            records = session.scalars(
-                stmt.order_by(*_fetch_file_order_by(sort=sort, order=order))
-                .offset((page - 1) * per_page)
-                .limit(per_page)
-            ).all()
+            selected = stmt.order_by(*_fetch_file_order_by(sort=sort, order=order))
+            if not all_items:
+                selected = selected.offset((page - 1) * per_page).limit(per_page)
+            records = session.scalars(selected).all()
         return {
             "fetch_id": fetch_id,
             "q": q,
             "hot": hot,
-            "page": page,
-            "per_page": per_page,
+            "page": 1 if all_items else page,
+            "per_page": total if all_items else per_page,
             "total": total,
-            "pages": math.ceil(total / per_page) if total else 0,
+            "pages": (
+                (1 if total else 0) if all_items else math.ceil(total / per_page) if total else 0
+            ),
             "sort": sort,
             "order": order,
             "files": [_file_payload(file) for file in records],

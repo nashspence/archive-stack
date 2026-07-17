@@ -95,3 +95,27 @@ def test_search_files_filters_hot_state(tmp_path: Path) -> None:
     assert [file["logical_path"] for file in payload["files"]] == [
         "2025/20250102T030405Z__docs/tax/invoice.pdf"
     ]
+
+
+def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+
+    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
+        q="tax",
+        page=9,
+        per_page=1,
+        sort="collection_path",
+        order="asc",
+        all_items=True,
+    )
+
+    assert payload["page"] == 1
+    assert payload["per_page"] == 2
+    assert payload["total"] == 2
+    assert payload["pages"] == 1
+    assert [file["collection_path"] for file in payload["files"]] == [
+        "tax/invoice.pdf",
+        "tax/receipt.pdf",
+    ]

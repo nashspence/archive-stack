@@ -25,6 +25,7 @@ def test_search_uses_current_filters() -> None:
         hot=False,
         sort="collection_path",
         order="desc",
+        all_items=True,
     )
 
     assert client.calls == [
@@ -40,6 +41,35 @@ def test_search_uses_current_filters() -> None:
                     "q": "tax",
                     "collection": "2025/20250102T030405Z__docs",
                     "hot": False,
+                    "all": True,
+                }
+            },
+        )
+    ]
+
+
+def test_fetch_file_list_can_request_every_matching_selector() -> None:
+    client = RecordingClient()
+    client.list_fetch_files(
+        "fx-1",
+        query="invoice",
+        hot=True,
+        all_items=True,
+    )
+
+    assert client.calls == [
+        (
+            "GET",
+            "/v1/fetches/fx-1/files",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "logical_path",
+                    "order": "asc",
+                    "q": "invoice",
+                    "hot": True,
+                    "all": True,
                 }
             },
         )

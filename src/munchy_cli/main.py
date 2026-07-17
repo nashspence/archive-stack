@@ -78,11 +78,26 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(template_app, name="template")
 app.add_typer(job_app, name="job")
 app.add_typer(routing_app, name="routing")
+_CLIENTS: list[Any] = []
+
+
+def _track_client[ClientT](client: ClientT) -> ClientT:
+    _CLIENTS.append(client)
+    return client
+
+
+def _close_clients() -> None:
+    while _CLIENTS:
+        close = getattr(_CLIENTS.pop(), "close", None)
+        if callable(close):
+            close()
 
 
 @app.callback()
-def munchy_app() -> None:
+def munchy_app(ctx: typer.Context) -> None:
     """Keep the CLI in group mode so `munchy job ...` stays canonical."""
+
+    ctx.call_on_close(_close_clients)
 
 
 def _plain_requested() -> bool:
@@ -424,17 +439,6 @@ def _normalize_mode(value: str | None, *, default: str, allowed: set[str], label
     return mode
 
 
-def _optional_bool(value: str | None, *, label: str) -> bool | None:
-    if value is None:
-        return None
-    normalized = value.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise typer.BadParameter(f"{label} must be true or false", param_hint=label)
-
-
 @routing_app.command("explain")
 def explain_routing(
     source: Annotated[Path, typer.Argument(exists=True, readable=True)],
@@ -660,18 +664,25 @@ def _job_template_definition(path: Path) -> dict[str, Any]:
 
 
 def _admin_client(runner_url: str | None) -> MunchyAdminClient:
-    return MunchyAdminClient(runner_url_setting(runner_url))
+    return _track_client(MunchyAdminClient(runner_url_setting(runner_url)))
+
+
+def _runner_client(runner_url: str | None) -> MunchyRunnerClient:
+    return _track_client(MunchyRunnerClient(runner_url_setting(runner_url)))
 
 
 @template_app.command("list")
 def list_job_templates(
     runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=500)] = 25,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[str | None, typer.Option("--query", "-q")] = None,
-    enabled: Annotated[str | None, typer.Option("--enabled")] = None,
+    enabled: Annotated[
+        bool | None,
+        typer.Option("--enabled/--disabled", help="Filter by template availability"),
+    ] = None,
     all_items: Annotated[
         bool,
         typer.Option("--all", help="Return every matching job template"),
@@ -693,7 +704,7 @@ def list_job_templates(
             sort=sort,
             order=order,
             query=query,
-            enabled=_optional_bool(enabled, label="--enabled"),
+            enabled=enabled,
             all_items=all_items,
         )
     except Exception as exc:
@@ -1034,7 +1045,7 @@ def submit(
         except MunchyJobAuthoringError as exc:
             raise typer.BadParameter(str(exc)) from exc
         resolved_runner_url = runner_url_setting(runner_url)
-        client = MunchyRunnerClient(resolved_runner_url)
+        client = _track_client(MunchyRunnerClient(resolved_runner_url))
         try:
             preflight = client.preflight_submission(request)
             if dry_run:
@@ -1070,7 +1081,7 @@ def list_jobs(
         typer.Option("--runner-url", help="Munchy runner URL; defaults to MUNCHY_RUNNER_URL"),
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=500)] = 25,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "updated_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
     query: Annotated[
@@ -1094,12 +1105,18 @@ def list_jobs(
         ),
     ] = None,
     cancel_requested: Annotated[
-        str | None,
-        typer.Option("--cancel-requested", help="Filter cancel-requested jobs: true or false"),
+        bool | None,
+        typer.Option(
+            "--cancel-requested/--not-cancel-requested",
+            help="Filter by whether cancellation was requested",
+        ),
     ] = None,
     storage_wait: Annotated[
-        str | None,
-        typer.Option("--storage-wait", help="Filter storage-waiting jobs: true or false"),
+        bool | None,
+        typer.Option(
+            "--storage-wait/--no-storage-wait",
+            help="Filter by whether storage is pending",
+        ),
     ] = None,
     all_items: Annotated[
         bool,
@@ -1115,7 +1132,7 @@ def list_jobs(
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    client = MunchyRunnerClient(runner_url_setting(runner_url))
+    client = _runner_client(runner_url)
     destination_filter = (
         _normalize_mode(
             handoff_destination,
@@ -1126,8 +1143,6 @@ def list_jobs(
         if handoff_destination
         else None
     )
-    cancel_requested_filter = _optional_bool(cancel_requested, label="--cancel-requested")
-    storage_wait_filter = _optional_bool(storage_wait, label="--storage-wait")
     normalized_workflow = (
         _normalize_mode(
             workflow_mode,
@@ -1149,8 +1164,8 @@ def list_jobs(
             state=state,
             workflow_mode=normalized_workflow,
             handoff_destination=destination_filter,
-            cancel_requested=cancel_requested_filter,
-            storage_wait=storage_wait_filter,
+            cancel_requested=cancel_requested,
+            storage_wait=storage_wait,
             all_items=all_items,
         )
     except Exception as exc:
@@ -1177,7 +1192,7 @@ def show_job(
     """Show runner job details."""
 
     try:
-        job = MunchyRunnerClient(runner_url_setting(runner_url)).get_job(job_id, compact=compact)
+        job = _runner_client(runner_url).get_job(job_id, compact=compact)
     except Exception as exc:
         _exit_runner_error(exc)
     emit(job if json_mode else format_job(job), json_mode=json_mode)
@@ -1196,7 +1211,7 @@ def watch_job(
     """Watch a runner job until it is safe to delete local sources."""
 
     try:
-        final = MunchyRunnerClient(runner_url_setting(runner_url)).wait_for_job(
+        final = _runner_client(runner_url).wait_for_job(
             job_id,
             interval=interval,
         )
@@ -1224,7 +1239,7 @@ def resume_job(
 ) -> None:
     """Resume a failed or canceled runner job after repair."""
 
-    client = MunchyRunnerClient(runner_url_setting(runner_url))
+    client = _runner_client(runner_url)
     try:
         job = client.resume_job(job_id)
         if wait:
@@ -1254,7 +1269,7 @@ def cancel_job(
 ) -> None:
     """Cancel a runner job."""
 
-    client = MunchyRunnerClient(runner_url_setting(runner_url))
+    client = _runner_client(runner_url)
     try:
         job = client.cancel_job(job_id, cleanup=cleanup)
         if wait or cleanup:

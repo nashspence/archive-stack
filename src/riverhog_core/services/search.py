@@ -69,6 +69,7 @@ class SqlAlchemySearchService:
         order: str,
         collection: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, object]:
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
@@ -108,7 +109,7 @@ class SqlAlchemySearchService:
                 select(func.count()).select_from(CollectionFileRecord).where(*filters)
             )
             total_count = int(total or 0)
-            rows = session.execute(
+            stmt = (
                 select(
                     CollectionFileRecord.collection_id,
                     CollectionFileRecord.path,
@@ -118,18 +119,25 @@ class SqlAlchemySearchService:
                 )
                 .where(*filters)
                 .order_by(*_order_expressions(sort, order))
-                .offset((page - 1) * per_page)
-                .limit(per_page)
-            ).all()
+            )
+            if not all_items:
+                stmt = stmt.offset((page - 1) * per_page).limit(per_page)
+            rows = session.execute(stmt).all()
 
         return {
             "query": query,
             "collection": normalized_collection,
             "hot": hot,
-            "page": page,
-            "per_page": per_page,
+            "page": 1 if all_items else page,
+            "per_page": total_count if all_items else per_page,
             "total": total_count,
-            "pages": math.ceil(total_count / per_page) if total_count else 0,
+            "pages": (
+                (1 if total_count else 0)
+                if all_items
+                else math.ceil(total_count / per_page)
+                if total_count
+                else 0
+            ),
             "sort": sort,
             "order": order,
             "files": [

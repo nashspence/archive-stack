@@ -106,6 +106,12 @@ class ApiClient:
             self._upload_client.close()
             self._upload_client = None
 
+    def __enter__(self) -> ApiClient:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     def _upload_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
         if self.token:
@@ -279,6 +285,7 @@ class ApiClient:
         order: str = "asc",
         collection: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
@@ -292,6 +299,8 @@ class ApiClient:
             params["collection"] = collection
         if hot is not None:
             params["hot"] = hot
+        if all_items:
+            params["all"] = True
         return self._json("GET", "/v1/search", params=params)
 
     def get_collection(self, collection_id: str) -> dict[str, Any]:
@@ -602,6 +611,7 @@ class ApiClient:
         order: str = "asc",
         query: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -613,6 +623,8 @@ class ApiClient:
             params["q"] = query
         if hot is not None:
             params["hot"] = hot
+        if all_items:
+            params["all"] = True
         return self._json(
             "GET",
             f"/v1/fetches/{quote(fetch_id, safe='/')}/files",

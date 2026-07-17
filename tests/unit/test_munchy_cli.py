@@ -219,10 +219,8 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             "collection-archive",
             "--destination",
             "riverhog",
-            "--cancel-requested",
-            "false",
+            "--not-cancel-requested",
             "--storage-wait",
-            "true",
             "--all",
         ],
     )
@@ -260,17 +258,47 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
 
         def list_job_templates(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["all_items"] is True
+            assert kwargs["enabled"] is False
             return {"templates": [{"name": "archive"}, {"name": "review"}]}
 
     monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
 
     result = runner.invoke(
         app,
-        ["template", "list", "--runner-url", "http://runner", "--all", "--ids"],
+        [
+            "template",
+            "list",
+            "--runner-url",
+            "http://runner",
+            "--disabled",
+            "--all",
+            "--ids",
+        ],
     )
 
     assert result.exit_code == 0
     assert result.stdout == "archive\nreview\n"
+
+
+def test_munchy_closes_the_runner_client(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    closed: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def list_jobs(self, **_kwargs: object) -> dict[str, object]:
+            return {"jobs": []}
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(app, ["job", "list", "--runner-url", "http://runner"])
+
+    assert result.exit_code == 0
+    assert closed == [True]
 
 
 def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]

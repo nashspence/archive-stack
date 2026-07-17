@@ -113,6 +113,7 @@ class SearchService(Protocol):
         order: str,
         collection: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> JsonObject: ...
 
 
@@ -223,6 +224,7 @@ class FetchService(Protocol):
         order: str,
         q: str | None = None,
         hot: bool | None = None,
+        all_items: bool = False,
     ) -> JsonObject: ...
 
 

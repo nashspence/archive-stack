@@ -1690,7 +1690,7 @@ def list_job_templates_page(
     all_items: bool = False,
 ) -> dict[str, Any]:
     bounded_page = max(1, page)
-    bounded_per_page = max(1, min(per_page, 500))
+    bounded_per_page = max(1, min(per_page, 100))
     normalized_sort = sort.casefold()
     if normalized_sort not in JOB_TEMPLATE_LIST_SORT_COLUMNS:
         raise HTTPException(
@@ -2094,7 +2094,7 @@ def list_job_summaries_page(
     all_items: bool = False,
 ) -> dict[str, Any]:
     bounded_page = max(1, page)
-    bounded_per_page = max(1, min(per_page, 500))
+    bounded_per_page = max(1, min(per_page, 100))
     normalized_sort = sort.casefold()
     if normalized_sort not in JOB_LIST_SORT_COLUMNS:
         raise HTTPException(

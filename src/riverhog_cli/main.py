@@ -29,6 +29,7 @@ from riverhog_cli.output import (
     format_fetch,
     format_fetch_files,
     format_fetches,
+    format_file_selectors,
     format_find,
     format_hot_evict,
     format_list_ids,
@@ -67,6 +68,7 @@ UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
 UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
 UPLOAD_LOG_LOCK = threading.Lock()
 UploadWaitMode = Literal["staged", "finalized"]
+_API_CLIENT: ApiClient | None = None
 
 
 class CollectionManifestEntry(TypedDict):
@@ -82,7 +84,22 @@ class CollectionUploadFilePayload(CollectionManifestEntry, total=False):
 
 
 def client() -> ApiClient:
-    return ApiClient()
+    global _API_CLIENT
+    if _API_CLIENT is None:
+        _API_CLIENT = ApiClient()
+    return _API_CLIENT
+
+
+def _close_client() -> None:
+    global _API_CLIENT
+    if _API_CLIENT is not None:
+        _API_CLIENT.close()
+        _API_CLIENT = None
+
+
+@app.callback()
+def _root(ctx: typer.Context) -> None:
+    ctx.call_on_close(_close_client)
 
 
 def _response_upload_files(payload: dict[str, Any]) -> list[CollectionUploadFilePayload]:
@@ -1137,7 +1154,7 @@ def collection_list_cmd(
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "--search", help="Substring match over collection ids"),
+        typer.Option("--query", "-q", help="Substring match over collection ids"),
     ] = None,
     all_items: Annotated[
         bool,
@@ -1392,7 +1409,7 @@ def upload_watch_cmd(
 def find_cmd(
     query: Annotated[
         str | None,
-        typer.Argument(help="Optional substring matched against logical file paths"),
+        typer.Option("--query", "-q", help="Substring match over logical file paths"),
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
@@ -1406,10 +1423,20 @@ def find_cmd(
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
     ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching file"),
+    ] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Search logical files across collections."""
 
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
     if sort not in _FIND_SORT_FIELDS:
         raise typer.BadParameter(
             f"sort must be one of {', '.join(sorted(_FIND_SORT_FIELDS))}",
@@ -1426,7 +1453,11 @@ def find_cmd(
         order=normalized_order,
         collection=collection,
         hot=hot,
+        all_items=all_items,
     )
+    if selectors:
+        emit(format_file_selectors(payload), json_mode=False)
+        return
     emit(payload if json_mode else format_find(payload), json_mode=json_mode)
 
 
@@ -1801,10 +1832,20 @@ def fetch_files_cmd(
         bool | None,
         typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
     ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching file"),
+    ] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List the files selected by a fetch."""
 
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_sort = sort.casefold()
     if normalized_sort not in _FETCH_FILE_SORT_FIELDS:
         raise typer.BadParameter(
@@ -1822,7 +1863,11 @@ def fetch_files_cmd(
         order=normalized_order,
         query=query,
         hot=hot,
+        all_items=all_items,
     )
+    if selectors:
+        emit(format_file_selectors(payload), json_mode=False)
+        return
     emit(payload if json_mode else format_fetch_files(payload), json_mode=json_mode)
 
 

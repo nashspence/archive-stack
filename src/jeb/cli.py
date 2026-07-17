@@ -24,9 +24,21 @@ from riverhog_cli.output import (
 )
 from riverhog_core.domain.errors import RiverhogError
 
+_API_CLIENT: ApiClient | None = None
+
 
 def client() -> ApiClient:
-    return ApiClient()
+    global _API_CLIENT
+    if _API_CLIENT is None:
+        _API_CLIENT = ApiClient()
+    return _API_CLIENT
+
+
+def _close_client() -> None:
+    global _API_CLIENT
+    if _API_CLIENT is not None:
+        _API_CLIENT.close()
+        _API_CLIENT = None
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -447,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
     except (RiverhogError, httpx.TransportError, ValueError) as exc:
         print(f"jeb: {_error_message(exc)}", file=sys.stderr)
         return 1
+    finally:
+        _close_client()
 
 
 if __name__ == "__main__":

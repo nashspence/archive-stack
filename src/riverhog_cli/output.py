@@ -364,6 +364,18 @@ def format_list_ids(
     )
 
 
+def format_file_selectors(
+    payload: Mapping[str, object],
+    key: str = "files",
+) -> str:
+    return "\n".join(
+        f"{item['collection_id']}::{item['collection_path']}"
+        for item in _items(payload, key)
+        if item.get("collection_id") not in {None, ""}
+        and item.get("collection_path") not in {None, ""}
+    )
+
+
 def format_jeb_status(payload: Mapping[str, object]) -> str:
     sources = _items(payload, "sources")
     batches = payload.get("batches")
@@ -378,9 +390,7 @@ def format_jeb_status(payload: Mapping[str, object]) -> str:
             f"state={'enabled' if source.get('enabled') else 'disabled'}"
         )
     if isinstance(batches, Mapping):
-        lines.append(
-            f"batches: total={batches.get('total', 0)} active={batches.get('active', 0)}"
-        )
+        lines.append(f"batches: total={batches.get('total', 0)} active={batches.get('active', 0)}")
     incomplete = payload.get("incomplete_tus_uploads")
     if isinstance(incomplete, Mapping):
         lines.append(

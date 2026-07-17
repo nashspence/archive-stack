@@ -50,7 +50,7 @@ def add_list_query_arguments(
         default=default_order,
         help="Sort order.",
     )
-    parser.add_argument("--query", "--search", "-q", help=query_help)
+    parser.add_argument("--query", "-q", help=query_help)
 
 
 def add_list_output_arguments(
