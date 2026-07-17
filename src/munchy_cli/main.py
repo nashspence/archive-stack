@@ -48,7 +48,6 @@ from munchy.runner_client import (
     keep_system_awake,
     runner_url_setting,
 )
-from riverhog_cli.output import format_list_ids
 from riverhog_core.config_yaml import (
     ConfigError,
 )
@@ -177,6 +176,21 @@ def _sequence(value: object) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return list(value)
     return []
+
+
+def _format_list_ids(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    id_key: str = "id",
+) -> str:
+    return "\n".join(
+        str(item[id_key])
+        for item in _sequence(payload.get(key))
+        if isinstance(item, Mapping)
+        and item.get(id_key) is not None
+        and item.get(id_key) != ""
+    )
 
 
 def _mapping(value: object, *, label: str) -> dict[str, Any]:
@@ -685,7 +699,7 @@ def list_job_templates(
     except Exception as exc:
         _exit_runner_error(exc)
     if ids:
-        emit(format_list_ids(payload, "templates", id_key="name"), json_mode=False)
+        emit(_format_list_ids(payload, "templates", id_key="name"), json_mode=False)
         return
     emit(payload if json_mode else format_job_templates(payload), json_mode=json_mode)
 
@@ -1142,7 +1156,7 @@ def list_jobs(
     except Exception as exc:
         _exit_runner_error(exc)
     if ids:
-        emit(format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
+        emit(_format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
         return
     emit(payload if json_mode else format_jobs(payload), json_mode=json_mode)
 
