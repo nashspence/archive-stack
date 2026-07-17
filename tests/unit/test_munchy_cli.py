@@ -159,6 +159,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             handoff_destination: str | None,
             cancel_requested: bool | None,
             storage_wait: bool | None,
+            all_items: bool,
         ) -> dict[str, object]:
             assert page == 2
             assert per_page == 2
@@ -171,6 +172,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             assert handoff_destination == "riverhog"
             assert cancel_requested is False
             assert storage_wait is True
+            assert all_items is True
             return {
                 "page": 2,
                 "pages": 3,
@@ -221,6 +223,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             "false",
             "--storage-wait",
             "true",
+            "--all",
         ],
     )
 
@@ -228,6 +231,46 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     assert "jobs page 2/3" in result.stdout
     assert "job-1" in result.stdout
     assert "job: running" in result.stdout
+
+
+def test_munchy_job_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def list_jobs(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["all_items"] is True
+            return {"jobs": [{"job_id": "job-1"}, {"job_id": "job-2"}]}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["job", "list", "--runner-url", "http://runner", "--all", "--ids"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "job-1\njob-2\n"
+
+
+def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def list_job_templates(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["all_items"] is True
+            return {"templates": [{"name": "archive"}, {"name": "review"}]}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["template", "list", "--runner-url", "http://runner", "--all", "--ids"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "archive\nreview\n"
 
 
 def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]

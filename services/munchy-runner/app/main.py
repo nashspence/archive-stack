@@ -29,7 +29,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit
 
 import httpx
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -642,8 +642,7 @@ class HandoffConfig(BaseModel):
         destination = value.strip().casefold().replace("-", "_")
         if destination not in HANDOFF_OPTION_MODELS:
             raise ValueError(
-                "handoff destination must be one of: "
-                + ", ".join(sorted(HANDOFF_OPTION_MODELS))
+                "handoff destination must be one of: " + ", ".join(sorted(HANDOFF_OPTION_MODELS))
             )
         return destination
 
@@ -1688,6 +1687,7 @@ def list_job_templates_page(
     order: str,
     query: str | None,
     enabled: bool | None,
+    all_items: bool = False,
 ) -> dict[str, Any]:
     bounded_page = max(1, page)
     bounded_per_page = max(1, min(per_page, 500))
@@ -1713,6 +1713,8 @@ def list_job_templates_page(
     sort_column = JOB_TEMPLATE_LIST_SORT_COLUMNS[normalized_sort]
     direction = normalized_order.upper()
     offset = (bounded_page - 1) * bounded_per_page
+    limit_sql = "" if all_items else "LIMIT ? OFFSET ?"
+    row_params = params if all_items else [*params, bounded_per_page, offset]
     with closing(state_db()) as conn:
         total = int(
             conn.execute(
@@ -1725,22 +1727,24 @@ def list_job_templates_page(
             SELECT * FROM job_templates
             {where_sql}
             ORDER BY {sort_column} {direction}, name ASC
-            LIMIT ? OFFSET ?
+            {limit_sql}
             """,
-            [*params, bounded_per_page, offset],
+            row_params,
         ).fetchall()
     return {
-        "page": bounded_page,
-        "pages": (total + bounded_per_page - 1) // bounded_per_page if total else 0,
-        "per_page": bounded_per_page,
+        "page": 1 if all_items else bounded_page,
+        "pages": (1 if total else 0)
+        if all_items
+        else (total + bounded_per_page - 1) // bounded_per_page
+        if total
+        else 0,
+        "per_page": total if all_items else bounded_per_page,
         "total": total,
         "sort": normalized_sort,
         "order": normalized_order,
         "query": query,
         "filters": {"enabled": enabled},
-        "templates": [
-            job_template_row_payload(row, include_definition=False) for row in rows
-        ],
+        "templates": [job_template_row_payload(row, include_definition=False) for row in rows],
     }
 
 
@@ -1798,11 +1802,7 @@ def submission_template_summary(job: Mapping[str, Any]) -> dict[str, Any]:
     raw = job.get("job_template")
     if not isinstance(raw, Mapping):
         return {}
-    return {
-        key: raw[key]
-        for key in ("name", "revision", "digest")
-        if key in raw
-    }
+    return {key: raw[key] for key in ("name", "revision", "digest") if key in raw}
 
 
 def submission_response(job: dict[str, Any]) -> dict[str, Any]:
@@ -2091,6 +2091,7 @@ def list_job_summaries_page(
     handoff_destination: str | None,
     cancel_requested: bool | None,
     storage_wait: bool | None,
+    all_items: bool = False,
 ) -> dict[str, Any]:
     bounded_page = max(1, page)
     bounded_per_page = max(1, min(per_page, 500))
@@ -2149,6 +2150,8 @@ def list_job_summaries_page(
             f"{sort_column} {direction}, job_id ASC"
         )
     offset = (bounded_page - 1) * bounded_per_page
+    limit_sql = "" if all_items else "LIMIT ? OFFSET ?"
+    row_params = params if all_items else [*params, bounded_per_page, offset]
     with closing(state_db()) as conn:
         total = int(
             conn.execute(
@@ -2162,16 +2165,20 @@ def list_job_summaries_page(
             FROM job_summaries
             {where_sql}
             ORDER BY {order_sql}
-            LIMIT ? OFFSET ?
+            {limit_sql}
             """,
-            [*params, bounded_per_page, offset],
+            row_params,
         ).fetchall()
     job_ids = [str(row["job_id"]) for row in rows]
     jobs = [compact_job_response(job, include_queue=False) for job in load_jobs_by_ids(job_ids)]
     return {
-        "page": bounded_page,
-        "pages": (total + bounded_per_page - 1) // bounded_per_page if total else 0,
-        "per_page": bounded_per_page,
+        "page": 1 if all_items else bounded_page,
+        "pages": (1 if total else 0)
+        if all_items
+        else (total + bounded_per_page - 1) // bounded_per_page
+        if total
+        else 0,
+        "per_page": total if all_items else bounded_per_page,
         "total": total,
         "sort": normalized_sort,
         "order": normalized_order,
@@ -3177,18 +3184,13 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
         ):
             current_adapter_state = current.get("handoff_adapter_state")
             incoming_adapter_state = payload.get("handoff_adapter_state")
-            if isinstance(current_adapter_state, dict) and isinstance(
-                incoming_adapter_state, dict
-            ):
+            if isinstance(current_adapter_state, dict) and isinstance(incoming_adapter_state, dict):
                 payload["handoff_adapter_state"] = merge_handoff_adapter_state(
                     payload,
                     current_adapter_state,
                     incoming_adapter_state,
                 )
-            elif (
-                isinstance(current_adapter_state, dict)
-                and "handoff_adapter_state" not in payload
-            ):
+            elif isinstance(current_adapter_state, dict) and "handoff_adapter_state" not in payload:
                 payload["handoff_adapter_state"] = current_adapter_state
             current_eager = current.get("eager_archive")
             payload_eager = payload.get("eager_archive")
@@ -7994,9 +7996,9 @@ class RiverhogHandoffAdapter:
                 return
 
     def can_resume(self, job: dict[str, Any]) -> bool:
-        return can_resume_preserving_riverhog_session(
+        return can_resume_preserving_riverhog_session(job) and riverhog_session_visible_for_resume(
             job
-        ) and riverhog_session_visible_for_resume(job)
+        )
 
     def merge_state(
         self,
@@ -10496,6 +10498,7 @@ def list_job_templates(
     q: str | None = None,
     query: str | None = None,
     enabled: bool | None = None,
+    all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
     return list_job_templates_page(
         page=page,
@@ -10504,6 +10507,7 @@ def list_job_templates(
         order=order,
         query=q if q is not None else query,
         enabled=enabled,
+        all_items=all_items is True,
     )
 
 
@@ -10881,6 +10885,7 @@ def list_jobs(
     handoff_destination: HandoffDestination | None = None,
     cancel_requested: bool | None = None,
     storage_wait: bool | None = None,
+    all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
     return list_job_summaries_page(
         page=page,
@@ -10894,6 +10899,7 @@ def list_jobs(
         handoff_destination=handoff_destination,
         cancel_requested=cancel_requested,
         storage_wait=storage_wait,
+        all_items=all_items is True,
     )
 
 

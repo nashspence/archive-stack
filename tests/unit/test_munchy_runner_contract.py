@@ -110,18 +110,27 @@ def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch
     runner = load_runner(tmp_path, monkeypatch)
 
     with TestClient(runner.app) as client:
-        assert client.get(
-            "/v1/admin/job-templates",
-            headers={"Authorization": "Bearer submission-token"},
-        ).status_code == 401
-        assert client.get(
-            "/v1/capabilities",
-            headers={"Authorization": "Bearer admin-token"},
-        ).status_code == 401
-        assert client.get(
-            "/v1/admin/job-templates",
-            headers={"Authorization": "Bearer admin-token"},
-        ).status_code == 200
+        assert (
+            client.get(
+                "/v1/admin/job-templates",
+                headers={"Authorization": "Bearer submission-token"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.get(
+                "/v1/capabilities",
+                headers={"Authorization": "Bearer admin-token"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.get(
+                "/v1/admin/job-templates",
+                headers={"Authorization": "Bearer admin-token"},
+            ).status_code
+            == 200
+        )
 
 
 def test_job_template_crud_is_revision_guarded_and_database_listed(
@@ -141,6 +150,26 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
         assert created["revision"] == 1
         assert created["enabled"] is True
         assert created["resolved_job"]["workflow_mode"] == "collection_archive"
+
+        assert (
+            client.post(
+                "/v1/admin/job-templates",
+                json={"name": "phone-archive", "definition": job_template_definition()},
+            ).status_code
+            == 201
+        )
+
+        all_templates = client.get(
+            "/v1/admin/job-templates",
+            params={"all": "true", "per_page": 1},
+        ).json()
+        assert all_templates["page"] == 1
+        assert all_templates["pages"] == 1
+        assert all_templates["per_page"] == 2
+        assert [item["name"] for item in all_templates["templates"]] == [
+            "camera-archive",
+            "phone-archive",
+        ]
 
         listed = client.get(
             "/v1/admin/job-templates",
@@ -224,9 +253,7 @@ def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -
             }
         },
     }
-    definition["groups"] = {
-        "video": {"output_mode": "video", "tasks": ["archive_video"]}
-    }
+    definition["groups"] = {"video": {"output_mode": "video", "tasks": ["archive_video"]}}
 
     with TestClient(runner.app) as client:
         response = client.post(
@@ -280,16 +307,17 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
                 "profile_id": "webm-q42",
             },
         },
-        "groups": {
-            "review": {"output_mode": "video", "tasks": ["qcut_video"]}
-        },
+        "groups": {"review": {"output_mode": "video", "tasks": ["qcut_video"]}},
     }
 
     with TestClient(runner.app) as client:
-        assert client.post(
-            "/v1/admin/job-templates",
-            json={"name": "camera-review", "definition": definition},
-        ).status_code == 201
+        assert (
+            client.post(
+                "/v1/admin/job-templates",
+                json={"name": "camera-review", "definition": definition},
+            ).status_code
+            == 201
+        )
         response = client.post(
             "/v1/submissions",
             json={
@@ -313,10 +341,13 @@ def test_submission_preflight_resolves_template_without_creating_state(
     runner = load_runner(tmp_path, monkeypatch)
 
     with TestClient(runner.app) as client:
-        assert client.post(
-            "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": job_template_definition()},
-        ).status_code == 201
+        assert (
+            client.post(
+                "/v1/admin/job-templates",
+                json={"name": "camera-archive", "definition": job_template_definition()},
+            ).status_code
+            == 201
+        )
         response = client.post(
             "/v1/submissions/preflight",
             json={
@@ -382,9 +413,7 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         assert retried.json()["template"]["revision"] == 1
 
         conflict_request = dict(request)
-        conflict_request["files"] = [
-            {"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}
-        ]
+        conflict_request["files"] = [{"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}]
         conflict = client.post("/v1/submissions", json=conflict_request)
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["error"] == "submission_conflict"
@@ -418,12 +447,8 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
                 "files": [{"path": "video/a.mp4", "bytes": 4}],
             },
         )
-        upload = client.post(
-            "/v1/submissions/submission-1/files/video/a.mp4/upload"
-        )
-        unknown = client.post(
-            "/v1/submissions/submission-1/files/video/b.mp4/upload"
-        )
+        upload = client.post("/v1/submissions/submission-1/files/video/a.mp4/upload")
+        unknown = client.post("/v1/submissions/submission-1/files/video/b.mp4/upload")
 
     assert upload.status_code == 201
     assert upload.json()["protocol"] == "tus"
@@ -7740,6 +7765,12 @@ def test_list_jobs_returns_recent_compact_jobs(
 
     active = runner.list_jobs()
     all_jobs = runner.list_jobs(terminal="all")
+    all_jobs_single_page = runner.list_jobs(
+        terminal="all",
+        page=2,
+        per_page=1,
+        all_items=True,
+    )
 
     assert [job["job_id"] for job in active["jobs"]] == ["active"]
     assert active["page"] == 1
@@ -7749,6 +7780,10 @@ def test_list_jobs_returns_recent_compact_jobs(
     assert [job["job_id"] for job in all_jobs["jobs"]] == ["active", "done"]
     assert all_jobs["total"] == 2
     assert "eager_archive" not in all_jobs["jobs"][1]
+    assert all_jobs_single_page["page"] == 1
+    assert all_jobs_single_page["pages"] == 1
+    assert all_jobs_single_page["per_page"] == 2
+    assert [job["job_id"] for job in all_jobs_single_page["jobs"]] == ["active", "done"]
 
 
 def test_list_jobs_pages_filters_and_searches_indexed_summaries(

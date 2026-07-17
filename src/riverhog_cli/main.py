@@ -31,6 +31,7 @@ from riverhog_cli.output import (
     format_fetches,
     format_find,
     format_hot_evict,
+    format_list_ids,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
@@ -1162,16 +1163,7 @@ def collection_list_cmd(
         all_items=all_items,
     )
     if ids:
-        collections = payload.get("collections")
-        values = collections if isinstance(collections, list) else []
-        emit(
-            "\n".join(
-                str(collection.get("id"))
-                for collection in values
-                if isinstance(collection, Mapping) and collection.get("id")
-            ),
-            json_mode=False,
-        )
+        emit(format_list_ids(payload, "collections"), json_mode=False)
         return
     emit(
         _compact_collection_page(payload) if json_mode else format_collections(payload),
@@ -1775,16 +1767,7 @@ def fetches_cmd(
         all_items=all_items,
     )
     if ids:
-        fetches = payload.get("fetches")
-        values = fetches if isinstance(fetches, list) else []
-        emit(
-            "\n".join(
-                str(fetch.get("id"))
-                for fetch in values
-                if isinstance(fetch, Mapping) and fetch.get("id")
-            ),
-            json_mode=False,
-        )
+        emit(format_list_ids(payload, "fetches"), json_mode=False)
         return
     emit(payload if json_mode else format_fetches(payload), json_mode=json_mode)
 

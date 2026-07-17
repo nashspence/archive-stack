@@ -1839,6 +1839,7 @@ class MunchyRunnerClient:
         handoff_destination: str | None = None,
         cancel_requested: bool | None = None,
         storage_wait: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, str] = {
             "page": str(page),
@@ -1847,6 +1848,8 @@ class MunchyRunnerClient:
             "order": order,
             "terminal": terminal,
         }
+        if all_items:
+            params["all"] = "true"
         if query:
             params["q"] = query
         if state:
@@ -1963,9 +1966,7 @@ class MunchyRunnerClient:
                     submission = self.get_submission(submission_id)
                     job = submission.get("job")
                     if not isinstance(job, dict):
-                        raise RuntimeError(
-                            f"submission returned invalid job state: {submission}"
-                        )
+                        raise RuntimeError(f"submission returned invalid job state: {submission}")
                     retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
                     retry_reporter.finish()
                 except Exception as exc:
@@ -2007,6 +2008,7 @@ class MunchyAdminClient(MunchyRunnerClient):
         order: str = "asc",
         query: str | None = None,
         enabled: bool | None = None,
+        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, str] = {
             "page": str(page),
@@ -2014,6 +2016,8 @@ class MunchyAdminClient(MunchyRunnerClient):
             "sort": sort,
             "order": order,
         }
+        if all_items:
+            params["all"] = "true"
         if query:
             params["q"] = query
         if enabled is not None:

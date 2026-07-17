@@ -48,6 +48,7 @@ from munchy.runner_client import (
     keep_system_awake,
     runner_url_setting,
 )
+from riverhog_cli.output import format_list_ids
 from riverhog_core.config_yaml import (
     ConfigError,
 )
@@ -314,9 +315,7 @@ def _template_page_header(payload: Mapping[str, Any]) -> str:
 
 
 def format_job_templates(payload: Mapping[str, Any]) -> Any:
-    templates = [
-        item for item in _sequence(payload.get("templates")) if isinstance(item, Mapping)
-    ]
+    templates = [item for item in _sequence(payload.get("templates")) if isinstance(item, Mapping)]
     if not _rich_enabled():
         lines = [_template_page_header(payload)]
         lines.extend(
@@ -573,9 +572,7 @@ def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
     ]
     handoff = _mapping(plan.get("handoff"), label="handoff")
     if handoff.get("location_template"):
-        lines.append(
-            f"handoff: {handoff.get('destination')} {handoff.get('location_template')}"
-        )
+        lines.append(f"handoff: {handoff.get('destination')} {handoff.get('location_template')}")
     for error in _sequence(plan.get("errors")):
         lines.append(f"error: {error}")
     for route in _sequence(plan.get("routes")):
@@ -661,10 +658,20 @@ def list_job_templates(
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[str | None, typer.Option("--query", "-q")] = None,
     enabled: Annotated[str | None, typer.Option("--enabled")] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching job template"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one job-template name per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """List server-owned job templates."""
 
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
     try:
         payload = _admin_client(runner_url).list_job_templates(
             page=page,
@@ -673,9 +680,13 @@ def list_job_templates(
             order=order,
             query=query,
             enabled=_optional_bool(enabled, label="--enabled"),
+            all_items=all_items,
         )
     except Exception as exc:
         _exit_runner_error(exc)
+    if ids:
+        emit(format_list_ids(payload, "templates", id_key="name"), json_mode=False)
+        return
     emit(payload if json_mode else format_job_templates(payload), json_mode=json_mode)
 
 
@@ -1076,10 +1087,20 @@ def list_jobs(
         str | None,
         typer.Option("--storage-wait", help="Filter storage-waiting jobs: true or false"),
     ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching job"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one job id per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List runner jobs."""
 
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
     client = MunchyRunnerClient(runner_url_setting(runner_url))
     destination_filter = (
         _normalize_mode(
@@ -1116,9 +1137,13 @@ def list_jobs(
             handoff_destination=destination_filter,
             cancel_requested=cancel_requested_filter,
             storage_wait=storage_wait_filter,
+            all_items=all_items,
         )
     except Exception as exc:
         _exit_runner_error(exc)
+    if ids:
+        emit(format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
+        return
     emit(payload if json_mode else format_jobs(payload), json_mode=json_mode)
 
 

@@ -194,10 +194,7 @@ def test_format_handoff_progress_renders_adapter_stages_in_order() -> None:
         }
     )
 
-    assert line == (
-        "Riverhog Deep Archive, uploading | "
-        "Riverhog Hot Materialization, 3/10 items"
-    )
+    assert line == ("Riverhog Deep Archive, uploading | Riverhog Hot Materialization, 3/10 items")
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:
@@ -655,6 +652,7 @@ def test_runner_client_list_jobs_validates_response() -> None:
         assert method == "GET"
         assert path == (
             "/v1/jobs?page=2&per_page=5&sort=created_at&order=asc&terminal=all"
+            "&all=true"
             "&q=camera&state=running&workflow_mode=collection_archive"
             "&handoff_destination=riverhog"
             "&cancel_requested=false&storage_wait=true"
@@ -680,6 +678,7 @@ def test_runner_client_list_jobs_validates_response() -> None:
         handoff_destination="riverhog",
         cancel_requested=False,
         storage_wait=True,
+        all_items=True,
     ) == {
         "page": 2,
         "per_page": 5,
