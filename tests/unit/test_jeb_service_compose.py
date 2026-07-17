@@ -52,7 +52,9 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
     }
     assert services["jeb-tusd"]["command"][-1] == "pre-create,post-finish"
     assert services["jeb-tusd"].get("ports", []) == []
-    assert services["jeb-tus"]["ports"] == ["${JEB_TUS_PORT:-1081}:1081"]
+    assert services["jeb-tus"]["ports"] == [
+        "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_TUS_PORT:-1081}:1081"
+    ]
     for service_name in ("jeb", "jeb-ftp", "jeb-tusd"):
         assert any(volume["target"] == "/landing" for volume in services[service_name]["volumes"])
     assert {volume["target"] for volume in services["jeb-ftp"]["volumes"]} == {

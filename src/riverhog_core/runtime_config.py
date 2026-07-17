@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from riverhog_core.operator_reminders import (
     next_operator_reminder_at,
@@ -17,6 +18,13 @@ from riverhog_core.operator_reminders import (
 _DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
+DEV_ARCHIVE_ACCESS_KEY_IDS = frozenset(
+    {
+        "minioadmin",
+        "GK000000000000000000000002",
+    }
+)
+DEV_ARCHIVE_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "garage"})
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
@@ -185,6 +193,14 @@ class ArchiveStoreConfig:
     storage_class: str
 
 
+def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
+    endpoint_host = (urlsplit(store.endpoint_url).hostname or "").casefold()
+    return (
+        endpoint_host in DEV_ARCHIVE_ENDPOINT_HOSTS
+        and store.access_key_id in DEV_ARCHIVE_ACCESS_KEY_IDS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     hot_store_endpoint_url: str = "http://127.0.0.1:9000"
@@ -332,6 +348,17 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be in 1..22")
         if not self.archive_passphrase:
             raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASE must be set")
+        non_development_stores = sorted(
+            name
+            for name, store in self.archive_stores.items()
+            if not _is_development_archive_store(store)
+        )
+        if self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE and non_development_stores:
+            raise ValueError(
+                "RIVERHOG_ARCHIVE_PASSPHRASE must be explicitly set to a "
+                "non-development secret for archive store(s): "
+                + ", ".join(non_development_stores)
+            )
         if (
             self.archive_require_explicit_passphrase
             and self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE

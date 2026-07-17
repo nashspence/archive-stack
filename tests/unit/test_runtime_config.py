@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from riverhog_core.runtime_config import DEFAULT_DATABASE_URL, RuntimeConfig, load_runtime_config
+from riverhog_core.runtime_config import (
+    DEFAULT_DATABASE_URL,
+    DEV_ARCHIVE_PASSPHRASE,
+    ArchiveStoreConfig,
+    RuntimeConfig,
+    load_runtime_config,
+)
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -122,6 +128,7 @@ def test_load_runtime_config_builds_named_archive_stores(
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_PREFIX", "")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BACKEND", "b2")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS", "STANDARD")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
 
     config = load_runtime_config()
 
@@ -132,6 +139,39 @@ def test_load_runtime_config_builds_named_archive_stores(
     assert config.archive_store("b2").backend == "b2"
     assert config.archive_store("b2").storage_class == "STANDARD"
     assert config.archive_store("b2").prefix == ""
+
+
+def test_remote_archive_store_requires_non_development_passphrase(tmp_path: Path) -> None:
+    remote = ArchiveStoreConfig(
+        name="b2",
+        endpoint_url="https://s3.example.test",
+        region="example-region",
+        bucket="riverhog",
+        access_key_id="example-key",
+        secret_access_key="example-secret",
+        force_path_style=False,
+        prefix="",
+        backend="b2",
+        storage_class="STANDARD",
+    )
+
+    with pytest.raises(ValueError, match="non-development secret for archive store.*b2"):
+        _config(
+            tmp_path,
+            archive_write_store="b2",
+            archive_read_order=("b2",),
+            archive_stores={"b2": remote},
+            archive_passphrase=DEV_ARCHIVE_PASSPHRASE,
+        )
+
+    config = _config(
+        tmp_path,
+        archive_write_store="b2",
+        archive_read_order=("b2",),
+        archive_stores={"b2": remote},
+        archive_passphrase="archive-secret",
+    )
+    assert config.archive_passphrase == "archive-secret"
 
 
 def test_configured_archive_store_requires_complete_connection_settings(

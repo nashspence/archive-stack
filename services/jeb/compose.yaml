@@ -82,7 +82,7 @@ services:
       - jeb
       - jeb-tusd
     ports:
-      - "${JEB_TUS_PORT:-1081}:1081"
+      - "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_TUS_PORT:-1081}:1081"
     volumes:
       - type: bind
         source: ./adapters/tus/nginx.conf
@@ -96,8 +96,8 @@ services:
       jeb:
         condition: service_healthy
     ports:
-      - "${JEB_FTP_PORT:-21}:21"
-      - "${JEB_FTP_PASSIVE_PORT_START:-30000}-${JEB_FTP_PASSIVE_PORT_END:-30039}:30000-30039"
+      - "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_FTP_PORT:-21}:21"
+      - "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_FTP_PASSIVE_PORT_START:-30000}-${JEB_FTP_PASSIVE_PORT_END:-30039}:30000-30039"
     environment:
       FTP_PASSIVE_PORTS: ${JEB_FTP_PASSIVE_PORT_START:-30000}:${JEB_FTP_PASSIVE_PORT_END:-30039}
       JEB_FTP_PUBLIC_HOST: ${JEB_FTP_PUBLIC_HOST:-127.0.0.1}

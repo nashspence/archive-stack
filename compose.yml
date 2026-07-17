@@ -40,7 +40,7 @@ services:
       - "--addr"
       - ":8080"
     ports:
-      - "${RIVERHOG_WEBDAV_PORT:-8080}:8080"
+      - "${RIVERHOG_WEBDAV_BIND_ADDR:-127.0.0.1}:${RIVERHOG_WEBDAV_PORT:-8080}:8080"
     volumes:
       - ./tests/harness/rclone.conf:/config/rclone.conf:ro
 
@@ -159,7 +159,7 @@ services:
       retries: 30
       start_period: 2s
     ports:
-      - "${RIVERHOG_API_PORT:-8000}:8000"
+      - "${RIVERHOG_API_BIND_ADDR:-127.0.0.1}:${RIVERHOG_API_PORT:-8000}:8000"
     volumes:
       - .:/app
       - upload-staging:/uploads

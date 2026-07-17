@@ -136,8 +136,12 @@ services:
     depends_on:
       - munchy-runner
       - munchy-runner-tusd
+    environment:
+      MUNCHY_GATEWAY_BIND_ADDR: ${MUNCHY_GATEWAY_BIND_ADDR:-127.0.0.1}
+      NGINX_ENVSUBST_FILTER: ^MUNCHY_GATEWAY_BIND_ADDR$
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
     volumes:
-      - ./config/nginx-lan-gateway.conf:/etc/nginx/nginx.conf:ro
+      - ./config/nginx-lan-gateway.conf:/etc/nginx/templates/nginx.conf.template:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8092/health/live >/dev/null || exit 1"]
       interval: 15s
