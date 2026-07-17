@@ -51,7 +51,7 @@ def test_search_uses_current_filters() -> None:
 def test_fetch_file_list_can_request_every_matching_selector() -> None:
     client = RecordingClient()
     client.list_fetch_files(
-        "fx-1",
+        1,
         query="invoice",
         hot=True,
         all_items=True,
@@ -60,7 +60,7 @@ def test_fetch_file_list_can_request_every_matching_selector() -> None:
     assert client.calls == [
         (
             "GET",
-            "/v1/fetches/fx-1/files",
+            "/v1/fetches/1/files",
             {
                 "params": {
                     "page": 1,
@@ -78,9 +78,22 @@ def test_fetch_file_list_can_request_every_matching_selector() -> None:
 
 def test_fetch_start_is_a_single_archive_aware_action() -> None:
     client = RecordingClient()
-    client.start_fetch("fx-1")
+    client.start_fetch(1)
 
-    assert client.calls == [("POST", "/v1/fetches/fx-1/start", {})]
+    assert client.calls == [("POST", "/v1/fetches/1/start", {})]
+
+
+def test_fetch_delete_confirms_the_exact_resource() -> None:
+    client = RecordingClient()
+    client.delete_fetch(1, confirmation=1)
+
+    assert client.calls == [
+        (
+            "DELETE",
+            "/v1/fetches/1",
+            {"json": {"confirmation": 1}},
+        )
+    ]
 
 
 def test_archive_restore_list_filters_collection_and_state() -> None:

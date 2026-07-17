@@ -298,14 +298,14 @@ def test_catalog_read_projections_run_on_postgres(database_url: str) -> None:
     _, fetches, _, hot_store = _services(database_url, hot=True)
     config = RuntimeConfig(database_url=database_url)
     fetch = fetches.create(
-        name="documents",
+        label="documents",
         collections=["2025/20250102T030405Z__docs"],
     )
 
     fetch_page = fetches.list(page=1, per_page=25, sort="bytes", order="desc")
-    fetch_status = fetches.status(str(fetch.id))
+    fetch_status = fetches.status(fetch.id)
     file_page = fetches.files(
-        str(fetch.id),
+        fetch.id,
         page=1,
         per_page=25,
         sort="logical_path",
@@ -346,7 +346,7 @@ def _start_work(
     *,
     fetch_service: SqlAlchemyFetchService,
     restore_service: SqlAlchemyArchiveRestoreService,
-    fetch_id: str | None,
+    fetch_id: int | None,
 ) -> object:
     if kind == "fetch":
         assert fetch_id is not None
@@ -362,12 +362,10 @@ def test_deletion_lock_blocks_new_collection_work(
 ) -> None:
     deletion, fetches, restores, hot_store = _services(database_url, hot=True)
     fetch_id = (
-        str(
-            fetches.create(
-                name="documents",
-                collections=["2025/20250102T030405Z__docs"],
-            ).id
-        )
+        fetches.create(
+            label="documents",
+            collections=["2025/20250102T030405Z__docs"],
+        ).id
         if work_kind == "fetch"
         else None
     )
@@ -446,7 +444,7 @@ def test_deletion_lock_blocks_new_collection_work(
         assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
         if fetch_id is not None:
             fetch = session.get(FetchRecord, fetch_id)
-            assert fetch is not None and fetch.fetch_state == FetchState.DRAFT.value
+            assert fetch is not None and fetch.state == FetchState.DRAFT.value
         assert session.scalar(select(ArchiveRestoreRecord)) is None
 
 
@@ -457,12 +455,10 @@ def test_active_collection_work_prevents_deletion_from_beginning(
 ) -> None:
     deletion, fetches, restores, hot_store = _services(database_url, hot=False)
     fetch_id = (
-        str(
-            fetches.create(
-                name="documents",
-                collections=["2025/20250102T030405Z__docs"],
-            ).id
-        )
+        fetches.create(
+            label="documents",
+            collections=["2025/20250102T030405Z__docs"],
+        ).id
         if work_kind == "fetch"
         else None
     )
@@ -480,7 +476,7 @@ def test_active_collection_work_prevents_deletion_from_beginning(
     def block_work_commit(session: Session, _: object) -> None:
         fetch_started = any(
             isinstance(record, FetchRecord)
-            and record.fetch_state == FetchState.QUEUED_ARCHIVE.value
+            and record.state == FetchState.QUEUED_ARCHIVE.value
             for record in session.dirty
         )
         restore_started = any(isinstance(record, ArchiveRestoreRecord) for record in session.new)
@@ -545,7 +541,7 @@ def test_active_collection_work_prevents_deletion_from_beginning(
         assert session.get(CollectionDeletionRecord, "2025/20250102T030405Z__docs") is None
         if fetch_id is not None:
             fetch = session.get(FetchRecord, fetch_id)
-            assert fetch is not None and fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value
+            assert fetch is not None and fetch.state == FetchState.QUEUED_ARCHIVE.value
         else:
             restore = session.scalar(select(ArchiveRestoreRecord))
             assert restore is not None and restore.state == "requested"

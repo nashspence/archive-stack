@@ -90,8 +90,8 @@ def test_list_and_search_output_use_logical_paths_and_collection_ids() -> None:
 
 def test_fetch_output_explains_archive_progress() -> None:
     payload = {
-        "id": "fx-1",
-        "name": "tax documents",
+        "id": 1,
+        "label": "tax documents",
         "state": "restoring_archive",
         "files": 2,
         "bytes": 100,
@@ -106,7 +106,9 @@ def test_fetch_output_explains_archive_progress() -> None:
 
     assert "restoring_archive" in format_fetch(payload)
     assert "archive materialization" in format_fetch(payload)
-    assert "fx-1" in format_fetches({"page": 1, "pages": 1, "total": 1, "fetches": [payload]})
+    assert "tax documents" in format_fetches(
+        {"page": 1, "pages": 1, "total": 1, "fetches": [payload]}
+    )
 
 
 def test_archive_output_reports_remote_storage_and_materialization() -> None:

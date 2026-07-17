@@ -394,13 +394,13 @@ def _build_plan(
         .order_by(ArchiveRestoreRecord.restore_id)
     ).all()
     active_fetches = db.scalars(
-        select(FetchRecord.fetch_id)
+        select(FetchRecord.id)
         .join(FetchFileRecord)
         .where(
             FetchFileRecord.collection_id == collection_id,
-            FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES),
+            FetchRecord.state.in_(_ACTIVE_FETCH_STATES),
         )
-        .order_by(FetchRecord.fetch_id)
+        .order_by(FetchRecord.id)
     ).all()
     copy_jobs = db.execute(
         select(

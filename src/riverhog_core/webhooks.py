@@ -44,11 +44,11 @@ def archive_restore_url(base_url: str, restore_id: str) -> str:
     return f"{base_url.rstrip('/')}{archive_restore_path(restore_id)}"
 
 
-def fetch_summary_path(fetch_id: str) -> str:
+def fetch_summary_path(fetch_id: int) -> str:
     return f"/v1/fetches/{fetch_id}"
 
 
-def fetch_summary_url(base_url: str, fetch_id: str) -> str:
+def fetch_summary_url(base_url: str, fetch_id: int) -> str:
     return f"{base_url.rstrip('/')}{fetch_summary_path(fetch_id)}"
 
 

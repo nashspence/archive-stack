@@ -203,7 +203,7 @@ class SqlAlchemyArchiveRestoreService:
 
     def list_for_fetch(
         self,
-        fetch_id: str,
+        fetch_id: int,
         *,
         page: int,
         per_page: int,
@@ -253,7 +253,7 @@ class SqlAlchemyArchiveRestoreService:
                 restores=[_restore_summary(session, record, self._config) for record in records],
             )
 
-    def create_or_resume_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
+    def create_or_resume_for_fetch(self, fetch_id: int) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
             missing_files = session.execute(
@@ -274,8 +274,8 @@ class SqlAlchemyArchiveRestoreService:
                 missing_by_collection.setdefault(str(collection_id), []).append(str(path))
             for collection_id in missing_by_collection:
                 require_collection_custody_idle(session, collection_id)
-            if fetch.fetch_state == FetchState.QUEUED_ARCHIVE.value:
-                fetch.fetch_state = FetchState.RESTORING_ARCHIVE.value
+            if fetch.state == FetchState.QUEUED_ARCHIVE.value:
+                fetch.state = FetchState.RESTORING_ARCHIVE.value
 
         for collection_id, paths in missing_by_collection.items():
             with session_scope(self._session_factory) as session:
@@ -317,7 +317,7 @@ class SqlAlchemyArchiveRestoreService:
             order="desc",
         )
 
-    def cancel_for_fetch(self, fetch_id: str) -> ArchiveRestoreListPage:
+    def cancel_for_fetch(self, fetch_id: int) -> ArchiveRestoreListPage:
         with session_scope(self._session_factory) as session:
             fetch = _require_fetch(session, fetch_id)
             restore_ids = list(
@@ -337,11 +337,11 @@ class SqlAlchemyArchiveRestoreService:
                     .order_by(ArchiveRestoreRecord.restore_id)
                 ).all()
             )
-            if fetch.fetch_state in {
+            if fetch.state in {
                 FetchState.QUEUED_ARCHIVE.value,
                 FetchState.RESTORING_ARCHIVE.value,
             }:
-                fetch.fetch_state = FetchState.DRAFT.value
+                fetch.state = FetchState.DRAFT.value
         for restore_id in restore_ids:
             self.cancel(restore_id)
         return self.list_for_fetch(
@@ -444,19 +444,19 @@ class SqlAlchemyArchiveRestoreService:
     def repair_missing_fetch_hot_files(self, *, limit: int = 100) -> int:
         if limit < 1 or self._hot_store is None:
             return 0
-        fetches_to_restore: set[str] = set()
+        fetches_to_restore: set[int] = set()
         missing_count = 0
         with session_scope(self._session_factory) as session:
             fetches = session.scalars(
                 select(FetchRecord)
-                .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
-                .order_by(FetchRecord.fetch_order)
+                .where(FetchRecord.state != FetchState.DRAFT.value)
+                .order_by(FetchRecord.id)
             ).all()
             for fetch in fetches:
                 if missing_count >= limit:
                     break
-                selected = _fetch_files(session, fetch.fetch_id)
-                selected_count = _fetch_file_count(session, fetch.fetch_id)
+                selected = _fetch_files(session, fetch.id)
+                selected_count = _fetch_file_count(session, fetch.id)
                 listed: dict[str, dict[str, int]] = {}
                 fetch_missing = False
                 for file in selected:
@@ -473,11 +473,11 @@ class SqlAlchemyArchiveRestoreService:
                     file.hot = False
                     fetch_missing = True
                     missing_count += 1
-                    fetches_to_restore.add(fetch.fetch_id)
-                if fetch_missing and fetch.fetch_state == FetchState.DONE.value:
-                    fetch.fetch_state = FetchState.QUEUED_ARCHIVE.value
+                    fetches_to_restore.add(fetch.id)
+                if fetch_missing and fetch.state == FetchState.DONE.value:
+                    fetch.state = FetchState.QUEUED_ARCHIVE.value
                 elif not fetch_missing and selected_count > 0:
-                    fetch.fetch_state = FetchState.DONE.value
+                    fetch.state = FetchState.DONE.value
 
         for fetch_id in sorted(fetches_to_restore):
             try:
@@ -638,7 +638,7 @@ def _require_restore(session: Session, restore_id: str) -> ArchiveRestoreRecord:
     return record
 
 
-def _require_fetch(session: Session, fetch_id: str) -> FetchRecord:
+def _require_fetch(session: Session, fetch_id: int) -> FetchRecord:
     record = session.get(FetchRecord, fetch_id)
     if record is None:
         raise NotFound(f"fetch not found: {fetch_id}")
@@ -736,7 +736,7 @@ def _restore_collections(
     return result
 
 
-def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
+def _fetch_collection_ids(session: Session, fetch_id: int) -> list[str]:
     return list(
         session.scalars(
             select(FetchFileRecord.collection_id)
@@ -750,7 +750,7 @@ def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
     )
 
 
-def _fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
+def _fetch_files(session: Session, fetch_id: int) -> list[CollectionFileRecord]:
     return list(
         session.scalars(
             select(CollectionFileRecord)
@@ -767,7 +767,7 @@ def _fetch_files(session: Session, fetch_id: str) -> list[CollectionFileRecord]:
     )
 
 
-def _fetch_file_count(session: Session, fetch_id: str) -> int:
+def _fetch_file_count(session: Session, fetch_id: int) -> int:
     return int(
         session.scalar(
             select(func.count(CollectionFileRecord.path))
@@ -1176,12 +1176,12 @@ def _sync_fetch_states(session: Session, *, hot_store: HotStore | None) -> None:
         return
     fetches = session.scalars(
         select(FetchRecord)
-        .where(FetchRecord.fetch_state != FetchState.DRAFT.value)
-        .order_by(FetchRecord.fetch_order)
+        .where(FetchRecord.state != FetchState.DRAFT.value)
+        .order_by(FetchRecord.id)
     ).all()
     for fetch in fetches:
-        files = _fetch_files(session, fetch.fetch_id)
-        fetch.fetch_state = (
+        files = _fetch_files(session, fetch.id)
+        fetch.state = (
             FetchState.DONE.value
             if files and all(_hot_file_available(hot_store, file) for file in files)
             else FetchState.RESTORING_ARCHIVE.value

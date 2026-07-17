@@ -47,7 +47,7 @@ def test_fetch_list_all_ids_uses_the_same_pipeable_shape(monkeypatch) -> None:
                 "per_page": 2,
                 "total": 2,
                 "pages": 1,
-                "fetches": [{"id": "fx-1"}, {"id": "fx-2"}],
+                "fetches": [{"id": 1}, {"id": 2}],
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -58,7 +58,7 @@ def test_fetch_list_all_ids_uses_the_same_pipeable_shape(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0
-    assert result.stdout == "fx-1\nfx-2\n"
+    assert result.stdout == "1\n2\n"
 
 
 def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
@@ -92,8 +92,8 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
 
 def test_fetch_files_all_selectors_uses_the_same_pipeable_shape(monkeypatch) -> None:
     class FakeClient:
-        def list_fetch_files(self, fetch_id: str, **kwargs: Any) -> dict[str, object]:
-            assert fetch_id == "fx-1"
+        def list_fetch_files(self, fetch_id: int, **kwargs: Any) -> dict[str, object]:
+            assert fetch_id == 1
             assert kwargs["query"] == "photo"
             assert kwargs["all_items"] is True
             return {
@@ -109,7 +109,7 @@ def test_fetch_files_all_selectors_uses_the_same_pipeable_shape(monkeypatch) -> 
 
     result = runner.invoke(
         app,
-        ["hot", "fetch", "files", "fx-1", "-q", "photo", "--all", "--selectors"],
+        ["hot", "fetch", "files", "1", "-q", "photo", "--all", "--selectors"],
     )
 
     assert result.exit_code == 0

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord, FetchFileRecord
+from riverhog_core.domain.errors import BadRequest, InvalidState, NotFound
 from riverhog_core.services.fetches import SqlAlchemyFetchService
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -36,7 +39,7 @@ def test_fetch_selection_is_persisted_as_files_and_aggregated_in_sql(tmp_path: P
     config, _archive_store, _hot_store, service = _service(tmp_path / "catalog.sqlite3", hot=False)
 
     selected = service.create(
-        name="one file",
+        label="one file",
         files=((COLLECTION_ID, "one.txt"),),
     )
     expanded = service.add_collections(selected.id, (COLLECTION_ID,))
@@ -55,7 +58,7 @@ def test_fetch_selection_is_persisted_as_files_and_aggregated_in_sql(tmp_path: P
 
 def test_fetch_files_can_return_every_database_match(tmp_path: Path) -> None:
     _config, _archive_store, _hot_store, service = _service(tmp_path / "catalog.sqlite3", hot=False)
-    fetch = service.create(name="all files", collections=(COLLECTION_ID,))
+    fetch = service.create(collections=(COLLECTION_ID,))
 
     payload = service.files(
         fetch.id,
@@ -74,6 +77,43 @@ def test_fetch_files_can_return_every_database_match(tmp_path: Path) -> None:
         "one.txt",
         "two.txt",
     ]
+    assert fetch.id == 1
+    assert fetch.label is None
+
+
+def test_fetch_deletion_requires_exact_confirmation_and_removes_its_selection(
+    tmp_path: Path,
+) -> None:
+    config, _archive_store, _hot_store, service = _service(
+        tmp_path / "catalog.sqlite3", hot=False
+    )
+    fetch = service.create(label="temporary selection", collections=(COLLECTION_ID,))
+
+    with pytest.raises(BadRequest, match="exactly match"):
+        service.delete(fetch.id, confirmation="another-fetch")
+    assert service.get(fetch.id).files == 2
+
+    assert service.delete(fetch.id, confirmation=fetch.id) == {
+        "status": "deleted",
+        "id": fetch.id,
+    }
+    with pytest.raises(NotFound, match="fetch not found"):
+        service.get(fetch.id)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        assert session.query(FetchFileRecord).filter_by(fetch_id=fetch.id).count() == 0
+
+
+def test_active_fetch_must_be_canceled_before_deletion(tmp_path: Path) -> None:
+    _config, _archive_store, _hot_store, service = _service(
+        tmp_path / "catalog.sqlite3", hot=False
+    )
+    fetch = service.create(label="active selection", collections=(COLLECTION_ID,))
+    started = service.start(fetch.id)
+
+    assert started.state.value == "queued_archive"
+    with pytest.raises(InvalidState, match="must be canceled"):
+        service.delete(fetch.id, confirmation=fetch.id)
+    assert service.get(fetch.id).state.value == "queued_archive"
 
 
 def test_file_eviction_verifies_exact_archive_coverage_then_removes_one_hot_file(

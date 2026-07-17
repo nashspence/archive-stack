@@ -442,16 +442,16 @@ def _build_plan(
     }
 
 
-def _active_fetch_ids(session: Session, collection_id: str) -> list[str]:
+def _active_fetch_ids(session: Session, collection_id: str) -> list[int]:
     return list(
         session.scalars(
-            select(FetchRecord.fetch_id)
+            select(FetchRecord.id)
             .join(FetchFileRecord)
             .where(
-                FetchRecord.fetch_state.in_(_ACTIVE_FETCH_STATES),
+                FetchRecord.state.in_(_ACTIVE_FETCH_STATES),
                 FetchFileRecord.collection_id == collection_id,
             )
-            .order_by(FetchRecord.fetch_id)
+            .order_by(FetchRecord.id)
         ).all()
     )
 

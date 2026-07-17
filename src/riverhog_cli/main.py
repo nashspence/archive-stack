@@ -47,7 +47,7 @@ from riverhog_core.timestamps import utc_timestamp_now
 app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
-fetch_app = typer.Typer(help="Named collection-file fetch operations.")
+fetch_app = typer.Typer(help="Collection-file fetch requests.")
 hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
@@ -1648,7 +1648,10 @@ def _parse_file_selections(values: Sequence[str]) -> list[tuple[str, str]]:
 
 @fetch_app.command("create")
 def fetch_create_cmd(
-    name: Annotated[str, typer.Option("--name", "-n", help="Human-readable fetch purpose")],
+    label: Annotated[
+        str | None,
+        typer.Option("--label", "-l", help="Optional human-readable purpose"),
+    ] = None,
     collections: Annotated[
         list[str] | None,
         typer.Argument(help="Optional collection ids to add immediately"),
@@ -1659,18 +1662,21 @@ def fetch_create_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Create a named editable fetch."""
+    """Create an editable fetch request."""
 
     api = client()
     payload = api.create_fetch(
-        name=name,
+        label=label,
         collections=collections or [],
         files=_parse_file_selections(files or []),
     )
     if json_mode:
         emit(payload, json_mode=True)
         return
-    status = api.get_fetch_status(str(payload.get("id", "unknown")))
+    created_id = payload.get("id")
+    if not isinstance(created_id, int):
+        raise typer.BadParameter("server did not return an integer fetch id")
+    status = api.get_fetch_status(created_id)
     emit(format_fetch(status), json_mode=False)
 
 
@@ -1704,7 +1710,7 @@ def hot_evict_cmd(
 
 @fetch_app.command("add")
 def fetch_add_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     collections: Annotated[
         list[str] | None,
         typer.Argument(help="Collection ids to add"),
@@ -1734,7 +1740,7 @@ def fetch_add_cmd(
 
 @fetch_app.command("remove")
 def fetch_remove_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     collections: Annotated[
         list[str] | None,
         typer.Argument(help="Collection ids whose files should be removed"),
@@ -1770,9 +1776,9 @@ def fetches_cmd(
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     state: Annotated[str | None, typer.Option("--state", help="Filter by fetch state")] = None,
     query: Annotated[
-        str | None, typer.Option("--query", "-q", help="Search id, name, or collections")
+        str | None, typer.Option("--query", "-q", help="Search id, label, or selected files")
     ] = None,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "order",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     all_items: Annotated[
         bool,
@@ -1784,7 +1790,7 @@ def fetches_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List named fetches."""
+    """List fetch requests."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
@@ -1805,7 +1811,7 @@ def fetches_cmd(
 
 @fetch_app.command("show")
 def fetch_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Show fetch preflight and progress summary."""
@@ -1820,7 +1826,7 @@ def fetch_cmd(
 
 @fetch_app.command("files")
 def fetch_files_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     query: Annotated[
         str | None, typer.Option("--query", "-q", help="Search logical file paths")
     ] = None,
@@ -1873,7 +1879,7 @@ def fetch_files_cmd(
 
 @fetch_app.command("start")
 def fetch_start_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Start a fetch, restoring only the archive objects its files require."""
@@ -1889,7 +1895,7 @@ def fetch_start_cmd(
 
 @fetch_app.command("cancel")
 def fetch_cancel_cmd(
-    fetch_id: Annotated[str, typer.Argument(help="Fetch id")],
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Cancel an active fetch and return it to draft."""
@@ -1897,6 +1903,46 @@ def fetch_cancel_cmd(
     payload = client().cancel_fetch(fetch_id)
     emit(
         payload if json_mode else format_fetch(payload),
+        json_mode=json_mode,
+    )
+
+
+@fetch_app.command("delete")
+def fetch_delete_cmd(
+    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
+    confirm: Annotated[
+        int | None,
+        typer.Option(
+            "--confirm",
+            help="Confirm deletion with the complete fetch id",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Delete an inactive fetch request without changing stored files."""
+
+    api = client()
+    if json_mode and confirm is None:
+        raise typer.BadParameter("--json requires --confirm")
+    if confirm is None:
+        summary = api.get_fetch(fetch_id)
+        typer.echo(
+            "This deletes only the fetch request and its saved file selection. "
+            "Archived collections and hot files are unchanged."
+        )
+        typer.echo(
+            f"fetch: {summary.get('id', fetch_id)} "
+            f"({summary.get('label') or 'unlabeled'}, {summary.get('state', 'unknown')})"
+        )
+        confirm = typer.prompt("Type the complete fetch id to delete it", type=int)
+        if confirm != fetch_id:
+            typer.echo("Confirmation did not match; nothing was deleted.", err=True)
+            raise typer.Abort()
+    payload = api.delete_fetch(fetch_id, confirmation=confirm)
+    emit(
+        payload
+        if json_mode
+        else f"fetch deletion: {payload.get('status', 'unknown')}\nfetch: {fetch_id}",
         json_mode=json_mode,
     )
 

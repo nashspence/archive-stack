@@ -11,10 +11,10 @@ from riverhog_cli.main import app
 runner = CliRunner()
 
 
-def _status(fetch_id: str) -> dict[str, object]:
+def _status(fetch_id: int) -> dict[str, object]:
     return {
         "id": fetch_id,
-        "name": "Docs",
+        "label": "Docs",
         "collections": ["2025/20250102T030405Z__docs"],
         "state": "done",
         "files": 3,
@@ -30,15 +30,15 @@ def _status(fetch_id: str) -> dict[str, object]:
 
 def test_hot_fetch_show_renders_current_status(monkeypatch) -> None:
     class FakeClient:
-        def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
+        def get_fetch_status(self, fetch_id: int) -> dict[str, object]:
             return _status(fetch_id)
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
-    result = runner.invoke(app, ["hot", "fetch", "show", "fx-1"])
+    result = runner.invoke(app, ["hot", "fetch", "show", "1"])
 
     assert result.exit_code == 0
-    assert "fetch fx-1" in result.stdout
+    assert "fetch 1" in result.stdout
     assert "hot: 3" in result.stdout
 
 
@@ -51,7 +51,7 @@ def test_hot_fetch_list_emits_paged_json(monkeypatch) -> None:
                 "per_page": 1,
                 "total": 2,
                 "pages": 2,
-                "fetches": [_status("fx-2")],
+                "fetches": [_status(2)],
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -61,22 +61,58 @@ def test_hot_fetch_list_emits_paged_json(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["fetches"][0]["id"] == "fx-2"
+    assert json.loads(result.stdout)["fetches"][0]["id"] == 2
 
 
 def test_hot_fetch_start_follows_with_status(monkeypatch) -> None:
     class FakeClient:
-        def start_fetch(self, fetch_id: str) -> dict[str, object]:
+        def start_fetch(self, fetch_id: int) -> dict[str, object]:
             return {**_status(fetch_id), "state": "done"}
 
-        def get_fetch_status(self, fetch_id: str) -> dict[str, object]:
+        def get_fetch_status(self, fetch_id: int) -> dict[str, object]:
             return _status(fetch_id)
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
-    result = runner.invoke(app, ["hot", "fetch", "start", "fx-1"])
+    result = runner.invoke(app, ["hot", "fetch", "start", "1"])
 
     assert result.exit_code == 0
     assert "state: done" in result.stdout
+
+
+def test_hot_fetch_delete_explains_scope_and_requires_the_complete_id(monkeypatch) -> None:
+    calls: list[tuple[int, int]] = []
+
+    class FakeClient:
+        def get_fetch(self, fetch_id: int) -> dict[str, object]:
+            return _status(fetch_id)
+
+        def delete_fetch(self, fetch_id: int, *, confirmation: int) -> dict[str, object]:
+            calls.append((fetch_id, confirmation))
+            return {"status": "deleted", "id": fetch_id}
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    result = runner.invoke(app, ["hot", "fetch", "delete", "1"], input="1\n")
+
+    assert result.exit_code == 0
+    assert "Archived collections and hot files are unchanged" in result.stdout
+    assert calls == [(1, 1)]
+    assert "fetch deletion: deleted" in result.stdout
+
+
+def test_hot_fetch_delete_supports_explicit_machine_confirmation(monkeypatch) -> None:
+    class FakeClient:
+        def delete_fetch(self, fetch_id: int, *, confirmation: int) -> dict[str, object]:
+            assert confirmation == fetch_id == 1
+            return {"status": "deleted", "id": fetch_id}
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    result = runner.invoke(
+        app,
+        ["hot", "fetch", "delete", "1", "--confirm", "1", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"status": "deleted", "id": 1}
 
 
 def test_hot_evict_dry_run_renders_selection(monkeypatch) -> None:

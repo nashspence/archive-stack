@@ -229,8 +229,10 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
 def format_fetches(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "fetches")]
     for fetch in _items(payload, "fetches"):
+        label = fetch.get("label")
+        label_text = f"  {label}" if label else ""
         lines.append(
-            f"- {fetch.get('id', 'unknown')}  {fetch.get('name', '')}  "
+            f"- {fetch.get('id', 'unknown')}{label_text}  "
             f"state={fetch.get('state', 'unknown')}  "
             f"hot={fetch.get('hot_files', 0)}/{fetch.get('files', 0)}"
         )
@@ -239,12 +241,14 @@ def format_fetches(payload: Mapping[str, object]) -> str:
 
 def format_fetch(payload: Mapping[str, object]) -> str:
     lines = [
-        f"fetch {payload.get('id', 'unknown')}: {payload.get('name', '')}",
+        f"fetch {payload.get('id', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files', 0)} ({_bytes(payload.get('bytes'))})",
         f"hot: {payload.get('hot_files', 0)} ({_bytes(payload.get('hot_bytes'))})",
         f"missing: {payload.get('missing_files', 0)} ({_bytes(payload.get('missing_bytes'))})",
     ]
+    if payload.get("label"):
+        lines.insert(1, f"label: {payload['label']}")
     collections = payload.get("collections")
     if isinstance(collections, Sequence) and not isinstance(collections, (str, bytes)):
         lines.append("collections: " + ", ".join(str(collection) for collection in collections))

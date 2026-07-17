@@ -5,7 +5,19 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import case, delete, func, insert, literal, or_, select
+from sqlalchemy import (
+    String,
+    case,
+    delete,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+)
+from sqlalchemy import (
+    cast as sql_cast,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -45,7 +57,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.collection_custody import require_collection_custody_idle
 
-_FETCH_SORT_FIELDS = {"id", "name", "state", "order", "files", "bytes", "missing_bytes"}
+_FETCH_SORT_FIELDS = {"id", "label", "state", "files", "bytes", "missing_bytes"}
 _FETCH_FILE_SORT_FIELDS = {
     "logical_path",
     "collection_id",
@@ -71,7 +83,7 @@ class SqlAlchemyFetchService:
     def create(
         self,
         *,
-        name: str,
+        label: str | None = None,
         collections: Sequence[str] | None = None,
         files: Sequence[FileSelection] | None = None,
     ) -> FetchSummary:
@@ -80,18 +92,15 @@ class SqlAlchemyFetchService:
         with session_scope(self._session_factory) as session:
             _require_collections_exist(session, collection_ids)
             _require_files_exist(session, file_ids)
-            fetch_order = _next_fetch_order(session)
             fetch = FetchRecord(
-                fetch_id=f"fx-{fetch_order}",
-                name=_normalize_fetch_name(name),
-                fetch_order=fetch_order,
-                fetch_state=FetchState.DRAFT.value,
+                label=_normalize_fetch_label(label),
+                state=FetchState.DRAFT.value,
             )
             session.add(fetch)
             session.flush()
-            _add_fetch_collections(session, fetch.fetch_id, collection_ids)
-            _add_fetch_files(session, fetch.fetch_id, file_ids)
-            return _fetch_summary(session, fetch.fetch_id)
+            _add_fetch_collections(session, fetch.id, collection_ids)
+            _add_fetch_files(session, fetch.id, file_ids)
+            return _fetch_summary(session, fetch.id)
 
     def list(
         self,
@@ -100,7 +109,7 @@ class SqlAlchemyFetchService:
         per_page: int,
         state: str | None = None,
         q: str | None = None,
-        sort: str = "order",
+        sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
     ) -> FetchListPage:
@@ -117,46 +126,47 @@ class SqlAlchemyFetchService:
 
         stmt, expressions = _fetch_summary_query()
         if state is not None:
-            stmt = stmt.where(FetchRecord.fetch_state == state)
+            stmt = stmt.where(FetchRecord.state == state)
         if q:
             pattern = _like_pattern(q.casefold())
             logical_path = FetchFileRecord.collection_id + literal("/") + FetchFileRecord.path
             file_match = (
                 select(FetchFileRecord.fetch_id)
                 .where(
-                    FetchFileRecord.fetch_id == FetchRecord.fetch_id,
+                    FetchFileRecord.fetch_id == FetchRecord.id,
                     func.lower(logical_path).like(pattern, escape="\\"),
                 )
                 .exists()
             )
             stmt = stmt.where(
                 or_(
-                    func.lower(FetchRecord.fetch_id).like(pattern, escape="\\"),
-                    func.lower(FetchRecord.name).like(pattern, escape="\\"),
+                    sql_cast(FetchRecord.id, String).like(pattern, escape="\\"),
+                    func.lower(func.coalesce(FetchRecord.label, "")).like(
+                        pattern, escape="\\"
+                    ),
                     file_match,
                 )
             )
         sort_expr = {
-            "id": FetchRecord.fetch_id,
-            "name": func.lower(FetchRecord.name),
-            "state": FetchRecord.fetch_state,
-            "order": FetchRecord.fetch_order,
+            "id": FetchRecord.id,
+            "label": func.lower(func.coalesce(FetchRecord.label, "")),
+            "state": FetchRecord.state,
             "files": expressions["files"],
             "bytes": expressions["bytes"],
             "missing_bytes": expressions["missing_bytes"],
         }[sort]
         stmt = stmt.order_by(
             sort_expr.desc() if order == "desc" else sort_expr.asc(),
-            FetchRecord.fetch_id,
+            FetchRecord.id,
         )
         with session_scope(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
             selected = stmt if all_items else stmt.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(selected).all()
-            fetch_ids = [row[0].fetch_id for row in rows]
+            fetch_ids = [row[0].id for row in rows]
             collections_by_fetch = _collections_by_fetch(session, fetch_ids)
             summaries = [
-                _fetch_summary_from_row(row, collections_by_fetch.get(row[0].fetch_id, ()))
+                _fetch_summary_from_row(row, collections_by_fetch.get(row[0].id, ()))
                 for row in rows
             ]
         return FetchListPage(
@@ -167,7 +177,7 @@ class SqlAlchemyFetchService:
             fetches=summaries,
         )
 
-    def add_collections(self, fetch_id: str, collections: Sequence[str]) -> FetchSummary:
+    def add_collections(self, fetch_id: int, collections: Sequence[str]) -> FetchSummary:
         collection_ids = _canonical_collection_ids(collections)
         if not collection_ids:
             raise BadRequest("at least one collection is required")
@@ -178,7 +188,7 @@ class SqlAlchemyFetchService:
             _add_fetch_collections(session, fetch_id, collection_ids)
             return _fetch_summary(session, fetch_id)
 
-    def remove_collections(self, fetch_id: str, collections: Sequence[str]) -> FetchSummary:
+    def remove_collections(self, fetch_id: int, collections: Sequence[str]) -> FetchSummary:
         collection_ids = _canonical_collection_ids(collections)
         if not collection_ids:
             raise BadRequest("at least one collection is required")
@@ -193,7 +203,7 @@ class SqlAlchemyFetchService:
             )
             return _fetch_summary(session, fetch_id)
 
-    def add_files(self, fetch_id: str, files: Sequence[FileSelection]) -> FetchSummary:
+    def add_files(self, fetch_id: int, files: Sequence[FileSelection]) -> FetchSummary:
         file_ids = _canonical_files(files)
         if not file_ids:
             raise BadRequest("at least one file is required")
@@ -204,7 +214,7 @@ class SqlAlchemyFetchService:
             _add_fetch_files(session, fetch_id, file_ids)
             return _fetch_summary(session, fetch_id)
 
-    def remove_files(self, fetch_id: str, files: Sequence[FileSelection]) -> FetchSummary:
+    def remove_files(self, fetch_id: int, files: Sequence[FileSelection]) -> FetchSummary:
         file_ids = _canonical_files(files)
         if not file_ids:
             raise BadRequest("at least one file is required")
@@ -221,7 +231,7 @@ class SqlAlchemyFetchService:
                 )
             return _fetch_summary(session, fetch_id)
 
-    def start(self, fetch_id: str) -> FetchSummary:
+    def start(self, fetch_id: int) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
             _require_startable(fetch)
@@ -231,20 +241,34 @@ class SqlAlchemyFetchService:
             for collection_id in collection_ids:
                 require_collection_custody_idle(session, collection_id)
             summary = _fetch_summary(session, fetch_id)
-            fetch.fetch_state = (
+            fetch.state = (
                 FetchState.DONE.value
                 if summary.hot_files == summary.files
                 else FetchState.QUEUED_ARCHIVE.value
             )
             return _fetch_summary(session, fetch_id)
 
-    def cancel(self, fetch_id: str) -> FetchSummary:
+    def cancel(self, fetch_id: int) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             fetch = _get_fetch(session, fetch_id)
-            if fetch.fetch_state == FetchState.DONE.value:
+            if fetch.state == FetchState.DONE.value:
                 raise InvalidState("completed fetches cannot be canceled")
-            fetch.fetch_state = FetchState.DRAFT.value
+            fetch.state = FetchState.DRAFT.value
             return _fetch_summary(session, fetch_id)
+
+    def delete(self, fetch_id: int, *, confirmation: int) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            fetch = _get_fetch(session, fetch_id)
+            if confirmation != fetch.id:
+                raise BadRequest("confirmation must exactly match the fetch id")
+            if fetch.state in {
+                FetchState.QUEUED_ARCHIVE.value,
+                FetchState.RESTORING_ARCHIVE.value,
+            }:
+                raise InvalidState("active fetches must be canceled before deletion")
+            session.delete(fetch)
+            session.flush()
+            return {"status": "deleted", "id": fetch_id}
 
     def evict(
         self,
@@ -343,11 +367,11 @@ class SqlAlchemyFetchService:
                 dry_run=False,
             )
 
-    def get(self, fetch_id: str) -> FetchSummary:
+    def get(self, fetch_id: int) -> FetchSummary:
         with session_scope(self._session_factory) as session:
             return _fetch_summary(session, fetch_id)
 
-    def status(self, fetch_id: str) -> dict[str, object]:
+    def status(self, fetch_id: int) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             summary = _fetch_summary(session, fetch_id)
             collection_rows = session.execute(_fetch_collection_summary_query(fetch_id)).all()
@@ -376,7 +400,7 @@ class SqlAlchemyFetchService:
 
     def files(
         self,
-        fetch_id: str,
+        fetch_id: int,
         *,
         page: int,
         per_page: int,
@@ -531,12 +555,12 @@ def _fetch_summary_query() -> tuple[Any, dict[str, Any]]:
             expressions["hot_bytes"].label("hot_bytes"),
             expressions["missing_files"].label("missing_files"),
             expressions["missing_bytes"].label("missing_bytes"),
-        ).outerjoin(stats, stats.c.fetch_id == FetchRecord.fetch_id),
+        ).outerjoin(stats, stats.c.fetch_id == FetchRecord.id),
         expressions,
     )
 
 
-def _fetch_collection_summary_query(fetch_id: str) -> Any:
+def _fetch_collection_summary_query(fetch_id: int) -> Any:
     files = func.count(CollectionFileRecord.path)
     bytes_total = func.coalesce(func.sum(CollectionFileRecord.bytes), 0)
     hot_files = func.coalesce(
@@ -574,7 +598,7 @@ def _fetch_collection_summary_query(fetch_id: str) -> Any:
     )
 
 
-def _fetch_files_query(fetch_id: str) -> Any:
+def _fetch_files_query(fetch_id: int) -> Any:
     return (
         select(CollectionFileRecord)
         .join(
@@ -614,7 +638,7 @@ def _file_query_stats(session: Session, query: Any) -> tuple[int, int]:
 
 def _add_fetch_collections(
     session: Session,
-    fetch_id: str,
+    fetch_id: int,
     collection_ids: Sequence[str],
 ) -> None:
     if not collection_ids:
@@ -661,7 +685,7 @@ def _add_fetch_collections(
 
 def _add_fetch_files(
     session: Session,
-    fetch_id: str,
+    fetch_id: int,
     files: Sequence[FileSelection],
 ) -> None:
     next_order = int(
@@ -696,8 +720,8 @@ def _add_fetch_files(
 
 def _collections_by_fetch(
     session: Session,
-    fetch_ids: Sequence[str],
-) -> dict[str, list[str]]:
+    fetch_ids: Sequence[int],
+) -> dict[int, list[str]]:
     if not fetch_ids:
         return {}
     ordered = (
@@ -719,7 +743,7 @@ def _collections_by_fetch(
     rows = session.execute(
         select(ordered.c.fetch_id, aggregate.label("collection_ids")).group_by(ordered.c.fetch_id)
     ).all()
-    result: dict[str, list[str]] = {fetch_id: [] for fetch_id in fetch_ids}
+    result: dict[int, list[str]] = {fetch_id: [] for fetch_id in fetch_ids}
     for row in rows:
         values = (
             json.loads(row.collection_ids)
@@ -730,9 +754,9 @@ def _collections_by_fetch(
     return result
 
 
-def _fetch_summary(session: Session, fetch_id: str) -> FetchSummary:
+def _fetch_summary(session: Session, fetch_id: int) -> FetchSummary:
     stmt, _ = _fetch_summary_query()
-    row = session.execute(stmt.where(FetchRecord.fetch_id == fetch_id)).one_or_none()
+    row = session.execute(stmt.where(FetchRecord.id == fetch_id)).one_or_none()
     if row is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return _fetch_summary_from_row(row, _fetch_collection_ids(session, fetch_id))
@@ -741,10 +765,10 @@ def _fetch_summary(session: Session, fetch_id: str) -> FetchSummary:
 def _fetch_summary_from_row(row: Any, collection_ids: Sequence[str]) -> FetchSummary:
     fetch = row[0]
     return FetchSummary(
-        id=FetchId(fetch.fetch_id),
-        name=fetch.name,
+        id=FetchId(fetch.id),
+        label=fetch.label,
         collections=tuple(CollectionId(value) for value in collection_ids),
-        state=FetchState(fetch.fetch_state),
+        state=FetchState(fetch.state),
         files=int(row.files),
         bytes=int(row.bytes),
         hot_files=int(row.hot_files),
@@ -754,19 +778,15 @@ def _fetch_summary_from_row(row: Any, collection_ids: Sequence[str]) -> FetchSum
     )
 
 
-def _fetch_collection_ids(session: Session, fetch_id: str) -> list[str]:
+def _fetch_collection_ids(session: Session, fetch_id: int) -> list[str]:
     return _collections_by_fetch(session, [fetch_id]).get(fetch_id, [])
 
 
-def _get_fetch(session: Session, fetch_id: str) -> FetchRecord:
+def _get_fetch(session: Session, fetch_id: int) -> FetchRecord:
     fetch = session.get(FetchRecord, fetch_id)
     if fetch is None:
         raise NotFound(f"fetch not found: {fetch_id}")
     return fetch
-
-
-def _next_fetch_order(session: Session) -> int:
-    return int(session.scalar(select(func.max(FetchRecord.fetch_order))) or 0) + 1
 
 
 def _canonical_collection_ids(collections: Sequence[str]) -> list[str]:
@@ -841,8 +861,8 @@ def _file_payload(file: CollectionFileRecord) -> dict[str, object]:
 
 def _fetch_summary_payload(summary: FetchSummary) -> dict[str, object]:
     return {
-        "id": str(summary.id),
-        "name": summary.name,
+        "id": summary.id,
+        "label": summary.label,
         "collections": [str(value) for value in summary.collections],
         "state": summary.state.value,
         "files": summary.files,
@@ -890,22 +910,24 @@ def _eviction_payload(
     }
 
 
-def _normalize_fetch_name(name: str) -> str:
-    normalized = " ".join(name.strip().split())
+def _normalize_fetch_label(label: str | None) -> str | None:
+    if label is None:
+        return None
+    normalized = " ".join(label.strip().split())
     if not normalized:
-        raise BadRequest("fetch name is required")
+        raise BadRequest("fetch label cannot be blank")
     return normalized
 
 
 def _require_editable(fetch: FetchRecord) -> None:
-    if fetch.fetch_state != FetchState.DRAFT.value:
+    if fetch.state != FetchState.DRAFT.value:
         raise InvalidState("fetch is already started and cannot be edited")
 
 
 def _require_startable(fetch: FetchRecord) -> None:
-    if fetch.fetch_state == FetchState.DONE.value:
+    if fetch.state == FetchState.DONE.value:
         raise InvalidState("fetch is already complete")
-    if fetch.fetch_state != FetchState.DRAFT.value:
+    if fetch.state != FetchState.DRAFT.value:
         raise InvalidState("fetch is already started")
 
 

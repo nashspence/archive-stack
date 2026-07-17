@@ -136,7 +136,7 @@ class CollectionListPage:
 @dataclass(frozen=True)
 class FetchSummary:
     id: FetchId
-    name: str
+    label: str | None
     collections: tuple[CollectionId, ...]
     state: FetchState
     files: int

@@ -43,15 +43,14 @@ def _seed_fetch(config, path: str = "one.txt") -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         session.add(
             FetchRecord(
-                fetch_id="fx-1",
-                name="selected",
-                fetch_order=1,
-                fetch_state="queued_archive",
+                id=1,
+                label="selected",
+                state="queued_archive",
             )
         )
         session.add(
             FetchFileRecord(
-                fetch_id="fx-1",
+                fetch_id=1,
                 collection_id=COLLECTION_ID,
                 path=path,
                 file_order=1,
@@ -63,15 +62,14 @@ def _seed_second_fetch(config, path: str = "two.txt") -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         session.add(
             FetchRecord(
-                fetch_id="fx-2",
-                name="other selection",
-                fetch_order=2,
-                fetch_state="queued_archive",
+                id=2,
+                label="other selection",
+                state="queued_archive",
             )
         )
         session.add(
             FetchFileRecord(
-                fetch_id="fx-2",
+                fetch_id=2,
                 collection_id=COLLECTION_ID,
                 path=path,
                 file_order=1,
@@ -83,7 +81,7 @@ def test_restore_fetch_materializes_only_the_selected_file(tmp_path: Path) -> No
     config, archive_store, hot_store, service = _service(tmp_path / "catalog.sqlite3")
     _seed_fetch(config)
 
-    page = service.create_or_resume_for_fetch("fx-1")
+    page = service.create_or_resume_for_fetch(1)
 
     assert page.total == 1
     assert page.restores[0].state.value == "completed"
@@ -106,7 +104,7 @@ def test_restore_waits_on_only_the_objects_mapped_to_selected_files(tmp_path: Pa
     config, archive_store, hot_store, service = _service(tmp_path / "catalog.sqlite3", ready=False)
     _seed_fetch(config, "two.txt")
 
-    page = service.create_or_resume_for_fetch("fx-1")
+    page = service.create_or_resume_for_fetch(1)
 
     assert page.restores[0].state.value == "requested"
     assert archive_store.prepared == [("data-000000",)]
@@ -120,8 +118,8 @@ def test_concurrent_fetches_keep_distinct_file_selections(tmp_path: Path) -> Non
     _seed_fetch(config, "one.txt")
     _seed_second_fetch(config, "two.txt")
 
-    service.create_or_resume_for_fetch("fx-1")
-    service.create_or_resume_for_fetch("fx-2")
+    service.create_or_resume_for_fetch(1)
+    service.create_or_resume_for_fetch(2)
 
     with session_scope(make_session_factory(config.database_url)) as session:
         restores = session.query(ArchiveRestoreRecord).order_by(ArchiveRestoreRecord.restore_id)

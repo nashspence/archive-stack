@@ -8,6 +8,8 @@ from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_restore_list, map_fetch, map_fetch_list
 from riverhog_api.schemas.fetches import (
     CreateFetchRequest,
+    DeleteFetchRequest,
+    DeleteFetchResponse,
     FetchCollectionsRequest,
     FetchesResponse,
     FetchFilesRequest,
@@ -21,7 +23,7 @@ from riverhog_api.schemas.fetches import (
 router = APIRouter(tags=["fetches"])
 
 
-def _fetch_status_payload(fetch_id: str, container: ContainerDep) -> dict[str, object]:
+def _fetch_status_payload(fetch_id: int, container: ContainerDep) -> dict[str, object]:
     payload = container.fetches.status(fetch_id)
     payload["archive_restores"] = map_archive_restore_list(
         container.archive_restores.list_for_fetch(
@@ -56,7 +58,7 @@ def list_fetches(
     per_page: int = Query(25, ge=1, le=100),
     state: str | None = Query(None),
     q: str | None = Query(None),
-    sort: str = Query("order"),
+    sort: str = Query("id"),
     order: str = Query("asc"),
     all_items: bool = Query(False, alias="all"),
 ) -> FetchesResponse:
@@ -83,7 +85,7 @@ def create_fetch(
     return FetchSummaryOut.model_validate(
         map_fetch(
             container.fetches.create(
-                name=request.name,
+                label=request.label,
                 collections=request.collections,
                 files=[(item.collection_id, item.path) for item in request.files],
             )
@@ -91,9 +93,20 @@ def create_fetch(
     )
 
 
+@router.delete("/fetches/{fetch_id}", response_model=DeleteFetchResponse)
+def delete_fetch(
+    fetch_id: int,
+    request: DeleteFetchRequest,
+    container: ContainerDep,
+) -> DeleteFetchResponse:
+    return DeleteFetchResponse.model_validate(
+        container.fetches.delete(fetch_id, confirmation=request.confirmation)
+    )
+
+
 @router.post("/fetches/{fetch_id}/collections", response_model=FetchSummaryOut)
 def add_fetch_collections(
-    fetch_id: str,
+    fetch_id: int,
     request: FetchCollectionsRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
@@ -104,7 +117,7 @@ def add_fetch_collections(
 
 @router.delete("/fetches/{fetch_id}/collections", response_model=FetchSummaryOut)
 def remove_fetch_collections(
-    fetch_id: str,
+    fetch_id: int,
     request: FetchCollectionsRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
@@ -115,7 +128,7 @@ def remove_fetch_collections(
 
 @router.post("/fetches/{fetch_id}/files", response_model=FetchSummaryOut)
 def add_fetch_files(
-    fetch_id: str,
+    fetch_id: int,
     request: FetchFilesRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
@@ -131,7 +144,7 @@ def add_fetch_files(
 
 @router.delete("/fetches/{fetch_id}/files", response_model=FetchSummaryOut)
 def remove_fetch_files(
-    fetch_id: str,
+    fetch_id: int,
     request: FetchFilesRequest,
     container: ContainerDep,
 ) -> FetchSummaryOut:
@@ -146,7 +159,7 @@ def remove_fetch_files(
 
 
 @router.post("/fetches/{fetch_id}/start", response_model=FetchSummaryOut)
-def start_fetch(fetch_id: str, container: ContainerDep) -> FetchSummaryOut:
+def start_fetch(fetch_id: int, container: ContainerDep) -> FetchSummaryOut:
     summary = container.fetches.start(fetch_id)
     if summary.state.value == "queued_archive":
         container.archive_restores.create_or_resume_for_fetch(fetch_id)
@@ -155,17 +168,17 @@ def start_fetch(fetch_id: str, container: ContainerDep) -> FetchSummaryOut:
 
 
 @router.get("/fetches/{fetch_id}", response_model=FetchSummaryOut)
-def get_fetch(fetch_id: str, container: ContainerDep) -> FetchSummaryOut:
+def get_fetch(fetch_id: int, container: ContainerDep) -> FetchSummaryOut:
     return FetchSummaryOut.model_validate(map_fetch(container.fetches.get(fetch_id)))
 
 
 @router.get("/fetches/{fetch_id}/status", response_model=FetchStatusResponse)
-def get_fetch_status(fetch_id: str, container: ContainerDep) -> FetchStatusResponse:
+def get_fetch_status(fetch_id: int, container: ContainerDep) -> FetchStatusResponse:
     return FetchStatusResponse.model_validate(_fetch_status_payload(fetch_id, container))
 
 
 @router.post("/fetches/{fetch_id}/cancel", response_model=FetchStatusResponse)
-def cancel_fetch(fetch_id: str, container: ContainerDep) -> FetchStatusResponse:
+def cancel_fetch(fetch_id: int, container: ContainerDep) -> FetchStatusResponse:
     summary = container.fetches.get(fetch_id)
     if summary.state.value in {"queued_archive", "restoring_archive"}:
         container.archive_restores.cancel_for_fetch(fetch_id)
@@ -176,7 +189,7 @@ def cancel_fetch(fetch_id: str, container: ContainerDep) -> FetchStatusResponse:
 
 @router.get("/fetches/{fetch_id}/files", response_model=FetchFilesResponse)
 def list_fetch_files(
-    fetch_id: str,
+    fetch_id: int,
     container: ContainerDep,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),

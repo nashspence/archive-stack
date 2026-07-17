@@ -55,6 +55,12 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "path",
         "file_order",
     }
+    fetch_columns = {
+        column["name"]: column for column in inspector.get_columns("fetches")
+    }
+    assert set(fetch_columns) == {"id", "label", "state"}
+    assert fetch_columns["id"]["type"].python_type is int
+    assert fetch_columns["label"]["nullable"] is True
     upload_columns = {
         column["name"]: column for column in inspector.get_columns("collection_uploads")
     }

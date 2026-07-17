@@ -9,8 +9,8 @@ from riverhog_api.schemas.common import RiverhogModel
 
 
 class FetchSummaryOut(RiverhogModel):
-    id: str
-    name: str
+    id: int
+    label: str | None
     collections: list[str]
     state: Literal["draft", "queued_archive", "restoring_archive", "done", "failed"]
     files: int
@@ -30,7 +30,7 @@ class FetchesResponse(RiverhogModel):
 
 
 class CreateFetchRequest(RiverhogModel):
-    name: str
+    label: str | None = None
     collections: list[str] = Field(default_factory=list)
     files: list[FetchFileSelection] = Field(default_factory=list)
 
@@ -46,6 +46,15 @@ class FetchCollectionsRequest(RiverhogModel):
 
 class FetchFilesRequest(RiverhogModel):
     files: list[FetchFileSelection]
+
+
+class DeleteFetchRequest(RiverhogModel):
+    confirmation: int = Field(gt=0)
+
+
+class DeleteFetchResponse(RiverhogModel):
+    status: Literal["deleted"]
+    id: int
 
 
 class HotEvictRequest(RiverhogModel):
@@ -99,7 +108,7 @@ class FetchStatusResponse(FetchSummaryOut):
 
 
 class FetchFilesResponse(RiverhogModel):
-    fetch_id: str
+    fetch_id: int
     q: str | None
     hot: bool | None
     page: int

@@ -169,8 +169,8 @@ def map_archive_restore_list(summary: ArchiveRestoreListPage) -> dict[str, objec
 
 def map_fetch(summary: FetchSummary) -> dict[str, object]:
     return {
-        "id": str(summary.id),
-        "name": summary.name,
+        "id": summary.id,
+        "label": summary.label,
         "collections": [str(collection) for collection in summary.collections],
         "state": summary.state.value,
         "files": summary.files,

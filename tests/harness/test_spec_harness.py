@@ -233,7 +233,7 @@ def test_hot_fetch_completes_when_collection_is_available(client: TestClient) ->
     created = client.post(
         "/v1/fetches",
         json={
-            "name": "documentation",
+            "label": "documentation",
             "collections": ["2025/20250102T030405Z__docs"],
         },
     ).json()
@@ -246,3 +246,23 @@ def test_hot_fetch_completes_when_collection_is_available(client: TestClient) ->
     assert status["missing_files"] == 0
     assert status["next_action"]["action"] == "none"
     assert content.content == b"current archive contract\n"
+
+
+def test_inactive_fetch_can_be_explicitly_deleted(client: TestClient) -> None:
+    created = client.post(
+        "/v1/fetches",
+        json={
+            "collections": ["2025/20250102T030405Z__docs"],
+        },
+    ).json()
+
+    deleted = client.request(
+        "DELETE",
+        f"/v1/fetches/{created['id']}",
+        json={"confirmation": created["id"]},
+    )
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"status": "deleted", "id": created["id"]}
+    assert created["label"] is None
+    assert client.get(f"/v1/fetches/{created['id']}").status_code == 404

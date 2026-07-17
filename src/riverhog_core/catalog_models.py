@@ -336,10 +336,9 @@ class ArchiveRestoreObjectRecord(Base):
 class FetchRecord(Base):
     __tablename__ = "fetches"
 
-    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
-    name: Mapped[str] = mapped_column(String)
-    fetch_order: Mapped[int] = mapped_column(Integer, unique=True)
-    fetch_state: Mapped[str] = mapped_column(String)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str] = mapped_column(String)
     files: Mapped[list[FetchFileRecord]] = relationship(
         back_populates="fetch",
         cascade="all, delete-orphan",
@@ -349,13 +348,13 @@ class FetchRecord(Base):
 class FetchFileRecord(Base):
     __tablename__ = "fetch_files"
 
-    fetch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fetch_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     file_order: Mapped[int] = mapped_column(Integer)
 
     __table_args__ = (
-        ForeignKeyConstraint(["fetch_id"], ["fetches.fetch_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["fetch_id"], ["fetches.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["collection_id", "path"],
             ["collection_files.collection_id", "collection_files.path"],

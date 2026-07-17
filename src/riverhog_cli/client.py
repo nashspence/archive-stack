@@ -490,7 +490,7 @@ class ApiClient:
         per_page: int = 25,
         state: str | None = None,
         query: str | None = None,
-        sort: str = "order",
+        sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -511,7 +511,7 @@ class ApiClient:
     def create_fetch(
         self,
         *,
-        name: str,
+        label: str | None,
         collections: Sequence[str],
         files: Sequence[tuple[str, str]] = (),
     ) -> dict[str, Any]:
@@ -519,7 +519,7 @@ class ApiClient:
             "POST",
             "/v1/fetches",
             json={
-                "name": name,
+                "label": label,
                 "collections": list(collections),
                 "files": _file_selections_payload(files),
             },
@@ -527,56 +527,63 @@ class ApiClient:
 
     def add_fetch_collections(
         self,
-        fetch_id: str,
+        fetch_id: int,
         collections: Sequence[str],
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/collections",
+            f"/v1/fetches/{fetch_id}/collections",
             json={"collections": list(collections)},
         )
 
     def remove_fetch_collections(
         self,
-        fetch_id: str,
+        fetch_id: int,
         collections: Sequence[str],
     ) -> dict[str, Any]:
         return self._json(
             "DELETE",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/collections",
+            f"/v1/fetches/{fetch_id}/collections",
             json={"collections": list(collections)},
         )
 
     def add_fetch_files(
         self,
-        fetch_id: str,
+        fetch_id: int,
         files: Sequence[tuple[str, str]],
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            f"/v1/fetches/{fetch_id}/files",
             json={"files": _file_selections_payload(files)},
         )
 
     def remove_fetch_files(
         self,
-        fetch_id: str,
+        fetch_id: int,
         files: Sequence[tuple[str, str]],
     ) -> dict[str, Any]:
         return self._json(
             "DELETE",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            f"/v1/fetches/{fetch_id}/files",
             json={"files": _file_selections_payload(files)},
         )
 
-    def start_fetch(self, fetch_id: str) -> dict[str, Any]:
+    def start_fetch(self, fetch_id: int) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/start",
+            f"/v1/fetches/{fetch_id}/start",
         )
 
-    def cancel_fetch(self, fetch_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/fetches/{quote(fetch_id, safe='/')}/cancel")
+    def cancel_fetch(self, fetch_id: int) -> dict[str, Any]:
+        return self._json("POST", f"/v1/fetches/{fetch_id}/cancel")
+
+    def delete_fetch(self, fetch_id: int, *, confirmation: int) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/fetches/{fetch_id}",
+            json={"confirmation": confirmation},
+        )
 
     def evict_hot(
         self,
@@ -595,15 +602,15 @@ class ApiClient:
             },
         )
 
-    def get_fetch(self, fetch_id: str) -> dict[str, Any]:
+    def get_fetch(self, fetch_id: int) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}")
 
-    def get_fetch_status(self, fetch_id: str) -> dict[str, Any]:
+    def get_fetch_status(self, fetch_id: int) -> dict[str, Any]:
         return self._json("GET", f"/v1/fetches/{fetch_id}/status")
 
     def list_fetch_files(
         self,
-        fetch_id: str,
+        fetch_id: int,
         *,
         page: int = 1,
         per_page: int = 25,
@@ -627,7 +634,7 @@ class ApiClient:
             params["all"] = True
         return self._json(
             "GET",
-            f"/v1/fetches/{quote(fetch_id, safe='/')}/files",
+            f"/v1/fetches/{fetch_id}/files",
             params=params,
         )
 
