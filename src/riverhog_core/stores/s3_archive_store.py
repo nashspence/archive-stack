@@ -208,12 +208,14 @@ def _read_object_range(
     offset: int,
     size: int,
 ) -> bytes:
+    if size == 0:
+        return b""
     out = bytearray()
     for chunk in object.iter_plaintext_from_offset(offset):
-        if len(out) >= size:
-            break
         needed = size - len(out)
         out.extend(chunk[:needed])
+        if len(out) == size:
+            break
     if len(out) != size:
         raise ValueError("archive object stream ended before encrypted part range")
     return bytes(out)

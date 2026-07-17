@@ -29,7 +29,11 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.stores.s3_archive_store import ArchiveMultipartTiming, S3ArchiveStore
+from riverhog_core.stores.s3_archive_store import (
+    ArchiveMultipartTiming,
+    S3ArchiveStore,
+    _read_object_range,
+)
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
@@ -370,6 +374,29 @@ def _multi_object_archive() -> CollectionArchive:
         proof_bytes=proof,
         proof_sha256=hashlib.sha256(proof).hexdigest(),
     )
+
+
+def test_archive_object_range_stops_reading_when_the_request_is_satisfied() -> None:
+    chunks_read = 0
+
+    def chunks() -> Iterator[bytes]:
+        nonlocal chunks_read
+        for chunk in (b"abcd", b"efgh"):
+            chunks_read += 1
+            yield chunk
+
+    data = CollectionArchiveDataObject(
+        object_id="data-000000",
+        kind="file",
+        plaintext_bytes=8,
+        sha256=hashlib.sha256(b"abcdefgh").hexdigest(),
+        placements=(),
+        _chunks=chunks,
+        _chunks_from_offset=lambda _offset: chunks(),
+    )
+
+    assert _read_object_range(data, 0, 4) == b"abcd"
+    assert chunks_read == 1
 
 
 def _identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdentity:
