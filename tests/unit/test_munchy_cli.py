@@ -402,6 +402,38 @@ def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  
     assert "canceled" in result.stdout
 
 
+def test_munchy_job_cleanup_accepts_cleaned_terminal_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    cleaned = {
+        "job_id": "job-1",
+        "state": "failed",
+        "phase": "routing",
+        "cleanup_completed_at": "2026-01-01T00:00:00Z",
+    }
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def cancel_job(self, job_id: str, *, cleanup: bool = False) -> dict[str, object]:
+            assert job_id == "job-1"
+            assert cleanup is True
+            return cleaned
+
+        def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, object]:
+            assert job_id == "job-1"
+            return cleaned
+
+    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["job", "cancel", "job-1", "--runner-url", "http://runner", "--cleanup"],
+    )
+
+    assert result.exit_code == 0
+    assert "cleanup complete" in result.stdout
+
+
 def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")

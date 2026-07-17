@@ -1276,7 +1276,9 @@ def cancel_job(
             job = client.wait_for_job(job_id, interval=interval)
             if cleanup and job.get("state") == "canceled" and not job.get("cleanup_completed_at"):
                 job = client.cancel_job(job_id, cleanup=True)
-            if job.get("state") != "canceled":
+            if cleanup and not job.get("cleanup_completed_at"):
+                raise RuntimeError(f"job cleanup did not complete: {format_job_status_line(job)}")
+            if not cleanup and job.get("state") != "canceled":
                 raise RuntimeError(f"job did not cancel cleanly: {format_job_status_line(job)}")
     except Exception as exc:
         _exit_runner_error(exc)
