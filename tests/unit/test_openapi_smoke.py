@@ -55,3 +55,18 @@ def test_collection_upload_requests_retain_hot_storage_by_default() -> None:
         ]
         is True
     )
+
+
+def test_collection_file_upload_response_reports_storage_policy() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+    response = schemas["CollectionUploadSessionFileUploadOut"]
+
+    assert response["properties"]["retain_hot"] == {
+        "type": "boolean",
+        "title": "Retain Hot",
+    }
+    assert response["properties"]["archive_store"] == {
+        "type": "string",
+        "title": "Archive Store",
+    }
+    assert {"retain_hot", "archive_store"} <= set(response["required"])

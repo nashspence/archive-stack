@@ -199,5 +199,7 @@ class CollectionFileUploadSessionOut(RiverhogModel):
 class CollectionUploadSessionFileUploadOut(CollectionFileUploadSessionOut):
     collection_id: str
     ingest_source: str | None
+    retain_hot: bool
+    archive_store: str
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut
