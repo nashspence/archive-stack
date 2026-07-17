@@ -120,6 +120,9 @@ def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
             _ = request
             return {"accepted": True}
 
+        def close(self) -> None:
+            pass
+
     monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
 
 
@@ -480,6 +483,9 @@ def test_archive_plan_target_preflight_does_not_record_failure(
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request
             raise collector_module.UnrecoverableJebError("unknown template")
+
+        def close(self) -> None:
+            pass
 
     monkeypatch.setattr(collector_module, "MunchyRunnerClient", RejectingMunchyRunnerClient)
 

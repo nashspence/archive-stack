@@ -94,6 +94,9 @@ def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
             _ = request
             return {"accepted": True}
 
+        def close(self) -> None:
+            pass
+
     monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
 
 

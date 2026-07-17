@@ -1708,57 +1708,61 @@ class Collector:
             collection_slug=source.collection_slug,
             collection_timestamp=current_time().strftime("%Y%m%dT%H%M%S.%fZ"),
         )
+        client = MunchyRunnerClient(target.url)
         try:
-            result = MunchyRunnerClient(target.url).preflight_submission(request)
-        except Exception as exc:
-            if is_transient_error(exc):
-                LOG.warning(
-                    "source %s target preflight hit a transient issue; will retry later: %s",
-                    source.id,
-                    exc,
-                )
+            try:
+                result = client.preflight_submission(request)
+            except Exception as exc:
+                if is_transient_error(exc):
+                    LOG.warning(
+                        "source %s target preflight hit a transient issue; will retry later: %s",
+                        source.id,
+                        exc,
+                    )
+                    return None, {
+                        "ok": False,
+                        "status": "transient_error",
+                        "file_count": len(files),
+                        "template": source.template,
+                        "error": str(exc),
+                    }
+                if record_failures:
+                    self.record_target_preflight_failure(
+                        source=source,
+                        files=files,
+                        error=exc,
+                    )
+                    self.notify_target_preflight_failures(source_id=source.id)
                 return None, {
                     "ok": False,
-                    "status": "transient_error",
+                    "status": "rejected",
                     "file_count": len(files),
                     "template": source.template,
                     "error": str(exc),
                 }
+            accepted = bool(result.get("accepted"))
+            summary = {
+                "ok": accepted,
+                "status": "accepted" if accepted else "rejected",
+                "file_count": len(files),
+                "template": source.template,
+                "result": result,
+            }
+            if accepted:
+                if record_failures:
+                    self.clear_target_preflight_failure(source.id)
+                return list(files), summary
+            error = UnrecoverableJebError("target rejected submission preflight")
             if record_failures:
                 self.record_target_preflight_failure(
                     source=source,
                     files=files,
-                    error=exc,
+                    error=error,
                 )
                 self.notify_target_preflight_failures(source_id=source.id)
-            return None, {
-                "ok": False,
-                "status": "rejected",
-                "file_count": len(files),
-                "template": source.template,
-                "error": str(exc),
-            }
-        accepted = bool(result.get("accepted"))
-        summary = {
-            "ok": accepted,
-            "status": "accepted" if accepted else "rejected",
-            "file_count": len(files),
-            "template": source.template,
-            "result": result,
-        }
-        if accepted:
-            if record_failures:
-                self.clear_target_preflight_failure(source.id)
-            return list(files), summary
-        error = UnrecoverableJebError("target rejected submission preflight")
-        if record_failures:
-            self.record_target_preflight_failure(
-                source=source,
-                files=files,
-                error=error,
-            )
-            self.notify_target_preflight_failures(source_id=source.id)
-        return None, summary
+            return None, summary
+        finally:
+            client.close()
 
     def record_target_preflight_failure(
         self,
@@ -2887,37 +2891,42 @@ class MunchyTargetRunner:
             return
         target = collector.target_by_name(str(attempt["target_name"]))
         client = MunchyRunnerClient(target.url)
-        request = munchy_submission_request(collector, attempt_id, target)
+        try:
+            request = munchy_submission_request(collector, attempt_id, target)
 
-        state = str(attempt["state"])
-        if state == "preflighted":
-            client.create_submission(request)
-            collector.set_attempt_state(attempt_id, "target_submitted")
-            state = "target_submitted"
-        if state in {"target_submitted", "target_uploading"}:
-            collector.set_attempt_state(attempt_id, "target_uploading")
-            try:
-                client.upload_files(request)
-            except RunnerJobTerminalDuringUpload as exc:
-                if job_finished_cleanly(exc.job):
-                    collector.set_attempt_state(attempt_id, "target_complete")
-                    return
-                raise UnrecoverableJebError(str(exc)) from exc
-            collector.set_attempt_state(attempt_id, "target_uploaded")
-            state = "target_uploaded"
-        if state == "target_uploaded":
-            submission = client.wait_for_submission(
-                request.submission_id,
-                wait_for_safe_delete=target.wait_for_safe_delete,
-            )
-            job = submission.get("job")
-            if not isinstance(job, dict):
-                raise UnrecoverableJebError(
-                    f"Munchy submission returned invalid job state: {submission}"
+            state = str(attempt["state"])
+            if state == "preflighted":
+                client.create_submission(request)
+                collector.set_attempt_state(attempt_id, "target_submitted")
+                state = "target_submitted"
+            if state in {"target_submitted", "target_uploading"}:
+                collector.set_attempt_state(attempt_id, "target_uploading")
+                try:
+                    client.upload_files(request)
+                except RunnerJobTerminalDuringUpload as exc:
+                    if job_finished_cleanly(exc.job):
+                        collector.set_attempt_state(attempt_id, "target_complete")
+                        return
+                    raise UnrecoverableJebError(str(exc)) from exc
+                collector.set_attempt_state(attempt_id, "target_uploaded")
+                state = "target_uploaded"
+            if state == "target_uploaded":
+                submission = client.wait_for_submission(
+                    request.submission_id,
+                    wait_for_safe_delete=target.wait_for_safe_delete,
                 )
-            if not job_finished_cleanly(job):
-                raise UnrecoverableJebError(f"Munchy submission did not finish cleanly: {job}")
-            collector.set_attempt_state(attempt_id, "target_complete")
+                job = submission.get("job")
+                if not isinstance(job, dict):
+                    raise UnrecoverableJebError(
+                        f"Munchy submission returned invalid job state: {submission}"
+                    )
+                if not job_finished_cleanly(job):
+                    raise UnrecoverableJebError(
+                        f"Munchy submission did not finish cleanly: {job}"
+                    )
+                collector.set_attempt_state(attempt_id, "target_complete")
+        finally:
+            client.close()
 
     def cancel(self, collector: Collector, attempt_id: str) -> None:
         attempt = collector.load_attempt(attempt_id)
@@ -2929,7 +2938,11 @@ class MunchyTargetRunner:
                 f"active target delivery has no cancellation identity: {attempt_id}"
             )
         target = collector.target_by_name(str(attempt["target_name"]))
-        MunchyRunnerClient(target.url).cancel_submission(submission_id)
+        client = MunchyRunnerClient(target.url)
+        try:
+            client.cancel_submission(submission_id)
+        finally:
+            client.close()
 
 
 def munchy_submission_request(
