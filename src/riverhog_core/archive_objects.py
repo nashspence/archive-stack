@@ -86,7 +86,7 @@ class CollectionArchiveDataObject:
     sha256: str
     placements: tuple[ArchiveObjectPlacement, ...]
     _chunks: Callable[[], Iterator[bytes]] = field(repr=False, compare=False)
-    _chunks_from_offset: Callable[[int], Iterator[bytes]] | None = field(
+    _chunks_range: Callable[[int, int], Iterator[bytes]] | None = field(
         default=None,
         repr=False,
         compare=False,
@@ -95,20 +95,21 @@ class CollectionArchiveDataObject:
     def iter_plaintext(self) -> Iterator[bytes]:
         yield from self._chunks()
 
-    def iter_plaintext_from_offset(self, offset: int) -> Iterator[bytes]:
+    def iter_plaintext_range(self, offset: int, size: int) -> Iterator[bytes]:
         if offset < 0:
             raise ValueError("archive object offset must be non-negative")
-        if offset == 0:
-            yield from self.iter_plaintext()
+        if size < 0:
+            raise ValueError("archive object range size must be non-negative")
+        if offset + size > self.plaintext_bytes:
+            raise ValueError("archive object range exceeds its plaintext size")
+        if self._chunks_range is not None:
+            yield from self._chunks_range(offset, size)
             return
-        if self._chunks_from_offset is not None:
-            yield from self._chunks_from_offset(offset)
-            return
-        yield from _iter_chunks_after_skipping(self.iter_plaintext(), offset)
+        yield from _iter_range(self.iter_plaintext(), offset, size)
 
     @property
     def supports_ranges(self) -> bool:
-        return self._chunks_from_offset is not None
+        return self._chunks_range is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +240,7 @@ def load_collection_archive(
     manifest_bytes: bytes,
     proof_bytes: bytes,
     read_object_chunks: Callable[[str], Iterable[bytes]],
-    read_object_chunks_from_offset: Callable[[str, int], Iterable[bytes]] | None = None,
+    read_object_chunks_range: Callable[[str, int, int], Iterable[bytes]] | None = None,
     verifier: ProofVerifier | None = None,
 ) -> CollectionArchive:
     """Load an archive from independently readable plaintext objects."""
@@ -275,19 +276,20 @@ def load_collection_archive(
                 label=object_id,
             )
 
-        object_chunks_from_offset: Callable[[int], Iterator[bytes]] | None = None
-        if read_object_chunks_from_offset is not None:
+        object_chunks_range: Callable[[int, int], Iterator[bytes]] | None = None
+        if read_object_chunks_range is not None:
 
-            def object_chunks_from_offset(
+            def object_chunks_range(
                 offset: int,
+                size: int,
                 object_id: str = object_id,
                 expected_bytes: int = expected_bytes,
             ) -> Iterator[bytes]:
-                if offset > expected_bytes:
-                    raise ValueError("archive object stream ended before requested offset")
+                if offset < 0 or size < 0 or offset + size > expected_bytes:
+                    raise ValueError("archive object range exceeds its plaintext size")
                 yield from _validated_source_chunks(
-                    read_object_chunks_from_offset(object_id, offset),
-                    expected_bytes=expected_bytes - offset,
+                    read_object_chunks_range(object_id, offset, size),
+                    expected_bytes=size,
                     expected_sha256=None,
                     label=object_id,
                 )
@@ -300,7 +302,7 @@ def load_collection_archive(
                 sha256=expected_sha256,
                 placements=cast(tuple[ArchiveObjectPlacement, ...], descriptor["placements"]),
                 _chunks=chunks,
-                _chunks_from_offset=object_chunks_from_offset,
+                _chunks_range=object_chunks_range,
             )
         )
     return CollectionArchive(
@@ -445,7 +447,7 @@ class _PlannedObject:
     plaintext_bytes: int
     placements: tuple[ArchiveObjectPlacement, ...]
     chunks: Callable[[], Iterator[bytes]]
-    chunks_from_offset: Callable[[int], Iterator[bytes]] | None
+    chunks_range: Callable[[int, int], Iterator[bytes]] | None
 
 
 def _plan_data_objects(
@@ -482,17 +484,19 @@ def _plan_data_objects(
         def chunks(members: tuple[CollectionArchiveFile, ...] = members) -> Iterator[bytes]:
             yield from _iter_tar_chunks(members, read_file_chunks)
 
-        pack_chunks_from_offset: Callable[[int], Iterator[bytes]] | None = None
+        pack_chunks_range: Callable[[int, int], Iterator[bytes]] | None = None
         if read_file_chunks_range is not None:
 
-            def pack_chunks_from_offset(
+            def pack_chunks_range(
                 offset: int,
+                size: int,
                 members: tuple[CollectionArchiveFile, ...] = members,
             ) -> Iterator[bytes]:
-                yield from _iter_tar_chunks_from_offset(
+                yield from _iter_tar_chunks_range(
                     members,
                     read_file_chunks_range,
                     offset,
+                    size,
                 )
 
         planned.append(
@@ -502,7 +506,7 @@ def _plan_data_objects(
                 plaintext_bytes=plaintext_bytes,
                 placements=placements,
                 chunks=chunks,
-                chunks_from_offset=pack_chunks_from_offset,
+                chunks_range=pack_chunks_range,
             )
         )
         pending_pack = []
@@ -571,18 +575,17 @@ def _raw_planned_object(
             label=file.path,
         )
 
-    def chunks_from_offset(object_offset: int) -> Iterator[bytes]:
-        if object_offset > length:
-            raise ValueError("archive object stream ended before requested offset")
-        remaining = length - object_offset
+    def chunks_range(object_offset: int, size: int) -> Iterator[bytes]:
+        if object_offset < 0 or size < 0 or object_offset + size > length:
+            raise ValueError("archive object range exceeds its plaintext size")
         source = (
-            read_file_chunks_range(file.path, file_offset + object_offset, remaining)
+            read_file_chunks_range(file.path, file_offset + object_offset, size)
             if read_file_chunks_range is not None
-            else _iter_range(read_file_chunks(file.path), file_offset + object_offset, remaining)
+            else _iter_range(read_file_chunks(file.path), file_offset + object_offset, size)
         )
         yield from _validated_source_chunks(
             source,
-            expected_bytes=remaining,
+            expected_bytes=size,
             expected_sha256=None,
             label=file.path,
         )
@@ -599,7 +602,7 @@ def _raw_planned_object(
             ),
         ),
         chunks=chunks,
-        chunks_from_offset=chunks_from_offset if read_file_chunks_range is not None else None,
+        chunks_range=chunks_range if read_file_chunks_range is not None else None,
     )
 
 
@@ -614,7 +617,7 @@ def _hash_planned_object(planned: _PlannedObject) -> CollectionArchiveDataObject
         sha256=digest,
         placements=planned.placements,
         _chunks=planned.chunks,
-        _chunks_from_offset=planned.chunks_from_offset,
+        _chunks_range=planned.chunks_range,
     )
 
 
@@ -818,7 +821,7 @@ def _object_from_descriptor(
     read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None,
 ) -> CollectionArchiveDataObject:
     placements = cast(tuple[ArchiveObjectPlacement, ...], descriptor["placements"])
-    object_chunks_from_offset: Callable[[int], Iterator[bytes]] | None = None
+    object_chunks_range: Callable[[int, int], Iterator[bytes]] | None = None
     if descriptor["kind"] == "pack":
         file_by_path = {file.path: file for file in files}
         members = tuple(file_by_path[item.path] for item in placements)
@@ -828,11 +831,12 @@ def _object_from_descriptor(
 
         if read_file_chunks_range is not None:
 
-            def object_chunks_from_offset(offset: int) -> Iterator[bytes]:
-                yield from _iter_tar_chunks_from_offset(
+            def object_chunks_range(offset: int, size: int) -> Iterator[bytes]:
+                yield from _iter_tar_chunks_range(
                     members,
                     read_file_chunks_range,
                     offset,
+                    size,
                 )
 
     else:
@@ -847,7 +851,7 @@ def _object_from_descriptor(
             read_file_chunks_range=read_file_chunks_range,
         )
         chunks = raw.chunks
-        object_chunks_from_offset = raw.chunks_from_offset
+        object_chunks_range = raw.chunks_range
     expected_bytes = int(descriptor["bytes"])
     expected_sha256 = str(descriptor["sha256"])
 
@@ -866,7 +870,7 @@ def _object_from_descriptor(
         sha256=str(descriptor["sha256"]),
         placements=placements,
         _chunks=verified_chunks,
-        _chunks_from_offset=object_chunks_from_offset,
+        _chunks_range=object_chunks_range,
     )
 
 
@@ -930,17 +934,19 @@ def _iter_tar_chunks(
     yield b"\0" * 1024
 
 
-def _iter_tar_chunks_from_offset(
+def _iter_tar_chunks_range(
     files: Sequence[CollectionArchiveFile],
     read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]],
     archive_offset: int,
+    size: int,
 ) -> Iterator[bytes]:
-    yield from _iter_chunks_after_skipping(
+    yield from _iter_range(
         _iter_tar_chunks(
             files,
             lambda path: read_file_chunks_range(path, 0, None),
         ),
         archive_offset,
+        size,
     )
 
 

@@ -392,7 +392,7 @@ def test_archive_object_range_stops_reading_when_the_request_is_satisfied() -> N
         sha256=hashlib.sha256(b"abcdefgh").hexdigest(),
         placements=(),
         _chunks=chunks,
-        _chunks_from_offset=lambda _offset: chunks(),
+        _chunks_range=lambda _offset, _size: chunks(),
     )
 
     assert _read_object_range(data, 0, 4) == b"abcd"

@@ -80,6 +80,7 @@ def test_whole_file_and_segments_are_independent_raw_objects() -> None:
     assert b"".join(archive.data_objects[0].iter_plaintext()) == divided[:SMALL_FILE_LIMIT]
     assert b"".join(archive.data_objects[1].iter_plaintext()) == divided[SMALL_FILE_LIMIT:]
     assert b"".join(archive.data_objects[2].iter_plaintext()) == whole
+    assert b"".join(archive.data_objects[2].iter_plaintext_range(7, 11)) == whole[7:18]
 
 
 def test_manifest_binds_files_to_pack_file_and_segment_objects() -> None:

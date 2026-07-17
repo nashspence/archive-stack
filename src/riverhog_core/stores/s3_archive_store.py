@@ -211,7 +211,7 @@ def _read_object_range(
     if size == 0:
         return b""
     out = bytearray()
-    for chunk in object.iter_plaintext_from_offset(offset):
+    for chunk in object.iter_plaintext_range(offset, size):
         needed = size - len(out)
         out.extend(chunk[:needed])
         if len(out) == size:

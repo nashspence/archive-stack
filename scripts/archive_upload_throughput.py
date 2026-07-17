@@ -54,20 +54,22 @@ class _TimedFileSource:
         self._lock = Lock()
 
     def chunks(self) -> Iterator[bytes]:
-        yield from self.chunks_from_offset(0)
+        yield from self.chunks_range(0, self.path.stat().st_size)
 
-    def chunks_from_offset(self, offset: int) -> Iterator[bytes]:
+    def chunks_range(self, offset: int, size: int) -> Iterator[bytes]:
         with self.path.open("rb") as source:
             source.seek(offset)
-            while True:
+            remaining = size
+            while remaining:
                 started = time.perf_counter()
-                chunk = source.read(READ_BYTES)
+                chunk = source.read(min(READ_BYTES, remaining))
                 elapsed = time.perf_counter() - started
                 if not chunk:
-                    return
+                    raise ValueError("archive throughput source ended before requested range")
                 with self._lock:
                     self.bytes_read += len(chunk)
                     self.read_seconds += elapsed
+                remaining -= len(chunk)
                 yield chunk
 
 
@@ -140,7 +142,7 @@ def _archive(source: _TimedFileSource, *, bytes_total: int, sha256: str) -> Coll
         sha256=sha256,
         placements=(),
         _chunks=source.chunks,
-        _chunks_from_offset=source.chunks_from_offset,
+        _chunks_range=source.chunks_range,
     )
     manifest = b"format: riverhog-archive-throughput-probe-v1\n"
     proof = b"throughput probe\n"

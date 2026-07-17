@@ -19,14 +19,14 @@ def _module() -> ModuleType:
     return module
 
 
-def test_timed_source_reads_requested_range_once(tmp_path: Path) -> None:
+def test_timed_source_reads_only_the_requested_range(tmp_path: Path) -> None:
     module = _module()
     path = tmp_path / "source.bin"
     path.write_bytes(b"0123456789")
     source = module._TimedFileSource(path)
 
-    assert b"".join(source.chunks_from_offset(4)) == b"456789"
-    assert source.bytes_read == 6
+    assert b"".join(source.chunks_range(4, 3)) == b"456"
+    assert source.bytes_read == 3
     assert source.read_seconds >= 0
 
 
