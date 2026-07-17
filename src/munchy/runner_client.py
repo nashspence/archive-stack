@@ -8,9 +8,7 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -18,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any
+
+import httpx
 
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
@@ -285,13 +285,21 @@ def is_transient_upload_error(exc: BaseException) -> bool:
         if exc.status == 400 and b"ERR_UPLOAD_INTERRUPTED" in exc.body:
             return True
         return exc.status in TRANSIENT_UPLOAD_HTTP_STATUSES
-    if isinstance(exc, urllib.error.URLError):
+    if isinstance(exc, httpx.TransportError):
         return True
     if isinstance(exc, (TimeoutError, ConnectionError, http.client.HTTPException, socket.timeout)):
         return True
     if isinstance(exc, OSError):
         return exc.errno in TRANSIENT_UPLOAD_ERRNOS
     return False
+
+
+def upload_was_removed(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, RunnerHttpError)
+        and exc.status == 404
+        and b"ERR_UPLOAD_NOT_FOUND" in exc.body
+    )
 
 
 def next_upload_retry_delay(current_delay: float) -> float:
@@ -1333,9 +1341,25 @@ class UploadProgress:
 
 
 class MunchyRunnerClient:
-    def __init__(self, base_url: str, *, token: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = runner_token_setting(token)
+        self._http = httpx.Client(transport=transport)
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> MunchyRunnerClient:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def request(
         self,
@@ -1359,18 +1383,18 @@ class MunchyRunnerClient:
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
             request_headers.setdefault("Content-Type", "application/json")
-        req = urllib.request.Request(url, data=body, headers=request_headers, method=method)
-        try:
-            response = urllib.request.urlopen(req, timeout=timeout)
-            response_body = response.read()
-            status = int(response.status)
-        except urllib.error.HTTPError as exc:
-            response_body = exc.read()
-            status = int(exc.code)
-            if expect is None or status not in expect:
-                raise RunnerHttpError(method, url, status, response_body) from exc
-            return status, response_body, exc
-        if expect is not None and status not in expect:
+        response = self._http.request(
+            method,
+            url,
+            content=body,
+            headers=request_headers,
+            timeout=timeout,
+        )
+        response_body = response.content
+        status = response.status_code
+        if (status >= 400 and (expect is None or status not in expect)) or (
+            expect is not None and status not in expect
+        ):
             raise RunnerHttpError(method, url, status, response_body)
         return status, response_body, response
 
@@ -1706,6 +1730,16 @@ class MunchyRunnerClient:
                 )
                 return
             except Exception as exc:
+                if upload_was_removed(exc):
+                    try:
+                        submission = self.get_submission(submission_id)
+                    except Exception:
+                        submission = {}
+                    job = submission.get("job")
+                    if isinstance(job, dict) and job_should_stop_upload(job):
+                        if stop_event is not None:
+                            stop_event.set()
+                        raise RunnerJobTerminalDuringUpload(job) from exc
                 if not is_transient_upload_error(exc):
                     raise
                 retry_count += 1

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import io
-import urllib.request
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from munchy.runner_client import (
@@ -32,22 +32,17 @@ from munchy.runner_client import (
 
 
 def test_runner_client_injects_bearer_token() -> None:
-    client = MunchyRunnerClient("http://runner", token="runner-token")
-    seen: list[urllib.request.Request] = []
+    seen: list[httpx.Request] = []
 
-    class FakeResponse:
-        status = 200
-        headers: dict[str, str] = {}
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={})
 
-        def read(self) -> bytes:
-            return b"{}"
-
-    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
-        assert timeout == 60.0
-        seen.append(req)
-        return FakeResponse()
-
-    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
+    with MunchyRunnerClient(
+        "http://runner",
+        token="runner-token",
+        transport=httpx.MockTransport(handle),
+    ) as client:
         client.request("GET", "/v1/jobs")
         client.request(
             "PATCH",
@@ -56,7 +51,7 @@ def test_runner_client_injects_bearer_token() -> None:
             headers={"Tus-Resumable": "1.0.0"},
         )
 
-    assert [req.get_header("Authorization") for req in seen] == [
+    assert [req.headers.get("Authorization") for req in seen] == [
         "Bearer runner-token",
         "Bearer runner-token",
     ]
@@ -979,6 +974,61 @@ def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
 
     assert json_calls == 2
     assert request_calls == 1
+
+
+def test_upload_file_reports_canceled_job_after_tusd_cleanup(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    item = RunnerInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256="0" * 64,
+    )
+    stop_event = Event()
+    client = MunchyRunnerClient("http://runner")
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            return {
+                "upload_url": "http://uploads.test/file",
+                "offset": 0,
+                "length": item.bytes,
+            }
+        assert method == "GET"
+        return {
+            "job": {
+                "job_id": "job-1",
+                "state": "canceled",
+                "phase": "canceled",
+            }
+        }
+
+    def fake_request(
+        method: str,
+        path_or_url: str,
+        **_kwargs: object,
+    ) -> tuple[int, bytes, object]:
+        raise RunnerHttpError(
+            method,
+            path_or_url,
+            404,
+            b"ERR_UPLOAD_NOT_FOUND: upload not found",
+        )
+
+    client.json = fake_json  # type: ignore[method-assign]
+    client.request = fake_request  # type: ignore[method-assign]
+
+    with pytest.raises(RunnerJobTerminalDuringUpload) as exc_info:
+        client.upload_file(
+            "submission-1",
+            item,
+            chunk_bytes=1024,
+            stop_event=stop_event,
+        )
+
+    assert stop_event.is_set()
+    assert "canceled" in str(exc_info.value)
 
 
 def test_upload_file_does_not_retry_non_transient_http_error(tmp_path: Path) -> None:
