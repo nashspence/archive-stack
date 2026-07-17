@@ -7,10 +7,12 @@ from io import BytesIO
 import yaml
 
 from riverhog_age import age_ciphertext_len_for_plaintext_len
+from riverhog_core import archive_objects as archive_object_module
 from riverhog_core.archive_objects import (
     COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
     PACK_PAYLOAD_LIMIT,
     SMALL_FILE_LIMIT,
+    STORED_OBJECT_LIMIT,
     CollectionArchiveFile,
     CollectionArchiveSourceFile,
     build_collection_archive,
@@ -182,4 +184,50 @@ def test_plaintext_limit_accounts_for_complete_age_ciphertext() -> None:
             age_prefix_len=200,
         )
         > stored_limit
+    )
+
+
+def test_real_stored_object_boundary_plans_ordered_segments_without_reading_content() -> None:
+    plaintext_limit = max_age_plaintext_object_bytes(age_prefix_len=200)
+
+    def unread(*_args: object) -> tuple[bytes, ...]:
+        raise AssertionError("archive boundary planning must not read file content")
+
+    at_limit = archive_object_module._plan_data_objects(
+        (
+            CollectionArchiveFile(
+                path="at-limit.bin",
+                bytes=plaintext_limit,
+                sha256="0" * 64,
+            ),
+        ),
+        read_file_chunks=unread,
+        read_file_chunks_range=unread,
+        max_plaintext_object_bytes=plaintext_limit,
+    )
+    over_limit = archive_object_module._plan_data_objects(
+        (
+            CollectionArchiveFile(
+                path="over-limit.bin",
+                bytes=plaintext_limit + 1,
+                sha256="0" * 64,
+            ),
+        ),
+        read_file_chunks=unread,
+        read_file_chunks_range=unread,
+        max_plaintext_object_bytes=plaintext_limit,
+    )
+
+    assert [(obj.kind, obj.plaintext_bytes) for obj in at_limit] == [
+        ("file", plaintext_limit)
+    ]
+    assert [(obj.kind, obj.plaintext_bytes) for obj in over_limit] == [
+        ("segment", plaintext_limit),
+        ("segment", 1),
+    ]
+    assert [obj.placements[0].file_offset for obj in over_limit] == [0, plaintext_limit]
+    assert all(
+        age_ciphertext_len_for_plaintext_len(obj.plaintext_bytes, age_prefix_len=200)
+        <= STORED_OBJECT_LIMIT
+        for obj in (*at_limit, *over_limit)
     )
