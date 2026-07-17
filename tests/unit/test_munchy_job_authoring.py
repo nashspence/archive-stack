@@ -116,6 +116,8 @@ device_profile:
         max_parallel_encodes: 2
 job:
   workflow_mode: collection_archive
+  handoff:
+    destination: riverhog
 """.strip(),
         encoding="utf-8",
     )
@@ -186,29 +188,6 @@ device_profile:
         load_munchy_job_config(path)
 
 
-def test_munchy_job_config_rejects_runtime_riverhog_failure_policy(tmp_path: Path) -> None:
-    path = tmp_path / "munchy.yaml"
-    path.write_text(
-        """
-schema_version: 1
-kind: munchy.job
-job:
-  collection_archive:
-    destination: riverhog
-    riverhog:
-      wait: finalized
-      upload_session_on_failure: cancel
-groups:
-  video:
-    output_mode: video
-""".strip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ConfigError, match="upload_session_on_failure"):
-        load_munchy_job_config(path)
-
-
 def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  # type: ignore[no-untyped-def]
     source_dir = tmp_path / "camera"
     source_dir.mkdir()
@@ -218,15 +197,16 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
         "job": {
             "workflow_mode": "review",
             "collection_timestamp": "20260712T120000Z",
-            "review": {
-                "device_id": "camera",
-                "target": {
-                    "enabled": True,
-                    "method": "rclone",
-                    "destination": (
+            "handoff": {
+                "destination": "rclone",
+                "options": {
+                    "location": (
                         "review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
                     ),
                 },
+            },
+            "review": {
+                "device_id": "camera",
                 "sweep": {"quality": "24..28:4"},
             },
             "routing": {
@@ -275,6 +255,6 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
     route = plan["routes"][0]
     assert route["route_id"] == "camera-video"
     assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
-    assert route["variants"][0]["destination"] == (
+    assert route["variants"][0]["location"] == (
         "review-remote:reviews/camera/camera-video/q24/20260712T120000Z"
     )

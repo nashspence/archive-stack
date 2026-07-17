@@ -40,9 +40,9 @@ DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_AUDIO_TASKS = ["archive_audio"]
 DEFAULT_GROUP = "video"
 WORKFLOW_MODES = {"collection_archive", "review"}
-COLLECTION_ARCHIVE_DESTINATIONS = {"target", "riverhog"}
+HANDOFF_DESTINATIONS = {"command", "rclone", "riverhog"}
 OUTPUT_MODES = {"video", "audio", "preserve"}
-RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS = {"preserve_for_resume", "cancel"}
+HANDOFF_FAILURE_ACTIONS = {"preserve_for_resume", "cancel"}
 MUNCHY_CONFIG_ENV = "MUNCHY_JOB_CONFIG"
 HASH_CACHE_ENV = "MUNCHY_HASH_CACHE"
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -164,22 +164,9 @@ def reject_runtime_lifecycle_fields(config: Mapping[str, Any]) -> None:
     job = config.get("job")
     if not isinstance(job, Mapping):
         return
-    if "riverhog_upload_session_on_failure" in job:
+    if "handoff_on_failure" in job:
         raise MunchyJobAuthoringError(
-            "riverhog_upload_session_on_failure is a job-start option, not Munchy job config"
-        )
-    if "riverhog" in job:
-        raise MunchyJobAuthoringError(
-            "job.riverhog is not Munchy job config; use job.collection_archive.riverhog"
-        )
-    collection_archive = job.get("collection_archive")
-    if not isinstance(collection_archive, Mapping):
-        return
-    riverhog = collection_archive.get("riverhog")
-    if isinstance(riverhog, Mapping) and "upload_session_on_failure" in riverhog:
-        raise MunchyJobAuthoringError(
-            "collection_archive.riverhog.upload_session_on_failure is a job-start option, "
-            "not Munchy job config"
+            "handoff_on_failure is a job-start option, not Munchy job config"
         )
 
 
@@ -368,7 +355,7 @@ def render_job_template(
         return value.format(**values)
     except KeyError as exc:
         raise MunchyJobAuthoringError(
-            f"unknown target upload template field: {exc.args[0]}"
+            f"unknown handoff template field: {exc.args[0]}"
         ) from exc
 
 
@@ -453,7 +440,7 @@ def build_submission_upload_request(
     collection_timestamp: str | None = None,
     submission_id: str | None = None,
     destination_prefix: str | None = None,
-    riverhog_upload_session_on_failure: str = "preserve_for_resume",
+    handoff_on_failure: str = "preserve_for_resume",
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
     upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
     hash_cache: Path | None = None,
@@ -470,10 +457,10 @@ def build_submission_upload_request(
     if not identifier:
         raise MunchyJobAuthoringError("submission id must not be blank")
     failure_action = normalize_mode(
-        riverhog_upload_session_on_failure,
+        handoff_on_failure,
         default="preserve_for_resume",
-        allowed=RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS,
-        label="riverhog_upload_session_on_failure",
+        allowed=HANDOFF_FAILURE_ACTIONS,
+        label="handoff_on_failure",
     )
     candidates = discover_local_candidates(
         source,
@@ -492,7 +479,7 @@ def build_submission_upload_request(
         inputs={str(name): str(value) for name, value in (inputs or {}).items()},
         collection_slug=collection_slug,
         collection_timestamp=timestamp,
-        riverhog_upload_session_on_failure=failure_action,
+        handoff_on_failure=failure_action,
         upload_workers=upload_workers,
         upload_chunk_mib=upload_chunk_mib,
     )
@@ -602,8 +589,9 @@ def build_review_sweep_plan(
         if str(route_id).strip()
     ]
     requested_route_id_set = set(requested_route_ids)
-    target = mapping(review.get("target"), label="review.target")
-    destination_template = str(target.get("destination") or "").strip()
+    handoff = mapping(defaults.get("handoff"), label="handoff")
+    handoff_options = mapping(handoff.get("options"), label="handoff.options")
+    location_template = str(handoff_options.get("location") or "").strip()
     errors: list[str] = []
     routes: list[dict[str, Any]] = []
     for route_id, route in sorted(route_totals.items()):
@@ -622,10 +610,10 @@ def build_review_sweep_plan(
         planned_variants: list[dict[str, Any]] = []
         for variant in variants:
             profile_id = str(variant["profile_id"])
-            destination = None
-            if destination_template:
-                destination = render_job_template(
-                    destination_template,
+            location = None
+            if location_template:
+                location = render_job_template(
+                    location_template,
                     job=job_context,
                     context={"route_id": route_id, "profile_id": profile_id},
                 )
@@ -633,7 +621,7 @@ def build_review_sweep_plan(
             planned_variants.append(
                 {
                     "profile_id": profile_id,
-                    "destination": destination,
+                    "location": location,
                     "encode_settings": deepcopy(variant.get("encode_settings") or {}),
                     "axis_values": deepcopy(variant.get("axis_values") or {}),
                     "archive": deepcopy(encode_profile.get("archive") or {}),
@@ -678,10 +666,9 @@ def build_review_sweep_plan(
         "job_id": job_id,
         "run_id": run_id,
         "device_id": str(review.get("device_id") or ""),
-        "target": {
-            "enabled": bool(target.get("enabled", False)),
-            "method": str(target.get("method") or "command"),
-            "destination_template": destination_template or None,
+        "handoff": {
+            "destination": str(handoff.get("destination") or ""),
+            "location_template": location_template or None,
         },
         "requested_route_ids": requested_route_ids,
         "routes": routes,
@@ -756,7 +743,7 @@ def routing_report_text(plan: Mapping[str, Any]) -> str:
 
 __all__ = [
     "OUTPUT_MODES",
-    "COLLECTION_ARCHIVE_DESTINATIONS",
+    "HANDOFF_DESTINATIONS",
     "DEFAULT_AUDIO_TASKS",
     "DEFAULT_GROUP",
     "DEFAULT_TASKS",

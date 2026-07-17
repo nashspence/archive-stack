@@ -54,10 +54,13 @@ and proof.
 
 - Riverhog owns custody, search, retrieval, and hot-cache state.
 - Munchy owns media discovery, routing, transformation, metadata projection, and assembly
-  before custody.
+  before handing completed artifacts to a named destination adapter. Its core job lifecycle
+  depends only on the adapter contract; the Riverhog adapter owns collection submission,
+  remote progress, cancellation, and the final custody receipt.
 - Jeb owns source enrollment and credentials, transport-neutral landing, watched-drop
-  scheduling, and target submission. Ingress adapters publish completed files into source
-  landing directories.
+  scheduling, and named target submission. Ingress adapters publish completed files into
+  source landing directories, and target runners own destination-specific submission and
+  cancellation.
 - Gogurt maps mounted-volume markers to configured operator actions.
 - Downstream private configuration owns real device identity, destinations, recipients,
   remotes, and deployment topology.
@@ -73,3 +76,5 @@ and proof.
 - **Fetch:** a named selection of files to keep materialized in hot storage.
 - **Restore:** retrieval and verification of the archive objects needed to materialize
   selected files.
+- **Handoff:** Munchy's delivery of completed artifacts through one named destination
+  adapter; adapter-confirmed safety controls release of local work.

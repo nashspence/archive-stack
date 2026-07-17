@@ -38,6 +38,7 @@ from munchy.filesystem_metadata import (
     load_filesystem_metadata_map,
     write_filesystem_metadata_map,
 )
+from munchy.handoffs import HandoffAdapter
 from munchy.job_templates import (
     JobTemplateError,
     job_template_digest,
@@ -192,63 +193,62 @@ EAGER_ARCHIVE_SCRATCH_MULTIPLIER = float(
 REVIEW_SCRATCH_EXTRA_MULTIPLIER = float(
     os.getenv("MUNCHY_RUNNER_REVIEW_SCRATCH_EXTRA_MULTIPLIER", "0.35")
 )
-COLLECTION_ARCHIVE_TARGET_SCRATCH_EXTRA_MULTIPLIER = float(
-    os.getenv("MUNCHY_RUNNER_COLLECTION_ARCHIVE_TARGET_SCRATCH_EXTRA_MULTIPLIER", "1.25")
+BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER = float(
+    os.getenv("MUNCHY_RUNNER_BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER", "1.25")
 )
 MAX_ACTIVE_INPUT_UPLOADS = int(os.getenv("MUNCHY_RUNNER_MAX_ACTIVE_INPUT_UPLOADS", "8"))
 MAX_RUNNING_JOBS = int(os.getenv("MUNCHY_RUNNER_MAX_RUNNING_JOBS", "1"))
-RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "0").lower() in {
+RIVERHOG_HANDOFF_ENABLED = os.getenv("MUNCHY_RUNNER_RIVERHOG_HANDOFF_ENABLED", "0").lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
-RIVERHOG_WAIT = os.getenv("MUNCHY_RUNNER_RIVERHOG_WAIT", "finalized").strip() or "finalized"
-RIVERHOG_UPLOAD_CHUNK_BYTES = int(
-    os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024))
+RIVERHOG_HANDOFF_CHUNK_BYTES = int(
+    os.getenv("MUNCHY_RUNNER_RIVERHOG_HANDOFF_CHUNK_BYTES", str(8 * 1024 * 1024))
 )
-RIVERHOG_UPLOAD_WORKERS = max(
+RIVERHOG_HANDOFF_WORKERS = max(
     1,
-    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_WORKERS", "8")),
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_HANDOFF_WORKERS", "8")),
 )
-RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK = max(
+RIVERHOG_EAGER_HANDOFF_FILES_PER_TICK = max(
     1,
-    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK", "128")),
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_HANDOFF_FILES_PER_TICK", "128")),
 )
-RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK = max(
+RIVERHOG_EAGER_HANDOFF_BYTES_PER_TICK = max(
     1,
-    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK", str(512 * 1024 * 1024))),
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_HANDOFF_BYTES_PER_TICK", str(512 * 1024 * 1024))),
 )
-RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK = max(
+RIVERHOG_EAGER_HANDOFF_SECONDS_PER_TICK = max(
     0.25,
-    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK", "8")),
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_HANDOFF_SECONDS_PER_TICK", "8")),
 )
-RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS = max(
+RIVERHOG_EAGER_HANDOFF_INTERVAL_SECONDS = max(
     0.25,
-    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS", "1")),
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_EAGER_HANDOFF_INTERVAL_SECONDS", "1")),
 )
-RIVERHOG_UPLOAD_SAVE_EVERY_FILES = max(
+RIVERHOG_HANDOFF_SAVE_EVERY_FILES = max(
     1,
-    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_SAVE_EVERY_FILES", "32")),
+    int(os.getenv("MUNCHY_RUNNER_RIVERHOG_HANDOFF_SAVE_EVERY_FILES", "32")),
 )
-RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS = max(
+RIVERHOG_HANDOFF_SAVE_EVERY_SECONDS = max(
     0.25,
-    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS", "5")),
+    float(os.getenv("MUNCHY_RUNNER_RIVERHOG_HANDOFF_SAVE_EVERY_SECONDS", "5")),
 )
 RIVERHOG_FINALIZE_POLL_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RUNNER_RIVERHOG_FINALIZE_POLL_SECONDS", "5")),
 )
-UPLOAD_ATTEMPTS = int(os.getenv("MUNCHY_RUNNER_UPLOAD_ATTEMPTS", "3"))
-TARGET_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_TARGET_UPLOAD_ENABLED", "0").lower() in {
+HANDOFF_ATTEMPTS = int(os.getenv("MUNCHY_RUNNER_HANDOFF_ATTEMPTS", "3"))
+EXTERNAL_HANDOFF_ENABLED = os.getenv("MUNCHY_RUNNER_EXTERNAL_HANDOFF_ENABLED", "0").lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
-TARGET_UPLOAD_COMMAND = os.getenv("MUNCHY_RUNNER_TARGET_UPLOAD_COMMAND", "").strip()
-TARGET_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_TARGET_RCLONE_COMMAND", "rclone")
-DEFAULT_TARGET_UPLOAD_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
+COMMAND_HANDOFF_COMMAND = os.getenv("MUNCHY_RUNNER_COMMAND_HANDOFF_COMMAND", "").strip()
+RCLONE_HANDOFF_COMMAND = os.getenv("MUNCHY_RUNNER_RCLONE_HANDOFF_COMMAND", "rclone")
+DEFAULT_HANDOFF_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
 NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
 NOTIFY_REMINDER_INTERVAL_SECONDS = parse_reminder_interval_seconds(
     os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL")
@@ -298,9 +298,9 @@ STORAGE_WAIT_SECONDS = max(
 UploadState = Literal["pending", "partial", "uploaded", "consumed"]
 OutputMode = Literal["video", "audio", "preserve"]
 WorkflowMode = Literal["collection_archive", "review"]
-CollectionArchiveDestination = Literal["target", "riverhog"]
+HandoffDestination = str
 TaskName = Literal["archive_video", "archive_audio", "qcut_video", "audio_review"]
-RiverhogUploadSessionFailureAction = Literal["preserve_for_resume", "cancel"]
+HandoffFailureAction = Literal["preserve_for_resume", "cancel"]
 DEFAULT_TASKS: tuple[TaskName, ...] = ("archive_video", "qcut_video", "audio_review")
 DEFAULT_AUDIO_TASKS: tuple[TaskName, ...] = ("archive_audio",)
 DEFAULT_REVIEW_CLIP_TARGET_SECONDS = 180
@@ -361,8 +361,8 @@ JOB_TEMPLATE_LIST_SORT_COLUMNS = {
 }
 cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
-riverhog_upload_stop = threading.Event()
-riverhog_upload_thread: threading.Thread | None = None
+handoff_stop = threading.Event()
+handoff_thread: threading.Thread | None = None
 
 
 def validate_group_name(value: str) -> str:
@@ -427,7 +427,7 @@ class JobCanceled(RuntimeError):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global cleanup_thread, riverhog_upload_thread
+    global cleanup_thread, handoff_thread
     ensure_dirs()
     init_state_store()
     if RESUME_ON_START:
@@ -436,20 +436,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         cleanup_stop.clear()
         cleanup_thread = threading.Thread(target=cleanup_loop, name="cleanup-loop", daemon=True)
         cleanup_thread.start()
-    if RIVERHOG_UPLOAD_ENABLED:
-        riverhog_upload_stop.clear()
-        riverhog_upload_thread = threading.Thread(
-            target=riverhog_upload_loop,
-            name="riverhog-upload-loop",
+    if any(adapter.supports_eager for adapter in HANDOFF_ADAPTERS.values()):
+        handoff_stop.clear()
+        handoff_thread = threading.Thread(
+            target=handoff_loop,
+            name="handoff-loop",
             daemon=True,
         )
-        riverhog_upload_thread.start()
+        handoff_thread.start()
     try:
         yield
     finally:
-        riverhog_upload_stop.set()
-        if riverhog_upload_thread is not None:
-            riverhog_upload_thread.join(timeout=5)
+        handoff_stop.set()
+        if handoff_thread is not None:
+            handoff_thread.join(timeout=5)
         cleanup_stop.set()
         if cleanup_thread is not None:
             cleanup_thread.join(timeout=5)
@@ -583,51 +583,75 @@ class InputFileSpec(BaseModel):
         return lowered
 
 
-class RiverhogConfig(BaseModel):
+class RiverhogHandoffOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    wait: Literal["staged", "finalized"] = "finalized"
     archive_store: str | None = None
     retain_hot: bool = True
 
 
-class TargetUploadConfig(BaseModel):
+class CommandHandoffOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    method: Literal["command", "rclone"] = "command"
-    destination: str | None = Field(default=None, min_length=1, max_length=4096)
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator("exclude")
+    @classmethod
+    def normalize_exclude(cls, value: list[str]) -> list[str]:
+        return normalize_exclude_patterns(value, label="command handoff exclude")
+
+
+class RcloneHandoffOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: str = Field(min_length=1, max_length=4096)
     mode: Literal["copy", "sync"] = "copy"
     exclude: list[str] = Field(default_factory=list)
 
-    @field_validator("destination")
+    @field_validator("location")
     @classmethod
-    def normalize_destination(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def normalize_location(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("destination must not be blank")
+            raise ValueError("rclone handoff location must not be blank")
         return normalized
 
     @field_validator("exclude")
     @classmethod
     def normalize_exclude(cls, value: list[str]) -> list[str]:
-        return normalize_exclude_patterns(value, label="target upload exclude")
-
-    @model_validator(mode="after")
-    def require_rclone_destination(self) -> TargetUploadConfig:
-        if self.enabled and self.method == "rclone" and not self.destination:
-            raise ValueError("target upload destination is required for rclone uploads")
-        return self
+        return normalize_exclude_patterns(value, label="rclone handoff exclude")
 
 
-class CollectionArchiveConfig(BaseModel):
+HANDOFF_OPTION_MODELS: dict[str, type[BaseModel]] = {
+    "command": CommandHandoffOptions,
+    "rclone": RcloneHandoffOptions,
+    "riverhog": RiverhogHandoffOptions,
+}
+
+
+class HandoffConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    destination: CollectionArchiveDestination = "riverhog"
-    target: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
-    riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
+    destination: str = Field(min_length=1, max_length=160)
+    options: dict[str, Any] = Field(default_factory=dict)
+    on_failure: HandoffFailureAction = "preserve_for_resume"
+
+    @field_validator("destination")
+    @classmethod
+    def normalize_destination(cls, value: str) -> str:
+        destination = value.strip().casefold().replace("-", "_")
+        if destination not in HANDOFF_OPTION_MODELS:
+            raise ValueError(
+                "handoff destination must be one of: "
+                + ", ".join(sorted(HANDOFF_OPTION_MODELS))
+            )
+        return destination
+
+    @model_validator(mode="after")
+    def validate_options(self) -> HandoffConfig:
+        option_model = HANDOFF_OPTION_MODELS[self.destination]
+        self.options = option_model.model_validate(self.options).model_dump(exclude_none=True)
+        return self
 
 
 class ReviewClipPlanConfig(BaseModel):
@@ -692,7 +716,6 @@ class ReviewConfig(BaseModel):
     device_id: str = Field(min_length=1, max_length=180)
     route_id: str | None = Field(default=None, min_length=1, max_length=180)
     profile_id: str | None = Field(default=None, min_length=1, max_length=180)
-    target: TargetUploadConfig = Field(default_factory=TargetUploadConfig)
     clip_plan: ReviewClipPlanConfig | None = None
     sweep: ReviewSweepConfig | None = None
 
@@ -950,7 +973,7 @@ class InputUploadStorageHint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_mode: WorkflowMode
-    collection_archive_destination: CollectionArchiveDestination = "riverhog"
+    handoff_destination: HandoffDestination
     output_mode: OutputMode = "video"
     tasks: list[TaskName] = Field(default_factory=list)
     groups: dict[str, StorageGroupHint] = Field(default_factory=dict)
@@ -1218,11 +1241,9 @@ class CreateJobRequest(BaseModel):
     encode_profile: EncodeProfile | None = None
     groups: dict[str, GroupConfig] = Field(default_factory=dict)
     routing: RoutingConfig | None = None
-    collection_archive: CollectionArchiveConfig = Field(default_factory=CollectionArchiveConfig)
+    handoff: HandoffConfig
     review: ReviewConfig | None = None
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
-    cleanup_local_on_success: bool = False
-    riverhog_upload_session_on_failure: RiverhogUploadSessionFailureAction = "preserve_for_resume"
 
     @field_validator("tasks")
     @classmethod
@@ -1270,8 +1291,6 @@ class CreateJobRequest(BaseModel):
         if self.workflow_mode == "review":
             if self.review is None:
                 raise ValueError("review jobs require review config")
-            if not self.review.target.enabled:
-                raise ValueError("review jobs require review.target.enabled")
             reviewable_group_found = False
             for name, output_mode, tasks in task_lists:
                 if any(task in tasks for task in ("archive_video", "archive_audio")):
@@ -1287,8 +1306,6 @@ class CreateJobRequest(BaseModel):
                     raise ValueError(f"review group {name!r} requires qcut_video or audio_review")
             if not reviewable_group_found:
                 raise ValueError("review jobs require at least one reviewable group")
-            if self.cleanup_local_on_success:
-                raise ValueError("review jobs cannot cleanup local work on success")
             return self
 
         if not self.collection_slug:
@@ -1300,15 +1317,6 @@ class CreateJobRequest(BaseModel):
                 raise ValueError(
                     f"collection_archive group {name!r} requires archive_video or archive_audio"
                 )
-        if (
-            self.collection_archive.destination == "target"
-            and not self.collection_archive.target.enabled
-        ):
-            raise ValueError("collection_archive destination target requires target.enabled")
-        if self.collection_archive.destination == "target" and self.cleanup_local_on_success:
-            raise ValueError(
-                "collection_archive target jobs cannot cleanup local archive work on success"
-            )
         return self
 
 
@@ -1354,9 +1362,7 @@ class SubmissionSpec(BaseModel):
     collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
     collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
-    riverhog_upload_session_on_failure: RiverhogUploadSessionFailureAction = (
-        "preserve_for_resume"
-    )
+    handoff_on_failure: HandoffFailureAction = "preserve_for_resume"
 
     @field_validator("template")
     @classmethod
@@ -1441,7 +1447,7 @@ def init_state_store() -> None:
                 collection_slug TEXT NOT NULL,
                 collection_timestamp TEXT NOT NULL,
                 workflow_mode TEXT NOT NULL,
-                collection_archive_destination TEXT NOT NULL,
+                handoff_destination TEXT NOT NULL,
                 output_mode TEXT NOT NULL,
                 profile TEXT NOT NULL,
                 terminal INTEGER NOT NULL,
@@ -1463,8 +1469,8 @@ def init_state_store() -> None:
             "ON job_summaries(workflow_mode, updated_at, job_id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_collection_archive_destination_updated "
-            "ON job_summaries(collection_archive_destination, updated_at, job_id)"
+            "CREATE INDEX IF NOT EXISTS job_summaries_handoff_destination_updated "
+            "ON job_summaries(handoff_destination, updated_at, job_id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS job_summaries_collection_updated "
@@ -1765,13 +1771,10 @@ def resolved_submission(
             status_code=422,
             detail="collection_timestamp is required for collection_archive submissions",
         )
-    raw_job.update(
-        {
-            "job_id": submission_id,
-            "input_upload_id": submission_id,
-            "riverhog_upload_session_on_failure": req.riverhog_upload_session_on_failure,
-        }
-    )
+    handoff = dict_or_empty(raw_job.get("handoff"))
+    handoff["on_failure"] = req.handoff_on_failure
+    raw_job["handoff"] = handoff
+    raw_job.update({"job_id": submission_id, "input_upload_id": submission_id})
     for key, value in (
         ("collection_slug", req.collection_slug),
         ("collection_timestamp", req.collection_timestamp),
@@ -1950,7 +1953,7 @@ def job_summary_search_text(job: dict[str, Any]) -> str:
         job.get("state"),
         job.get("phase"),
         job.get("workflow_mode"),
-        dict_or_empty(job.get("collection_archive")).get("destination"),
+        dict_or_empty(job.get("handoff")).get("destination"),
         job.get("output_mode"),
         job.get("profile"),
     ]
@@ -1961,16 +1964,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
     job_id = str(job.get("job_id") or "")
     if not job_id:
         return
-    riverhog = job.get("riverhog")
-    collection_archive = dict_or_empty(job.get("collection_archive"))
-    collection_archive_destination = str(collection_archive.get("destination") or "")
-    if (
-        not collection_archive_destination
-        and str(job.get("workflow_mode") or "") == "collection_archive"
-    ):
-        collection_archive_destination = (
-            "riverhog" if isinstance(riverhog, dict) and riverhog.get("enabled") else "target"
-        )
+    handoff_destination = str(dict_or_empty(job.get("handoff")).get("destination") or "")
     summary = {
         "job_id": job_id,
         "state": str(job.get("state") or ""),
@@ -1983,7 +1977,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
         "collection_slug": str(job.get("collection_slug") or ""),
         "collection_timestamp": str(job.get("collection_timestamp") or ""),
         "workflow_mode": str(job.get("workflow_mode") or ""),
-        "collection_archive_destination": collection_archive_destination,
+        "handoff_destination": handoff_destination,
         "output_mode": str(job.get("output_mode") or ""),
         "profile": str(job.get("profile") or ""),
         "terminal": bool_int(job.get("state") in TERMINAL_JOB_STATES),
@@ -2004,7 +1998,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             collection_slug,
             collection_timestamp,
             workflow_mode,
-            collection_archive_destination,
+            handoff_destination,
             output_mode,
             profile,
             terminal,
@@ -2023,7 +2017,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             :collection_slug,
             :collection_timestamp,
             :workflow_mode,
-            :collection_archive_destination,
+            :handoff_destination,
             :output_mode,
             :profile,
             :terminal,
@@ -2041,7 +2035,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             collection_slug = excluded.collection_slug,
             collection_timestamp = excluded.collection_timestamp,
             workflow_mode = excluded.workflow_mode,
-            collection_archive_destination = excluded.collection_archive_destination,
+            handoff_destination = excluded.handoff_destination,
             output_mode = excluded.output_mode,
             profile = excluded.profile,
             terminal = excluded.terminal,
@@ -2094,7 +2088,7 @@ def list_job_summaries_page(
     terminal: str,
     state: str | None,
     workflow_mode: str | None,
-    collection_archive_destination: str | None,
+    handoff_destination: str | None,
     cancel_requested: bool | None,
     storage_wait: bool | None,
 ) -> dict[str, Any]:
@@ -2128,9 +2122,9 @@ def list_job_summaries_page(
     if workflow_mode:
         where.append("workflow_mode = ?")
         params.append(workflow_mode.strip().casefold().replace("-", "_"))
-    if collection_archive_destination:
-        where.append("collection_archive_destination = ?")
-        params.append(collection_archive_destination.strip().casefold().replace("-", "_"))
+    if handoff_destination:
+        where.append("handoff_destination = ?")
+        params.append(handoff_destination.strip().casefold().replace("-", "_"))
     if cancel_requested is not None:
         where.append("cancel_requested = ?")
         params.append(bool_int(cancel_requested))
@@ -2186,7 +2180,7 @@ def list_job_summaries_page(
         "filters": {
             "state": state,
             "workflow_mode": workflow_mode,
-            "collection_archive_destination": collection_archive_destination,
+            "handoff_destination": handoff_destination,
             "cancel_requested": cancel_requested,
             "storage_wait": storage_wait,
         },
@@ -2544,11 +2538,8 @@ def storage_hint_scratch_extra_multiplier(hint: InputUploadStorageHint) -> float
         return 0.0
     if hint.workflow_mode == "review":
         return REVIEW_SCRATCH_EXTRA_MULTIPLIER
-    if (
-        hint.workflow_mode == "collection_archive"
-        and hint.collection_archive_destination == "target"
-    ):
-        return COLLECTION_ARCHIVE_TARGET_SCRATCH_EXTRA_MULTIPLIER
+    if hint.workflow_mode == "collection_archive" and hint.handoff_destination != "riverhog":
+        return BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER
     return GPU_SCRATCH_MULTIPLIER
 
 
@@ -2608,7 +2599,7 @@ def gpu_scratch_admission_required_bytes(
         return 0
     if (
         hint.workflow_mode != "collection_archive"
-        or hint.collection_archive_destination != "riverhog"
+        or hint.handoff_destination != "riverhog"
         or hint.structured_routing
     ):
         return gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
@@ -3067,7 +3058,7 @@ def merge_last_eager_upload_metrics(
             merged[key] = source[key]
 
 
-def merge_riverhog_session_upload_state(
+def merge_riverhog_handoff_state(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
 ) -> dict[str, Any]:
@@ -3083,6 +3074,18 @@ def merge_riverhog_session_upload_state(
         payload_riverhog.get("files"),
     )
     return merged
+
+
+def merge_handoff_adapter_state(
+    job: dict[str, Any],
+    current: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    destination = str(dict_or_empty(job.get("handoff")).get("destination") or "")
+    adapter = HANDOFF_ADAPTERS.get(destination)
+    if adapter is None:
+        return {**current, **incoming}
+    return adapter.merge_state(current, incoming)
 
 
 GPU_RESULT_STORAGE_KEYS = {
@@ -3148,8 +3151,8 @@ TERMINAL_CLEANUP_JOB_KEYS = (
     "local_work_removed",
     "local_work_removed_count",
     "local_work_removed_sample",
-    "riverhog_cancel_error",
-    "riverhog_cancel_failed_at",
+    "handoff_cancel_error",
+    "handoff_cancel_failed_at",
 )
 
 
@@ -3172,15 +3175,21 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
             and payload.get("state") not in TERMINAL_JOB_STATES
             and not reset_runtime_state
         ):
-            current_riverhog = current.get("riverhog_session_upload")
-            payload_riverhog = payload.get("riverhog_session_upload")
-            if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
-                payload["riverhog_session_upload"] = merge_riverhog_session_upload_state(
-                    current_riverhog,
-                    payload_riverhog,
+            current_adapter_state = current.get("handoff_adapter_state")
+            incoming_adapter_state = payload.get("handoff_adapter_state")
+            if isinstance(current_adapter_state, dict) and isinstance(
+                incoming_adapter_state, dict
+            ):
+                payload["handoff_adapter_state"] = merge_handoff_adapter_state(
+                    payload,
+                    current_adapter_state,
+                    incoming_adapter_state,
                 )
-            elif isinstance(current_riverhog, dict) and "riverhog_session_upload" not in payload:
-                payload["riverhog_session_upload"] = current_riverhog
+            elif (
+                isinstance(current_adapter_state, dict)
+                and "handoff_adapter_state" not in payload
+            ):
+                payload["handoff_adapter_state"] = current_adapter_state
             current_eager = current.get("eager_archive")
             payload_eager = payload.get("eager_archive")
             if isinstance(current_eager, dict) and isinstance(payload_eager, dict):
@@ -3217,9 +3226,9 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
                 "local_work_removed",
                 "local_work_removed_count",
                 "local_work_removed_sample",
-                "riverhog_cancel_failed_at",
-                "riverhog_cancel_error",
-                "riverhog_handoff_metrics",
+                "handoff_cancel_failed_at",
+                "handoff_cancel_error",
+                "handoff_metrics",
                 "terminal_state_compacted_at",
                 "debug_bundle_dir",
                 "debug_bundle_created_at",
@@ -4053,13 +4062,9 @@ def storage_hint_for_job_request(req: CreateJobRequest) -> InputUploadStorageHin
         )
         for name, group in req.groups.items()
     }
-    if req.workflow_mode == "collection_archive":
-        collection_archive_destination = req.collection_archive.destination
-    else:
-        collection_archive_destination = "target"
     return InputUploadStorageHint(
         workflow_mode=req.workflow_mode,
-        collection_archive_destination=collection_archive_destination,
+        handoff_destination=req.handoff.destination,
         output_mode=req.output_mode,
         tasks=req.tasks,
         groups=groups,
@@ -4559,7 +4564,7 @@ def route_completed_input_files(
         "groups": group_counts,
         "routes": route_counts,
     }
-    job["riverhog_expected_primary_files_total"] = expected_riverhog_primary_files_total(
+    job["handoff_expected_primary_files_total"] = expected_riverhog_primary_files_total(
         upload,
         groups,
     )
@@ -5356,15 +5361,15 @@ def metadata_projection_handed_off_paths(job: dict[str, Any]) -> set[str]:
     if not isinstance(current, dict):
         return paths
     paths.update(uploaded_riverhog_paths(current))
-    current_riverhog = current.get("riverhog_session_upload")
-    payload_riverhog = job.get("riverhog_session_upload")
-    if isinstance(current_riverhog, dict) and isinstance(payload_riverhog, dict):
-        job["riverhog_session_upload"] = merge_riverhog_session_upload_state(
-            current_riverhog,
-            payload_riverhog,
+    current_adapter_state = current.get("handoff_adapter_state")
+    incoming_adapter_state = job.get("handoff_adapter_state")
+    if isinstance(current_adapter_state, dict) and isinstance(incoming_adapter_state, dict):
+        job["handoff_adapter_state"] = merge_riverhog_handoff_state(
+            current_adapter_state,
+            incoming_adapter_state,
         )
-    elif isinstance(current_riverhog, dict):
-        job["riverhog_session_upload"] = current_riverhog
+    elif isinstance(current_adapter_state, dict):
+        job["handoff_adapter_state"] = current_adapter_state
     return paths
 
 
@@ -5653,11 +5658,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
         return False
     changed = snapshot_terminal_progress(job)
 
-    for result_key in (
-        "review_handoff_result",
-        "collection_archive_target_upload_result",
-        "riverhog_upload_result",
-    ):
+    for result_key in ("handoff_receipt",):
         compact = compact_command_result(job.get(result_key))
         if compact != job.get(result_key):
             job[result_key] = compact
@@ -5670,7 +5671,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
         "gpu_results",
         "gpu_statuses",
         "group_results",
-        "riverhog_session_upload",
+        "handoff_adapter_state",
     ):
         if key in job:
             job.pop(key, None)
@@ -5688,7 +5689,6 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
 RESUMABLE_RUNTIME_JOB_KEYS = (
     *TERMINAL_CLEANUP_JOB_KEYS,
-    "collection_archive_target_upload_result",
     "debug_bundle_created_at",
     "debug_bundle_dir",
     "debug_bundle_reason",
@@ -5700,11 +5700,10 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "group_results",
     "upload_progress",
     "routing_result",
-    "review_handoff_result",
     "review_sweep_result",
-    "riverhog_handoff_metrics",
-    "riverhog_session_upload",
-    "riverhog_upload_result",
+    "handoff_metrics",
+    "handoff_adapter_state",
+    "handoff_receipt",
     "terminal_progress",
     "terminal_state_compacted_at",
 )
@@ -5755,10 +5754,10 @@ def snapshot_terminal_progress(job: dict[str, Any]) -> bool:
         if progress is not None:
             job["upload_progress"] = progress
             changed = True
-    if "riverhog_upload_progress" not in job:
-        progress = riverhog_upload_progress_for_job(job)
+    if "handoff_progress" not in job:
+        progress = current_handoff_progress(job)
         if progress is not None:
-            job["riverhog_upload_progress"] = progress
+            job["handoff_progress"] = progress
             changed = True
     return changed
 
@@ -5780,13 +5779,11 @@ def mark_job_canceled(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
 def finalize_canceled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]:
     job = mark_job_canceled(job, reason=reason)
     try:
-        cancel_riverhog_upload_session(job, reason=reason)
+        cancel_handoff(job, reason=reason)
     except Exception as exc:
-        job["riverhog_cancel_failed_at"] = utc_timestamp_now()
-        job["riverhog_cancel_error"] = str(exc)
-        log.exception(
-            "unexpected failure while cancelling riverhog session for %s", job.get("job_id")
-        )
+        job["handoff_cancel_failed_at"] = utc_timestamp_now()
+        job["handoff_cancel_error"] = str(exc)
+        log.exception("unexpected failure while cancelling handoff for %s", job.get("job_id"))
         save_job(job)
 
     try:
@@ -5800,14 +5797,7 @@ def finalize_canceled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]
 
 
 def should_cleanup_local_work_on_success(job: dict[str, Any]) -> bool:
-    workflow_mode = str(job.get("workflow_mode") or "collection_archive")
-    if workflow_mode == "review":
-        return True
-    collection_archive = dict_or_empty(job.get("collection_archive"))
-    if str(collection_archive.get("destination") or "riverhog") == "target":
-        return True
-    riverhog = job.get("riverhog")
-    return isinstance(riverhog, dict) and bool(riverhog.get("enabled"))
+    return bool(dict_or_empty(job.get("handoff")).get("safe_to_delete"))
 
 
 def should_cleanup_terminal_local_work(job: dict[str, Any], cutoff: datetime) -> bool:
@@ -6343,18 +6333,26 @@ def wait_gpu_job(
 
 
 def riverhog_config_enabled(job: dict[str, Any]) -> bool:
-    riverhog = job.get("riverhog")
-    return isinstance(riverhog, dict) and bool(riverhog.get("enabled"))
+    return str(dict_or_empty(job.get("handoff")).get("destination") or "") == "riverhog"
+
+
+def riverhog_handoff_options(job: Mapping[str, Any]) -> dict[str, Any]:
+    handoff = job.get("handoff")
+    if not isinstance(handoff, Mapping):
+        return {}
+    return dict_or_empty(handoff.get("options"))
 
 
 def riverhog_collection_id_for_job(job: dict[str, Any]) -> str | None:
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     if isinstance(state, dict) and state.get("collection_id"):
         return str(state["collection_id"])
-    for key in ("riverhog_upload_result", "riverhog_upload_progress"):
-        value = job.get(key)
-        if isinstance(value, dict) and value.get("collection_id"):
-            return str(value["collection_id"])
+    receipt = job.get("handoff_receipt")
+    if isinstance(receipt, dict) and receipt.get("external_id"):
+        return str(receipt["external_id"])
+    progress = job.get("handoff_progress")
+    if isinstance(progress, dict) and progress.get("external_id"):
+        return str(progress["external_id"])
     return derived_riverhog_collection_id(job)
 
 
@@ -6367,10 +6365,10 @@ def derived_riverhog_collection_id(job: dict[str, Any]) -> str | None:
 
 
 def riverhog_session_state(job: dict[str, Any]) -> dict[str, Any]:
-    state = job.setdefault("riverhog_session_upload", {})
+    state = job.setdefault("handoff_adapter_state", {})
     if not isinstance(state, dict):
         state = {}
-        job["riverhog_session_upload"] = state
+        job["handoff_adapter_state"] = state
     state.setdefault("state", "not_started")
     state.setdefault("files", {})
     return state
@@ -6439,7 +6437,7 @@ def finalized_riverhog_payload_from_collection(
     }
 
 
-def update_riverhog_state_from_payload(
+def update_remote_state_from_payload(
     job: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -6448,7 +6446,7 @@ def update_riverhog_state_from_payload(
         if payload.get("collection_id"):
             state["collection_id"] = str(payload["collection_id"])
         if payload.get("state"):
-            state["riverhog_state"] = str(payload["state"])
+            state["remote_state"] = str(payload["state"])
             state["state"] = str(payload["state"])
         state["last_payload"] = compact_riverhog_payload(payload)
         state["updated_at"] = utc_timestamp_now()
@@ -6498,7 +6496,7 @@ def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> di
     except NotFound:
         collection = api.get_collection(collection_id)
         payload = finalized_riverhog_payload_from_collection(collection_id, collection)
-    update_riverhog_state_from_payload(job, payload)
+    update_remote_state_from_payload(job, payload)
     return payload
 
 
@@ -6544,7 +6542,7 @@ def ensure_riverhog_session(
 ) -> str:
     if not riverhog_config_enabled(job):
         raise RuntimeError("riverhog upload is not enabled for this job")
-    if not RIVERHOG_UPLOAD_ENABLED:
+    if not RIVERHOG_HANDOFF_ENABLED:
         raise RuntimeError("riverhog upload requested, but runner Riverhog upload is disabled")
     timestamp = job.get("collection_timestamp")
     if not timestamp:
@@ -6563,12 +6561,12 @@ def ensure_riverhog_session(
             upload_timestamp=str(timestamp),
             archive_store=cast(
                 str | None,
-                dict_or_empty(job.get("riverhog")).get("archive_store"),
+                riverhog_handoff_options(job).get("archive_store"),
             ),
-            retain_hot=bool(dict_or_empty(job.get("riverhog")).get("retain_hot", True)),
+            retain_hot=bool(riverhog_handoff_options(job).get("retain_hot", True)),
             notify=riverhog_collection_notify_config(job),
         )
-        update_riverhog_state_from_payload(job, payload)
+        update_remote_state_from_payload(job, payload)
         state = riverhog_session_state(job)
         state["opened_at"] = state.get("opened_at") or utc_timestamp_now()
         save_job(job)
@@ -6669,7 +6667,7 @@ def confirm_riverhog_artifact_uploaded(
         length_value = int(str(length_value))
     length = length_value
     payload = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
-    update_riverhog_state_from_payload(job, payload)
+    update_remote_state_from_payload(job, payload)
     if not riverhog_payload_confirms_file_uploaded(payload, rel_path, length):
         raise RuntimeError(f"riverhog did not acknowledge completed upload for {rel_path}")
     return payload
@@ -6737,7 +6735,7 @@ def riverhog_upload_artifact(
         "sha256": str(record["sha256"]),
     }
     session = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
-    update_riverhog_state_from_payload(job, session)
+    update_remote_state_from_payload(job, session)
     with riverhog_upload_lock(job_id):
         record = (
             riverhog_session_state(job)
@@ -6794,7 +6792,7 @@ def riverhog_upload_artifact(
                     length=length,
                     checksum_algorithm=str(session["checksum_algorithm"]),
                 ),
-                chunk_bytes=RIVERHOG_UPLOAD_CHUNK_BYTES,
+                chunk_bytes=RIVERHOG_HANDOFF_CHUNK_BYTES,
                 cancel_check=lambda: raise_if_job_canceled(job_id),
                 progress=mark_progress,
             )
@@ -7105,7 +7103,7 @@ def archive_dir_artifact_paths(archive_dir: Path) -> list[Path]:
 
 
 def uploaded_riverhog_paths(job: dict[str, Any]) -> set[str]:
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     if not isinstance(state, dict):
         return set()
     files = state.get("files")
@@ -7246,7 +7244,7 @@ def _upload_riverhog_artifacts_unlocked(
             "elapsed_seconds": round(max(0.0, time.monotonic() - started), 6),
         }
 
-    worker_count = min(max(1, RIVERHOG_UPLOAD_WORKERS), len(selected))
+    worker_count = min(max(1, RIVERHOG_HANDOFF_WORKERS), len(selected))
     last_save_at = started
 
     def persist_progress_if_due(*, force: bool = False) -> None:
@@ -7254,8 +7252,8 @@ def _upload_riverhog_artifacts_unlocked(
         now = time.monotonic()
         if (
             force
-            or processed % RIVERHOG_UPLOAD_SAVE_EVERY_FILES == 0
-            or now - last_save_at >= RIVERHOG_UPLOAD_SAVE_EVERY_SECONDS
+            or processed % RIVERHOG_HANDOFF_SAVE_EVERY_FILES == 0
+            or now - last_save_at >= RIVERHOG_HANDOFF_SAVE_EVERY_SECONDS
         ):
             save_job(job)
             last_save_at = now
@@ -7335,16 +7333,16 @@ def _upload_riverhog_artifacts_unlocked(
 
 
 def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> None:
-    if not riverhog_config_enabled(job) or not RIVERHOG_UPLOAD_ENABLED:
+    if not riverhog_config_enabled(job) or not RIVERHOG_HANDOFF_ENABLED:
         return
     try:
         result = upload_riverhog_artifacts(
             job,
             archive_dir,
             final=False,
-            max_files=RIVERHOG_EAGER_UPLOAD_FILES_PER_TICK,
-            max_bytes=RIVERHOG_EAGER_UPLOAD_BYTES_PER_TICK,
-            max_seconds=RIVERHOG_EAGER_UPLOAD_SECONDS_PER_TICK,
+            max_files=RIVERHOG_EAGER_HANDOFF_FILES_PER_TICK,
+            max_bytes=RIVERHOG_EAGER_HANDOFF_BYTES_PER_TICK,
+            max_seconds=RIVERHOG_EAGER_HANDOFF_SECONDS_PER_TICK,
         )
         if result["processed_files"]:
             state = riverhog_session_state(job)
@@ -7365,7 +7363,7 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
         log.warning("riverhog eager upload issue; will retry later: %s", exc)
 
 
-RIVERHOG_EAGER_UPLOAD_BLOCKED_PHASES = {"metadata_projection", "riverhog_upload"}
+RIVERHOG_EAGER_HANDOFF_BLOCKED_PHASES = {"metadata_projection", "handoff"}
 
 
 def riverhog_eager_upload_allowed(job: dict[str, Any]) -> bool:
@@ -7373,21 +7371,20 @@ def riverhog_eager_upload_allowed(job: dict[str, Any]) -> bool:
         return False
     if str(job.get("workflow_mode") or "collection_archive") != "collection_archive":
         return False
-    collection_archive = dict_or_empty(job.get("collection_archive"))
-    if str(collection_archive.get("destination") or "riverhog") != "riverhog":
+    if str(dict_or_empty(job.get("handoff")).get("destination") or "") != "riverhog":
         return False
     if not riverhog_config_enabled(job):
         return False
-    if str(job.get("phase") or "") in RIVERHOG_EAGER_UPLOAD_BLOCKED_PHASES:
+    if str(job.get("phase") or "") in RIVERHOG_EAGER_HANDOFF_BLOCKED_PHASES:
         return False
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     return not (
         isinstance(state, dict) and state.get("state") in {"canceled", "archiving", "finalized"}
     )
 
 
 def all_riverhog_session_files_uploaded(job: dict[str, Any]) -> bool:
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     if not isinstance(state, dict):
         return False
     files = state.get("files")
@@ -7399,7 +7396,7 @@ def all_riverhog_session_files_uploaded(job: dict[str, Any]) -> bool:
 
 
 def can_resume_preserving_riverhog_session(job: dict[str, Any]) -> bool:
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     if not riverhog_config_enabled(job) or not isinstance(state, dict):
         return False
     if state.get("canceled_at") or state.get("state") in {"canceled"}:
@@ -7407,25 +7404,23 @@ def can_resume_preserving_riverhog_session(job: dict[str, Any]) -> bool:
     return all_riverhog_session_files_uploaded(job)
 
 
-def riverhog_upload_session_on_failure(job: dict[str, Any]) -> str:
-    value = str(
-        dict_or_empty(job.get("riverhog")).get("upload_session_on_failure") or "preserve_for_resume"
-    )
+def handoff_on_failure(job: dict[str, Any]) -> str:
+    value = str(dict_or_empty(job.get("handoff")).get("on_failure") or "preserve_for_resume")
     if value not in {"preserve_for_resume", "cancel"}:
         return "preserve_for_resume"
     return value
 
 
-def should_cancel_riverhog_upload_session_on_failure(job: dict[str, Any], exc: Exception) -> bool:
+def should_cancel_handoff_on_failure(job: dict[str, Any], exc: Exception) -> bool:
     if isinstance(exc, EncodingFailed):
         return True
-    if riverhog_upload_session_on_failure(job) == "cancel":
+    if handoff_on_failure(job) == "cancel":
         return True
-    return not can_resume_preserving_riverhog_session(job)
+    return not handoff_adapter(job).can_resume(job)
 
 
 def riverhog_session_visible_for_resume(job: dict[str, Any]) -> bool:
-    if not RIVERHOG_UPLOAD_ENABLED:
+    if not RIVERHOG_HANDOFF_ENABLED:
         return True
     api = ApiClient()
     try:
@@ -7451,7 +7446,7 @@ def complete_riverhog_session(
 ) -> dict[str, Any]:
     collection_id = ensure_riverhog_session(job, api, archive_dir)
     payload = api.complete_collection_upload_session(collection_id)
-    update_riverhog_state_from_payload(job, payload)
+    update_remote_state_from_payload(job, payload)
     state = riverhog_session_state(job)
     state["completed_at"] = state.get("completed_at") or utc_timestamp_now()
     save_job(job)
@@ -7497,7 +7492,7 @@ def wait_for_riverhog_finalized(
             collection = api.get_collection(collection_id)
             payload = finalized_riverhog_payload_from_collection(collection_id, collection)
             state = riverhog_session_state(job)
-            state["riverhog_state"] = "finalized"
+            state["remote_state"] = "finalized"
             state["state"] = "finalized"
             state["finalized_at"] = state.get("finalized_at") or utc_timestamp_now()
             state["last_payload"] = compact_riverhog_payload(payload)
@@ -7505,7 +7500,7 @@ def wait_for_riverhog_finalized(
             return payload
         except NotFound as exc:
             payload = api.get_collection_upload(collection_id)
-            update_riverhog_state_from_payload(job, payload)
+            update_remote_state_from_payload(job, payload)
             save_job(job)
             if str(payload.get("state") or "") == "failed":
                 raise RuntimeError(
@@ -7517,7 +7512,6 @@ def wait_for_riverhog_finalized(
 def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any] | None:
     if not riverhog_config_enabled(job):
         return None
-    wait = str(job.get("riverhog", {}).get("wait") or RIVERHOG_WAIT)
     notify_job_event(
         job,
         "archive.handoff",
@@ -7526,19 +7520,16 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
     )
 
     def operation() -> dict[str, Any]:
-        if not RIVERHOG_UPLOAD_ENABLED:
+        if not RIVERHOG_HANDOFF_ENABLED:
             raise RuntimeError("riverhog upload requested, but runner Riverhog upload is disabled")
         api = ApiClient()
-        metrics: dict[str, Any] = {
-            "started_at": utc_timestamp_now(),
-            "wait": wait,
-        }
-        job["riverhog_handoff_metrics"] = metrics
+        metrics: dict[str, Any] = {"started_at": utc_timestamp_now()}
+        job["handoff_metrics"] = metrics
         save_job(job)
         try:
             metrics["final_sweep_started_at"] = utc_timestamp_now()
             metrics["final_sweep_before"] = compact_riverhog_progress_metrics(
-                riverhog_upload_progress_for_job(job)
+                riverhog_handoff_progress(job)
             )
             final_sweep = upload_riverhog_artifacts(job, archive_dir, final=True)
             metrics["final_sweep_finished_at"] = utc_timestamp_now()
@@ -7548,7 +7539,7 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             metrics["final_sweep_uploaded_bytes"] = final_sweep["uploaded_bytes"]
             sync_riverhog_session_from_remote(job, api)
             metrics["final_sweep_after"] = compact_riverhog_progress_metrics(
-                riverhog_upload_progress_for_job(job)
+                riverhog_handoff_progress(job)
             )
             save_job(job)
             if not all_riverhog_session_files_uploaded(job):
@@ -7563,7 +7554,7 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
                 6,
             )
             collection_id = str(payload.get("collection_id") or "")
-            if wait == "finalized" and collection_id:
+            if collection_id:
                 finalize_started = time.monotonic()
                 metrics["wait_finalized_started_at"] = utc_timestamp_now()
                 save_job(job)
@@ -7576,9 +7567,8 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             metrics["finished_at"] = utc_timestamp_now()
             save_job(job)
             return {
-                "method": "session",
-                "wait": wait,
-                "collection_id": collection_id,
+                "destination": "riverhog",
+                "external_id": collection_id,
                 "metrics": dict(metrics),
                 "payload": compact_riverhog_payload(payload),
             }
@@ -7596,55 +7586,50 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
 
     return retry_handoff_until_success(
         job,
-        result_key="riverhog_upload_result",
-        phase="riverhog_upload",
-        action="riverhog upload",
-        component="riverhog_upload",
+        result_key="handoff_receipt",
+        phase="handoff",
+        action="Riverhog handoff",
+        component="riverhog_handoff",
         operation=operation,
     )
 
 
-def riverhog_eager_upload_candidate_jobs() -> list[dict[str, Any]]:
-    if not RIVERHOG_UPLOAD_ENABLED:
-        return []
+def eager_handoff_candidate_jobs() -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for job in job_states():
-        if not riverhog_eager_upload_allowed(job):
+        try:
+            adapter = handoff_adapter(job)
+        except RuntimeError:
             continue
-        if eager_riverhog_artifact_paths(job):
+        if adapter.supports_eager and adapter.eager_ready(job):
             candidates.append(job)
     candidates.sort(key=lambda item: str(item.get("created_at") or ""))
     return candidates
 
 
-def riverhog_upload_loop() -> None:
-    while not riverhog_upload_stop.wait(RIVERHOG_EAGER_UPLOAD_INTERVAL_SECONDS):
+def handoff_loop() -> None:
+    while not handoff_stop.wait(RIVERHOG_EAGER_HANDOFF_INTERVAL_SECONDS):
         try:
-            for job in riverhog_eager_upload_candidate_jobs():
-                if riverhog_upload_stop.is_set():
+            for job in eager_handoff_candidate_jobs():
+                if handoff_stop.is_set():
                     return
                 archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
-                maybe_upload_riverhog_artifacts(job, archive_dir)
+                advance_handoff(
+                    job,
+                    archive_dir,
+                    final=False,
+                    source_label="collection archive",
+                )
         except JobCanceled as exc:
-            log.info("riverhog eager upload worker noticed cancellation: %s", exc)
+            log.info("eager handoff worker noticed cancellation: %s", exc)
         except Exception:
-            log.exception("riverhog eager upload worker failed")
-
-
-def wait_for_riverhog_eager_upload_quiescent(job: dict[str, Any]) -> None:
-    if not riverhog_config_enabled(job):
-        return
-    job_id = str(job.get("job_id") or "")
-    if not job_id:
-        return
-    with riverhog_upload_call_lock(job_id):
-        return
+            log.exception("eager handoff worker failed")
 
 
 def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     if not riverhog_config_enabled(job):
         return
-    state = job.get("riverhog_session_upload")
+    state = job.get("handoff_adapter_state")
     if not isinstance(state, dict):
         state = riverhog_session_state(job)
     collection_id = str(state.get("collection_id") or derived_riverhog_collection_id(job) or "")
@@ -7654,7 +7639,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     if state.get("state") in {"canceled", "archiving", "finalized"} or state.get("canceled_at"):
         return
     state["cancel_reason"] = reason
-    if not RIVERHOG_UPLOAD_ENABLED:
+    if not RIVERHOG_HANDOFF_ENABLED:
         state["cancel_skipped_at"] = utc_timestamp_now()
         state["cancel_skipped_reason"] = "riverhog upload disabled"
         save_job(job)
@@ -7662,7 +7647,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     api = ApiClient()
     try:
         payload = api.cancel_collection_upload_session(collection_id)
-        update_riverhog_state_from_payload(job, payload)
+        update_remote_state_from_payload(job, payload)
         state = riverhog_session_state(job)
         state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
@@ -7674,7 +7659,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         )
     except NotFound:
         state["state"] = "canceled"
-        state["riverhog_state"] = "absent"
+        state["remote_state"] = "absent"
         state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
         state["cancel_not_found"] = True
@@ -7719,23 +7704,23 @@ def render_job_template(
     try:
         return value.format(**mapping)
     except KeyError as exc:
-        raise RuntimeError(f"unknown target upload template field: {exc.args[0]}") from exc
+        raise RuntimeError(f"unknown handoff template field: {exc.args[0]}") from exc
 
 
-def target_upload_excludes(config: Mapping[str, Any]) -> list[str]:
-    excludes = list(DEFAULT_TARGET_UPLOAD_EXCLUDES)
+def handoff_excludes(config: Mapping[str, Any]) -> list[str]:
+    excludes = list(DEFAULT_HANDOFF_EXCLUDES)
     raw_excludes = config.get("exclude") or []
     if not isinstance(raw_excludes, Sequence) or isinstance(raw_excludes, (str, bytes)):
-        raise RuntimeError("target upload exclude must be a list")
+        raise RuntimeError("handoff exclude must be a list")
     raw_patterns: list[str] = []
     for item in raw_excludes:
         if not isinstance(item, str):
-            raise RuntimeError("target upload exclude entries must be strings")
+            raise RuntimeError("handoff exclude entries must be strings")
         raw_patterns.append(item)
     try:
         extra_excludes = normalize_exclude_patterns(
             raw_patterns,
-            label="target upload exclude",
+            label="handoff exclude",
         )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -7745,22 +7730,22 @@ def target_upload_excludes(config: Mapping[str, Any]) -> list[str]:
     return excludes
 
 
-def target_upload_path_excluded(rel_path: str, excludes: Sequence[str]) -> bool:
+def handoff_path_excluded(rel_path: str, excludes: Sequence[str]) -> bool:
     return path_matches_exclude_patterns(rel_path, excludes)
 
 
-def target_artifact_count(source_dir: Path, *, excludes: Sequence[str] = ()) -> int:
+def handoff_artifact_count(source_dir: Path, *, excludes: Sequence[str] = ()) -> int:
     if not source_dir.is_dir():
         return 0
     return sum(
         1
         for path in source_dir.rglob("*")
         if path.is_file()
-        and not target_upload_path_excluded(path.relative_to(source_dir).as_posix(), excludes)
+        and not handoff_path_excluded(path.relative_to(source_dir).as_posix(), excludes)
     )
 
 
-def run_target_command(
+def run_handoff_command(
     cmd: list[str],
     *,
     action: str,
@@ -7769,28 +7754,28 @@ def run_target_command(
     return run_command(cmd, action=action, env=env)
 
 
-def upload_target(
+def run_external_handoff(
     job: dict[str, Any],
     source_dir: Path,
     *,
     config: Mapping[str, Any] | None = None,
     source_label: str = "review",
-    result_key: str = "review_handoff_result",
-    phase: str = "review_handoff",
-    component: str = "review_handoff",
+    result_key: str = "handoff_receipt",
+    phase: str = "handoff",
+    component: str = "handoff",
     event: NotifyEvent = "review.handoff",
     allow_empty: bool = True,
     emit_notification: bool = True,
     template_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     if config is None:
-        config = dict_or_empty(dict_or_empty(job.get("review")).get("target"))
+        raise RuntimeError("external handoff config is required")
     if not config.get("enabled"):
         return None
-    if not TARGET_UPLOAD_ENABLED:
-        raise RuntimeError("target upload requested, but runner target upload is disabled")
-    excludes = target_upload_excludes(config)
-    artifact_count = target_artifact_count(source_dir, excludes=excludes)
+    if not EXTERNAL_HANDOFF_ENABLED:
+        raise RuntimeError("external handoff requested, but external handoffs are disabled")
+    excludes = handoff_excludes(config)
+    artifact_count = handoff_artifact_count(source_dir, excludes=excludes)
     if artifact_count == 0:
         if not allow_empty:
             raise RuntimeError(f"{source_label} artifacts are empty: {source_dir}")
@@ -7815,7 +7800,7 @@ def upload_target(
     if method == "rclone":
         destination = str(config.get("destination") or "").strip()
         if not destination:
-            raise RuntimeError("target upload destination is required for rclone")
+            raise RuntimeError("rclone handoff location is required")
         rendered_destination = render_job_template(
             destination,
             job,
@@ -7823,15 +7808,15 @@ def upload_target(
         )
         mode = str(config.get("mode") or "copy")
         if mode not in {"copy", "sync"}:
-            raise RuntimeError(f"unsupported target upload rclone mode: {mode}")
+            raise RuntimeError(f"unsupported rclone handoff mode: {mode}")
         cmd = [
-            TARGET_RCLONE_COMMAND,
+            RCLONE_HANDOFF_COMMAND,
             mode,
             *[arg for pattern in excludes for arg in ("--exclude", pattern)],
             str(source_dir),
             rendered_destination,
             "--retries",
-            str(max(1, UPLOAD_ATTEMPTS)),
+            str(max(1, HANDOFF_ATTEMPTS)),
             "--low-level-retries",
             "10",
             "--stats",
@@ -7839,12 +7824,12 @@ def upload_target(
         ]
 
         def rclone_operation() -> dict[str, Any]:
-            result = run_target_command(cmd, action=f"{source_label} rclone upload")
-            result["method"] = "rclone"
+            result = run_handoff_command(cmd, action=f"{source_label} rclone handoff")
+            result["destination"] = "rclone"
             result["mode"] = mode
             result["source"] = str(source_dir)
             result["source_label"] = source_label
-            result["destination"] = rendered_destination
+            result["location"] = rendered_destination
             result["artifact_count"] = artifact_count
             return result
 
@@ -7852,19 +7837,19 @@ def upload_target(
             job,
             result_key=result_key,
             phase=phase,
-            action=f"{source_label} rclone upload",
+            action=f"{source_label} rclone handoff",
             component=component,
             operation=rclone_operation,
         )
     if method != "command":
-        raise RuntimeError(f"unsupported target upload method: {method}")
-    if not TARGET_UPLOAD_COMMAND:
+        raise RuntimeError(f"unsupported external handoff adapter: {method}")
+    if not COMMAND_HANDOFF_COMMAND:
         raise RuntimeError(
-            "target upload requested, but MUNCHY_RUNNER_TARGET_UPLOAD_COMMAND is empty"
+            "command handoff requested, but MUNCHY_RUNNER_COMMAND_HANDOFF_COMMAND is empty"
         )
     env = os.environ.copy()
-    env["MUNCHY_TARGET_SOURCE"] = str(source_dir)
-    env["MUNCHY_TARGET_SOURCE_LABEL"] = source_label
+    env["MUNCHY_HANDOFF_SOURCE"] = str(source_dir)
+    env["MUNCHY_HANDOFF_SOURCE_LABEL"] = source_label
     env["MUNCHY_JOB_ID"] = str(job["job_id"])
     env["MUNCHY_COLLECTION_SLUG"] = str(job.get("collection_slug") or "")
     env["MUNCHY_COLLECTION_TIMESTAMP"] = str(job.get("collection_timestamp") or "")
@@ -7881,12 +7866,12 @@ def upload_target(
     env["MUNCHY_REVIEW_PROFILE_ID"] = review_context["profile_id"]
 
     def command_operation() -> dict[str, Any]:
-        result = run_target_command(
-            ["/bin/sh", "-lc", TARGET_UPLOAD_COMMAND],
-            action=f"{source_label} command upload",
+        result = run_handoff_command(
+            ["/bin/sh", "-lc", COMMAND_HANDOFF_COMMAND],
+            action=f"{source_label} command handoff",
             env=env,
         )
-        result["method"] = "command"
+        result["destination"] = "command"
         result["source"] = str(source_dir)
         result["source_label"] = source_label
         result["artifact_count"] = artifact_count
@@ -7896,10 +7881,279 @@ def upload_target(
         job,
         result_key=result_key,
         phase=phase,
-        action=f"{source_label} command upload",
+        action=f"{source_label} command handoff",
         component=component,
         operation=command_operation,
     )
+
+
+def handoff_config(job: dict[str, Any]) -> dict[str, Any]:
+    configured = job.setdefault("handoff", {})
+    if not isinstance(configured, dict):
+        raise RuntimeError("job handoff config is invalid")
+    return configured
+
+
+class RiverhogHandoffAdapter:
+    name = "riverhog"
+    supports_eager = RIVERHOG_HANDOFF_ENABLED
+
+    def advance(
+        self,
+        job: dict[str, Any],
+        source_dir: Path,
+        *,
+        final: bool,
+        source_label: str,
+        context: Mapping[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        del source_label, context
+        configured = handoff_config(job)
+        configured["state"] = "transferring"
+        if not final:
+            maybe_upload_riverhog_artifacts(job, source_dir)
+            return None
+        receipt = upload_to_riverhog(job, source_dir)
+        self.refresh(job)
+        configured = handoff_config(job)
+        configured["state"] = "complete"
+        configured["safe_to_delete"] = self.safe_to_delete(job)
+        save_job(job)
+        return receipt
+
+    def cancel(self, job: dict[str, Any], *, reason: str) -> None:
+        cancel_riverhog_upload_session(job, reason=reason)
+
+    def refresh(self, job: dict[str, Any]) -> None:
+        refresh_riverhog_session_from_remote(job)
+
+    def progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        progress = riverhog_handoff_progress(job)
+        if progress is None:
+            return None
+        stages: list[dict[str, Any]] = [
+            {
+                "id": "transfer",
+                "label": "Riverhog Handoff",
+                "state": progress.get("state"),
+                "items_done": progress.get("primary_files_uploaded"),
+                "items_total": progress.get("primary_files_total"),
+                "bytes_done": progress.get("uploaded_bytes"),
+                "bytes_total": progress.get("bytes_total"),
+                "rate_bytes_per_second": progress.get("rate_bytes_per_second"),
+            }
+        ]
+        if (
+            int(progress.get("archive_total_bytes") or 0) > 0
+            or progress.get("archive_phase")
+            or progress.get("collection_id")
+        ):
+            stages.append(
+                {
+                    "id": "archive",
+                    "label": "Riverhog Deep Archive",
+                    "state": progress.get("archive_phase") or "waiting",
+                    "bytes_done": progress.get("archive_uploaded_bytes"),
+                    "bytes_total": progress.get("archive_total_bytes"),
+                    "items_done": progress.get("archive_uploaded_parts"),
+                    "items_total": progress.get("archive_total_parts"),
+                    "item_label": "parts",
+                }
+            )
+        if progress.get("retain_hot"):
+            stages.append(
+                {
+                    "id": "hot",
+                    "label": "Riverhog Hot Materialization",
+                    "items_done": progress.get("hot_materialized_files"),
+                    "items_total": progress.get("destination_files_total"),
+                    "bytes_done": progress.get("hot_materialized_bytes"),
+                    "bytes_total": progress.get("destination_bytes_total"),
+                }
+            )
+        return {
+            "destination": self.name,
+            "external_id": progress.get("collection_id"),
+            "state": progress.get("state"),
+            "completed": progress.get("completed"),
+            "safe_to_delete": progress.get("safe_to_delete"),
+            "stages": stages,
+        }
+
+    def safe_to_delete(self, job: dict[str, Any]) -> bool:
+        progress = riverhog_handoff_progress(job)
+        return isinstance(progress, dict) and bool(progress.get("safe_to_delete"))
+
+    def eager_ready(self, job: dict[str, Any]) -> bool:
+        return riverhog_eager_upload_allowed(job) and bool(eager_riverhog_artifact_paths(job))
+
+    def wait_until_idle(self, job: dict[str, Any]) -> None:
+        job_id = str(job.get("job_id") or "")
+        if job_id:
+            with riverhog_upload_call_lock(job_id):
+                return
+
+    def can_resume(self, job: dict[str, Any]) -> bool:
+        return can_resume_preserving_riverhog_session(
+            job
+        ) and riverhog_session_visible_for_resume(job)
+
+    def merge_state(
+        self,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        return merge_riverhog_handoff_state(current, incoming)
+
+
+class ExternalHandoffAdapter:
+    supports_eager = False
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def advance(
+        self,
+        job: dict[str, Any],
+        source_dir: Path,
+        *,
+        final: bool,
+        source_label: str,
+        context: Mapping[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        if not final:
+            return None
+        configured = handoff_config(job)
+        options = dict_or_empty(configured.get("options"))
+        upload_config: dict[str, Any] = {
+            **options,
+            "enabled": True,
+            "method": self.name,
+        }
+        if self.name == "rclone":
+            upload_config["destination"] = options.get("location")
+        configured["state"] = "transferring"
+        save_job(job)
+        event: NotifyEvent = (
+            "review.handoff"
+            if str(job.get("workflow_mode") or "") == "review"
+            else "collection_archive.handoff"
+        )
+        receipt = run_external_handoff(
+            job,
+            source_dir,
+            config=upload_config,
+            source_label=source_label,
+            result_key="handoff_receipt",
+            phase="handoff",
+            component="handoff",
+            event=event,
+            allow_empty=str(job.get("workflow_mode") or "") == "review",
+            emit_notification=context is None,
+            template_context=context,
+        )
+        configured = handoff_config(job)
+        configured["state"] = "complete"
+        configured["safe_to_delete"] = True
+        save_job(job)
+        return receipt
+
+    def cancel(self, job: dict[str, Any], *, reason: str) -> None:
+        del job, reason
+
+    def refresh(self, job: dict[str, Any]) -> None:
+        del job
+
+    def progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        configured = handoff_config(job)
+        label = f"{self.name.title()} Handoff"
+        return {
+            "destination": self.name,
+            "state": str(configured.get("state") or "pending"),
+            "completed": str(configured.get("state") or "") == "complete",
+            "safe_to_delete": bool(configured.get("safe_to_delete")),
+            "stages": [
+                {
+                    "id": "transfer",
+                    "label": label,
+                    "state": str(configured.get("state") or "pending"),
+                }
+            ],
+        }
+
+    def safe_to_delete(self, job: dict[str, Any]) -> bool:
+        return bool(handoff_config(job).get("safe_to_delete"))
+
+    def eager_ready(self, job: dict[str, Any]) -> bool:
+        del job
+        return False
+
+    def wait_until_idle(self, job: dict[str, Any]) -> None:
+        del job
+
+    def can_resume(self, job: dict[str, Any]) -> bool:
+        del job
+        return False
+
+    def merge_state(
+        self,
+        current: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {**current, **incoming}
+
+
+HANDOFF_ADAPTERS: dict[str, HandoffAdapter] = {
+    "command": ExternalHandoffAdapter("command"),
+    "rclone": ExternalHandoffAdapter("rclone"),
+    "riverhog": RiverhogHandoffAdapter(),
+}
+
+
+def handoff_adapter(job: dict[str, Any]) -> HandoffAdapter:
+    destination = str(handoff_config(job).get("destination") or "")
+    adapter = HANDOFF_ADAPTERS.get(destination)
+    if adapter is None:
+        raise RuntimeError(f"unsupported handoff destination: {destination or 'missing'}")
+    return adapter
+
+
+def advance_handoff(
+    job: dict[str, Any],
+    source_dir: Path,
+    *,
+    final: bool,
+    source_label: str,
+    context: Mapping[str, str] | None = None,
+) -> dict[str, Any] | None:
+    return handoff_adapter(job).advance(
+        job,
+        source_dir,
+        final=final,
+        source_label=source_label,
+        context=context,
+    )
+
+
+def cancel_handoff(job: dict[str, Any], *, reason: str) -> None:
+    adapter = handoff_adapter(job)
+    adapter.cancel(job, reason=reason)
+    configured = handoff_config(job)
+    configured["state"] = "canceled"
+    configured["safe_to_delete"] = False
+    save_job(job)
+
+
+def refresh_handoff(job: dict[str, Any]) -> None:
+    handoff_adapter(job).refresh(job)
+
+
+def handoff_safe_to_delete(job: dict[str, Any]) -> bool:
+    return handoff_adapter(job).safe_to_delete(job)
+
+
+def current_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
+    return handoff_adapter(job).progress(job)
 
 
 def review_sweep_config(job: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -8136,8 +8390,6 @@ def run_review_sweep_job(
                     "tasks": tasks,
                     "collection_slug": str(job.get("collection_slug") or ""),
                     "collection_timestamp": job.get("collection_timestamp"),
-                    "riverhog": {"enabled": False},
-                    "review_upload": {"enabled": False},
                     "container_metadata_required": gpu_tasks_require_container_metadata(
                         tasks,
                         group_config,
@@ -8180,19 +8432,12 @@ def run_review_sweep_job(
                         },
                     )
                     notified_handoff = True
-                result_key = f"review_sweep_upload_{safe_local_id(variant_key)}"
-                upload_result = upload_target(
+                upload_result = advance_handoff(
                     job,
                     variant_review_dir,
-                    config=dict_or_empty(dict_or_empty(job.get("review")).get("target")),
+                    final=True,
                     source_label="review sweep",
-                    result_key=result_key,
-                    phase="review_sweep_handoff",
-                    component="review_sweep_handoff",
-                    event="review.handoff",
-                    allow_empty=False,
-                    emit_notification=False,
-                    template_context={
+                    context={
                         "route_id": route_id,
                         "profile_id": profile_id,
                     },
@@ -8201,7 +8446,7 @@ def run_review_sweep_job(
                 if isinstance(latest, dict):
                     job.clear()
                     job.update(latest)
-                clear_handoff_attempt_state(job, result_key)
+                clear_handoff_attempt_state(job, "handoff_receipt")
                 result = review_sweep_result_state(job)
                 result.setdefault("variants", []).append(
                     {
@@ -8211,7 +8456,7 @@ def run_review_sweep_job(
                         "tasks": tasks,
                         "encode_settings": variant.get("encode_settings") or {},
                         "axis_values": variant.get("axis_values") or {},
-                        "upload_result": upload_result,
+                        "handoff_receipt": upload_result,
                         "completed_at": utc_timestamp_now(),
                     }
                 )
@@ -8225,9 +8470,6 @@ def run_review_sweep_job(
     result = review_sweep_result_state(job)
     result["finished_at"] = utc_timestamp_now()
     result["variants_completed"] = len(result.get("variants") or [])
-    job["review_handoff_result"] = result
-    job["collection_archive_target_upload_result"] = None
-    job["riverhog_upload_result"] = None
     save_job(job)
 
 
@@ -8785,8 +9027,8 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
-    state = job.get("riverhog_session_upload")
+def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
+    state = job.get("handoff_adapter_state")
     if not isinstance(state, dict):
         return None
     files = state.get("files")
@@ -8818,7 +9060,7 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         archive_dir = GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
     registered_artifact_paths = {str(path) for path in files if isinstance(path, str)}
     known_artifact_paths = registered_artifact_paths | local_artifact_paths
-    expected_primary_files_total = int(job.get("riverhog_expected_primary_files_total") or 0)
+    expected_primary_files_total = int(job.get("handoff_expected_primary_files_total") or 0)
     encode_progress = encode_progress_for_job(job)
     encode_files_total = 0
     encode_files_encoded = 0
@@ -8877,7 +9119,7 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         if recent_age <= 120 and recent_elapsed > 0 and recent_bytes > 0:
             recent_rate = int(recent_bytes / recent_elapsed)
     rate = recent_rate or average_rate
-    state_name = str(state.get("riverhog_state") or state.get("state") or "not_started")
+    state_name = str(state.get("remote_state") or state.get("state") or "not_started")
     handoff_completed = state_name in {"archiving", "finalized"} or (
         primary_files_total > 0
         and primary_files_uploaded == primary_files_total
@@ -8892,10 +9134,10 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
     hot_materialized_files = int(last_payload.get("hot_materialized_files") or 0)
     hot_materialized_bytes = int(last_payload.get("hot_materialized_bytes") or 0)
     retain_hot = bool(
-        last_payload.get("retain_hot", dict_or_empty(job.get("riverhog")).get("retain_hot", True))
+        last_payload.get("retain_hot", riverhog_handoff_options(job).get("retain_hot", True))
     )
-    riverhog_files_total = int(last_payload.get("files_total") or primary_files_total)
-    riverhog_bytes_total = int(last_payload.get("bytes_total") or bytes_total)
+    destination_files_total = int(last_payload.get("files_total") or primary_files_total)
+    destination_bytes_total = int(last_payload.get("bytes_total") or bytes_total)
     finalized = state_name == "finalized" or str(last_payload.get("state") or "") == "finalized"
     return {
         "collection_id": str(state.get("collection_id") or ""),
@@ -8944,8 +9186,8 @@ def riverhog_upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | No
         "retain_hot": retain_hot,
         "hot_materialized_files": hot_materialized_files,
         "hot_materialized_bytes": hot_materialized_bytes,
-        "riverhog_files_total": riverhog_files_total,
-        "riverhog_bytes_total": riverhog_bytes_total,
+        "destination_files_total": destination_files_total,
+        "destination_bytes_total": destination_bytes_total,
         "finalized": finalized,
         "safe_to_delete": finalized,
     }
@@ -8959,8 +9201,8 @@ def job_response(job: dict[str, Any], *, include_queue: bool = True) -> dict[str
         response["upload_progress"] = progress
     if progress := encode_progress_for_job(job):
         response["encode_progress"] = progress
-    if progress := riverhog_upload_progress_for_job(job):
-        response["riverhog_upload_progress"] = progress
+    if progress := current_handoff_progress(job):
+        response["handoff_progress"] = progress
     return response
 
 
@@ -8979,17 +9221,16 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "collection_slug",
         "collection_timestamp",
         "workflow_mode",
+        "handoff",
         "review",
         "output_mode",
         "profile",
         "upload_progress",
         "encode_progress",
-        "riverhog_upload_progress",
-        "riverhog_handoff_metrics",
+        "handoff_progress",
+        "handoff_metrics",
         "review_sweep_result",
-        "review_handoff_result",
-        "collection_archive_target_upload_result",
-        "riverhog_upload_result",
+        "handoff_receipt",
         "queue",
         "storage_wait",
         "cancel_requested",
@@ -9173,8 +9414,6 @@ def build_eager_gpu_payload(
         "tasks": tasks,
         "collection_slug": str(job.get("collection_slug") or ""),
         "collection_timestamp": job.get("collection_timestamp"),
-        "riverhog": {"enabled": False},
-        "review_upload": {"enabled": False},
         "container_metadata_required": gpu_tasks_require_container_metadata(tasks, group_config),
     }
     if group_config.get("encode_profile") is not None:
@@ -9808,8 +10047,6 @@ def run_job(job_id: str) -> None:
                         "tasks": tasks,
                         "collection_slug": str(job.get("collection_slug") or ""),
                         "collection_timestamp": job.get("collection_timestamp"),
-                        "riverhog": {"enabled": False},
-                        "review_upload": {"enabled": False},
                         "container_metadata_required": gpu_tasks_require_container_metadata(
                             tasks,
                             group_config,
@@ -9868,58 +10105,25 @@ def run_job(job_id: str) -> None:
         input_upload = load_input_upload(str(job["input_upload_id"]))
         job["phase"] = "metadata_projection"
         save_job(job)
-        wait_for_riverhog_eager_upload_quiescent(job)
+        handoff_adapter(job).wait_until_idle(job)
         input_upload = write_metadata_projection_sidecars(job, input_upload, groups, archive_dir)
         raise_if_job_canceled(job_id)
         if isinstance(job.get("routing"), dict):
             write_routing_manifest(job, input_upload, groups, archive_dir)
 
         workflow_mode = str(job.get("workflow_mode") or "collection_archive")
-        if workflow_mode == "review":
-            job["phase"] = "review_handoff"
-            save_job(job)
-            review_config = dict_or_empty(job.get("review"))
-            job["review_handoff_result"] = upload_target(
-                job,
-                review_dir,
-                config=dict_or_empty(review_config.get("target")),
-            )
-            job["collection_archive_target_upload_result"] = None
-            job["riverhog_upload_result"] = None
-            save_job(job)
-            raise_if_job_canceled(job_id)
-        else:
-            collection_archive = dict_or_empty(job.get("collection_archive"))
-            destination = str(collection_archive.get("destination") or "riverhog")
-            if destination == "target":
-                target_config = dict_or_empty(collection_archive.get("target"))
-                job["phase"] = "collection_archive_target_upload"
-                save_job(job)
-                job["collection_archive_target_upload_result"] = upload_target(
-                    job,
-                    archive_dir,
-                    config=target_config,
-                    source_label="collection archive",
-                    result_key="collection_archive_target_upload_result",
-                    phase="collection_archive_target_upload",
-                    component="collection_archive_target_upload",
-                    event="collection_archive.handoff",
-                    allow_empty=False,
-                )
-                job["review_handoff_result"] = None
-                job["riverhog_upload_result"] = None
-                save_job(job)
-                raise_if_job_canceled(job_id)
-            elif destination == "riverhog":
-                job["phase"] = "riverhog_upload"
-                save_job(job)
-                job["collection_archive_target_upload_result"] = None
-                job["review_handoff_result"] = None
-                job["riverhog_upload_result"] = upload_to_riverhog(job, archive_dir)
-                save_job(job)
-                raise_if_job_canceled(job_id)
-            else:
-                raise RuntimeError(f"unsupported collection archive destination: {destination}")
+        source_dir = review_dir if workflow_mode == "review" else archive_dir
+        source_label = "review" if workflow_mode == "review" else "collection archive"
+        job["phase"] = "handoff"
+        save_job(job)
+        job["handoff_receipt"] = advance_handoff(
+            job,
+            source_dir,
+            final=True,
+            source_label=source_label,
+        )
+        save_job(job)
+        raise_if_job_canceled(job_id)
 
         job["phase"] = "done"
         job["state"] = "succeeded"
@@ -9951,13 +10155,15 @@ def run_job(job_id: str) -> None:
             reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
             error=exc,
         )
-        if should_cancel_riverhog_upload_session_on_failure(job, exc):
-            cancel_riverhog_upload_session(
+        if should_cancel_handoff_on_failure(job, exc):
+            cancel_handoff(
                 job,
                 reason="encoding_failed" if isinstance(exc, EncodingFailed) else "job_failed",
             )
         else:
-            riverhog_session_state(job)["preserved_after_failure_at"] = utc_timestamp_now()
+            state = job.setdefault("handoff_adapter_state", {})
+            if isinstance(state, dict):
+                state["preserved_after_failure_at"] = utc_timestamp_now()
         save_job(job)
         if isinstance(exc, EncodingFailed):
             cleanup_terminal_job(job)
@@ -10039,18 +10245,26 @@ def health_ready() -> dict[str, Any]:
         "work_dir": str(WORK_DIR),
         "tusd_public_base_url": TUSD_PUBLIC_BASE_URL,
         "gpu_target": GPU_TARGET,
-        "riverhog_upload_enabled": RIVERHOG_UPLOAD_ENABLED,
-        "target_upload_enabled": TARGET_UPLOAD_ENABLED,
-        "target_rclone_command": TARGET_RCLONE_COMMAND,
+        "handoff_adapters": {
+            "command": {
+                "enabled": EXTERNAL_HANDOFF_ENABLED and bool(COMMAND_HANDOFF_COMMAND),
+            },
+            "rclone": {
+                "enabled": EXTERNAL_HANDOFF_ENABLED and bool(RCLONE_HANDOFF_COMMAND),
+            },
+            "riverhog": {
+                "enabled": RIVERHOG_HANDOFF_ENABLED,
+                "eager_workers": RIVERHOG_HANDOFF_WORKERS,
+                "eager_worker_running": bool(
+                    handoff_thread is not None and handoff_thread.is_alive()
+                ),
+            },
+        },
         "notify_enabled": NOTIFY_ENABLED,
         "scheduler_paused": scheduling_paused(),
         "running_job_limit": MAX_RUNNING_JOBS,
         "running_jobs": len(active_jobs),
         "scheduled_jobs": len(scheduled_jobs),
-        "riverhog_upload_workers": RIVERHOG_UPLOAD_WORKERS,
-        "riverhog_upload_worker": bool(
-            riverhog_upload_thread is not None and riverhog_upload_thread.is_alive()
-        ),
     }
 
 
@@ -10058,18 +10272,22 @@ def health_ready() -> dict[str, Any]:
 def capabilities() -> dict[str, Any]:
     return {
         "workflow_modes": ["collection_archive", "review"],
-        "collection_archive": {
-            "destinations": ["target", "riverhog"],
-            "target_upload": {
-                "methods": ["rclone", "command"],
-                "modes": ["copy", "sync"],
-                "template_fields": [
-                    "job_id",
-                    "collection_slug",
-                    "collection_timestamp",
-                    "run_id",
-                ],
+        "handoff": {
+            "destinations": {
+                "command": {"options": ["exclude"]},
+                "rclone": {"options": ["location", "mode", "exclude"]},
+                "riverhog": {"options": ["archive_store", "retain_hot"]},
             },
+            "failure_actions": ["preserve_for_resume", "cancel"],
+            "template_fields": [
+                "job_id",
+                "collection_slug",
+                "collection_timestamp",
+                "device_id",
+                "route_id",
+                "profile_id",
+                "run_id",
+            ],
         },
         "output_modes": ["video", "audio", "preserve"],
         "tasks": ["archive_video", "archive_audio", "qcut_video", "audio_review"],
@@ -10108,9 +10326,6 @@ def capabilities() -> dict[str, Any]:
             "job_groups": True,
         },
         "review": {
-            "methods": ["rclone", "command"],
-            "modes": ["copy", "sync"],
-            "template_fields": ["job_id", "device_id", "route_id", "profile_id", "run_id"],
             "sweep": {
                 "axes": ["quality", "max_height", "audio_bitrate"],
                 "custom_axes": "encode-profile dotted paths",
@@ -10123,16 +10338,6 @@ def capabilities() -> dict[str, Any]:
                 "max_seconds": DEFAULT_REVIEW_CLIP_MAX_SECONDS,
             },
         },
-        "target_upload": {
-            "methods": ["rclone", "command"],
-            "modes": ["copy", "sync"],
-            "template_fields": [
-                "job_id",
-                "collection_slug",
-                "collection_timestamp",
-                "run_id",
-            ],
-        },
         "storage": {
             "same_filesystem_hardlink_discount": path_device(TUSD_DIR)
             == path_device(GPU_RUNTIME_DIR),
@@ -10144,8 +10349,8 @@ def capabilities() -> dict[str, Any]:
             "storage_wait_seconds": STORAGE_WAIT_SECONDS,
             "scratch_extra_multipliers": {
                 "review": REVIEW_SCRATCH_EXTRA_MULTIPLIER,
-                "collection_archive.target": COLLECTION_ARCHIVE_TARGET_SCRATCH_EXTRA_MULTIPLIER,
-                "collection_archive.riverhog": GPU_SCRATCH_MULTIPLIER,
+                "buffered_handoff": BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER,
+                "handoff.riverhog": GPU_SCRATCH_MULTIPLIER,
             },
         },
         "notify": {
@@ -10615,13 +10820,12 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
     job_id = req.job_id or uuid.uuid4().hex
     if state_exists("job", job_id):
         raise HTTPException(status_code=409, detail=f"job already exists: {job_id}")
-    collection_archive = req.collection_archive.model_dump()
-    riverhog = {
-        **req.collection_archive.riverhog.model_dump(exclude_none=True),
-        "enabled": req.workflow_mode == "collection_archive"
-        and req.collection_archive.destination == "riverhog",
-        "upload_session_on_failure": req.riverhog_upload_session_on_failure,
+    handoff = {
+        **req.handoff.model_dump(exclude_none=True),
+        "state": "pending",
+        "safe_to_delete": False,
     }
+    riverhog_handoff = req.handoff.destination == "riverhog"
     job = {
         "job_id": job_id,
         "state": "queued",
@@ -10642,25 +10846,23 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         else None,
         "groups": groups,
         "routing": routing,
-        "riverhog_expected_primary_files_total": (
+        "handoff_expected_primary_files_total": (
             expected_riverhog_primary_files_total_from_path_routing(
                 input_upload,
                 groups,
                 routing,
             )
-            if riverhog["enabled"] and routing is not None
+            if riverhog_handoff and routing is not None
             else (
                 expected_riverhog_primary_files_total(input_upload, groups)
-                if riverhog["enabled"]
+                if riverhog_handoff
                 else 0
             )
         )
         or 0,
-        "collection_archive": collection_archive,
-        "riverhog": riverhog,
+        "handoff": handoff,
         "review": req.review.model_dump(exclude_none=True) if req.review is not None else None,
         "notify": req.notify.model_dump(),
-        "cleanup_local_on_success": req.cleanup_local_on_success,
     }
     return save_job(job)
 
@@ -10676,7 +10878,7 @@ def list_jobs(
     terminal: str = "active",
     state: str | None = None,
     workflow_mode: str | None = None,
-    collection_archive_destination: CollectionArchiveDestination | None = None,
+    handoff_destination: HandoffDestination | None = None,
     cancel_requested: bool | None = None,
     storage_wait: bool | None = None,
 ) -> dict[str, Any]:
@@ -10689,7 +10891,7 @@ def list_jobs(
         terminal=terminal,
         state=state,
         workflow_mode=workflow_mode,
-        collection_archive_destination=collection_archive_destination,
+        handoff_destination=handoff_destination,
         cancel_requested=cancel_requested,
         storage_wait=storage_wait,
     )
@@ -10698,7 +10900,7 @@ def list_jobs(
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
     job = load_job(job_id)
-    refresh_riverhog_session_from_remote(job)
+    refresh_handoff(job)
     return compact_job_response(job) if compact else job_response(job)
 
 
@@ -10708,10 +10910,8 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        preserve_riverhog_session = can_resume_preserving_riverhog_session(
-            job
-        ) and riverhog_session_visible_for_resume(job)
-        if preserve_riverhog_session:
+        preserve_handoff = handoff_adapter(job).can_resume(job)
+        if preserve_handoff:
             for key in (
                 "debug_bundle_created_at",
                 "debug_bundle_dir",
@@ -10720,9 +10920,9 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
                 "terminal_state_compacted_at",
             ):
                 job.pop(key, None)
-            job["riverhog_resume_preserved_at"] = utc_timestamp_now()
+            job["handoff_resume_preserved_at"] = utc_timestamp_now()
         else:
-            cancel_riverhog_upload_session(job, reason="job_resume_reset")
+            cancel_handoff(job, reason="job_resume_reset")
             reset_resumable_job_runtime_state(job)
         job["state"] = "queued"
         job["phase"] = "queued"
@@ -10732,7 +10932,7 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("error", None)
         job.pop("finished_at", None)
         job["_allow_clear_cancel"] = True
-        job["_reset_runtime_state"] = not preserve_riverhog_session
+        job["_reset_runtime_state"] = not preserve_handoff
         save_job(job)
     schedule_pending_jobs(background_tasks)
     return job
@@ -10747,7 +10947,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
             if cleanup:
                 if job.get("state") == "failed":
                     write_job_debug_bundle(job, reason="terminal_failed_cleanup")
-                cancel_riverhog_upload_session(job, reason="terminal_cleanup")
+                cancel_handoff(job, reason="terminal_cleanup")
                 cleanup_terminal_job(job)
                 compact_terminal_job_state(job)
                 return compact_job_response(save_job(job))

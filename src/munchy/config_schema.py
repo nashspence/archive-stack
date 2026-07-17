@@ -242,36 +242,56 @@ MUNCHY_DEVICE_PROFILE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-TARGET_UPLOAD_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "enabled": {"type": "boolean"},
-        "method": {"enum": ["command", "rclone"]},
-        "destination": {"type": "string", "minLength": 1},
-        "mode": {"enum": ["copy", "sync"]},
-        "exclude": STRING_LIST,
-    },
-    "additionalProperties": False,
-}
-
-COLLECTION_ARCHIVE_RIVERHOG_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "wait": {"enum": ["staged", "finalized"]},
-        "archive_store": {"type": "string", "minLength": 1},
-        "retain_hot": {"type": "boolean", "default": True},
-    },
-    "additionalProperties": False,
-}
-
-COLLECTION_ARCHIVE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "destination": {"enum": ["riverhog", "target"]},
-        "target": TARGET_UPLOAD_SCHEMA,
-        "riverhog": COLLECTION_ARCHIVE_RIVERHOG_SCHEMA,
-    },
-    "additionalProperties": False,
+HANDOFF_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "destination": {"const": "riverhog"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "archive_store": {"type": "string", "minLength": 1},
+                        "retain_hot": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["destination"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "destination": {"const": "command"},
+                "options": {
+                    "type": "object",
+                    "properties": {"exclude": STRING_LIST},
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["destination"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "destination": {"const": "rclone"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "minLength": 1},
+                        "mode": {"enum": ["copy", "sync"]},
+                        "exclude": STRING_LIST,
+                    },
+                    "required": ["location"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["destination", "options"],
+            "additionalProperties": False,
+        },
+    ]
 }
 
 JOB_SCHEMA: dict[str, Any] = {
@@ -285,12 +305,12 @@ JOB_SCHEMA: dict[str, Any] = {
         "workflow_mode": {"enum": ["collection_archive", "review"]},
         "output_mode": {"enum": ["video", "audio", "preserve"]},
         "tasks": STRING_LIST,
-        "cleanup_local_on_success": {"type": "boolean"},
-        "collection_archive": COLLECTION_ARCHIVE_SCHEMA,
+        "handoff": HANDOFF_SCHEMA,
         "review": {"type": "object"},
         "notify": {"type": "object"},
         "routing": ROUTING_SCHEMA,
     },
+    "required": ["handoff"],
     "additionalProperties": False,
 }
 

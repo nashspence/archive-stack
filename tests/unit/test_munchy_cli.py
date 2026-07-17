@@ -156,7 +156,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             terminal: str,
             state: str | None,
             workflow_mode: str | None,
-            collection_archive_destination: str | None,
+            handoff_destination: str | None,
             cancel_requested: bool | None,
             storage_wait: bool | None,
         ) -> dict[str, object]:
@@ -168,7 +168,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             assert terminal == "all"
             assert state == "running"
             assert workflow_mode == "collection_archive"
-            assert collection_archive_destination == "riverhog"
+            assert handoff_destination == "riverhog"
             assert cancel_requested is False
             assert storage_wait is True
             return {
@@ -183,7 +183,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
                 "filters": {
                     "state": state,
                     "workflow_mode": workflow_mode,
-                    "collection_archive_destination": collection_archive_destination,
+                    "handoff_destination": handoff_destination,
                     "cancel_requested": cancel_requested,
                     "storage_wait": storage_wait,
                 },
@@ -371,7 +371,12 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             return {
                 "submission_id": submission_id,
                 "upload": {"state": "uploaded"},
-                "job": {"job_id": submission_id, "state": "succeeded", "phase": "done"},
+                "job": {
+                    "job_id": submission_id,
+                    "state": "succeeded",
+                    "phase": "done",
+                    "handoff": {"state": "complete", "safe_to_delete": True},
+                },
             }
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
@@ -477,12 +482,12 @@ def test_munchy_job_plan_review_sweep_reports_routes(tmp_path) -> None:  # type:
 job:
   workflow_mode: review
   collection_timestamp: 20260712T120000Z
+  handoff:
+    destination: rclone
+    options:
+      location: review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
   review:
     device_id: camera
-    target:
-      enabled: true
-      method: rclone
-      destination: review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
     sweep:
       route_ids:
         - camera-video
@@ -548,7 +553,7 @@ groups:
     assert route["route_id"] == "camera-video"
     assert route["tasks"] == ["qcut_video"]
     assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
-    assert route["variants"][1]["destination"] == (
+    assert route["variants"][1]["location"] == (
         "review-remote:reviews/camera/camera-video/q28/20260712T120000Z"
     )
 
@@ -562,6 +567,8 @@ def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: igno
         """
 job:
   destination_prefix: phone
+  handoff:
+    destination: command
   routing:
     routes:
       - id: phone-video
@@ -609,6 +616,8 @@ def test_munchy_routing_explain_uses_configured_sidecar_facts_only(
         """
 job:
   destination_prefix: camera
+  handoff:
+    destination: command
   routing:
     sidecars:
       camera_xml:
@@ -679,6 +688,8 @@ def test_munchy_routing_explain_skips_expensive_tools_for_path_only_route(
         """
 job:
   destination_prefix: camera
+  handoff:
+    destination: command
   routing:
     routes:
       - id: device-state

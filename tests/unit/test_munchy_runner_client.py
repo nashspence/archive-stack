@@ -20,18 +20,14 @@ from munchy.runner_client import (
     UploadProgress,
     UploadRetryReporter,
     format_encode_progress,
+    format_handoff_progress,
     format_job_failure,
     format_job_status_line,
     format_job_summary_line,
     format_progress_status_line,
-    format_riverhog_archive_progress,
-    format_riverhog_hot_materialization_progress,
-    format_riverhog_upload_progress,
     job_finished_cleanly,
     keep_system_awake,
     progress_percent,
-    riverhog_archive_progress,
-    riverhog_hot_materialization_progress,
 )
 
 
@@ -141,29 +137,29 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     assert "batches 1/3" in line
 
 
-def test_format_riverhog_upload_progress_uses_expected_file_total() -> None:
-    line = format_riverhog_upload_progress(
+def test_format_handoff_progress_uses_expected_file_total() -> None:
+    line = format_handoff_progress(
         {
-            "primary_files_uploaded": 3,
-            "primary_files_total": 20,
-            "primary_files_encoded": 4,
-            "artifact_files_uploaded": 6,
-            "artifact_files_known": 7,
-            "artifact_files_registered": 6,
-            "uploaded_bytes": 1_614_000,
-            "bytes_total": 2_130_000,
-            "percent_primary_files": 15.0,
-            "rate_bytes_per_second": 9_000,
-            "state": "open",
+            "destination": "riverhog",
+            "stages": [
+                {
+                    "id": "transfer",
+                    "label": "Riverhog Handoff",
+                    "state": "open",
+                    "items_done": 3,
+                    "items_total": 20,
+                    "item_label": "recordings",
+                    "bytes_done": 1_614_000,
+                    "bytes_total": 2_130_000,
+                    "rate_bytes_per_second": 9_000,
+                }
+            ],
         }
     )
 
-    assert line.startswith("riverhog handoff 3/20 recordings delivered")
-    assert "15.00%" in line
-    assert "4 encoded" in line
-    assert "6/7 artifacts" in line
-    assert "1.54 MiB uploaded" in line
-    assert "72." not in line
+    assert line.startswith("Riverhog Handoff, open, 3/20 recordings")
+    assert "1.54 MiB / 2.03 MiB" in line
+    assert "8.79 KiB/s" in line
 
 
 def test_format_encode_progress_distinguishes_file_and_input_byte_percent() -> None:
@@ -187,46 +183,26 @@ def test_format_encode_progress_distinguishes_file_and_input_byte_percent() -> N
     assert "21.30% input" in line
 
 
-def test_format_riverhog_archive_and_hot_materialization_progress_are_separate() -> None:
-    progress = {
-        "collection_id": "2026/20260101T000000Z__camera",
-        "archive_phase": "uploading",
-        "archive_uploaded_bytes": 4_000,
-        "archive_total_bytes": 10_000,
-        "archive_uploaded_parts": 2,
-        "archive_total_parts": 5,
-        "retain_hot": True,
-        "hot_materialized_files": 3,
-        "riverhog_files_total": 10,
-        "hot_materialized_bytes": 6_000,
-        "riverhog_bytes_total": 20_000,
-    }
-
-    archive = riverhog_archive_progress(progress)
-    materialization = riverhog_hot_materialization_progress(progress)
-
-    assert archive is not None
-    assert materialization is not None
-    assert format_riverhog_archive_progress(archive).startswith("riverhog deep archive, uploading")
-    assert "parts 2/5" in format_riverhog_archive_progress(archive)
-    assert format_riverhog_hot_materialization_progress(materialization).startswith(
-        "riverhog hot materialization 3/10 files"
-    )
-
-
-def test_riverhog_archive_progress_waits_when_collection_exists() -> None:
-    progress = riverhog_archive_progress(
+def test_format_handoff_progress_renders_adapter_stages_in_order() -> None:
+    line = format_handoff_progress(
         {
-            "collection_id": "2026/20260101T000000Z__camera",
-            "archive_phase": "",
-            "archive_uploaded_bytes": 0,
-            "archive_total_bytes": 0,
+            "destination": "riverhog",
+            "stages": [
+                {"id": "archive", "label": "Riverhog Deep Archive", "state": "uploading"},
+                {
+                    "id": "hot",
+                    "label": "Riverhog Hot Materialization",
+                    "items_done": 3,
+                    "items_total": 10,
+                },
+            ],
         }
     )
 
-    assert progress is not None
-    assert progress["percent_bytes"] == 0.0
-    assert format_riverhog_archive_progress(progress).startswith("riverhog deep archive, waiting")
+    assert line == (
+        "Riverhog Deep Archive, uploading | "
+        "Riverhog Hot Materialization, 3/10 items"
+    )
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:
@@ -573,7 +549,7 @@ def test_rich_renderer_clears_transient_issue_when_upload_advances() -> None:
     assert renderer.transient_issue is None
 
 
-def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts() -> None:
+def test_rich_renderer_uses_adapter_supplied_handoff_rows() -> None:
     pytest.importorskip("rich")
     from rich.console import Console
 
@@ -581,18 +557,15 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
     job = {
         "state": "running",
         "phase": "eager_archive:pipeline=3/3",
-        "riverhog_upload_progress": {
-            "collection_id": "2026/20260101T000000Z__camera",
-            "primary_files_uploaded": 3,
-            "primary_files_total": 10,
-            "percent_primary_files": 30.0,
-            "archive_phase": "",
-            "archive_uploaded_bytes": 0,
-            "archive_total_bytes": 0,
-            "hot_materialized_files": 0,
-            "riverhog_files_total": 10,
-            "hot_materialized_bytes": 0,
-            "riverhog_bytes_total": 1000,
+        "handoff_progress": {
+            "destination": "riverhog",
+            "stages": [
+                {
+                    "id": "archive",
+                    "label": "Riverhog Deep Archive",
+                    "state": "waiting",
+                }
+            ],
         },
     }
     console = Console(record=True, width=100, color_system=None)
@@ -601,8 +574,7 @@ def test_rich_renderer_reserves_riverhog_deep_archive_row_before_archive_starts(
     text = console.export_text()
 
     assert "Riverhog Deep Archive" in text
-    assert "riverhog deep archive, waiting" in text
-    assert "Riverhog Hot Materialization" not in text
+    assert "waiting" in text
 
 
 def test_format_job_summary_line_includes_encoder_queue_position() -> None:
@@ -657,7 +629,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
             "job_id": "job-1",
             "collection_slug": "camera-collection-archive",
             "state": "failed",
-            "phase": "collection_archive_target_upload",
+            "phase": "handoff",
             "error": "rclone failed after many retries",
             "gpu_statuses": {
                 "batch-1": {
@@ -689,7 +661,7 @@ def test_runner_client_list_jobs_validates_response() -> None:
         assert path == (
             "/v1/jobs?page=2&per_page=5&sort=created_at&order=asc&terminal=all"
             "&q=camera&state=running&workflow_mode=collection_archive"
-            "&collection_archive_destination=riverhog"
+            "&handoff_destination=riverhog"
             "&cancel_requested=false&storage_wait=true"
         )
         return {
@@ -710,7 +682,7 @@ def test_runner_client_list_jobs_validates_response() -> None:
         terminal="all",
         state="running",
         workflow_mode="collection_archive",
-        collection_archive_destination="riverhog",
+        handoff_destination="riverhog",
         cancel_requested=False,
         storage_wait=True,
     ) == {
@@ -727,7 +699,12 @@ def test_wait_for_job_polls_compact_status() -> None:
 
     def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
         calls.append(compact)
-        return {"job_id": job_id, "state": "succeeded", "phase": "done"}
+        return {
+            "job_id": job_id,
+            "state": "succeeded",
+            "phase": "done",
+            "handoff": {"state": "complete", "safe_to_delete": True},
+        }
 
     client.get_job = fake_get_job  # type: ignore[method-assign]
 
@@ -735,14 +712,15 @@ def test_wait_for_job_polls_compact_status() -> None:
     assert calls == [True]
 
 
-def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
+def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
     client = MunchyRunnerClient("http://runner")
     responses: list[dict[str, object]] = [
         {
             "job_id": "job-1",
             "state": "succeeded",
-            "riverhog_upload_progress": {
-                "collection_id": "2026/20260101T000000Z__camera",
+            "handoff": {"state": "transferring", "safe_to_delete": False},
+            "handoff_progress": {
+                "external_id": "2026/20260101T000000Z__camera",
                 "state": "archiving",
                 "safe_to_delete": False,
             },
@@ -750,8 +728,9 @@ def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
         {
             "job_id": "job-1",
             "state": "succeeded",
-            "riverhog_upload_progress": {
-                "collection_id": "2026/20260101T000000Z__camera",
+            "handoff": {"state": "complete", "safe_to_delete": True},
+            "handoff_progress": {
+                "external_id": "2026/20260101T000000Z__camera",
                 "state": "finalized",
                 "safe_to_delete": True,
             },
@@ -771,12 +750,13 @@ def test_wait_for_job_continues_until_riverhog_safe_to_delete() -> None:
     assert responses == []
 
 
-def test_job_finished_cleanly_rejects_unfinalized_riverhog_job() -> None:
+def test_job_finished_cleanly_requires_safe_handoff() -> None:
     assert not job_finished_cleanly(
         {
             "state": "succeeded",
-            "riverhog_upload_progress": {
-                "collection_id": "2026/20260101T000000Z__camera",
+            "handoff": {"state": "transferring", "safe_to_delete": False},
+            "handoff_progress": {
+                "external_id": "2026/20260101T000000Z__camera",
                 "state": "archiving",
                 "safe_to_delete": False,
             },

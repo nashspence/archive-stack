@@ -124,8 +124,8 @@ def normalize_job_template(
         )
     try:
         validate_json_schema(raw, MUNCHY_CONFIG_SCHEMA, label="job template")
-        normalized = normalize_munchy_config(raw)
-        defaults = munchy_job_defaults_from_config(normalized)
+        resolved_definition = normalize_munchy_config(raw)
+        defaults = munchy_job_defaults_from_config(resolved_definition)
     except (ConfigError, MunchyJobAuthoringError) as exc:
         raise JobTemplateError(str(exc)) from exc
     configured_runtime_fields = sorted(JOB_TEMPLATE_RUNTIME_FIELDS.intersection(defaults))
@@ -134,7 +134,7 @@ def normalize_job_template(
             "job template contains submission-owned field(s): "
             + ", ".join(configured_runtime_fields)
         )
-    inputs = _template_inputs(normalized.get("inputs"))
+    inputs = _template_inputs(raw.get("inputs"))
     placeholders = sorted(_input_placeholders(defaults))
     undeclared = sorted(set(placeholders) - set(inputs))
     if undeclared:
@@ -142,8 +142,8 @@ def normalize_job_template(
             "job template uses undeclared input(s): " + ", ".join(undeclared)
         )
     if inputs:
-        normalized["inputs"] = inputs
-    return normalized, defaults
+        raw["inputs"] = inputs
+    return raw, defaults
 
 
 def job_template_digest(definition: Mapping[str, Any]) -> str:

@@ -11,7 +11,7 @@ import typer
 from pydantic import ValidationError
 
 from munchy.job_authoring import (
-    COLLECTION_ARCHIVE_DESTINATIONS,
+    HANDOFF_DESTINATIONS,
     HASH_CACHE_ENV,
     MUNCHY_CONFIG_ENV,
     WORKFLOW_MODES,
@@ -571,10 +571,10 @@ def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
             f"variants={plan.get('variants_total', 0)}"
         )
     ]
-    target = _mapping(plan.get("target"), label="target")
-    if target.get("destination_template"):
+    handoff = _mapping(plan.get("handoff"), label="handoff")
+    if handoff.get("location_template"):
         lines.append(
-            f"target: {target.get('method', 'command')} {target.get('destination_template')}"
+            f"handoff: {handoff.get('destination')} {handoff.get('location_template')}"
         )
     for error in _sequence(plan.get("errors")):
         lines.append(f"error: {error}")
@@ -592,8 +592,8 @@ def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
             if not isinstance(variant, Mapping):
                 continue
             suffix = ""
-            if variant.get("destination"):
-                suffix = f" -> {variant.get('destination')}"
+            if variant.get("location"):
+                suffix = f" -> {variant.get('location')}"
             lines.append(f"  {variant.get('profile_id')}{suffix}")
     return "\n".join(lines)
 
@@ -609,30 +609,30 @@ def format_review_sweep_plan(plan: Mapping[str, Any]) -> Any:
     detail.add_row("files", str(plan.get("files_total", 0)))
     detail.add_row("variants", str(plan.get("variants_total", 0)))
     detail.add_row("run", _entity_text(plan.get("run_id", "")))
-    target = _mapping(plan.get("target"), label="target")
-    if target.get("destination_template"):
-        detail.add_row("target", str(target.get("destination_template")))
+    handoff = _mapping(plan.get("handoff"), label="handoff")
+    if handoff.get("location_template"):
+        detail.add_row("handoff", str(handoff.get("location_template")))
     if plan.get("errors"):
         detail.add_row("errors", "; ".join(str(item) for item in _sequence(plan.get("errors"))))
 
-    routes_table = _quiet_table("Route", "Group", "Files", "Variants", "Destinations")
+    routes_table = _quiet_table("Route", "Group", "Files", "Variants", "Locations")
     for route in _sequence(plan.get("routes")):
         if not isinstance(route, Mapping):
             continue
-        destinations = [
-            str(variant.get("destination") or "")
+        locations = [
+            str(variant.get("location") or "")
             for variant in _sequence(route.get("variants"))
-            if isinstance(variant, Mapping) and variant.get("destination")
+            if isinstance(variant, Mapping) and variant.get("location")
         ]
-        destination_text = "\n".join(destinations[:3])
-        if len(destinations) > 3:
-            destination_text += f"\n... {len(destinations) - 3} more"
+        location_text = "\n".join(locations[:3])
+        if len(locations) > 3:
+            location_text += f"\n... {len(locations) - 3} more"
         routes_table.add_row(
             _entity_text(route.get("route_id", "")),
             str(route.get("group") or ""),
             str(route.get("files", 0)),
             str(route.get("variants_total", 0)),
-            destination_text,
+            location_text,
         )
     if not routes_table.rows:
         routes_table.add_row("none", "", "", "", "")
@@ -950,11 +950,11 @@ def submit(
         str | None,
         typer.Option("--prefix", help="Optional path prefix inside the submission"),
     ] = None,
-    riverhog_upload_session_on_failure: Annotated[
+    handoff_on_failure: Annotated[
         str,
         typer.Option(
-            "--riverhog-upload-session-on-failure",
-            help="Riverhog upload session handling on failure: preserve-for-resume or cancel",
+            "--handoff-on-failure",
+            help="Handoff handling on failure: preserve-for-resume or cancel",
         ),
     ] = "preserve-for-resume",
     submission_id: Annotated[
@@ -1000,7 +1000,7 @@ def submit(
                 collection_timestamp=collection_timestamp,
                 submission_id=submission_id,
                 destination_prefix=destination_prefix,
-                riverhog_upload_session_on_failure=riverhog_upload_session_on_failure,
+                handoff_on_failure=handoff_on_failure,
                 upload_workers=upload_workers,
                 upload_chunk_mib=upload_chunk_mib,
                 hash_cache=hash_cache,
@@ -1061,11 +1061,11 @@ def list_jobs(
         str | None,
         typer.Option("--workflow", help="Filter by workflow mode"),
     ] = None,
-    collection_archive_destination: Annotated[
+    handoff_destination: Annotated[
         str | None,
         typer.Option(
             "--destination",
-            help="Filter collection archive destination: target or riverhog",
+            help="Filter handoff destination: command, rclone, or riverhog",
         ),
     ] = None,
     cancel_requested: Annotated[
@@ -1083,12 +1083,12 @@ def list_jobs(
     client = MunchyRunnerClient(runner_url_setting(runner_url))
     destination_filter = (
         _normalize_mode(
-            collection_archive_destination,
+            handoff_destination,
             default="riverhog",
-            allowed=COLLECTION_ARCHIVE_DESTINATIONS,
-            label="collection_archive.destination",
+            allowed=HANDOFF_DESTINATIONS,
+            label="handoff.destination",
         )
-        if collection_archive_destination
+        if handoff_destination
         else None
     )
     cancel_requested_filter = _optional_bool(cancel_requested, label="--cancel-requested")
@@ -1113,7 +1113,7 @@ def list_jobs(
             terminal=terminal,
             state=state,
             workflow_mode=normalized_workflow,
-            collection_archive_destination=destination_filter,
+            handoff_destination=destination_filter,
             cancel_requested=cancel_requested_filter,
             storage_wait=storage_wait_filter,
         )

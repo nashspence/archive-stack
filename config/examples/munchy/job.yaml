@@ -1,10 +1,9 @@
 schema_version: 1
 kind: munchy.job
 job:
-  collection_archive:
+  handoff:
     destination: riverhog
-    riverhog:
-      wait: finalized
+    options:
       retain_hot: true
   notify:
     enabled: false

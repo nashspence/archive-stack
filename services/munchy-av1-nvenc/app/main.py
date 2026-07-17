@@ -92,21 +92,6 @@ QCUT_LOOKAHEAD_LEVEL = os.getenv("MUNCHY_QCUT_LOOKAHEAD_LEVEL", ARCHIVE_LOOKAHEA
 QCUT_SPLIT_ENCODE_MODE = os.getenv("MUNCHY_QCUT_SPLIT_ENCODE_MODE", ARCHIVE_SPLIT_ENCODE_MODE)
 QCUT_TRUE_PEAK = os.getenv("MUNCHY_QCUT_TRUE_PEAK", "").strip()
 REVIEW_AUDIO_BITRATE = os.getenv("MUNCHY_REVIEW_AUDIO_BITRATE", "96k")
-RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RIVERHOG_UPLOAD_ENABLED", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-RIVERHOG_COMMAND = os.getenv("MUNCHY_RIVERHOG_COMMAND", "riverhog")
-REVIEW_UPLOAD_ENABLED = os.getenv("MUNCHY_REVIEW_UPLOAD_ENABLED", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-REVIEW_UPLOAD_COMMAND = os.getenv("MUNCHY_REVIEW_UPLOAD_COMMAND", "").strip()
-
 VIDEO_EXTENSIONS = {
     ".3g2",
     ".3gp",
@@ -151,17 +136,8 @@ ffmpeg_filter_lock = threading.Lock()
 ffmpeg_filter_cache: set[str] | None = None
 
 
-class RiverhogConfig(BaseModel):
-    enabled: bool = False
-    wait: Literal["staged", "finalized"] = "staged"
-
-
 class InputVanishedDuringJob(RuntimeError):
     pass
-
-
-class ReviewUploadConfig(BaseModel):
-    enabled: bool = False
 
 
 class ReviewClipPlanConfig(BaseModel):
@@ -191,8 +167,6 @@ class JobRequest(BaseModel):
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     collection_slug: str | None = None
     collection_timestamp: str | None = None
-    riverhog: RiverhogConfig = Field(default_factory=RiverhogConfig)
-    review_upload: ReviewUploadConfig = Field(default_factory=ReviewUploadConfig)
     review_clip_plan: ReviewClipPlanConfig = Field(default_factory=ReviewClipPlanConfig)
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -1777,56 +1751,6 @@ def run_audio_review(
     return result
 
 
-def maybe_upload_riverhog(req: JobRequest) -> dict[str, Any] | None:
-    if not req.riverhog.enabled:
-        return None
-    if not RIVERHOG_UPLOAD_ENABLED:
-        raise RuntimeError(
-            "riverhog upload requested, but MUNCHY_RIVERHOG_UPLOAD_ENABLED is not enabled"
-        )
-    if not req.collection_slug or not req.collection_timestamp:
-        raise RuntimeError("riverhog upload requires collection_slug and collection_timestamp")
-    cmd = [
-        RIVERHOG_COMMAND,
-        "upload",
-        req.collection_slug,
-        str(req.archive_dir),
-        "--timestamp",
-        req.collection_timestamp,
-        "--wait",
-        req.riverhog.wait,
-    ]
-    return run_command(cmd, action="riverhog upload", dry_run=req.dry_run)
-
-
-def maybe_upload_review(req: JobRequest) -> dict[str, Any] | None:
-    if not req.review_upload.enabled:
-        return None
-    if not REVIEW_UPLOAD_ENABLED:
-        raise RuntimeError(
-            "review upload requested, but MUNCHY_REVIEW_UPLOAD_ENABLED is not enabled"
-        )
-    if not REVIEW_UPLOAD_COMMAND:
-        raise RuntimeError("review upload requested, but MUNCHY_REVIEW_UPLOAD_COMMAND is empty")
-    if req.review_dir is None:
-        raise RuntimeError("review upload requires review_dir")
-    env = os.environ.copy()
-    env["MUNCHY_REVIEW_SOURCE"] = str(req.review_dir)
-    env["MUNCHY_JOB_ID"] = req.job_id or ""
-    env["MUNCHY_COLLECTION_SLUG"] = req.collection_slug or ""
-    env["MUNCHY_COLLECTION_TIMESTAMP"] = req.collection_timestamp or ""
-    cmd = ["/bin/sh", "-lc", REVIEW_UPLOAD_COMMAND]
-    log.info("review upload: %s", REVIEW_UPLOAD_COMMAND)
-    if req.dry_run:
-        return {"command": REVIEW_UPLOAD_COMMAND, "dry_run": True}
-    result = run_command(cmd, action="review upload", env=env)
-    return {
-        "command": REVIEW_UPLOAD_COMMAND,
-        "stdout": result["stdout"],
-        "stderr": result["stderr"],
-    }
-
-
 def run_job(job_id: str, req: JobRequest) -> None:
     archive_profile = (
         req.encode_profile.archive if req.encode_profile is not None else ArchiveEncodeProfile()
@@ -1915,8 +1839,6 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 max_parallel_encodes=max_parallel_encodes,
             )
             write_status(job_id, status)
-        status["riverhog_upload"] = maybe_upload_riverhog(req)
-        status["review_upload"] = maybe_upload_review(req)
         status["state"] = "succeeded"
         status["finished_at"] = utc_timestamp_now()
         write_status(job_id, status)
@@ -1950,8 +1872,6 @@ def health_ready() -> dict[str, Any]:
         "video_scale_mode": VIDEO_SCALE_MODE,
         "scale_cuda": ffmpeg_filter_available("scale_cuda"),
         "scale_npp": ffmpeg_filter_available("scale_npp"),
-        "riverhog_upload_enabled": RIVERHOG_UPLOAD_ENABLED,
-        "review_upload_enabled": REVIEW_UPLOAD_ENABLED,
     }
 
 

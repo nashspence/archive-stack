@@ -78,4 +78,4 @@ def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) ->
     review_plan = build_review_sweep_plan(source=source, config_path=review_config)
     assert review_plan["ok"] is True
     assert review_plan["variants_total"] == 8
-    assert str(review_plan["routes"][0]["variants"][0]["destination"]).startswith("review-remote:")
+    assert str(review_plan["routes"][0]["variants"][0]["location"]).startswith("review-remote:")
