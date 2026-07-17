@@ -5,6 +5,9 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
+import jeb.collector as collector_module
 from jeb.collector import Collector, config_from_env
 from jeb.service_cli import main as jeb_main
 
@@ -25,17 +28,25 @@ def enroll(env: dict[str, str]) -> dict[str, str]:
         collector.add_source(
             source_id,
             adapters=("tus",),
-            policy={
-                "workflow_mode": "collection_archive",
-                "output_mode": "video",
-                "tasks": ["archive_video"],
-                "collection_archive": {"destination": "riverhog"},
-            },
+            template="camera-archive",
             credential=f"{source_id}-password",
             stable_seconds=0,
             include_extensions=(".txt",),
         )
     return runtime_env
+
+
+@pytest.fixture(autouse=True)
+def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def preflight_submission(self, request: object) -> dict[str, object]:
+            _ = request
+            return {"accepted": True}
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -241,5 +252,5 @@ def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
     assert payload["batches"]["states"] == {"batching": 1}
     assert payload["active_attempts"]["total"] == 1
     assert payload["active_attempts"]["attempts"][0]["state"] == "batching"
-    assert payload["routing_preflight_failures"]["total"] == 0
+    assert payload["target_preflight_failures"]["total"] == 0
     assert payload["incomplete_tus_uploads"]["total"] == 0

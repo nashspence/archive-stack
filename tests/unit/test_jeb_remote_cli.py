@@ -17,7 +17,7 @@ class FakeJebApi:
             "batches": {"total": 0, "active": 0, "terminal": 0, "states": {}},
             "active_attempts": {"attempts": [], "total": 0},
             "recent_failures": {"attempts": [], "total": 0},
-            "routing_preflight_failures": {"total": 0, "failures": []},
+            "target_preflight_failures": {"total": 0, "failures": []},
         }
 
     def list_jeb_attempts(self, **kwargs: Any) -> dict[str, Any]:
@@ -64,13 +64,10 @@ class FakeJebApi:
                 "process": process,
                 "dry_run": True,
                 "batch_id": "batch-plan",
-                "job_id": "job-plan",
-                "routing_preflight": {
-                    "configured": False,
+                "target_submission_id": "submission-plan",
+                "target_preflight": {
                     "ok": True,
-                    "status": "not_configured",
-                    "unmatched_count": 0,
-                    "left_count": 0,
+                    "status": "accepted",
                 },
             }
         return {
@@ -271,13 +268,10 @@ def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  #
 
 
 def test_jeb_remote_cli_enrolls_and_plans_source_purge(
-    tmp_path, capsys, monkeypatch
+    capsys, monkeypatch
 ) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
-    policy = tmp_path / "policy.yaml"
-    policy.write_text("workflow_mode: review\ntasks: [qcut_video]\n", encoding="utf-8")
-
     assert jeb_cli.main(
         [
             "source",
@@ -285,8 +279,8 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(
             "camera",
             "--adapter",
             "ftp",
-            "--policy",
-            str(policy),
+            "--template",
+            "camera-review",
         ]
     ) == 0
     capsys.readouterr()
@@ -298,7 +292,7 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(
             {
                 "id": "camera",
                 "adapters": ["ftp"],
-                "policy": {"workflow_mode": "review", "tasks": ["qcut_video"]},
+                "template": "camera-review",
                 "enabled": True,
                 "stable_seconds": 600,
                 "collection_slug": "camera",

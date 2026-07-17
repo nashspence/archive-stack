@@ -17,11 +17,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, cast
+from typing import Any
 
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
 RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
+ADMIN_TOKEN_ENV = "MUNCHY_ADMIN_TOKEN"
 PROGRESS_ENV = "MUNCHY_PROGRESS"
 KEEP_AWAKE_ENV = "MUNCHY_KEEP_AWAKE"
 DEFAULT_UPLOAD_CHUNK_MIB = 64
@@ -64,25 +65,15 @@ class RunnerInputFile:
 
 
 @dataclass(frozen=True)
-class RunnerRoutingPreflightFile:
-    rel_path: str
-    bytes: int
-    sha256: str | None = None
-    probe_summary: dict[str, Any] | None = None
-    probe_error: str | None = None
-    routing_facts: dict[str, Any] | None = None
-    facts_error: str | None = None
-    sidecar_facts: dict[str, Any] | None = None
-    sidecar_facts_error: str | None = None
-
-
-@dataclass(frozen=True)
-class RunnerUploadRequest:
-    input_upload_id: str
-    job_id: str
+class SubmissionUploadRequest:
+    submission_id: str
+    template: str
     files: tuple[RunnerInputFile, ...]
-    storage_hint: dict[str, Any]
-    job_payload: dict[str, Any]
+    inputs: dict[str, str] = field(default_factory=dict)
+    collection_slug: str | None = None
+    collection_timestamp: str | None = None
+    run_id: str | None = None
+    riverhog_upload_session_on_failure: str = "preserve_for_resume"
     upload_workers: int = DEFAULT_UPLOAD_WORKERS
     upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB
 
@@ -91,12 +82,50 @@ class RunnerUploadRequest:
         return self.upload_chunk_mib * 1024 * 1024
 
 
+UploadRequest = SubmissionUploadRequest
+
+
 def runner_url_setting(runner_url: str | None = None) -> str:
     return (runner_url or os.getenv(RUNNER_URL_ENV) or DEFAULT_RUNNER_URL).rstrip("/")
 
 
 def runner_token_setting(token: str | None = None) -> str:
     return (token or os.getenv(RUNNER_TOKEN_ENV) or "").strip()
+
+
+def admin_token_setting(token: str | None = None) -> str:
+    return (token or os.getenv(ADMIN_TOKEN_ENV) or "").strip()
+
+
+def submission_payload(
+    request: SubmissionUploadRequest,
+    *,
+    include_id: bool,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "template": request.template,
+        "inputs": request.inputs,
+        "files": [
+            {
+                "path": item.rel_path,
+                "bytes": item.bytes,
+                "filesystem_metadata": item.filesystem_metadata or None,
+                **({"sha256": item.sha256} if item.sha256 else {}),
+            }
+            for item in request.files
+        ],
+        "riverhog_upload_session_on_failure": request.riverhog_upload_session_on_failure,
+    }
+    if include_id:
+        payload["submission_id"] = request.submission_id
+    for key, value in (
+        ("collection_slug", request.collection_slug),
+        ("collection_timestamp", request.collection_timestamp),
+        ("run_id", request.run_id),
+    ):
+        if value is not None:
+            payload[key] = value
+    return payload
 
 
 def keep_awake_enabled() -> bool:
@@ -220,24 +249,6 @@ def format_runner_http_body(status: int, body: bytes) -> str:
         if error:
             return error
     return text
-
-
-def job_conflict_means_existing_job(body: bytes) -> bool:
-    text = body.decode("utf-8", "replace").strip()
-    if not text:
-        return False
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    detail = parsed.get("detail")
-    if isinstance(detail, str):
-        return detail.startswith("job already exists:")
-    if isinstance(detail, dict):
-        return str(detail.get("error") or "") == "job_already_exists"
-    return False
 
 
 class RunnerHttpError(RuntimeError):
@@ -1483,38 +1494,6 @@ class MunchyRunnerClient:
             raise RuntimeError(f"{method} {path} did not return a JSON object")
         return parsed
 
-    def check_ready(
-        self,
-        workflow_mode: str | None = None,
-        *,
-        requested_containers: list[str] | None = None,
-    ) -> None:
-        self.json("GET", "/health/ready")
-        capabilities = self.json("GET", "/v1/capabilities")
-        groups = capabilities.get("groups", {})
-        if not isinstance(groups, dict) or groups.get("input_path_shape") != "<group>/<file>":
-            raise RuntimeError("runner does not advertise group-path uploads")
-        if workflow_mode:
-            workflow_modes = capabilities.get("workflow_modes", [])
-            if workflow_mode not in workflow_modes:
-                raise RuntimeError(f"runner does not advertise {workflow_mode} jobs")
-        storage = capabilities.get("storage", {})
-        if not isinstance(storage, dict) or not storage.get("input_upload_storage_hint_required"):
-            raise RuntimeError("runner does not advertise required input upload storage hints")
-        if requested_containers:
-            encode_profile_caps = capabilities.get("encode_profile", {})
-            available_containers = (
-                encode_profile_caps.get("containers", [])
-                if isinstance(encode_profile_caps, dict)
-                else []
-            )
-            missing = sorted(set(requested_containers) - set(available_containers))
-            if missing:
-                raise RuntimeError(
-                    "runner does not advertise requested archive container(s): "
-                    + ", ".join(missing)
-                )
-
     def notify_preflight_failed(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return self.json(
@@ -1530,104 +1509,39 @@ class MunchyRunnerClient:
             )
             return None
 
-    def routing_preflight(
-        self,
-        *,
-        files: tuple[RunnerRoutingPreflightFile, ...],
-        groups: dict[str, Any],
-        routing: dict[str, Any],
-        enforce_metadata_projection: bool = False,
-    ) -> dict[str, Any]:
-        payload_files = [
-            {
-                "path": item.rel_path,
-                "bytes": item.bytes,
-                "sha256": item.sha256,
-                "probe_summary": item.probe_summary,
-                "probe_error": item.probe_error,
-                "routing_facts": item.routing_facts,
-                "facts_error": item.facts_error,
-                "sidecar_facts": item.sidecar_facts,
-                "sidecar_facts_error": item.sidecar_facts_error,
-            }
-            for item in files
-        ]
-        payload: dict[str, Any] = {
-            "files": payload_files,
-            "groups": groups,
-            "routing": routing,
-        }
-        if enforce_metadata_projection:
-            payload["enforce_metadata_projection"] = True
+    def preflight_submission(self, request: SubmissionUploadRequest) -> dict[str, Any]:
         return self._json_with_transient_retries(
             "POST",
-            "/v1/routing/preflight",
-            payload=payload,
-            label="routing preflight",
+            "/v1/submissions/preflight",
+            payload=submission_payload(request, include_id=False),
+            label="submission preflight",
             timeout=300.0,
         )
 
-    def create_or_get_input_upload(self, request: RunnerUploadRequest) -> dict[str, Any]:
-        files = [
-            {
-                "path": item.rel_path,
-                "bytes": item.bytes,
-                "sha256": item.sha256,
-                "filesystem_metadata": item.filesystem_metadata or None,
-            }
-            for item in request.files
-        ]
-        status, body, _ = self._request_with_transient_retries(
+    def create_submission(self, request: SubmissionUploadRequest) -> dict[str, Any]:
+        return self._json_with_transient_retries(
             "POST",
-            "/v1/input-uploads",
-            payload={
-                "input_upload_id": request.input_upload_id,
-                "files": files,
-                "storage_hint": request.storage_hint,
-            },
-            expect={201, 409},
-            label="remote upload setup",
+            "/v1/submissions",
+            payload=submission_payload(request, include_id=True),
+            expect={202},
+            label="submission setup",
         )
-        if status == 201:
-            return cast(dict[str, Any], json.loads(body.decode("utf-8")))
-        existing = self._json_with_transient_retries(
-            "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
-            label="remote upload status",
-        )
-        self._validate_existing_upload(existing, files, request.storage_hint)
-        return existing
 
-    def _validate_existing_upload(
-        self,
-        upload: dict[str, Any],
-        files: list[dict[str, Any]],
-        storage_hint: dict[str, Any],
-    ) -> None:
-        existing = {
-            str(item.get("path")): {
-                "bytes": int(item.get("bytes") or 0),
-                "sha256": item.get("sha256"),
-            }
-            for item in upload.get("files", [])
-            if isinstance(item, dict)
-        }
-        expected = {
-            str(item["path"]): {
-                "bytes": int(item["bytes"]),
-                "sha256": item.get("sha256"),
-            }
-            for item in files
-        }
-        if existing != expected:
-            raise RuntimeError(
-                f"input upload {upload.get('input_upload_id')} already exists with different files"
-            )
-        if upload.get("storage_hint") != storage_hint:
-            raise RuntimeError(
-                f"input upload {upload.get('input_upload_id')} already exists with "
-                "a different storage hint"
-            )
+    def get_submission(self, submission_id: str) -> dict[str, Any]:
+        return self._json_with_transient_retries(
+            "GET",
+            f"/v1/submissions/{urllib.parse.quote(submission_id)}",
+            label="submission status",
+        )
+
+    def cancel_submission(self, submission_id: str) -> dict[str, Any]:
+        return self._json_with_transient_retries(
+            "DELETE",
+            f"/v1/submissions/{urllib.parse.quote(submission_id)}",
+            expect={202},
+            label="submission cancellation",
+            timeout=CLEANUP_REQUEST_TIMEOUT_SECONDS,
+        )
 
     def _request_with_transient_retries(
         self,
@@ -1703,20 +1617,30 @@ class MunchyRunnerClient:
                 time.sleep(retry_delay)
                 retry_delay = next_upload_retry_delay(retry_delay)
 
-    def upload_files(self, request: RunnerUploadRequest) -> dict[str, Any]:
+    def _upload_status(self, request: UploadRequest) -> dict[str, Any]:
+        submission = self.get_submission(request.submission_id)
+        upload = submission.get("upload")
+        if not isinstance(upload, dict):
+            raise RuntimeError(f"submission {request.submission_id} no longer has upload state")
+        return upload
+
+    def _job_status(self, request: UploadRequest) -> dict[str, Any]:
+        submission = self.get_submission(request.submission_id)
+        job = submission.get("job")
+        if not isinstance(job, dict):
+            raise RuntimeError(f"submission returned invalid job state: {submission}")
+        return job
+
+    def upload_files(self, request: UploadRequest) -> dict[str, Any]:
         with keep_system_awake("munchy upload"):
             return self._upload_files(request)
 
-    def _upload_files(self, request: RunnerUploadRequest) -> dict[str, Any]:
+    def _upload_files(self, request: UploadRequest) -> dict[str, Any]:
         total_files = len(request.files)
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
         retry_reporter = UploadRetryReporter(label="remote upload")
-        current_upload = self._json_with_transient_retries(
-            "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
-            label="remote upload status",
-        )
+        current_upload = self._upload_status(request)
         completed_paths = {
             str(item.get("path"))
             for item in current_upload.get("files", [])
@@ -1764,18 +1688,14 @@ class MunchyRunnerClient:
                         completed_bytes=completed_bytes,
                     )
                     retry_reporter.finish()
-        upload = self._json_with_transient_retries(
-            "GET",
-            f"/v1/input-uploads/{urllib.parse.quote(request.input_upload_id)}",
-            label="remote upload status",
-        )
+        upload = self._upload_status(request)
         if upload.get("state") != "uploaded":
             raise RuntimeError(f"input upload did not complete: {upload}")
         return upload
 
     def _upload_files_serial(
         self,
-        request: RunnerUploadRequest,
+        request: UploadRequest,
         files: list[RunnerInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
@@ -1791,17 +1711,13 @@ class MunchyRunnerClient:
             completed_bytes=completed_bytes,
             renderer=renderer,
             stop_event=stop_event,
-            job_status_provider=lambda: self.json(
-                "GET",
-                f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
-                timeout=5.0,
-            ),
+            job_status_provider=lambda: self._job_status(request),
         )
         for item in files:
             if stop_event.is_set():
                 raise RuntimeError("upload stopped because runner job reached a terminal state")
             self.upload_file(
-                request.input_upload_id,
+                request.submission_id,
                 item,
                 chunk_bytes=request.upload_chunk_bytes,
                 retry_reporter=retry_reporter,
@@ -1812,7 +1728,7 @@ class MunchyRunnerClient:
 
     def _upload_files_parallel(
         self,
-        request: RunnerUploadRequest,
+        request: UploadRequest,
         files: list[RunnerInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
@@ -1828,25 +1744,25 @@ class MunchyRunnerClient:
             completed_bytes=completed_bytes,
             renderer=renderer,
             stop_event=stop_event,
-            job_status_provider=lambda: self.json(
-                "GET",
-                f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
-                timeout=5.0,
-            ),
+            job_status_provider=lambda: self._job_status(request),
         )
         executor = ThreadPoolExecutor(max_workers=request.upload_workers)
-        futures = {
-            executor.submit(
-                self.upload_file,
-                request.input_upload_id,
-                item,
-                chunk_bytes=request.upload_chunk_bytes,
-                retry_reporter=retry_reporter,
-                stop_event=stop_event,
-                progress_callback=progress.mark_uploaded,
-            ): item
-            for item in files
-        }
+        futures = {}
+        for item in files:
+            upload_kwargs: dict[str, Any] = {
+                "chunk_bytes": request.upload_chunk_bytes,
+                "retry_reporter": retry_reporter,
+                "stop_event": stop_event,
+                "progress_callback": progress.mark_uploaded,
+            }
+            futures[
+                executor.submit(
+                    self.upload_file,
+                    request.submission_id,
+                    item,
+                    **upload_kwargs,
+                )
+            ] = item
         try:
             for future in as_completed(futures):
                 item = futures[future]
@@ -1869,7 +1785,7 @@ class MunchyRunnerClient:
 
     def upload_file(
         self,
-        input_upload_id: str,
+        submission_id: str,
         item: RunnerInputFile,
         *,
         chunk_bytes: int,
@@ -1885,7 +1801,7 @@ class MunchyRunnerClient:
                 raise RuntimeError("upload stopped because runner job reached a terminal state")
             try:
                 self._upload_file_once(
-                    input_upload_id,
+                    submission_id,
                     item,
                     chunk_bytes=chunk_bytes,
                     stop_event=stop_event,
@@ -1907,20 +1823,17 @@ class MunchyRunnerClient:
 
     def _upload_file_once(
         self,
-        input_upload_id: str,
+        submission_id: str,
         item: RunnerInputFile,
         *,
         chunk_bytes: int,
         stop_event: Event | None = None,
         progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
     ) -> None:
-        escaped_input_upload_id = urllib.parse.quote(input_upload_id)
+        escaped_submission_id = urllib.parse.quote(submission_id)
         escaped_rel = urllib.parse.quote(item.rel_path, safe="/")
-        upload = self.json(
-            "POST",
-            f"/v1/input-uploads/{escaped_input_upload_id}/files/{escaped_rel}/upload",
-            expect={201},
-        )
+        setup_path = f"/v1/submissions/{escaped_submission_id}/files/{escaped_rel}/upload"
+        upload = self.json("POST", setup_path, expect={201})
         upload_url = str(upload["upload_url"])
         offset = int(upload.get("offset") or 0)
         length = int(upload.get("length") or item.bytes)
@@ -1963,42 +1876,6 @@ class MunchyRunnerClient:
                     progress_callback(item, offset)
         if offset != item.bytes:
             raise RuntimeError(f"incomplete upload for {item.rel_path}: {offset} of {item.bytes}")
-
-    def create_job(self, request: RunnerUploadRequest) -> dict[str, Any]:
-        status, body, _ = self._request_with_transient_retries(
-            "POST",
-            "/v1/jobs",
-            payload=request.job_payload,
-            expect={202, 409},
-            label="runner job setup",
-        )
-        if status == 202:
-            return cast(dict[str, Any], json.loads(body.decode("utf-8")))
-        if not job_conflict_means_existing_job(body):
-            raise RunnerHttpError("POST", f"{self.base_url}/v1/jobs", status, body)
-        existing = self._json_with_transient_retries(
-            "GET",
-            f"/v1/jobs/{urllib.parse.quote(request.job_id)}",
-            label="runner job status",
-        )
-        if existing.get("input_upload_id") != request.input_upload_id:
-            raise RuntimeError(f"job {request.job_id} already exists for a different upload")
-        if existing.get("state") in {"failed", "canceled"}:
-            return self._json_with_transient_retries(
-                "POST",
-                f"/v1/jobs/{urllib.parse.quote(request.job_id)}/resume",
-                label="runner job resume",
-                expect={202},
-            )
-        return existing
-
-    def delete_input_upload(self, input_upload_id: str) -> bool:
-        status, _, _ = self.request(
-            "DELETE",
-            f"/v1/input-uploads/{urllib.parse.quote(input_upload_id)}",
-            expect={202, 404, 409},
-        )
-        return status == 202
 
     def get_job(self, job_id: str, *, compact: bool = False) -> dict[str, Any]:
         path = f"/v1/jobs/{urllib.parse.quote(job_id)}"
@@ -2124,3 +2001,159 @@ class MunchyRunnerClient:
                     retry_reporter.finish()
                     return job
                 time.sleep(interval)
+
+    def wait_for_submission(
+        self,
+        submission_id: str,
+        *,
+        interval: float = 10.0,
+        wait_for_safe_delete: bool = True,
+    ) -> dict[str, Any]:
+        retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
+        retry_reporter = UploadRetryReporter(label="submission status")
+        renderer = make_progress_renderer(
+            include_job=True,
+            title=f"Munchy Submission {short_path(submission_id, max_len=48)}",
+        )
+        retry_reporter.bind_renderer(renderer)
+        with keep_system_awake("munchy submission wait"), renderer:
+            while True:
+                try:
+                    submission = self.get_submission(submission_id)
+                    job = submission.get("job")
+                    if not isinstance(job, dict):
+                        raise RuntimeError(
+                            f"submission returned invalid job state: {submission}"
+                        )
+                    retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
+                    retry_reporter.finish()
+                except Exception as exc:
+                    if not is_transient_upload_error(exc):
+                        raise
+                    retry_reporter.mark_retry(
+                        rel_path=submission_id,
+                        retry_count=retry_reporter.total_retries + 1,
+                        retry_delay=retry_delay,
+                        exc=exc,
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay = next_upload_retry_delay(retry_delay)
+                    continue
+                state = str(job.get("state") or "")
+                terminal = state in {"succeeded", "failed", "canceled"}
+                riverhog_pending = (
+                    wait_for_safe_delete
+                    and state == "succeeded"
+                    and riverhog_progress_requires_finalization(job)
+                    and not riverhog_progress_safe_to_delete(job)
+                )
+                renderer.update(job, force=terminal and not riverhog_pending)
+                if riverhog_progress_failed(job) or (terminal and not riverhog_pending):
+                    retry_reporter.finish()
+                    return submission
+                time.sleep(interval)
+
+
+class MunchyAdminClient(MunchyRunnerClient):
+    def __init__(self, base_url: str, *, token: str | None = None) -> None:
+        super().__init__(base_url, token=admin_token_setting(token))
+
+    def list_job_templates(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "name",
+        order: str = "asc",
+        query: str | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "page": str(page),
+            "per_page": str(per_page),
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if enabled is not None:
+            params["enabled"] = "true" if enabled else "false"
+        payload = self.json(
+            "GET",
+            "/v1/admin/job-templates?" + urllib.parse.urlencode(params),
+        )
+        templates = payload.get("templates")
+        if not isinstance(templates, list):
+            raise RuntimeError(f"runner returned invalid job-template page: {payload}")
+        payload["templates"] = [item for item in templates if isinstance(item, dict)]
+        return payload
+
+    def get_job_template(self, name: str) -> dict[str, Any]:
+        return self.json(
+            "GET",
+            f"/v1/admin/job-templates/{urllib.parse.quote(name)}",
+        )
+
+    def validate_job_template(
+        self,
+        name: str,
+        definition: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            "/v1/admin/job-templates/validate",
+            payload={"name": name, "definition": definition},
+        )
+
+    def create_job_template(
+        self,
+        name: str,
+        definition: dict[str, Any],
+        *,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            "/v1/admin/job-templates",
+            payload={"name": name, "definition": definition, "enabled": enabled},
+            expect={201},
+        )
+
+    def replace_job_template(
+        self,
+        name: str,
+        definition: dict[str, Any],
+        *,
+        expected_revision: int,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        return self.json(
+            "PUT",
+            f"/v1/admin/job-templates/{urllib.parse.quote(name)}",
+            payload={
+                "definition": definition,
+                "enabled": enabled,
+                "expected_revision": expected_revision,
+            },
+        )
+
+    def set_job_template_enabled(
+        self,
+        name: str,
+        *,
+        enabled: bool,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        action = "enable" if enabled else "disable"
+        return self.json(
+            "POST",
+            f"/v1/admin/job-templates/{urllib.parse.quote(name)}/{action}",
+            payload={"expected_revision": expected_revision},
+        )
+
+    def delete_job_template(self, name: str, *, expected_revision: int) -> dict[str, Any]:
+        query = urllib.parse.urlencode({"expected_revision": expected_revision})
+        return self.json(
+            "DELETE",
+            f"/v1/admin/job-templates/{urllib.parse.quote(name)}?{query}",
+        )

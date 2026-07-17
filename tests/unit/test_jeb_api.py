@@ -162,7 +162,7 @@ def test_jeb_api_forwards_source_management(monkeypatch: pytest.MonkeyPatch) -> 
     add = jeb_router.JebSourceAddRequest(
         id="front-door",
         adapters=["tus"],
-        policy={"workflow_mode": "review"},
+        template="front-door-review",
     )
     jeb_router.add_jeb_source(add)
     jeb_router.disable_jeb_source("front-door")
@@ -178,7 +178,7 @@ def test_jeb_api_forwards_source_management(monkeypatch: pytest.MonkeyPatch) -> 
             {
                 "id": "front-door",
                 "adapters": ["tus"],
-                "policy": {"workflow_mode": "review"},
+                "template": "front-door-review",
                 "enabled": True,
                 "stable_seconds": 600,
                 "target": "munchy",

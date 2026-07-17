@@ -6,6 +6,9 @@ parameters:
     required: true
 section:
   destination_prefix: '{device_id}-audio'
+  file_extensions:
+  - .mp3
+  - .wav
   group: audio-opus
   output_mode: audio
   encode_profile:

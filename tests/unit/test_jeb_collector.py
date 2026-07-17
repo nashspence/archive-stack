@@ -15,18 +15,13 @@ from jeb.collector import (
     NotifySettings,
     WebhookNotifier,
     config_from_env,
-    munchy_upload_request,
+    munchy_submission_request,
     parse_duration,
     parse_size,
 )
 from jeb.sources import SourceRegistryError
 
-TEST_POLICY = {
-    "workflow_mode": "collection_archive",
-    "output_mode": "video",
-    "tasks": ["archive_video"],
-    "collection_archive": {"destination": "riverhog"},
-}
+TEST_TEMPLATE = "camera-archive"
 
 
 def env_for(tmp_path: Path, *, sources: str = "camera,phone") -> dict[str, str]:
@@ -44,7 +39,7 @@ def collector_from_env(
     target_runners=None,
     notifier=None,
     options: dict[str, dict[str, object]] | None = None,
-    policies: dict[str, dict[str, object]] | None = None,
+    templates: dict[str, str] | None = None,
 ) -> Collector:
     source_ids = env.get("TEST_SOURCE_IDS", "").split(",")
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
@@ -61,7 +56,7 @@ def collector_from_env(
         collector.add_source(
             source_id,
             adapters=("ftp", "tus"),
-            policy=(policies or {}).get(source_id, TEST_POLICY),
+            template=(templates or {}).get(source_id, TEST_TEMPLATE),
             credential=f"{source_id}-password",
             stable_seconds=0,
             include_extensions=(".txt", ".mp4", ".xml"),
@@ -115,6 +110,19 @@ class RecordingNotifier:
         return True
 
 
+@pytest.fixture(autouse=True)
+def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def preflight_submission(self, request: object) -> dict[str, object]:
+            _ = request
+            return {"accepted": True}
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
+
+
 def test_parse_helpers_support_human_units() -> None:
     assert parse_duration("10m") == 600
     assert parse_duration("2h") == 7200
@@ -130,14 +138,14 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
         ("camera", "camera"),
         ("phone", "phone"),
     ]
-    assert [source.policy for source in sources] == [TEST_POLICY, TEST_POLICY]
+    assert [source.template for source in sources] == [TEST_TEMPLATE, TEST_TEMPLATE]
 
 
-def test_source_policy_revisions_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
+def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources="camera"))
     source = collector.source_registry.get("camera")
 
-    assert source.policy_revision == 1
+    assert source.template == TEST_TEMPLATE
     projection = collector.config.ingress.ftp_projection.read_text(encoding="utf-8")
     assert projection.startswith("camera:$argon2id$")
 
@@ -146,19 +154,13 @@ def test_source_policy_revisions_and_ftp_projection_are_registry_owned(tmp_path:
         {
             "cadence": "manual",
             "notify": {"enabled": True, "recipients": ["operator"]},
-            "policy": {**TEST_POLICY, "tasks": ["archive_video", "qcut_video"]},
+            "template": "camera-review",
         },
     )
 
     assert updated.cadence == "manual"
     assert updated.notify == {"enabled": True, "recipients": ["operator"]}
-    assert updated.policy_revision == 2
-    with collector.connect() as conn:
-        revisions = conn.execute(
-            "SELECT revision FROM source_policy_revisions WHERE source_id = ? ORDER BY revision",
-            ("camera",),
-        ).fetchall()
-    assert [row["revision"] for row in revisions] == [1, 2]
+    assert updated.template == "camera-review"
 
 
 def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> None:
@@ -185,7 +187,7 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
     assert page["pages"] == 2
     assert page["per_page"] == 1
     assert [source["id"] for source in page["sources"]] == ["phone"]
-    assert "policy" not in page["sources"][0]
+    assert page["sources"][0]["template"] == TEST_TEMPLATE
 
     filtered = collector.source_registry.list_page(
         query="MOBILE",
@@ -239,7 +241,7 @@ def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> No
     assert {
         "idx_jeb_batch_attempts_batch_state",
         "idx_jeb_batch_attempts_created",
-        "idx_jeb_batch_attempts_job",
+            "idx_jeb_batch_attempts_target_submission",
         "idx_jeb_batch_attempts_state",
         "idx_jeb_batch_attempts_state_updated",
         "idx_jeb_batch_attempts_updated",
@@ -338,7 +340,7 @@ def test_source_registry_requires_safe_source_slugs(tmp_path: Path) -> None:
         collector.add_source(
             "phone/raw",
             adapters=("tus",),
-            policy=TEST_POLICY,
+            template=TEST_TEMPLATE,
         )
 
 
@@ -350,7 +352,7 @@ def test_cleanup_after_success_requires_safe_munchy_target(tmp_path: Path) -> No
         collector.add_source(
             "camera",
             adapters=("ftp",),
-            policy=TEST_POLICY,
+            template=TEST_TEMPLATE,
             cleanup="after_target_success",
         )
 
@@ -460,63 +462,34 @@ def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
     assert plan["file_count"] == 1
     assert plan["total_bytes"] == 6
     assert plan["batch_id"]
-    assert plan["job_id"]
+    assert plan["target_submission_id"]
     assert active_attempt_ids(collector) == []
 
 
-def test_archive_plan_routing_preflight_does_not_record_failure(
+def test_archive_plan_target_preflight_does_not_record_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    munchy_config = {
-        "schema_version": 1,
-        "kind": "munchy.job",
-        "job": {
-            "output_mode": "video",
-            "tasks": ["archive_video"],
-            "routing": {
-                "routes": [
-                    {
-                        "id": "main-video",
-                        "group": "camera-video",
-                        "when": {"path": {"prefix": "camera"}},
-                    }
-                ]
-            },
-        },
-        "groups": {
-            "camera-video": {
-                "output_mode": "video",
-                "tasks": ["archive_video"],
-            }
-        },
-    }
     write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
-    policy = {**munchy_config["job"], "groups": munchy_config["groups"]}
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
-        policies={"camera": policy},
-    )
+    collector = collector_from_env(env_for(tmp_path, sources="camera"))
 
-    class FakeMunchyRunnerClient:
+    class RejectingMunchyRunnerClient:
         def __init__(self, url: str) -> None:
             self.url = url
 
-        def routing_preflight(self, **_kwargs: object) -> dict[str, object]:
-            return {
-                "ok": False,
-                "matches": [],
-                "unmatched": [{"path": "camera/clip.mp4", "reason": "no_matching_route"}],
-            }
+        def preflight_submission(self, request: object) -> dict[str, object]:
+            _ = request
+            raise collector_module.UnrecoverableJebError("unknown template")
 
-    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", RejectingMunchyRunnerClient)
 
     plan = collector.archive_plan(source_id="camera")
 
-    assert plan["status"] == "routing_preflight_failed"
-    assert plan["routing_preflight"]["unmatched_count"] == 1
+    assert plan["status"] == "target_preflight_failed"
+    assert plan["target_preflight"]["status"] == "rejected"
+    assert "unknown template" in plan["target_preflight"]["error"]
     assert active_attempt_ids(collector) == []
-    assert collector.routing_preflight_failures(state="failed") == []
+    assert collector.target_preflight_failures(state="failed") == []
 
 
 def test_monthly_cadence_uses_first_scheduled_run_after_month_boundary(
@@ -553,164 +526,26 @@ def test_seasonal_cadence_uses_first_scheduled_run_after_custom_season_boundary(
     assert collector.source_period(collection) == datetime(2026, 3, 2, 3, tzinfo=UTC)
 
 
-def test_munchy_payload_uses_source_group_paths_without_routing(tmp_path: Path) -> None:
+def test_munchy_submission_uses_template_and_generic_target_identity(tmp_path: Path) -> None:
     collector = collector_from_env(
         env_for(tmp_path, sources="camera"),
-        options={
-            "camera": {
-                "notify": {"enabled": True, "recipients": ["operator", "collaborator"]}
-            }
-        },
+        templates={"camera": "camera-review"},
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
 
     batch_id = collector.archive_now(source_id="camera", process=False)
     assert batch_id is not None
-    request = munchy_upload_request(collector, batch_id, collector.config.targets["munchy"])
+    request = munchy_submission_request(
+        collector,
+        batch_id,
+        collector.config.targets["munchy"],
+    )
 
+    assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
+    assert request.template == "camera-review"
+    assert request.collection_slug == "camera"
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]
-    assert request.storage_hint == {
-        "workflow_mode": "collection_archive",
-        "collection_archive_destination": "riverhog",
-        "output_mode": "video",
-        "tasks": ["archive_video"],
-        "structured_routing": False,
-        "groups": {},
-    }
-    assert request.job_payload["collection_slug"] == "camera"
-    assert request.job_payload["tasks"] == ["archive_video"]
-    assert request.job_payload["groups"] == {}
-    assert request.job_payload["notify"] == {
-        "enabled": True,
-        "recipients": ["operator", "collaborator"],
-    }
-    assert "routing" not in request.job_payload
-
-
-def test_munchy_payload_uses_per_source_job_defaults(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    munchy_config = {
-        "schema_version": 1,
-        "kind": "munchy.job",
-        "job": {
-            "output_mode": "video",
-            "tasks": ["archive_video"],
-            "routing": {
-                "routes": [
-                    {
-                        "id": "main-video",
-                        "group": "camera-video",
-                        "when": {"path": {"prefix": "camera"}},
-                    }
-                ]
-            },
-        },
-        "groups": {
-            "camera-video": {
-                "output_mode": "video",
-                "tasks": ["archive_video"],
-                "metadata_projection": {
-                    "gps": {"latitude": 48.9995, "longitude": -122.7404},
-                },
-            }
-        },
-    }
-    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
-    policy = {**munchy_config["job"], "groups": munchy_config["groups"]}
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
-        policies={"camera": policy},
-    )
-
-    class FakeMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
-            self.url = url
-
-        def routing_preflight(self, **_kwargs: object) -> dict[str, object]:
-            return {"ok": True, "left": []}
-
-    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
-
-    batch_id = collector.archive_now(source_id="camera", process=False)
-    assert batch_id is not None
-    request = munchy_upload_request(
-        collector,
-        batch_id,
-        collector.config.targets["munchy"],
-    )
-
-    assert [item.rel_path for item in request.files] == ["camera/clip.mp4"]
-    assert request.job_payload["groups"] == munchy_config["groups"]
-    assert request.job_payload["routing"]["routes"] == munchy_config["job"]["routing"]["routes"]
-    assert request.storage_hint["structured_routing"] is True
-    assert request.storage_hint["groups"] == {
-        "camera-video": {"output_mode": "video", "tasks": ["archive_video"]}
-    }
-
-
-def test_jeb_uploads_preflight_left_files_so_munchy_owns_culling(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    munchy_config = {
-        "schema_version": 1,
-        "kind": "munchy.job",
-        "job": {
-            "output_mode": "video",
-            "tasks": ["archive_video"],
-            "routing": {
-                "routes": [
-                    {
-                        "id": "main-video",
-                        "group": "camera-video",
-                        "when": {"path": {"prefix": "camera"}},
-                    },
-                    {
-                        "id": "munchy-left",
-                        "action": "leave",
-                        "when": {"path": {"filename_glob": "left.mp4"}},
-                    },
-                ]
-            },
-        },
-        "groups": {
-            "camera-video": {
-                "output_mode": "video",
-                "tasks": ["archive_video"],
-            }
-        },
-    }
-    write_stable_file(tmp_path / "landing" / "camera" / "clip.mp4")
-    write_stable_file(tmp_path / "landing" / "camera" / "left.mp4")
-    policy = {**munchy_config["job"], "groups": munchy_config["groups"]}
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
-        policies={"camera": policy},
-    )
-
-    class FakeMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
-            self.url = url
-
-        def routing_preflight(self, **_kwargs: object) -> dict[str, object]:
-            return {"ok": True, "left": [{"path": "camera/left.mp4"}]}
-
-    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
-
-    batch_id = collector.archive_now(source_id="camera", process=False)
-    assert batch_id is not None
-    request = munchy_upload_request(
-        collector,
-        batch_id,
-        collector.config.targets["munchy"],
-    )
-
-    assert [item.rel_path for item in request.files] == [
-        "camera/clip.mp4",
-        "camera/left.mp4",
-    ]
+    assert request.files[0].sha256
 
 
 def test_jeb_attempt_alerts_use_source_notify_recipients(tmp_path: Path) -> None:
@@ -737,10 +572,10 @@ def test_jeb_attempt_alerts_use_source_notify_recipients(tmp_path: Path) -> None
     }
 
 
-def test_jeb_routing_preflight_alerts_use_source_notify_recipients(tmp_path: Path) -> None:
+def test_jeb_target_preflight_alerts_and_status_use_source_context(tmp_path: Path) -> None:
     notifier = RecordingNotifier(calls=[])
     collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
+        env_for(tmp_path, sources="camera,phone"),
         notifier=notifier,
         options={
             "camera": {
@@ -748,6 +583,12 @@ def test_jeb_routing_preflight_alerts_use_source_notify_recipients(tmp_path: Pat
             }
         },
     )
+    clean_statuses = {
+        item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
+    }
+    assert clean_statuses["camera"]["target_preflight_failed"] is False
+    assert clean_statuses["phone"]["target_preflight_failed"] is False
+
     source = collector.source_registry.get("camera")
     file = EligibleFile(
         path=source.path / "clip.txt",
@@ -757,65 +598,25 @@ def test_jeb_routing_preflight_alerts_use_source_notify_recipients(tmp_path: Pat
         mtime=1.0,
         mtime_ns=1,
     )
-    collector.store_routing_preflight_failure(
+    collector.store_target_preflight_failure(
         source=source,
         files=[file],
-        failure_kind="routing",
         failure_payload={"ok": False},
-        fingerprint_payload={"source_id": "camera", "error": "no route"},
-        message="no route",
-        file_count=1,
-        total_bytes=4,
-        unmatched_count=1,
+        fingerprint_payload={"source_id": "camera", "error": "unknown template"},
+        message="unknown template",
     )
+    collector.notify_target_preflight_failures(source_id="camera")
 
-    collector.notify_routing_preflight_failures(source_id="camera")
-
+    assert notifier.calls[0]["component"] == "target_preflight"
     assert notifier.calls[0]["notify"] == {
         "enabled": True,
         "recipients": ["operator", "collaborator"],
     }
-
-
-def test_jeb_status_marks_sources_with_failed_routing_preflight(
-    tmp_path: Path,
-) -> None:
-    collector = collector_from_env(env_for(tmp_path, sources="camera,phone"))
-
-    clean_statuses = {
-        item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
-    }
-
-    assert clean_statuses["camera"]["routing_preflight_failed"] is False
-    assert clean_statuses["phone"]["routing_preflight_failed"] is False
-
-    source = collector.source_registry.get("camera")
-    file = EligibleFile(
-        path=source.path / "clip.txt",
-        rel=Path("clip.txt"),
-        target_path="camera/clip.txt",
-        bytes=4,
-        mtime=1.0,
-        mtime_ns=1,
-    )
-    collector.store_routing_preflight_failure(
-        source=source,
-        files=[file],
-        failure_kind="routing",
-        failure_payload={"ok": False},
-        fingerprint_payload={"source_id": "camera", "error": "no route"},
-        message="no route",
-        file_count=1,
-        total_bytes=4,
-        unmatched_count=1,
-    )
-
     failed_statuses = {
         item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
     }
-
-    assert failed_statuses["camera"]["routing_preflight_failed"] is True
-    assert failed_statuses["phone"]["routing_preflight_failed"] is False
+    assert failed_statuses["camera"]["target_preflight_failed"] is True
+    assert failed_statuses["phone"]["target_preflight_failed"] is False
 
 
 def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
@@ -898,102 +699,3 @@ def test_jeb_webhook_notifier_does_not_fallback_for_missing_named_recipient(
 
     assert not ok
     assert calls == []
-
-
-def test_jeb_routing_preflight_collects_primary_facts_after_sidecar_facts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    routing = {
-        "extra_exiftool_tags": ["VideoAvgBitrate"],
-        "sidecars": [
-            {
-                "id": "camera_xml",
-                "format": "xml",
-                "path": "{parent}/{stem}M01.XML",
-                "primary": {"path": {"suffix": ".mp4"}},
-                "facts": {"source": "exiftool", "tags": ["Make"]},
-            }
-        ],
-        "routes": [
-            {
-                "id": "sidecar-and-bitrate-video",
-                "group": "video",
-                "when": {
-                    "all": [
-                        {"path": {"suffix": ".mp4"}},
-                        {
-                            "fact": "sidecars.camera_xml.facts.exif.make",
-                            "equals": "example imaging",
-                        },
-                        {
-                            "fact": "exiftool.tags.video_avg_bitrate",
-                            "equals": "200 Mbps",
-                        },
-                    ]
-                },
-            }
-        ],
-    }
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
-        policies={"camera": {**TEST_POLICY, "routing": routing}},
-    )
-    source = collector.source_registry.get("camera")
-    video = source.path / "C0001.MP4"
-    sidecar = source.path / "C0001M01.XML"
-    video.parent.mkdir(parents=True, exist_ok=True)
-    video.write_bytes(b"video")
-    sidecar.write_text("<metadata />", encoding="utf-8")
-    files = [
-        EligibleFile(
-            path=video,
-            rel=Path("C0001.MP4"),
-            target_path="camera/C0001.MP4",
-            bytes=video.stat().st_size,
-            mtime=1.0,
-            mtime_ns=1,
-        ),
-        EligibleFile(
-            path=sidecar,
-            rel=Path("C0001M01.XML"),
-            target_path="camera/C0001M01.XML",
-            bytes=sidecar.stat().st_size,
-            mtime=1.0,
-            mtime_ns=2,
-        ),
-    ]
-    exiftool_calls: list[tuple[Path, tuple[str, ...]]] = []
-    preflight_files = []
-
-    def fail_ffprobe(path: Path) -> dict[str, object]:
-        raise AssertionError(f"ffprobe should not run for exiftool-only routing: {path}")
-
-    def fake_exiftool(path: Path, *, tags=()):  # type: ignore[no-untyped-def]
-        exiftool_calls.append((path, tuple(tags)))
-        if path == sidecar:
-            return {"EXIF:Make": "Example Imaging"}
-        if path == video:
-            assert "VideoAvgBitrate" in tuple(tags)
-            return {"QuickTime:VideoAvgBitrate": "200 Mbps"}
-        raise AssertionError(f"unexpected exiftool path: {path}")
-
-    class FakeMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
-            self.url = url
-
-        def routing_preflight(self, **kwargs: object) -> dict[str, object]:
-            preflight_files.extend(kwargs["files"])  # type: ignore[arg-type]
-            return {"ok": True, "left": []}
-
-    monkeypatch.setattr(collector_module, "ffprobe_for_routing_preflight", fail_ffprobe)
-    monkeypatch.setattr(collector_module, "exiftool_for_routing_preflight", fake_exiftool)
-    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
-
-    routed = collector.preflight_source_routes(source, files)
-
-    assert routed == files
-    assert [path for path, _tags in exiftool_calls] == [sidecar, video]
-    assert exiftool_calls[0] == (sidecar, ("Make",))
-    primary = next(item for item in preflight_files if item.rel_path == "camera/C0001.MP4")
-    assert primary.routing_facts["exiftool"]["tags"]["video_avg_bitrate"] == "200 Mbps"

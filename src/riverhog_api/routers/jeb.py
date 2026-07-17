@@ -27,7 +27,7 @@ class JebArchiveNowRequest(BaseModel):
 class JebSourceAddRequest(BaseModel):
     id: str = Field(min_length=1)
     adapters: list[str] = Field(min_length=1)
-    policy: dict[str, Any]
+    template: str = Field(min_length=1)
     credential: str | None = None
     enabled: bool = True
     stable_seconds: int = Field(600, ge=0)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json
 import urllib.request
 from pathlib import Path
 from threading import Event
@@ -17,8 +16,7 @@ from munchy.runner_client import (
     RunnerHttpError,
     RunnerInputFile,
     RunnerJobTerminalDuringUpload,
-    RunnerRoutingPreflightFile,
-    RunnerUploadRequest,
+    SubmissionUploadRequest,
     UploadProgress,
     UploadRetryReporter,
     format_encode_progress,
@@ -108,126 +106,6 @@ def test_keep_system_awake_uses_caffeinate_on_macos(monkeypatch) -> None:  # typ
     assert calls == [["caffeinate", "-dimsu", "-w", str(runner_client.os.getpid())]]
     assert fake_process.terminated is True
     assert fake_process.killed is False
-
-
-def test_routing_preflight_posts_manifest() -> None:
-    client = MunchyRunnerClient("http://runner", token="runner-token")
-    seen: list[dict[str, object]] = []
-
-    class FakeResponse:
-        status = 200
-        headers: dict[str, str] = {}
-
-        def read(self) -> bytes:
-            return b'{"ok": true, "matches": [], "unmatched": []}'
-
-    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
-        assert timeout == 300.0
-        seen.append(
-            {
-                "url": req.full_url,
-                "method": req.get_method(),
-                "auth": req.get_header("Authorization"),
-                "payload": json.loads(req.data.decode("utf-8")),
-            }
-        )
-        return FakeResponse()
-
-    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
-        result = client.routing_preflight(
-            files=(
-                RunnerRoutingPreflightFile(
-                    rel_path="phone/IMG_0001.MOV",
-                    bytes=123,
-                    probe_summary={"video_codec_name": "hevc"},
-                    routing_facts={"path.suffix": ".mov", "video.codec": "hevc"},
-                ),
-            ),
-            groups={"video": {"output_mode": "video", "tasks": []}},
-            routing={
-                "routes": [
-                    {
-                        "id": "phone-video",
-                        "group": "video",
-                        "when": {"fact": "video.codec", "equals": "hevc"},
-                    }
-                ]
-            },
-        )
-
-    assert result["ok"] is True
-    assert seen == [
-        {
-            "url": "http://runner/v1/routing/preflight",
-            "method": "POST",
-            "auth": "Bearer runner-token",
-            "payload": {
-                "files": [
-                    {
-                        "path": "phone/IMG_0001.MOV",
-                        "bytes": 123,
-                        "sha256": None,
-                        "probe_summary": {"video_codec_name": "hevc"},
-                        "probe_error": None,
-                        "routing_facts": {"path.suffix": ".mov", "video.codec": "hevc"},
-                        "facts_error": None,
-                        "sidecar_facts": None,
-                        "sidecar_facts_error": None,
-                    }
-                ],
-                "groups": {"video": {"output_mode": "video", "tasks": []}},
-                "routing": {
-                    "routes": [
-                        {
-                            "id": "phone-video",
-                            "group": "video",
-                            "when": {"fact": "video.codec", "equals": "hevc"},
-                        }
-                    ]
-                },
-            },
-        }
-    ]
-
-
-def test_routing_preflight_posts_metadata_projection_enforcement() -> None:
-    client = MunchyRunnerClient("http://runner", token="runner-token")
-    seen: list[dict[str, object]] = []
-
-    class FakeResponse:
-        status = 200
-        headers: dict[str, str] = {}
-
-        def read(self) -> bytes:
-            return b'{"ok": false, "matches": [], "unmatched": []}'
-
-    def fake_urlopen(req: urllib.request.Request, *, timeout: float) -> FakeResponse:
-        seen.append(json.loads(req.data.decode("utf-8")))
-        return FakeResponse()
-
-    with patch("munchy.runner_client.urllib.request.urlopen", side_effect=fake_urlopen):
-        result = client.routing_preflight(
-            files=(
-                RunnerRoutingPreflightFile(
-                    rel_path="camera/C0001.MP4",
-                    bytes=123,
-                ),
-            ),
-            groups={"video": {"output_mode": "video", "tasks": ["archive_video"]}},
-            routing={
-                "routes": [
-                    {
-                        "id": "camera-video",
-                        "group": "video",
-                        "when": {"path": {"suffix": ".mp4"}},
-                    }
-                ]
-            },
-            enforce_metadata_projection=True,
-        )
-
-    assert result["ok"] is False
-    assert seen[0]["enforce_metadata_projection"] is True
 
 
 def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
@@ -962,7 +840,7 @@ def test_resume_job_posts_runner_resume_endpoint() -> None:
 def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
     error = RunnerHttpError(
         "POST",
-        "http://runner/v1/input-uploads",
+        "http://runner/v1/submissions",
         507,
         b"""
         {
@@ -981,177 +859,6 @@ def test_runner_http_error_formats_insufficient_storage_concisely() -> None:
     assert "need 2.00 GiB free" in str(error)
     assert "have 1.00 GiB" in str(error)
     assert "512.00 MiB reserved by active uploads" in str(error)
-
-
-def test_create_input_upload_sends_filesystem_metadata(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp4"
-    source.write_bytes(b"video")
-    metadata = {
-        "kind": "munchy.source-filesystem-metadata",
-        "stat": {"st_birthtime": 1.25},
-    }
-    item = RunnerInputFile(
-        source=source,
-        rel_path="video/clip.mp4",
-        bytes=source.stat().st_size,
-        sha256="0" * 64,
-        filesystem_metadata=metadata,
-    )
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
-        files=(item,),
-        storage_hint={"source_bytes": item.bytes},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
-    )
-    client = MunchyRunnerClient("http://runner")
-    seen_payload: dict[str, object] = {}
-
-    def fake_request(
-        method: str,
-        path: str,
-        **kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        assert method == "POST"
-        assert path == "/v1/input-uploads"
-        seen_payload.update(kwargs["payload"])  # type: ignore[arg-type]
-        return (
-            201,
-            json.dumps({"input_upload_id": "upload-1", "files": seen_payload["files"]}).encode(),
-            object(),
-        )
-
-    client.request = fake_request  # type: ignore[method-assign]
-
-    upload = client.create_or_get_input_upload(request)
-
-    assert upload["input_upload_id"] == "upload-1"
-    assert seen_payload["files"] == [
-        {
-            "path": "video/clip.mp4",
-            "bytes": item.bytes,
-            "sha256": "0" * 64,
-            "filesystem_metadata": metadata,
-        }
-    ]
-
-
-def test_create_input_upload_retries_transient_setup_timeout(tmp_path: Path) -> None:
-    source = tmp_path / "clip.mp4"
-    source.write_bytes(b"video")
-    item = RunnerInputFile(
-        source=source,
-        rel_path="video/clip.mp4",
-        bytes=source.stat().st_size,
-        sha256="0" * 64,
-    )
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
-        files=(item,),
-        storage_hint={"source_bytes": item.bytes},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
-    )
-    client = MunchyRunnerClient("http://runner")
-    post_calls = 0
-
-    def fake_request(
-        method: str,
-        path: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        nonlocal post_calls
-        assert method == "POST"
-        assert path == "/v1/input-uploads"
-        post_calls += 1
-        if post_calls == 1:
-            raise TimeoutError("timed out")
-        return (
-            201,
-            json.dumps({"input_upload_id": "upload-1", "files": []}).encode(),
-            object(),
-        )
-
-    client.request = fake_request  # type: ignore[method-assign]
-
-    with patch("munchy.runner_client.time.sleep"):
-        upload = client.create_or_get_input_upload(request)
-
-    assert upload["input_upload_id"] == "upload-1"
-    assert post_calls == 2
-
-
-def test_create_job_retries_transient_setup_timeout() -> None:
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
-        files=(),
-        storage_hint={"source_bytes": 0},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
-    )
-    client = MunchyRunnerClient("http://runner")
-    post_calls = 0
-
-    def fake_request(
-        method: str,
-        path: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        nonlocal post_calls
-        assert method == "POST"
-        assert path == "/v1/jobs"
-        post_calls += 1
-        if post_calls == 1:
-            raise TimeoutError("timed out")
-        return (
-            202,
-            json.dumps({"job_id": "job-1", "input_upload_id": "upload-1"}).encode(),
-            object(),
-        )
-
-    client.request = fake_request  # type: ignore[method-assign]
-
-    with patch("munchy.runner_client.time.sleep"):
-        job = client.create_job(request)
-
-    assert job["job_id"] == "job-1"
-    assert post_calls == 2
-
-
-def test_create_job_preserves_non_existing_job_conflict() -> None:
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
-        files=(),
-        storage_hint={"source_bytes": 0},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
-    )
-    client = MunchyRunnerClient("http://runner")
-
-    def fake_request(
-        method: str,
-        path: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        assert method == "POST"
-        assert path == "/v1/jobs"
-        return (
-            409,
-            json.dumps(
-                {
-                    "detail": {
-                        "error": "storage_hint_mismatch",
-                        "message": "input upload storage_hint does not match requested job",
-                    }
-                }
-            ).encode(),
-            object(),
-        )
-
-    client.request = fake_request  # type: ignore[method-assign]
-
-    with pytest.raises(RunnerHttpError, match="storage_hint_mismatch"):
-        client.create_job(request)
 
 
 def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path) -> None:
@@ -1344,7 +1051,7 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         assert method == "POST"
-        assert path == "/v1/input-uploads/upload/files/video/clip.mp4/upload"
+        assert path == "/v1/submissions/upload/files/video/clip.mp4/upload"
         return {
             "upload_url": "http://uploads.test/file",
             "offset": 0,
@@ -1392,18 +1099,16 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
                 sha256=str(index) * 64,
             )
         )
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
+    request = SubmissionUploadRequest(
+        submission_id="submission-1",
+        template="test-template",
         files=tuple(files),
-        storage_hint={"source_bytes": sum(item.bytes for item in files)},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
         upload_workers=3,
         upload_chunk_mib=9,
     )
     client = MunchyRunnerClient("http://runner")
     uploaded: list[str] = []
-    input_upload_gets = 0
+    submission_gets = 0
 
     def fake_upload_file(
         upload_id: str,
@@ -1416,24 +1121,24 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     ) -> None:
         uploaded.append(item.rel_path)
 
-    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
-        nonlocal input_upload_gets
-        if path.startswith("/v1/jobs/"):
-            return {}
-        if path.startswith("/v1/input-uploads/"):
-            input_upload_gets += 1
-            return {
-                "state": "uploaded" if input_upload_gets > 1 else "uploading",
+    def fake_get_submission(submission_id: str) -> dict[str, object]:
+        nonlocal submission_gets
+        assert submission_id == "submission-1"
+        submission_gets += 1
+        return {
+            "job": {"state": "uploading"},
+            "upload": {
+                "state": "uploaded" if submission_gets > 1 else "uploading",
                 "files": [
                     {"path": files[0].rel_path, "complete": True},
                     {"path": files[1].rel_path, "complete": True},
                     {"path": files[2].rel_path, "complete": False},
                 ],
-            }
-        raise AssertionError(path)
+            },
+        }
 
     client.upload_file = fake_upload_file  # type: ignore[method-assign]
-    client.json = fake_json  # type: ignore[method-assign]
+    client.get_submission = fake_get_submission  # type: ignore[method-assign]
 
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr):
@@ -1452,18 +1157,16 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
         bytes=source.stat().st_size,
         sha256="0" * 64,
     )
-    request = RunnerUploadRequest(
-        input_upload_id="upload-1",
-        job_id="job-1",
+    request = SubmissionUploadRequest(
+        submission_id="submission-1",
+        template="test-template",
         files=(file,),
-        storage_hint={"source_bytes": file.bytes},
-        job_payload={"job_id": "job-1", "input_upload_id": "upload-1"},
         upload_workers=1,
         upload_chunk_mib=9,
     )
     client = MunchyRunnerClient("http://runner")
     uploaded: list[str] = []
-    input_upload_gets = 0
+    submission_gets = 0
 
     def fake_upload_file(
         upload_id: str,
@@ -1476,28 +1179,27 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
     ) -> None:
         uploaded.append(item.rel_path)
 
-    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
-        nonlocal input_upload_gets
-        if path.startswith("/v1/jobs/"):
-            return {}
-        if path.startswith("/v1/input-uploads/"):
-            input_upload_gets += 1
-            if input_upload_gets == 1:
-                return {"state": "uploading", "files": []}
-            if input_upload_gets == 2:
-                raise TimeoutError("timed out")
-            return {"state": "uploaded", "files": [{"path": file.rel_path, "complete": True}]}
-        raise AssertionError(path)
+    def fake_get_submission(submission_id: str) -> dict[str, object]:
+        nonlocal submission_gets
+        assert submission_id == "submission-1"
+        submission_gets += 1
+        if submission_gets == 1:
+            upload = {"state": "uploading", "files": []}
+        elif submission_gets == 2:
+            raise TimeoutError("timed out")
+        else:
+            upload = {"state": "uploaded", "files": [{"path": file.rel_path, "complete": True}]}
+        return {"job": {"state": "uploading"}, "upload": upload}
 
     client.upload_file = fake_upload_file  # type: ignore[method-assign]
-    client.json = fake_json  # type: ignore[method-assign]
+    client.get_submission = fake_get_submission  # type: ignore[method-assign]
 
     with patch("munchy.runner_client.time.sleep"):
         upload = client.upload_files(request)
 
     assert uploaded == [file.rel_path]
     assert upload["state"] == "uploaded"
-    assert input_upload_gets == 3
+    assert submission_gets == 3
 
 
 def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:

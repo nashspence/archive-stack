@@ -38,6 +38,12 @@ from munchy.filesystem_metadata import (
     load_filesystem_metadata_map,
     write_filesystem_metadata_map,
 )
+from munchy.job_templates import (
+    JobTemplateError,
+    job_template_digest,
+    normalize_job_template,
+    render_job_template_inputs,
+)
 from munchy.metadata_projection import (
     MetadataProjectionError,
     ProjectionMetadata,
@@ -72,7 +78,6 @@ from munchy.routing import (
     match_route,
     matched_fact_values,
     normalize_exiftool_tag,
-    route_requires_probe,
     routing_exiftool_summary,
     routing_exiftool_tags,
     routing_file_facts,
@@ -167,6 +172,7 @@ TUSD_PUBLIC_BASE_URL = os.getenv(
 ).rstrip("/")
 TUSD_HOOK_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_HOOK_SECRET", "").strip()
 API_TOKEN = os.getenv("MUNCHY_RUNNER_API_TOKEN", "").strip()
+ADMIN_TOKEN = os.getenv("MUNCHY_RUNNER_ADMIN_TOKEN", "").strip()
 TUSD_PUBLIC_SIGNING_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET", "").strip()
 GPU_RUNTIME_DIR = Path(
     os.getenv("MUNCHY_RUNNER_GPU_RUNTIME_DIR", "/gpu-runtime/munchy-av1-nvenc")
@@ -198,10 +204,7 @@ RIVERHOG_UPLOAD_ENABLED = os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_ENABLED", "0"
 }
 RIVERHOG_WAIT = os.getenv("MUNCHY_RUNNER_RIVERHOG_WAIT", "finalized").strip() or "finalized"
 RIVERHOG_UPLOAD_CHUNK_BYTES = int(
-    os.getenv(
-        "MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES",
-        os.getenv("RIVERHOG_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024)),
-    )
+    os.getenv("MUNCHY_RUNNER_RIVERHOG_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024))
 )
 RIVERHOG_UPLOAD_WORKERS = max(
     1,
@@ -247,11 +250,11 @@ TARGET_RCLONE_COMMAND = os.getenv("MUNCHY_RUNNER_TARGET_RCLONE_COMMAND", "rclone
 DEFAULT_TARGET_UPLOAD_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
 NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
 NOTIFY_REMINDER_INTERVAL_SECONDS = parse_reminder_interval_seconds(
-    os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL")
+    os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL")
 )
-NOTIFY_REMINDER_TIME = normalize_reminder_time(os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME"))
+NOTIFY_REMINDER_TIME = normalize_reminder_time(os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_TIME"))
 NOTIFY_REMINDER_TIMEZONE = (
-    os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
+    os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
 )
 reminder_zone(NOTIFY_REMINDER_TIMEZONE)
 NOTIFY_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_RUNNER_NOTIFY_TIMEOUT_SECONDS", "5"))
@@ -304,7 +307,7 @@ DEFAULT_REVIEW_CLIP_MIN_SECONDS = 6
 DEFAULT_REVIEW_CLIP_MAX_SECONDS = 9
 GPU_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "audio_review"})
 AUDIO_ARCHIVE_MAX_PARALLEL = max(1, int(os.getenv("MUNCHY_RUNNER_AUDIO_ARCHIVE_WORKERS", "2")))
-ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_AUDIO_BITRATE", "128k")
+ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_RUNNER_AUDIO_BITRATE", "128k")
 NotifyEvent = Literal[
     "job.received",
     "review.handoff",
@@ -348,6 +351,13 @@ JOB_LIST_SORT_COLUMNS = {
 }
 JOB_LIST_TERMINAL_FILTERS = {"active", "all", "terminal"}
 JOB_SEARCH_TOKEN_RE = re.compile(r"[0-9A-Za-z]+")
+JOB_TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
+JOB_TEMPLATE_LIST_SORT_COLUMNS = {
+    "created_at": "created_at",
+    "name": "name",
+    "revision": "revision",
+    "updated_at": "updated_at",
+}
 cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
 riverhog_upload_stop = threading.Event()
@@ -467,9 +477,24 @@ def authorized_api_bearer(request: Request) -> bool:
     return scheme.casefold() == "bearer" and secrets.compare_digest(token, API_TOKEN)
 
 
+def authorized_admin_bearer(request: Request) -> bool:
+    if not ADMIN_TOKEN:
+        return not API_TOKEN
+    raw = request.headers.get("authorization", "")
+    scheme, _, token = raw.partition(" ")
+    return scheme.casefold() == "bearer" and secrets.compare_digest(token, ADMIN_TOKEN)
+
+
 @app.middleware("http")
 async def require_api_auth(request: Request, call_next):  # type: ignore[no-untyped-def]
-    if request.url.path.startswith("/v1/") and not authorized_api_bearer(request):
+    if request.url.path.startswith("/v1/admin/"):
+        if not authorized_admin_bearer(request):
+            return JSONResponse(
+                {"detail": "invalid admin token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    elif request.url.path.startswith("/v1/") and not authorized_api_bearer(request):
         return JSONResponse(
             {"detail": "invalid api token"},
             status_code=401,
@@ -1156,70 +1181,6 @@ class RoutingConfig(BaseModel):
         return self
 
 
-class RoutingPreflightFile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(min_length=1, max_length=4096)
-    bytes: int = Field(ge=0)
-    sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    probe_summary: dict[str, Any] | None = None
-    probe_error: str | None = Field(default=None, max_length=1000)
-    routing_facts: dict[str, Any] | None = None
-    facts_error: str | None = Field(default=None, max_length=1000)
-    sidecar_facts: dict[str, Any] | None = None
-    sidecar_facts_error: str | None = Field(default=None, max_length=1000)
-
-    @field_validator("path")
-    @classmethod
-    def normalize_path(cls, value: str) -> str:
-        return normalize_posix(value)
-
-
-class RoutingPreflightRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    files: list[RoutingPreflightFile]
-    groups: dict[str, GroupConfig]
-    routing: RoutingConfig
-    enforce_metadata_projection: bool = False
-
-    @field_validator("files")
-    @classmethod
-    def require_files(
-        cls,
-        value: list[RoutingPreflightFile],
-    ) -> list[RoutingPreflightFile]:
-        if not value:
-            raise ValueError("at least one file is required")
-        paths = [item.path for item in value]
-        if len(paths) != len(set(paths)):
-            raise ValueError("file paths must be unique")
-        return value
-
-    @field_validator("groups")
-    @classmethod
-    def normalize_groups(
-        cls,
-        value: dict[str, GroupConfig],
-    ) -> dict[str, GroupConfig]:
-        if not value:
-            raise ValueError("routing preflight requires explicit groups")
-        return {validate_group_name(name): group for name, group in value.items()}
-
-    @model_validator(mode="after")
-    def validate_route_groups(self) -> RoutingPreflightRequest:
-        group_names = set(self.groups)
-        route_groups = {
-            str(route.group)
-            for route in self.routing.routes
-            if route.action == "upload" and route.group
-        }
-        missing = sorted(route_groups - group_names)
-        if missing:
-            raise ValueError("routing references unknown group(s): " + ", ".join(missing))
-        return self
-
-
 class CreateInputUploadRequest(BaseModel):
     input_upload_id: str | None = Field(default=None, min_length=1, max_length=160)
     files: list[InputFileSpec]
@@ -1350,6 +1311,86 @@ class CreateJobRequest(BaseModel):
         return self
 
 
+class JobTemplateCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    definition: dict[str, Any]
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        name = value.strip()
+        if not JOB_TEMPLATE_NAME_RE.fullmatch(name):
+            raise ValueError(
+                "name must start with an alphanumeric character and contain only "
+                "letters, digits, dots, underscores, and dashes"
+            )
+        return name
+
+
+class JobTemplateReplaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    definition: dict[str, Any]
+    enabled: bool = True
+    expected_revision: int = Field(ge=1)
+
+
+class JobTemplateEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class SubmissionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template: str = Field(min_length=1, max_length=160)
+    inputs: dict[str, str] = Field(default_factory=dict)
+    files: list[InputFileSpec]
+    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
+    collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
+    run_id: str | None = Field(default=None, min_length=1, max_length=64)
+    riverhog_upload_session_on_failure: RiverhogUploadSessionFailureAction = (
+        "preserve_for_resume"
+    )
+
+    @field_validator("template")
+    @classmethod
+    def validate_template(cls, value: str) -> str:
+        name = value.strip()
+        if not JOB_TEMPLATE_NAME_RE.fullmatch(name):
+            raise ValueError("template is not a valid job-template name")
+        return name
+
+    @field_validator("files")
+    @classmethod
+    def require_files(cls, value: list[InputFileSpec]) -> list[InputFileSpec]:
+        if not value:
+            raise ValueError("at least one file is required")
+        paths = [item.path for item in value]
+        if len(paths) != len(set(paths)):
+            raise ValueError("file paths must be unique")
+        return value
+
+    @field_validator("inputs")
+    @classmethod
+    def normalize_inputs(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for raw_name, raw_value in value.items():
+            name = str(raw_name).strip()
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", name):
+                raise ValueError(f"invalid submission input name: {raw_name}")
+            normalized[name] = str(raw_value).strip()
+        return normalized
+
+
+class CreateSubmissionRequest(SubmissionSpec):
+    submission_id: str | None = Field(default=None, min_length=1, max_length=160)
+
+
 def safe_parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -1383,6 +1424,28 @@ def init_state_store() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS states_kind_updated_at ON states(kind, updated_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_templates (
+                name TEXT PRIMARY KEY,
+                definition TEXT NOT NULL,
+                resolved_job TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_templates_enabled_name "
+            "ON job_templates(enabled, name)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_templates_updated_name "
+            "ON job_templates(updated_at, name)"
         )
         conn.execute(
             """
@@ -1432,6 +1495,409 @@ def init_state_store() -> None:
             "USING fts5(job_id UNINDEXED, search_text)"
         )
         conn.commit()
+
+
+def validated_job_template_definition(
+    definition: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    try:
+        normalized, defaults = normalize_job_template(definition)
+        input_values = {
+            name: str(spec.get("enum", ["template-validation"])[0])
+            for name, spec in dict(normalized.get("inputs") or {}).items()
+        }
+        validation_payload = render_job_template_inputs(
+            normalized,
+            defaults,
+            input_values,
+        )
+        validation_payload["input_upload_id"] = "template-validation"
+        if (
+            str(validation_payload.get("workflow_mode") or "collection_archive")
+            == "collection_archive"
+        ):
+            validation_payload["collection_slug"] = "template-validation"
+            validation_payload["collection_timestamp"] = "20260101T000000Z"
+        CreateJobRequest.model_validate(validation_payload)
+    except (JobTemplateError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return normalized, defaults, job_template_digest(normalized)
+
+
+def job_template_row_payload(
+    row: sqlite3.Row,
+    *,
+    include_definition: bool,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": str(row["name"]),
+        "enabled": bool(row["enabled"]),
+        "revision": int(row["revision"]),
+        "digest": str(row["digest"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+    if include_definition:
+        payload["definition"] = json.loads(str(row["definition"]))
+        payload["resolved_job"] = json.loads(str(row["resolved_job"]))
+    return payload
+
+
+def load_job_template(name: str, *, require_enabled: bool = False) -> dict[str, Any]:
+    with closing(state_db()) as conn:
+        row = conn.execute(
+            "SELECT * FROM job_templates WHERE name = ?",
+            (name,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+    payload = job_template_row_payload(row, include_definition=True)
+    if require_enabled and not payload["enabled"]:
+        raise HTTPException(status_code=409, detail=f"job template is disabled: {name}")
+    return payload
+
+
+def create_job_template_record(req: JobTemplateCreateRequest) -> dict[str, Any]:
+    definition, resolved_job, digest = validated_job_template_definition(req.definition)
+    now = utc_timestamp_now()
+    try:
+        with closing(state_db()) as conn:
+            conn.execute(
+                """
+                INSERT INTO job_templates(
+                    name, definition, resolved_job, digest, revision, enabled,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    req.name,
+                    json.dumps(definition, sort_keys=True),
+                    json.dumps(resolved_job, sort_keys=True),
+                    digest,
+                    bool_int(req.enabled),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"job template already exists: {req.name}",
+        ) from exc
+    return load_job_template(req.name)
+
+
+def replace_job_template_record(
+    name: str,
+    req: JobTemplateReplaceRequest,
+) -> dict[str, Any]:
+    definition, resolved_job, digest = validated_job_template_definition(req.definition)
+    now = utc_timestamp_now()
+    with closing(state_db()) as conn:
+        changed = conn.execute(
+            """
+            UPDATE job_templates
+            SET definition = ?, resolved_job = ?, digest = ?, revision = revision + 1,
+                enabled = ?, updated_at = ?
+            WHERE name = ? AND revision = ?
+            """,
+            (
+                json.dumps(definition, sort_keys=True),
+                json.dumps(resolved_job, sort_keys=True),
+                digest,
+                bool_int(req.enabled),
+                now,
+                name,
+                req.expected_revision,
+            ),
+        ).rowcount
+        if not changed:
+            exists = conn.execute(
+                "SELECT revision FROM job_templates WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "job_template_revision_conflict",
+                    "name": name,
+                    "expected_revision": req.expected_revision,
+                    "current_revision": int(exists["revision"]),
+                },
+            )
+        conn.commit()
+    return load_job_template(name)
+
+
+def set_job_template_enabled_record(
+    name: str,
+    *,
+    enabled: bool,
+    expected_revision: int,
+) -> dict[str, Any]:
+    now = utc_timestamp_now()
+    with closing(state_db()) as conn:
+        changed = conn.execute(
+            """
+            UPDATE job_templates
+            SET enabled = ?, revision = revision + 1, updated_at = ?
+            WHERE name = ? AND revision = ?
+            """,
+            (bool_int(enabled), now, name, expected_revision),
+        ).rowcount
+        if not changed:
+            exists = conn.execute(
+                "SELECT revision FROM job_templates WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "job_template_revision_conflict",
+                    "name": name,
+                    "expected_revision": expected_revision,
+                    "current_revision": int(exists["revision"]),
+                },
+            )
+        conn.commit()
+    return load_job_template(name)
+
+
+def delete_job_template_record(name: str, *, expected_revision: int) -> dict[str, Any]:
+    with closing(state_db()) as conn:
+        changed = conn.execute(
+            "DELETE FROM job_templates WHERE name = ? AND revision = ?",
+            (name, expected_revision),
+        ).rowcount
+        if not changed:
+            exists = conn.execute(
+                "SELECT revision FROM job_templates WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "job_template_revision_conflict",
+                    "name": name,
+                    "expected_revision": expected_revision,
+                    "current_revision": int(exists["revision"]),
+                },
+            )
+        conn.commit()
+    return {"name": name, "state": "removed"}
+
+
+def list_job_templates_page(
+    *,
+    page: int,
+    per_page: int,
+    sort: str,
+    order: str,
+    query: str | None,
+    enabled: bool | None,
+) -> dict[str, Any]:
+    bounded_page = max(1, page)
+    bounded_per_page = max(1, min(per_page, 500))
+    normalized_sort = sort.casefold()
+    if normalized_sort not in JOB_TEMPLATE_LIST_SORT_COLUMNS:
+        raise HTTPException(
+            status_code=400,
+            detail="sort must be one of: " + ", ".join(sorted(JOB_TEMPLATE_LIST_SORT_COLUMNS)),
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="order must be asc or desc")
+    where: list[str] = []
+    params: list[Any] = []
+    if query:
+        escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("lower(name) LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+    if enabled is not None:
+        where.append("enabled = ?")
+        params.append(bool_int(enabled))
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    sort_column = JOB_TEMPLATE_LIST_SORT_COLUMNS[normalized_sort]
+    direction = normalized_order.upper()
+    offset = (bounded_page - 1) * bounded_per_page
+    with closing(state_db()) as conn:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS total FROM job_templates{where_sql}",
+                params,
+            ).fetchone()["total"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT * FROM job_templates
+            {where_sql}
+            ORDER BY {sort_column} {direction}, name ASC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, bounded_per_page, offset],
+        ).fetchall()
+    return {
+        "page": bounded_page,
+        "pages": (total + bounded_per_page - 1) // bounded_per_page if total else 0,
+        "per_page": bounded_per_page,
+        "total": total,
+        "sort": normalized_sort,
+        "order": normalized_order,
+        "query": query,
+        "filters": {"enabled": enabled},
+        "templates": [
+            job_template_row_payload(row, include_definition=False) for row in rows
+        ],
+    }
+
+
+def submission_request_digest(req: SubmissionSpec) -> str:
+    payload = req.model_dump(mode="json")
+    payload.pop("submission_id", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def resolved_submission(
+    req: SubmissionSpec,
+    *,
+    submission_id: str,
+) -> tuple[dict[str, Any], CreateJobRequest, InputUploadStorageHint]:
+    template = load_job_template(req.template, require_enabled=True)
+    try:
+        raw_job = render_job_template_inputs(
+            dict(template["definition"]),
+            dict(template["resolved_job"]),
+            req.inputs,
+        )
+    except JobTemplateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    workflow_mode = str(raw_job.get("workflow_mode") or "collection_archive")
+    if workflow_mode == "collection_archive" and not req.collection_timestamp:
+        raise HTTPException(
+            status_code=422,
+            detail="collection_timestamp is required for collection_archive submissions",
+        )
+    raw_job.update(
+        {
+            "job_id": submission_id,
+            "input_upload_id": submission_id,
+            "riverhog_upload_session_on_failure": req.riverhog_upload_session_on_failure,
+        }
+    )
+    for key, value in (
+        ("collection_slug", req.collection_slug),
+        ("collection_timestamp", req.collection_timestamp),
+        ("run_id", req.run_id),
+    ):
+        if value is not None:
+            raw_job[key] = value
+    try:
+        job_request = CreateJobRequest.model_validate(raw_job)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    storage_hint = storage_hint_for_job_request(job_request)
+    try:
+        CreateInputUploadRequest(files=req.files, storage_hint=storage_hint)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return template, job_request, storage_hint
+
+
+def submission_template_summary(job: Mapping[str, Any]) -> dict[str, Any]:
+    raw = job.get("job_template")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        key: raw[key]
+        for key in ("name", "revision", "digest")
+        if key in raw
+    }
+
+
+def submission_response(job: dict[str, Any]) -> dict[str, Any]:
+    submission_id = str(job.get("submission_id") or job.get("job_id") or "")
+    upload: dict[str, Any] | None
+    try:
+        upload = load_input_upload(str(job["input_upload_id"]))
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        upload = None
+    return {
+        "submission_id": submission_id,
+        "state": str(job.get("state") or "unknown"),
+        "phase": str(job.get("phase") or ""),
+        "template": submission_template_summary(job),
+        "inputs": dict(job.get("submission_inputs") or {}),
+        "upload": upload,
+        "job": compact_job_response(job),
+    }
+
+
+def create_submission_state(
+    req: CreateSubmissionRequest,
+) -> tuple[dict[str, Any], bool]:
+    submission_id = req.submission_id or uuid.uuid4().hex
+    digest = submission_request_digest(req)
+    existing = read_state("job", submission_id)
+    if existing is not None:
+        if existing.get("submission_request_digest") != digest:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "submission_conflict",
+                    "submission_id": submission_id,
+                },
+            )
+        return existing, False
+    template, job_request, storage_hint = resolved_submission(
+        req,
+        submission_id=submission_id,
+    )
+    require_input_upload_capacity(req.files, storage_hint)
+    upload_created = False
+    try:
+        upload = create_input_upload_state(
+            input_upload_id=submission_id,
+            files=req.files,
+            storage_hint=storage_hint,
+        )
+        upload_created = True
+        upload["submission_id"] = submission_id
+        upload["submission_inputs"] = dict(req.inputs)
+        upload["submission_request_digest"] = digest
+        upload["job_template"] = {
+            "name": template["name"],
+            "revision": template["revision"],
+            "digest": template["digest"],
+        }
+        save_input_upload_raw(upload)
+        job = create_job_state_from_request(job_request)
+        job["submission_id"] = submission_id
+        job["submission_inputs"] = dict(req.inputs)
+        job["submission_request_digest"] = digest
+        job["job_template"] = {
+            "name": template["name"],
+            "revision": template["revision"],
+            "digest": template["digest"],
+        }
+        job = save_job(job)
+    except Exception:
+        if upload_created:
+            cleanup_upload = read_state("input-upload", submission_id)
+            if cleanup_upload is not None:
+                remove_input_upload_data(cleanup_upload)
+            delete_state("input-upload", submission_id)
+        raise
+    return job, True
 
 
 def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4889,275 +5355,6 @@ def metadata_projection_tags_for_file(
 
 def dedup_metadata_projection_tags(tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
-
-
-def routing_preflight_readout(
-    req: RoutingPreflightRequest,
-    routing: Mapping[str, Any],
-    plan: Any,
-) -> dict[str, Any]:
-    sidecar_facts_by_path = {
-        item.path: item.sidecar_facts for item in req.files if item.sidecar_facts is not None
-    }
-    sidecar_facts_errors_by_path = {
-        item.path: item.sidecar_facts_error for item in req.files if item.sidecar_facts_error
-    }
-    facts_by_path = {
-        item.path: routing_file_facts(
-            item.path,
-            probe_summary=item.probe_summary,
-            routing_facts=item.routing_facts,
-        )
-        for item in req.files
-    }
-    facts_by_path = apply_sidecar_rules(
-        routing,
-        facts_by_path,
-        sidecar_facts_by_path=sidecar_facts_by_path,
-        sidecar_facts_errors_by_path=sidecar_facts_errors_by_path,
-    )
-    group_configs = {
-        name: group.model_dump(mode="python", exclude_none=True)
-        for name, group in req.groups.items()
-    }
-    evidence_items = [
-        item for item in [*plan.matches, *plan.left] if item.get("action") == "evidence"
-    ]
-    evidence_by_primary: dict[str, list[dict[str, Any]]] = {}
-    for item in evidence_items:
-        primary_path = str(
-            item.get("sidecar_for") or item.get("matched_facts", {}).get("sidecar.for") or ""
-        )
-        if primary_path:
-            evidence_by_primary.setdefault(primary_path, []).append(item)
-
-    files: list[dict[str, Any]] = []
-    for item in [*plan.matches, *plan.left, *plan.unmatched]:
-        path = str(item.get("path") or "")
-        action = str(item.get("action") or "unmatched")
-        file_readout: dict[str, Any] = {
-            "path": path,
-            "action": action,
-        }
-        if item.get("route_id"):
-            file_readout["route_id"] = str(item["route_id"])
-        if item.get("group"):
-            file_readout["group"] = str(item["group"])
-        if action == "evidence":
-            file_readout["sidecar"] = {
-                "id": str(item.get("sidecar_id") or item.get("route_id") or ""),
-                "format": str(item.get("sidecar_format") or "opaque"),
-                "for": str(
-                    item.get("sidecar_for")
-                    or item.get("matched_facts", {}).get("sidecar.for")
-                    or ""
-                ),
-            }
-            file_readout["custody"] = {"kind": "source_artifact_sidecar"}
-        elif action == "upload":
-            sidecars = routing_preflight_sidecar_readout(evidence_by_primary.get(path, []))
-            if sidecars:
-                file_readout["sidecars"] = sidecars
-            group_name = str(item.get("group") or "")
-            group_config = group_configs.get(group_name)
-            if group_config:
-                file_readout["metadata_projection"] = metadata_projection_preflight_readout(
-                    path,
-                    group_config,
-                    facts_by_path=facts_by_path,
-                    sidecar_matches=evidence_by_primary.get(path, []),
-                )
-        files.append(file_readout)
-    return {"files": files}
-
-
-def metadata_projection_preflight_failures(
-    readout: Mapping[str, Any],
-) -> dict[str, dict[str, Any]]:
-    files = readout.get("files")
-    if not isinstance(files, list):
-        return {}
-    failures: dict[str, dict[str, Any]] = {}
-    for item in files:
-        if not isinstance(item, Mapping):
-            continue
-        if item.get("action") != "upload":
-            continue
-        path = str(item.get("path") or "").strip()
-        projection = item.get("metadata_projection")
-        if not path or not isinstance(projection, Mapping):
-            continue
-        if not projection.get("enabled", False) or projection.get("ok") is not False:
-            continue
-        error = str(projection.get("error") or "metadata projection failed")
-        failures[path] = {
-            "reason": "metadata_projection_failed",
-            "metadata_projection_error": error,
-            "metadata_projection": copy.deepcopy(dict(projection)),
-        }
-    return failures
-
-
-def enforce_metadata_projection_preflight(
-    payload: dict[str, Any],
-    readout: Mapping[str, Any],
-) -> dict[str, Any]:
-    failures = metadata_projection_preflight_failures(readout)
-    if not failures:
-        return payload
-
-    payload = copy.deepcopy(payload)
-    unmatched: list[dict[str, Any]] = [
-        dict(item) for item in payload.get("unmatched", []) if isinstance(item, Mapping)
-    ]
-    retained_matches: list[dict[str, Any]] = []
-    failed_primary_paths: set[str] = set()
-    for item in payload.get("matches", []):
-        if not isinstance(item, Mapping):
-            continue
-        match = dict(item)
-        path = str(match.get("path") or "")
-        failure = failures.get(path)
-        if match.get("action") == "upload" and failure is not None:
-            failed_primary_paths.add(path)
-            unmatched.append({**match, **failure})
-            continue
-        retained_matches.append(match)
-
-    matches: list[dict[str, Any]] = []
-    for item in retained_matches:
-        if item.get("action") == "evidence":
-            matched_facts = item.get("matched_facts")
-            if not isinstance(matched_facts, Mapping):
-                matched_facts = {}
-            sidecar_for = str(item.get("sidecar_for") or matched_facts.get("sidecar.for") or "")
-            if sidecar_for in failed_primary_paths:
-                unmatched.append(
-                    {
-                        **item,
-                        "reason": "sidecar_for_metadata_projection_failed",
-                        "sidecar_for": sidecar_for,
-                    }
-                )
-                continue
-        matches.append(item)
-
-    left = payload.get("left", [])
-    payload["ok"] = False
-    payload["matches"] = matches
-    payload["unmatched"] = unmatched
-    payload["matched_files"] = len(matches)
-    payload["left_files"] = len(left) if isinstance(left, list) else 0
-    payload["unmatched_files"] = len(unmatched)
-    return payload
-
-
-def routing_preflight_sidecar_readout(
-    sidecar_matches: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for item in sidecar_matches:
-        out.append(
-            {
-                "id": str(item.get("sidecar_id") or item.get("route_id") or ""),
-                "format": str(item.get("sidecar_format") or "opaque"),
-                "path": str(item.get("path") or ""),
-                "custody": "source_artifacts",
-            }
-        )
-    return out
-
-
-def metadata_projection_preflight_readout(
-    rel_path: str,
-    group_config: dict[str, Any],
-    *,
-    facts_by_path: Mapping[str, Mapping[str, Any]],
-    sidecar_matches: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    config = metadata_projection_config(group_config)
-    out: dict[str, Any] = {
-        "enabled": bool(config["enabled"]),
-        "target": str(config["target"]),
-    }
-    if not config["enabled"]:
-        return out
-    if not group_produces_primary_archive_output(group_config):
-        out["ok"] = True
-        out["produces_primary_output"] = False
-        return out
-    facts = metadata_projection_preflight_facts(
-        rel_path,
-        facts_by_path=facts_by_path,
-        sidecar_matches=sidecar_matches,
-    )
-    try:
-        metadata = project_immich_metadata(
-            facts,
-            allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
-            allow_missing_gps=bool(config["allow_missing_gps"]),
-            allow_missing_device_make=bool(config["allow_missing_device_make"]),
-            allow_missing_device_model=bool(config["allow_missing_device_model"]),
-            allow_missing_creators=bool(config["allow_missing_creators"]),
-            capture_date_sources=cast(
-                list[dict[str, Any]] | None,
-                config.get("capture_date_sources"),
-            ),
-            gps_sources=cast(list[dict[str, Any]] | None, config.get("gps_sources")),
-            configured_gps=cast(dict[str, Any] | None, config.get("configured_gps")),
-            device_make=cast(str | None, config.get("device_make")),
-            device_model=cast(str | None, config.get("device_model")),
-            creators=cast(list[str], config.get("creators")),
-            tags=cast(list[str], config.get("tags")),
-        )
-    except MetadataProjectionError as exc:
-        out["ok"] = False
-        out["error"] = str(exc)
-        return out
-    out["ok"] = True
-    out["capture_date"] = {
-        "present": metadata.capture_date is not None,
-        "source": metadata.capture_date_source,
-        "value": metadata.capture_date,
-    }
-    out["gps"] = {
-        "present": metadata.gps is not None,
-        "source": metadata.gps_source,
-    }
-    if metadata.gps is not None:
-        out["gps"]["latitude"] = metadata.gps.latitude
-        out["gps"]["longitude"] = metadata.gps.longitude
-        if metadata.gps.altitude is not None:
-            out["gps"]["altitude"] = metadata.gps.altitude
-    out["device"] = {
-        "make": metadata.device_make,
-        "model": metadata.device_model,
-    }
-    out["creators"] = list(metadata.creators)
-    return out
-
-
-def metadata_projection_preflight_facts(
-    rel_path: str,
-    *,
-    facts_by_path: Mapping[str, Mapping[str, Any]],
-    sidecar_matches: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    facts = dict(facts_by_path.get(rel_path, routing_file_facts(rel_path)))
-    sidecar_ids: list[str] = []
-    for item in sidecar_matches:
-        sidecar_id = str(item.get("sidecar_id") or item.get("route_id") or "").strip()
-        sidecar_path = str(item.get("path") or "").strip()
-        if not sidecar_id or not sidecar_path:
-            continue
-        sidecar_ids.append(sidecar_id)
-        facts[f"sidecars.{sidecar_id}.path"] = sidecar_path
-        facts[f"sidecars.{sidecar_id}.format"] = str(item.get("sidecar_format") or "opaque")
-        for key, value in facts_by_path.get(sidecar_path, {}).items():
-            facts[f"sidecars.{sidecar_id}.facts.{key}"] = value
-    if sidecar_ids:
-        facts["sidecars.ids"] = sidecar_ids
-    return facts
 
 
 def write_atomic_text(path: Path, text: str) -> bool:
@@ -9957,7 +10154,6 @@ def capabilities() -> dict[str, Any]:
             ],
         },
         "storage": {
-            "input_upload_storage_hint_required": True,
             "same_filesystem_hardlink_discount": path_device(TUSD_DIR)
             == path_device(GPU_RUNTIME_DIR),
             "max_active_input_uploads": MAX_ACTIVE_INPUT_UPLOADS,
@@ -9986,14 +10182,16 @@ def capabilities() -> dict[str, Any]:
                 "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS",
                 "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
-                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME",
-                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE",
-                "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL",
+                "MUNCHY_RUNNER_NOTIFY_REMINDER_TIME",
+                "MUNCHY_RUNNER_NOTIFY_REMINDER_TIMEZONE",
+                "MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL",
             ],
         },
         "operations": {
+            "submit": True,
+            "preflight_submission": True,
+            "cancel_submission": True,
             "cancel_job": True,
-            "delete_input_upload": True,
             "list_jobs": True,
             "compact_job_status": True,
             "notify_preflight_failed": True,
@@ -10092,44 +10290,147 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
     return {"status": "attempted", "deliveries": deliveries}
 
 
-@app.post("/v1/routing/preflight")
-def routing_preflight(req: RoutingPreflightRequest) -> dict[str, Any]:
-    routing = req.routing.model_dump(exclude_none=True)
-    plan = routing_plan(
-        routing,
-        [
-            RoutingFile(
-                path=item.path,
-                bytes=item.bytes,
-                sha256=item.sha256,
-                probe_summary=item.probe_summary,
-                probe_error=item.probe_error,
-                routing_facts=item.routing_facts,
-                facts_error=item.facts_error,
-                sidecar_facts=item.sidecar_facts,
-                sidecar_facts_error=item.sidecar_facts_error,
-            )
-            for item in req.files
-        ],
-        group_names=set(req.groups),
+@app.post("/v1/admin/job-templates/validate")
+def validate_job_template(req: JobTemplateCreateRequest) -> dict[str, Any]:
+    definition, resolved_job, digest = validated_job_template_definition(req.definition)
+    return {
+        "name": req.name,
+        "valid": True,
+        "digest": digest,
+        "definition": definition,
+        "resolved_job": resolved_job,
+    }
+
+
+@app.get("/v1/admin/job-templates")
+def list_job_templates(
+    page: int = 1,
+    per_page: int = 25,
+    sort: str = "name",
+    order: str = "asc",
+    q: str | None = None,
+    query: str | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    return list_job_templates_page(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=q if q is not None else query,
+        enabled=enabled,
     )
-    probe_route_ids = [
-        str(route.get("id") or f"route-{index + 1}")
-        for index, route in enumerate(routing.get("routes") or [])
-        if isinstance(route, dict) and route_requires_probe(route, routing=routing)
-    ]
-    for unmatched in plan.unmatched:
-        if unmatched.get("reason") == "no_matching_route":
-            item = next((file for file in req.files if file.path == unmatched.get("path")), None)
-            if item is not None and item.probe_summary is None and probe_route_ids:
-                unmatched["reason"] = "probe_summary_required"
-                unmatched["probe_sensitive_routes"] = probe_route_ids[:20]
-    readout = routing_preflight_readout(req, routing, plan)
-    payload = plan.as_dict()
-    if req.enforce_metadata_projection:
-        payload = enforce_metadata_projection_preflight(payload, readout)
-    payload["readout"] = readout
-    return payload
+
+
+@app.post("/v1/admin/job-templates", status_code=201)
+def create_job_template(req: JobTemplateCreateRequest) -> dict[str, Any]:
+    return create_job_template_record(req)
+
+
+@app.get("/v1/admin/job-templates/{name}")
+def get_job_template(name: str) -> dict[str, Any]:
+    return load_job_template(name)
+
+
+@app.put("/v1/admin/job-templates/{name}")
+def replace_job_template(
+    name: str,
+    req: JobTemplateReplaceRequest,
+) -> dict[str, Any]:
+    return replace_job_template_record(name, req)
+
+
+@app.post("/v1/admin/job-templates/{name}/enable")
+def enable_job_template(name: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
+    return set_job_template_enabled_record(
+        name,
+        enabled=True,
+        expected_revision=req.expected_revision,
+    )
+
+
+@app.post("/v1/admin/job-templates/{name}/disable")
+def disable_job_template(name: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
+    return set_job_template_enabled_record(
+        name,
+        enabled=False,
+        expected_revision=req.expected_revision,
+    )
+
+
+@app.delete("/v1/admin/job-templates/{name}")
+def delete_job_template(name: str, expected_revision: int) -> dict[str, Any]:
+    if expected_revision < 1:
+        raise HTTPException(status_code=400, detail="expected_revision must be >= 1")
+    return delete_job_template_record(name, expected_revision=expected_revision)
+
+
+def load_submission(submission_id: str) -> dict[str, Any]:
+    job = load_job(submission_id)
+    if job.get("submission_id") != submission_id:
+        raise HTTPException(status_code=404, detail=f"unknown submission: {submission_id}")
+    return job
+
+
+@app.post("/v1/submissions/preflight")
+def preflight_submission(req: SubmissionSpec) -> dict[str, Any]:
+    provisional_id = f"preflight-{uuid.uuid4().hex}"
+    template, job_request, storage_hint = resolved_submission(
+        req,
+        submission_id=provisional_id,
+    )
+    require_input_upload_capacity(req.files, storage_hint)
+    return {
+        "accepted": True,
+        "template": {
+            "name": template["name"],
+            "revision": template["revision"],
+            "digest": template["digest"],
+        },
+        "workflow_mode": job_request.workflow_mode,
+        "files_total": len(req.files),
+        "bytes_total": sum(item.bytes for item in req.files),
+        "storage_hint": storage_hint.model_dump(exclude_none=True),
+        "content_inspection": "after_upload",
+    }
+
+
+@app.post("/v1/submissions", status_code=202)
+def create_submission(
+    req: CreateSubmissionRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    with state_lock:
+        job, created = create_submission_state(req)
+    if created:
+        notify_job_event(job, "job.received", "Munchy submission received.")
+    schedule_pending_jobs(background_tasks)
+    return submission_response(job)
+
+
+@app.get("/v1/submissions/{submission_id}")
+def get_submission(submission_id: str) -> dict[str, Any]:
+    return submission_response(load_submission(submission_id))
+
+
+@app.post(
+    "/v1/submissions/{submission_id}/files/{rel_path:path}/upload",
+    status_code=201,
+)
+def create_or_resume_submission_file_upload(
+    submission_id: str,
+    rel_path: str,
+) -> dict[str, Any]:
+    load_submission(submission_id)
+    with input_file_upload_setup_lock(submission_id, rel_path):
+        return _create_or_resume_input_file_upload(submission_id, rel_path)
+
+
+@app.delete("/v1/submissions/{submission_id}", status_code=202)
+def cancel_submission(submission_id: str) -> dict[str, Any]:
+    load_submission(submission_id)
+    cancel_job(submission_id, cleanup=True)
+    return submission_response(load_submission(submission_id))
 
 
 @app.get("/v1/admin/scheduler")
@@ -10191,16 +10492,6 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     return JSONResponse({"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(target_path)}})
 
 
-@app.post("/v1/input-uploads", status_code=201)
-def create_input_upload(req: CreateInputUploadRequest) -> dict[str, Any]:
-    with state_lock:
-        return create_input_upload_state(
-            input_upload_id=req.input_upload_id or uuid.uuid4().hex,
-            files=req.files,
-            storage_hint=req.storage_hint,
-        )
-
-
 def create_input_upload_state(
     *,
     input_upload_id: str,
@@ -10240,35 +10531,6 @@ def create_input_upload_state(
     return save_input_upload(upload)
 
 
-@app.get("/v1/input-uploads/{input_upload_id}")
-def get_input_upload(input_upload_id: str) -> dict[str, Any]:
-    upload = load_input_upload(input_upload_id)
-    return refresh_input_upload(upload)
-
-
-@app.delete("/v1/input-uploads/{input_upload_id}", status_code=202)
-def delete_input_upload(input_upload_id: str) -> dict[str, Any]:
-    with state_lock:
-        upload = load_input_upload(input_upload_id)
-        referenced_jobs = jobs_referencing_input_upload(input_upload_id)
-        if referenced_jobs:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "input_upload_referenced",
-                    "input_upload_id": input_upload_id,
-                    "jobs": referenced_jobs,
-                },
-            )
-        remove_input_upload_data(upload)
-        delete_state("input-upload", input_upload_id)
-        return {
-            "input_upload_id": input_upload_id,
-            "state": "deleted",
-            "removed_files": len(upload.get("files", [])),
-        }
-
-
 def input_file_upload_response(
     *,
     upload_url: object,
@@ -10285,15 +10547,6 @@ def input_file_upload_response(
         "headers": {"Tus-Resumable": "1.0.0"},
         "file": status,
     }
-
-
-@app.post("/v1/input-uploads/{input_upload_id}/files/{rel_path:path}/upload", status_code=201)
-def create_or_resume_input_file_upload(
-    input_upload_id: str,
-    rel_path: str,
-) -> dict[str, Any]:
-    with input_file_upload_setup_lock(input_upload_id, rel_path):
-        return _create_or_resume_input_file_upload(input_upload_id, rel_path)
 
 
 def _create_or_resume_input_file_upload(
@@ -10430,15 +10683,6 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         "cleanup_local_on_success": req.cleanup_local_on_success,
     }
     return save_job(job)
-
-
-@app.post("/v1/jobs", status_code=202)
-def create_job(req: CreateJobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    with state_lock:
-        job = create_job_state_from_request(req)
-    notify_job_event(job, "job.received", "Munchy job received.")
-    schedule_pending_jobs(background_tasks)
-    return job
 
 
 @app.get("/v1/jobs")

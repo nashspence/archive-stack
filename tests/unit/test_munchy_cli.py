@@ -17,6 +17,7 @@ def test_munchy_help() -> None:
     assert "Munchy media ingest CLI." in result.stdout
     assert "Encode profile operations." in result.stdout
     assert "Runner job operations." in result.stdout
+    assert "Submit local files through a server-owned job template." in result.stdout
 
 
 def test_munchy_command_help_has_summaries() -> None:
@@ -30,7 +31,6 @@ def test_munchy_command_help_has_summaries() -> None:
     assert job.exit_code == 0
     for summary in (
         "Dry-run the configured routed review sweep.",
-        "Upload local media and start a runner job.",
         "List runner jobs.",
         "Show runner job details.",
         "Cancel a runner job.",
@@ -331,7 +331,7 @@ def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  
     assert "canceled" in result.stdout
 
 
-def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
     seen: dict[str, object] = {}
@@ -346,34 +346,32 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
         def __init__(self, base_url: str) -> None:
             assert base_url == "http://runner"
 
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            seen["workflow_mode"] = workflow_mode
-            seen["requested_containers"] = requested_containers
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        def preflight_submission(self, request):  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"input_upload_id": request.input_upload_id}
+            return {
+                "accepted": True,
+                "template": {"name": request.template, "revision": 3, "digest": "digest"},
+                "workflow_mode": "collection_archive",
+                "content_inspection": "after_upload",
+            }
 
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["job_payload"] = request.job_payload
-            return {"job_id": request.job_id, "state": "queued"}
+        def create_submission(self, request):  # type: ignore[no-untyped-def]
+            return {
+                "submission_id": request.submission_id,
+                "upload": {"state": "uploading"},
+                "job": {"job_id": request.submission_id, "state": "queued"},
+            }
 
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["uploaded"] = request.input_upload_id
-            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
+        def upload_files(self, request):  # type: ignore[no-untyped-def]
+            seen["uploaded"] = request.submission_id
+            return {"state": "uploaded"}
 
-        def wait_for_job(self, job_id: str, *, interval: float = 10.0) -> dict[str, object]:
+        def wait_for_submission(self, submission_id: str, *, interval: float = 10.0):
             assert interval == 0.5
             return {
-                "job_id": job_id,
-                "collection_slug": "camera",
-                "state": "succeeded",
-                "phase": "done",
+                "submission_id": submission_id,
+                "upload": {"state": "uploaded"},
+                "job": {"job_id": submission_id, "state": "succeeded", "phase": "done"},
             }
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
@@ -382,17 +380,18 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
     result = runner.invoke(
         app,
         [
-            "job",
-            "start",
+            "submit",
             str(source),
+            "--template",
+            "camera-archive",
+            "--input",
+            "route=camera-main",
             "--runner-url",
             "http://runner",
             "--collection",
             "camera",
             "--timestamp",
-            "20260621T120000Z",
-            "--group",
-            "video",
+            "20260621T120000.123456Z",
             "--no-hash-cache",
             "--interval",
             "0.5",
@@ -402,79 +401,19 @@ def test_munchy_job_start_builds_direct_group_upload(monkeypatch, tmp_path) -> N
 
     assert result.exit_code == 0
     request = seen["request"]
-    assert request.job_id == "camera-20260621T120000Z"
-    assert request.input_upload_id == "camera-20260621T120000Z"
-    assert request.files[0].rel_path == "video/clip.mp4"
-    assert request.storage_hint["structured_routing"] is False
-    assert request.storage_hint["groups"]["video"]["output_mode"] == "video"
-    assert seen["workflow_mode"] == "collection_archive"
-    assert seen["requested_containers"] == []
-    assert seen["uploaded"] == "camera-20260621T120000Z"
-    assert awake_reasons == ["munchy job start"]
-    assert json.loads(result.stdout)["state"] == "succeeded"
-
-
-def test_munchy_job_start_dry_run_does_not_create_runner_state(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    source = tmp_path / "clip.mp4"
-    source.write_bytes(b"video")
-    seen: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, base_url: str) -> None:
-            assert base_url == "http://runner"
-
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            seen["workflow_mode"] = workflow_mode
-            seen["requested_containers"] = requested_containers
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            raise AssertionError("dry-run must not create input uploads")
-
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            raise AssertionError("dry-run must not create jobs")
-
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            raise AssertionError("dry-run must not upload files")
-
-    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
-
-    result = runner.invoke(
-        app,
-        [
-            "job",
-            "start",
-            str(source),
-            "--runner-url",
-            "http://runner",
-            "--collection",
-            "camera",
-            "--timestamp",
-            "20260621T120000Z",
-            "--group",
-            "video",
-            "--no-hash-cache",
-            "--dry-run",
-            "--json",
-        ],
-    )
-
-    assert result.exit_code == 0
+    assert request.template == "camera-archive"
+    assert request.inputs == {"route": "camera-main"}
+    assert request.collection_slug == "camera"
+    assert request.collection_timestamp == "20260621T120000.123456Z"
+    assert [item.rel_path for item in request.files] == ["clip.mp4"]
+    assert seen["uploaded"] == request.submission_id
+    assert awake_reasons == ["munchy submit"]
     payload = json.loads(result.stdout)
-    assert payload["dry_run"] is True
-    assert payload["status"] == "would_start"
-    assert payload["job_id"] == "camera-20260621T120000Z"
-    assert payload["input_upload_id"] == "camera-20260621T120000Z"
-    assert payload["files_total"] == 1
-    assert payload["bytes_total"] == 5
-    assert seen["workflow_mode"] == "collection_archive"
+    assert payload["submission_id"] == request.submission_id
+    assert payload["job"]["state"] == "succeeded"
 
 
-def test_munchy_job_start_skips_platform_cruft_before_upload(
+def test_munchy_submit_dry_run_preflights_without_creating_state(
     monkeypatch,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -482,288 +421,49 @@ def test_munchy_job_start_skips_platform_cruft_before_upload(
     source_dir.mkdir()
     (source_dir / "IMG_0001.MOV").write_bytes(b"video")
     (source_dir / ".DS_Store").write_bytes(b"finder")
-    nested = source_dir / "nested"
-    nested.mkdir()
-    (nested / "._IMG_0001.MOV").write_bytes(b"appledouble")
     seen: dict[str, object] = {}
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
             assert base_url == "http://runner"
 
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            pass
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        def preflight_submission(self, request):  # type: ignore[no-untyped-def]
             seen["request"] = request
-            return {"input_upload_id": request.input_upload_id}
+            return {
+                "accepted": True,
+                "template": {"name": request.template, "revision": 2, "digest": "digest"},
+                "workflow_mode": "review",
+                "content_inspection": "after_upload",
+            }
 
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"job_id": request.job_id, "state": "queued"}
-
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
+        def create_submission(self, request):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"dry-run created submission {request.submission_id}")
 
     monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
 
     result = runner.invoke(
         app,
         [
-            "job",
-            "start",
+            "submit",
             str(source_dir),
+            "--template",
+            "phone-review",
             "--runner-url",
             "http://runner",
-            "--collection",
-            "phone",
-            "--timestamp",
-            "20260621T120000Z",
-            "--group",
-            "video",
             "--no-hash-cache",
-            "--no-wait",
+            "--dry-run",
+            "--json",
         ],
     )
 
     assert result.exit_code == 0
     request = seen["request"]
-    assert [item.rel_path for item in request.files] == ["video/IMG_0001.MOV"]
-
-
-def test_munchy_job_start_uses_configured_routing(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    source_dir = tmp_path / "camera"
-    source_dir.mkdir()
-    (source_dir / "clip.mp4").write_bytes(b"video")
-    config = tmp_path / "munchy.yaml"
-    config.write_text(
-        """
-job:
-  workflow_mode: collection_archive
-  collection_archive:
-    destination: riverhog
-  routing:
-    routes:
-      - id: camera-video
-        group: video
-        when:
-          path:
-            suffix: .mp4
-
-profiles:
-  camera:
-    schema_version: 1
-    target: munchy-av1-nvenc
-    name: camera
-    archive:
-      codec: av1_nvenc
-      container: webm
-      quality: 38
-
-groups:
-  video:
-    profile: camera
-    output_mode: video
-    eager_pipeline_batches: 1
-    tasks:
-      - archive_video
-    metadata_projection:
-      creators:
-        - Example Operator
-      tags:
-        - device/camera
-      device:
-        make: Example
-        model: Camera
-  preserve:
-    output_mode: preserve
-    tasks: []
-    metadata_projection: false
-""".strip(),
-        encoding="utf-8",
-    )
-    seen: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, base_url: str) -> None:
-            self.base_url = base_url
-
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            seen["requested_containers"] = requested_containers
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["request"] = request
-            return {"input_upload_id": request.input_upload_id}
-
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["job_payload"] = request.job_payload
-            return {"job_id": request.job_id, "state": "queued"}
-
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
-
-    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
-
-    result = runner.invoke(
-        app,
-        [
-            "job",
-            "start",
-            str(source_dir),
-            "--runner-url",
-            "http://runner",
-            "--config",
-            str(config),
-            "--collection",
-            "camera",
-            "--timestamp",
-            "20260621T120000Z",
-            "--riverhog-upload-session-on-failure",
-            "cancel",
-            "--no-hash-cache",
-            "--no-wait",
-        ],
-    )
-
-    assert result.exit_code == 0
-    request = seen["request"]
-    assert request.files[0].rel_path == "clip.mp4"
-    assert request.storage_hint["structured_routing"] is True
-    assert request.storage_hint["groups"]["video"]["tasks"] == ["archive_video"]
-    assert request.storage_hint["groups"]["video"]["eager_pipeline_batches"] == 1
-    assert request.storage_hint["groups"]["preserve"]["tasks"] == []
-    assert request.job_payload["collection_archive"]["destination"] == "riverhog"
-    assert request.job_payload["riverhog_upload_session_on_failure"] == "cancel"
-    assert request.job_payload["routing"]["routes"][0]["group"] == "video"
-    assert (
-        request.job_payload["groups"]["video"]["encode_profile"]["archive"]["container"] == "webm"
-    )
-    assert request.job_payload["groups"]["video"]["eager_pipeline_batches"] == 1
-    assert request.job_payload["groups"]["video"]["metadata_projection"] == {
-        "creators": ["Example Operator"],
-        "device": {"make": "Example", "model": "Camera"},
-        "tags": ["device/camera"],
-    }
-    assert request.job_payload["groups"]["preserve"]["metadata_projection"] is False
-    assert seen["requested_containers"] == ["webm"]
-
-
-def test_munchy_job_start_uses_review_sweep_config(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    source_dir = tmp_path / "camera"
-    source_dir.mkdir()
-    (source_dir / "clip.mp4").write_bytes(b"video")
-    config = tmp_path / "munchy-review.yaml"
-    config.write_text(
-        """
-job:
-  workflow_mode: review
-  review:
-    device_id: camera
-    target:
-      enabled: true
-      destination: review-remote:reviews/{route_id}/{profile_id}
-    sweep:
-      quality: 24..28:4
-      max_height:
-        - 720
-        - 1080
-  routing:
-    routes:
-      - id: camera-video
-        group: video
-        when:
-          path:
-            suffix: .mp4
-
-profiles:
-  camera:
-    schema_version: 1
-    target: munchy-av1-nvenc
-    name: camera
-    archive:
-      codec: av1_nvenc
-      container: webm
-      quality: 38
-
-groups:
-  video:
-    profile: camera
-    output_mode: video
-    tasks:
-      - archive_video
-  preserve:
-    output_mode: preserve
-    tasks: []
-""".strip(),
-        encoding="utf-8",
-    )
-    seen: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, base_url: str) -> None:
-            self.base_url = base_url
-
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            seen["workflow_mode"] = workflow_mode
-            seen["requested_containers"] = requested_containers
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["request"] = request
-            return {"input_upload_id": request.input_upload_id}
-
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["job_payload"] = request.job_payload
-            return {"job_id": request.job_id, "state": "queued"}
-
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
-
-    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
-
-    result = runner.invoke(
-        app,
-        [
-            "job",
-            "start",
-            str(source_dir),
-            "--runner-url",
-            "http://runner",
-            "--config",
-            str(config),
-            "--timestamp",
-            "20260621T120000Z",
-            "--no-hash-cache",
-            "--no-wait",
-        ],
-    )
-
-    assert result.exit_code == 0
-    request = seen["request"]
-    assert request.storage_hint["workflow_mode"] == "review"
-    assert request.storage_hint["groups"]["video"]["tasks"] == ["qcut_video"]
-    assert request.storage_hint["groups"]["preserve"]["tasks"] == []
-    assert request.job_payload["groups"]["video"]["tasks"] == ["qcut_video"]
-    assert request.job_payload["review"]["sweep"] == {
-        "quality": "24..28:4",
-        "max_height": [720, 1080],
-    }
-    assert "collection_slug" not in request.job_payload
-    assert seen["workflow_mode"] == "review"
-    assert seen["requested_containers"] == ["webm"]
+    assert [item.rel_path for item in request.files] == ["IMG_0001.MOV"]
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "would_submit"
+    assert payload["template"] == "phone-review"
+    assert payload["template_revision"] == 2
+    assert payload["workflow_mode"] == "review"
 
 
 def test_munchy_job_plan_review_sweep_reports_routes(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -851,92 +551,6 @@ groups:
     assert route["variants"][1]["destination"] == (
         "review-remote:reviews/camera/camera-video/q28/20260712T120000Z"
     )
-
-
-def test_munchy_job_start_defaults_audio_mode_to_archive_audio(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    source_dir = tmp_path / "voice"
-    source_dir.mkdir()
-    (source_dir / "REC_20260628_203040.WAV").write_bytes(b"audio")
-    config = tmp_path / "munchy-audio.yaml"
-    config.write_text(
-        """
-job:
-  workflow_mode: collection_archive
-  output_mode: audio
-
-profiles:
-  voice:
-    schema_version: 1
-    name: voice
-    archive:
-      codec: opus
-      audio:
-        bitrate: 64k
-        sample_rate: 24000
-        channels: 1
-
-groups:
-  voice:
-    profile: voice
-    output_mode: audio
-""".strip(),
-        encoding="utf-8",
-    )
-    seen: dict[str, object] = {}
-
-    class FakeClient:
-        def __init__(self, base_url: str) -> None:
-            self.base_url = base_url
-
-        def check_ready(
-            self,
-            workflow_mode: str | None = None,
-            *,
-            requested_containers: list[str] | None = None,
-        ) -> None:
-            seen["workflow_mode"] = workflow_mode
-            seen["requested_containers"] = requested_containers
-
-        def create_or_get_input_upload(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            seen["request"] = request
-            return {"input_upload_id": request.input_upload_id}
-
-        def create_job(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"job_id": request.job_id, "state": "queued"}
-
-        def upload_files(self, request) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            return {"input_upload_id": request.input_upload_id, "state": "uploaded"}
-
-    monkeypatch.setattr("munchy_cli.main.MunchyRunnerClient", FakeClient)
-
-    result = runner.invoke(
-        app,
-        [
-            "job",
-            "start",
-            str(source_dir),
-            "--runner-url",
-            "http://runner",
-            "--config",
-            str(config),
-            "--collection",
-            "voice",
-            "--timestamp",
-            "20260621T120000Z",
-            "--no-hash-cache",
-            "--no-wait",
-        ],
-    )
-
-    assert result.exit_code == 0
-    request = seen["request"]
-    assert request.files[0].rel_path == "voice/REC_20260628_203040.WAV"
-    assert request.storage_hint["output_mode"] == "audio"
-    assert request.storage_hint["tasks"] == ["archive_audio"]
-    assert request.storage_hint["groups"]["voice"]["tasks"] == ["archive_audio"]
-    assert request.job_payload["groups"]["voice"]["encode_profile"]["target"] == "munchy-audio"
-    assert seen["workflow_mode"] == "collection_archive"
-    assert seen["requested_containers"] == ["opus"]
 
 
 def test_munchy_routing_explain_reports_matches(tmp_path) -> None:  # type: ignore[no-untyped-def]

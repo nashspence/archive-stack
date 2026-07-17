@@ -485,7 +485,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     source_config, credential = state.collector.add_source(
                         source_id,
                         adapters=_sequence(payload, "adapters"),
-                        policy=_mapping(payload, "policy"),
+                        template=str(payload.get("template") or ""),
                         credential=(
                             str(payload["credential"])
                             if payload.get("credential") is not None

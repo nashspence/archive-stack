@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -28,7 +28,7 @@ SOURCE_LIST_SORT_FIELDS = frozenset(
         "created_at",
         "enabled",
         "id",
-        "policy_revision",
+        "template",
         "target",
         "updated_at",
     }
@@ -53,6 +53,7 @@ class SourceConfig:
     include_extensions: frozenset[str]
     collection_slug: str
     target: str
+    template: str
     notify: Mapping[str, Any]
     threshold_bytes: int
     cleanup: Cleanup
@@ -60,9 +61,6 @@ class SourceConfig:
     weekday: int
     hour: int
     minute: int
-    policy: Mapping[str, Any] = field(default_factory=dict)
-    policy_revision: int = 1
-
     def summary(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -72,6 +70,7 @@ class SourceConfig:
             "include_extensions": sorted(self.include_extensions),
             "collection_slug": self.collection_slug,
             "target": self.target,
+            "template": self.template,
             "notify": dict(self.notify),
             "threshold_bytes": self.threshold_bytes,
             "cleanup": self.cleanup,
@@ -79,8 +78,6 @@ class SourceConfig:
             "weekday": self.weekday,
             "hour": self.hour,
             "minute": self.minute,
-            "policy_revision": self.policy_revision,
-            "policy": dict(self.policy),
         }
 
 
@@ -122,6 +119,7 @@ class SourceRegistry:
                     include_extensions_json TEXT NOT NULL,
                     collection_slug TEXT NOT NULL,
                     target TEXT NOT NULL,
+                    template TEXT NOT NULL,
                     notify_json TEXT NOT NULL,
                     threshold_bytes INTEGER NOT NULL,
                     cleanup TEXT NOT NULL,
@@ -129,17 +127,8 @@ class SourceRegistry:
                     weekday INTEGER NOT NULL,
                     hour INTEGER NOT NULL,
                     minute INTEGER NOT NULL,
-                    policy_revision INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS source_policy_revisions (
-                    source_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    policy_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(source_id, revision),
-                    FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
                 );
                 """
             )
@@ -150,7 +139,7 @@ class SourceRegistry:
         source_id: str,
         *,
         adapters: Sequence[str],
-        policy: Mapping[str, Any],
+        template: str,
         credential: str | None = None,
         enabled: bool = True,
         stable_seconds: int = 600,
@@ -177,7 +166,7 @@ class SourceRegistry:
             minute=minute,
         )
         normalized_extensions = _extensions(include_extensions)
-        normalized_policy = _json_object(policy, "policy")
+        normalized_template = _template(template)
         normalized_notify = _json_object(notify or {}, "notify")
         secret = credential or secrets.token_urlsafe(24)
         if not secret or "\n" in secret or "\r" in secret:
@@ -189,10 +178,10 @@ class SourceRegistry:
                     """
                     INSERT INTO sources(
                         id, enabled, adapters_json, password_hash, upload_signing_key,
-                        stable_seconds, include_extensions_json, collection_slug, target,
+                        stable_seconds, include_extensions_json, collection_slug, target, template,
                         notify_json, threshold_bytes, cleanup, cadence, weekday, hour, minute,
-                        policy_revision, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_id,
@@ -204,6 +193,7 @@ class SourceRegistry:
                         _json(sorted(normalized_extensions)),
                         collection_slug or normalized_id,
                         target.strip() or "munchy",
+                        normalized_template,
                         _json(normalized_notify),
                         threshold_bytes,
                         cleanup,
@@ -214,15 +204,6 @@ class SourceRegistry:
                         now,
                         now,
                     ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO source_policy_revisions(
-                        source_id, revision, policy_json, created_at
-                    )
-                    VALUES(?, 1, ?, ?)
-                    """,
-                    (normalized_id, _json(normalized_policy), now),
                 )
         except sqlite3.IntegrityError as exc:
             raise SourceRegistryError(f"source already exists: {normalized_id}") from exc
@@ -274,12 +255,13 @@ class SourceRegistry:
                     lower(id) LIKE ? ESCAPE '\\'
                     OR lower(collection_slug) LIKE ? ESCAPE '\\'
                     OR lower(target) LIKE ? ESCAPE '\\'
+                    OR lower(template) LIKE ? ESCAPE '\\'
                     OR lower(cadence) LIKE ? ESCAPE '\\'
                     OR lower(adapters_json) LIKE ? ESCAPE '\\'
                 )
                 """
             )
-            values.extend((like,) * 5)
+            values.extend((like,) * 6)
         if enabled is not None:
             clauses.append("enabled = ?")
             values.append(int(enabled))
@@ -297,8 +279,8 @@ class SourceRegistry:
             "created_at": "created_at",
             "enabled": "enabled",
             "id": "id",
-            "policy_revision": "policy_revision",
             "target": "target",
+            "template": "template",
             "updated_at": "updated_at",
         }[sort]
         order_sql = order.upper()
@@ -310,7 +292,7 @@ class SourceRegistry:
                 collection_slug,
                 target,
                 cadence,
-                policy_revision,
+                template,
                 created_at,
                 updated_at
             FROM sources
@@ -356,7 +338,7 @@ class SourceRegistry:
                     "collection_slug": str(row["collection_slug"]),
                     "target": str(row["target"]),
                     "cadence": str(row["cadence"]),
-                    "policy_revision": int(row["policy_revision"]),
+                    "template": str(row["template"]),
                     "created_at": str(row["created_at"]),
                     "updated_at": str(row["updated_at"]),
                 }
@@ -402,7 +384,7 @@ class SourceRegistry:
             "weekday",
             "hour",
             "minute",
-            "policy",
+            "template",
         }
         unknown = sorted(set(changes) - allowed)
         if unknown:
@@ -428,18 +410,17 @@ class SourceRegistry:
             minute=minute,
         )
         notify = _json_object(values["notify"], "notify")
-        policy = _json_object(values["policy"], "policy")
-        policy_changed = "policy" in changes and policy != dict(current.policy)
-        revision = current.policy_revision + int(policy_changed)
+        template = _template(str(values["template"]))
         now = format_utc_timestamp(utc_now())
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE sources
                 SET adapters_json = ?, stable_seconds = ?, include_extensions_json = ?,
-                    collection_slug = ?, target = ?, notify_json = ?, threshold_bytes = ?,
+                    collection_slug = ?, target = ?, template = ?, notify_json = ?,
+                    threshold_bytes = ?,
                     cleanup = ?, cadence = ?, weekday = ?, hour = ?, minute = ?,
-                    policy_revision = ?, updated_at = ?
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -448,6 +429,7 @@ class SourceRegistry:
                     _json(sorted(extensions)),
                     str(values["collection_slug"]).strip() or current.id,
                     str(values["target"]).strip() or current.target,
+                    template,
                     _json(notify),
                     threshold_bytes,
                     cleanup,
@@ -455,20 +437,10 @@ class SourceRegistry:
                     weekday,
                     hour,
                     minute,
-                    revision,
                     now,
                     current.id,
                 ),
             )
-            if policy_changed:
-                connection.execute(
-                    """
-                    INSERT INTO source_policy_revisions(
-                        source_id, revision, policy_json, created_at
-                    ) VALUES(?, ?, ?, ?)
-                    """,
-                    (current.id, revision, _json(policy), now),
-                )
         self.write_ftp_projection()
         return self.get(current.id)
 
@@ -571,16 +543,6 @@ class SourceRegistry:
         )
 
     def _source(self, connection: sqlite3.Connection, row: sqlite3.Row) -> SourceConfig:
-        revision = int(row["policy_revision"])
-        policy_row = connection.execute(
-            """
-            SELECT policy_json FROM source_policy_revisions
-            WHERE source_id = ? AND revision = ?
-            """,
-            (row["id"], revision),
-        ).fetchone()
-        if policy_row is None:
-            raise SourceRegistryError(f"source policy is missing: {row['id']} revision {revision}")
         return SourceConfig(
             id=str(row["id"]),
             enabled=bool(row["enabled"]),
@@ -590,6 +552,7 @@ class SourceRegistry:
             include_extensions=frozenset(json.loads(row["include_extensions_json"])),
             collection_slug=str(row["collection_slug"]),
             target=str(row["target"]),
+            template=str(row["template"]),
             notify=json.loads(row["notify_json"]),
             threshold_bytes=int(row["threshold_bytes"]),
             cleanup=cast(Cleanup, str(row["cleanup"])),
@@ -597,8 +560,6 @@ class SourceRegistry:
             weekday=int(row["weekday"]),
             hour=int(row["hour"]),
             minute=int(row["minute"]),
-            policy=json.loads(policy_row["policy_json"]),
-            policy_revision=revision,
         )
 
 
@@ -606,6 +567,13 @@ def _source_id(value: str) -> str:
     normalized = value.strip()
     if not SOURCE_ID.fullmatch(normalized):
         raise SourceRegistryError(f"source must be a safe slug: {value!r}")
+    return normalized
+
+
+def _template(value: str) -> str:
+    normalized = value.strip()
+    if not SOURCE_ID.fullmatch(normalized):
+        raise SourceRegistryError(f"template must be a safe slug: {value!r}")
     return normalized
 
 

@@ -26,7 +26,7 @@ from munchy.runner_client import (
     DEFAULT_UPLOAD_CHUNK_MIB,
     DEFAULT_UPLOAD_WORKERS,
     RunnerInputFile,
-    RunnerUploadRequest,
+    SubmissionUploadRequest,
     make_progress_renderer,
 )
 from riverhog_core.config_yaml import (
@@ -72,7 +72,7 @@ def safe_id(value: str) -> str:
 
 
 def collection_timestamp_now() -> str:
-    return utc_now().strftime("%Y%m%dT%H%M%SZ")
+    return utc_now().strftime("%Y%m%dT%H%M%S.%fZ")
 
 
 def normalize_mode(value: str | None, *, default: str, allowed: set[str], label: str) -> str:
@@ -444,190 +444,55 @@ def hash_local_candidates(
     ]
 
 
-def build_runner_upload_request_from_files(
-    files: Sequence[RunnerInputFile],
-    *,
-    config: Mapping[str, Any] | None = None,
-    collection: str | None = None,
-    collection_timestamp: str | None = None,
-    job_id: str | None = None,
-    input_upload_id: str | None = None,
-    group: str | None = None,
-    workflow_mode: str | None = None,
-    collection_archive_destination: str | None = None,
-    riverhog_upload_session_on_failure: str | None = None,
-    upload_workers: int = DEFAULT_UPLOAD_WORKERS,
-    upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
-) -> RunnerUploadRequest:
-    normalized_config = normalize_munchy_config(config or {})
-    defaults = configured_job_defaults(normalized_config)
-    profiles = configured_profiles(normalized_config)
-    raw_groups = configured_groups(normalized_config)
-    routing = defaults.get("routing")
-    routing_payload = routing if isinstance(routing, Mapping) else None
-    structured_routing = routing_payload is not None
-    selected_group = effective_group(
-        group=group,
-        groups=raw_groups,
-        structured_routing=structured_routing,
-    )
-    groups = (
-        {
-            name: normalize_group_payload(str(name), raw_group, profiles=profiles)
-            for name, raw_group in raw_groups.items()
-        }
-        if raw_groups
-        else default_group_payload(selected_group or DEFAULT_GROUP)
-    )
-
-    workflow = normalize_mode(
-        workflow_mode or str(defaults.get("workflow_mode") or "collection_archive"),
-        default="collection_archive",
-        allowed=WORKFLOW_MODES,
-        label="workflow_mode",
-    )
-    collection_slug = str(collection or defaults.get("collection_slug") or "").strip()
-    if workflow == "collection_archive" and not collection_slug:
-        raise MunchyJobAuthoringError("--collection is required")
-    timestamp = str(
-        collection_timestamp or defaults.get("collection_timestamp") or collection_timestamp_now()
-    ).strip()
-    run_id = str(defaults.get("run_id") or timestamp).strip()
-    raw_collection_archive = deepcopy(
-        mapping(defaults.get("collection_archive"), label="collection_archive")
-    )
-    destination = normalize_mode(
-        collection_archive_destination
-        or str(raw_collection_archive.get("destination") or "riverhog"),
-        default="riverhog",
-        allowed=COLLECTION_ARCHIVE_DESTINATIONS,
-        label="collection_archive.destination",
-    )
-    raw_collection_archive["destination"] = destination
-    output_mode = normalize_mode(
-        str(defaults.get("output_mode") or "video"),
-        default="video",
-        allowed=OUTPUT_MODES,
-        label="output_mode",
-    )
-    default_tasks = default_tasks_for_output_mode(output_mode)
-    raw_tasks = defaults.get("tasks")
-    tasks = (
-        list(default_tasks) if raw_tasks is None else [str(task) for task in _sequence(raw_tasks)]
-    )
-    if workflow == "review":
-        groups = review_group_payloads(groups)
-        grouped = grouped_tasks(groups)
-        tasks = grouped or [task for task in tasks if task in {"qcut_video", "audio_review"}]
-    generated_job_id = safe_id(f"{collection_slug or workflow}-{timestamp}")
-    final_job_id = str(job_id or defaults.get("job_id") or generated_job_id).strip()
-    final_input_upload_id = str(
-        input_upload_id or defaults.get("input_upload_id") or final_job_id
-    ).strip()
-    if not final_job_id or not final_input_upload_id:
-        raise MunchyJobAuthoringError("job id and input upload id must not be blank")
-
-    review = deepcopy(mapping(defaults.get("review"), label="review"))
-    notify = deepcopy(mapping(defaults.get("notify"), label="notify"))
-
-    storage_hint = {
-        "workflow_mode": workflow,
-        "collection_archive_destination": destination,
-        "output_mode": output_mode,
-        "tasks": tasks,
-        "structured_routing": structured_routing,
-        "groups": storage_groups(groups),
-    }
-    job_payload: dict[str, Any] = {
-        "job_id": final_job_id,
-        "input_upload_id": final_input_upload_id,
-        "run_id": run_id,
-        "workflow_mode": workflow,
-        "output_mode": output_mode,
-        "tasks": tasks,
-        "groups": groups,
-        "notify": notify,
-        "cleanup_local_on_success": bool(defaults.get("cleanup_local_on_success", False)),
-    }
-    if workflow == "review":
-        job_payload["review"] = review
-    else:
-        job_payload["collection_slug"] = collection_slug
-        job_payload["collection_timestamp"] = timestamp
-        job_payload["collection_archive"] = raw_collection_archive
-    if riverhog_upload_session_on_failure is not None:
-        job_payload["riverhog_upload_session_on_failure"] = normalize_mode(
-            riverhog_upload_session_on_failure,
-            default="preserve_for_resume",
-            allowed=RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS,
-            label="riverhog_upload_session_on_failure",
-        )
-    if routing_payload is not None:
-        job_payload["routing"] = deepcopy(dict(routing_payload))
-    return RunnerUploadRequest(
-        input_upload_id=final_input_upload_id,
-        job_id=final_job_id,
-        files=tuple(files),
-        storage_hint=storage_hint,
-        job_payload=job_payload,
-        upload_workers=upload_workers,
-        upload_chunk_mib=upload_chunk_mib,
-    )
-
-
-def build_runner_upload_request(
+def build_submission_upload_request(
     *,
     source: Path,
-    config_path: Path | None = None,
-    config: Mapping[str, Any] | None = None,
+    template: str,
+    inputs: Mapping[str, str] | None = None,
     collection: str | None = None,
     collection_timestamp: str | None = None,
-    job_id: str | None = None,
-    input_upload_id: str | None = None,
+    submission_id: str | None = None,
     destination_prefix: str | None = None,
-    group: str | None = None,
-    workflow_mode: str | None = None,
-    collection_archive_destination: str | None = None,
-    riverhog_upload_session_on_failure: str | None = None,
+    riverhog_upload_session_on_failure: str = "preserve_for_resume",
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
     upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
     hash_cache: Path | None = None,
     use_hash_cache: bool = True,
-) -> RunnerUploadRequest:
-    if config_path is not None and config is not None:
-        raise MunchyJobAuthoringError("config_path and config are mutually exclusive")
-    loaded_config = load_munchy_job_config(config_path) if config_path is not None else config or {}
-    normalized_config = normalize_munchy_config(loaded_config)
-    defaults = configured_job_defaults(normalized_config)
-    raw_groups = configured_groups(normalized_config)
-    routing = defaults.get("routing")
-    structured_routing = isinstance(routing, Mapping)
-    selected_group = effective_group(
-        group=group,
-        groups=raw_groups,
-        structured_routing=structured_routing,
+) -> SubmissionUploadRequest:
+    template_name = template.strip()
+    if not template_name:
+        raise MunchyJobAuthoringError("--template must not be blank")
+    timestamp = (collection_timestamp or collection_timestamp_now()).strip()
+    collection_slug = (collection or "").strip() or None
+    identifier = (
+        submission_id or safe_id(f"{collection_slug or template_name}-{timestamp}")
+    ).strip()
+    if not identifier:
+        raise MunchyJobAuthoringError("submission id must not be blank")
+    failure_action = normalize_mode(
+        riverhog_upload_session_on_failure,
+        default="preserve_for_resume",
+        allowed=RIVERHOG_UPLOAD_SESSION_FAILURE_ACTIONS,
+        label="riverhog_upload_session_on_failure",
     )
     candidates = discover_local_candidates(
         source,
         destination_prefix=destination_prefix,
-        group=selected_group,
+        group=None,
     )
     files = hash_local_candidates(
         candidates,
         hash_cache=hash_cache,
         use_hash_cache=use_hash_cache,
     )
-    return build_runner_upload_request_from_files(
-        files,
-        config=normalized_config,
-        collection=collection,
-        collection_timestamp=collection_timestamp,
-        job_id=job_id,
-        input_upload_id=input_upload_id,
-        group=group,
-        workflow_mode=workflow_mode,
-        collection_archive_destination=collection_archive_destination,
-        riverhog_upload_session_on_failure=riverhog_upload_session_on_failure,
+    return SubmissionUploadRequest(
+        submission_id=identifier,
+        template=template_name,
+        files=tuple(files),
+        inputs={str(name): str(value) for name, value in (inputs or {}).items()},
+        collection_slug=collection_slug,
+        collection_timestamp=timestamp,
+        riverhog_upload_session_on_failure=failure_action,
         upload_workers=upload_workers,
         upload_chunk_mib=upload_chunk_mib,
     )
@@ -835,27 +700,6 @@ def build_review_sweep_plan(
     }
 
 
-def requested_archive_containers(request: RunnerUploadRequest) -> list[str]:
-    containers: list[str] = []
-    groups = request.job_payload.get("groups")
-    if not isinstance(groups, Mapping):
-        return containers
-    for group in groups.values():
-        if not isinstance(group, Mapping):
-            continue
-        profile = group.get("encode_profile")
-        if not isinstance(profile, Mapping):
-            continue
-        archive = profile.get("archive")
-        if not isinstance(archive, Mapping):
-            continue
-        codec = str(archive.get("codec") or "av1_nvenc")
-        container = str(archive.get("container") or ("opus" if codec == "opus" else "mkv"))
-        if container and container not in containers:
-            containers.append(container)
-    return containers
-
-
 def routing_report_text(plan: Mapping[str, Any]) -> str:
     lines = [
         (
@@ -920,8 +764,7 @@ __all__ = [
     "MUNCHY_CONFIG_ENV",
     "MunchyJobAuthoringError",
     "WORKFLOW_MODES",
-    "build_runner_upload_request",
-    "build_runner_upload_request_from_files",
+    "build_submission_upload_request",
     "build_review_sweep_plan",
     "configured_groups",
     "configured_job_defaults",
@@ -941,7 +784,6 @@ __all__ = [
     "normalize_mode",
     "normalize_munchy_config",
     "normalize_posix_path",
-    "requested_archive_containers",
     "review_group_payloads",
     "routing_report_text",
     "safe_id",

@@ -87,6 +87,336 @@ def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> Non
     assert authorized.json()["operations"]["list_jobs"] is True
 
 
+def job_template_definition(*, retain_hot: bool = True) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "workflow_mode": "collection_archive",
+            "collection_archive": {
+                "destination": "riverhog",
+                "riverhog": {
+                    "archive_store": "b2",
+                    "wait": "finalized",
+                    "retain_hot": retain_hot,
+                },
+            },
+        },
+    }
+
+
+def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_API_TOKEN", "submission-token")
+    monkeypatch.setenv("MUNCHY_RUNNER_ADMIN_TOKEN", "admin-token")
+    runner = load_runner(tmp_path, monkeypatch)
+
+    with TestClient(runner.app) as client:
+        assert client.get(
+            "/v1/admin/job-templates",
+            headers={"Authorization": "Bearer submission-token"},
+        ).status_code == 401
+        assert client.get(
+            "/v1/capabilities",
+            headers={"Authorization": "Bearer admin-token"},
+        ).status_code == 401
+        assert client.get(
+            "/v1/admin/job-templates",
+            headers={"Authorization": "Bearer admin-token"},
+        ).status_code == 200
+
+
+def test_job_template_crud_is_revision_guarded_and_database_listed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    with TestClient(runner.app) as client:
+        created_response = client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": job_template_definition()},
+        )
+        assert created_response.status_code == 201
+        created = created_response.json()
+        assert created["name"] == "camera-archive"
+        assert created["revision"] == 1
+        assert created["enabled"] is True
+        assert created["resolved_job"]["workflow_mode"] == "collection_archive"
+
+        listed = client.get(
+            "/v1/admin/job-templates",
+            params={"q": "camera", "sort": "revision", "order": "desc"},
+        ).json()
+        assert listed["total"] == 1
+        assert [item["name"] for item in listed["templates"]] == ["camera-archive"]
+        assert "definition" not in listed["templates"][0]
+
+        replaced_response = client.put(
+            "/v1/admin/job-templates/camera-archive",
+            json={
+                "definition": job_template_definition(retain_hot=False),
+                "enabled": True,
+                "expected_revision": 1,
+            },
+        )
+        assert replaced_response.status_code == 200
+        replaced = replaced_response.json()
+        assert replaced["revision"] == 2
+        assert replaced["digest"] != created["digest"]
+
+        conflict = client.put(
+            "/v1/admin/job-templates/camera-archive",
+            json={
+                "definition": job_template_definition(),
+                "enabled": True,
+                "expected_revision": 1,
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["error"] == "job_template_revision_conflict"
+
+        disabled = client.post(
+            "/v1/admin/job-templates/camera-archive/disable",
+            json={"expected_revision": 2},
+        ).json()
+        assert disabled["enabled"] is False
+        assert disabled["revision"] == 3
+
+        removed = client.delete(
+            "/v1/admin/job-templates/camera-archive",
+            params={"expected_revision": 3},
+        )
+        assert removed.status_code == 200
+        assert removed.json() == {"name": "camera-archive", "state": "removed"}
+        assert client.get("/v1/admin/job-templates/camera-archive").status_code == 404
+
+
+def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    definition = job_template_definition()
+    definition["job"]["collection_slug"] = "fixed"  # type: ignore[index]
+
+    with TestClient(runner.app) as client:
+        response = client.post(
+            "/v1/admin/job-templates",
+            json={"name": "invalid", "definition": definition},
+        )
+
+    assert response.status_code == 422
+    assert "submission-owned" in response.json()["detail"]
+
+
+def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    definition = job_template_definition()
+    definition["job"]["routing"] = {  # type: ignore[index]
+        "routes": [
+            {
+                "id": "video",
+                "group": "video",
+                "when": {"path": {"suffix": ".mp4"}},
+            }
+        ],
+        "sidecars": {
+            "metadata": {
+                "path": "{parent}/{stem}.xml",
+                "primary": {"path": {"suffix": ".mp4"}},
+                "sidecar": {"path": {"suffix": ".xml"}},
+            }
+        },
+    }
+    definition["groups"] = {
+        "video": {"output_mode": "video", "tasks": ["archive_video"]}
+    }
+
+    with TestClient(runner.app) as client:
+        response = client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": definition},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["resolved_job"]["routing"]["sidecars"][0]["id"] == "metadata"
+
+
+def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    definition = {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "inputs": {
+            "route": {
+                "required": True,
+                "enum": ["camera-main", "camera-telephoto"],
+            }
+        },
+        "job": {
+            "workflow_mode": "review",
+            "output_mode": "video",
+            "tasks": ["qcut_video"],
+            "review": {
+                "device_id": "camera",
+                "route_id": "{{route}}",
+                "profile_id": "webm-q42",
+                "target": {
+                    "enabled": True,
+                    "method": "rclone",
+                    "destination": "reviews/{route_id}/{profile_id}/{run_id}",
+                },
+            },
+        },
+        "groups": {
+            "review": {"output_mode": "video", "tasks": ["qcut_video"]}
+        },
+    }
+
+    with TestClient(runner.app) as client:
+        assert client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-review", "definition": definition},
+        ).status_code == 201
+        response = client.post(
+            "/v1/submissions",
+            json={
+                "submission_id": "submission-1",
+                "template": "camera-review",
+                "inputs": {"route": "camera-telephoto"},
+                "run_id": "20260101T000000.123456Z",
+                "files": [{"path": "review/a.mp4", "bytes": 4}],
+            },
+        )
+
+    assert response.status_code == 202, response.json()
+    assert response.json()["inputs"] == {"route": "camera-telephoto"}
+    assert runner.load_job("submission-1")["review"]["route_id"] == "camera-telephoto"
+
+
+def test_submission_preflight_resolves_template_without_creating_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+
+    with TestClient(runner.app) as client:
+        assert client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": job_template_definition()},
+        ).status_code == 201
+        response = client.post(
+            "/v1/submissions/preflight",
+            json={
+                "template": "camera-archive",
+                "collection_slug": "camera",
+                "collection_timestamp": "20260101T000000.123456Z",
+                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accepted"] is True
+    assert payload["template"]["revision"] == 1
+    assert payload["content_inspection"] == "after_upload"
+    assert payload["files_total"] == 1
+    assert runner.list_states("job") == []
+    assert runner.list_states("input-upload") == []
+
+
+def test_submission_creation_is_idempotent_and_snapshots_template_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    request = {
+        "submission_id": "submission-1",
+        "template": "camera-archive",
+        "collection_slug": "camera",
+        "collection_timestamp": "20260101T000000.123456Z",
+        "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+    }
+
+    with TestClient(runner.app) as client:
+        created_template = client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": job_template_definition()},
+        ).json()
+        created_response = client.post("/v1/submissions", json=request)
+        assert created_response.status_code == 202
+        created = created_response.json()
+        assert created["submission_id"] == "submission-1"
+        assert created["template"] == {
+            "name": "camera-archive",
+            "revision": 1,
+            "digest": created_template["digest"],
+        }
+        assert created["upload"]["files_total"] == 1
+
+        replaced = client.put(
+            "/v1/admin/job-templates/camera-archive",
+            json={
+                "definition": job_template_definition(retain_hot=False),
+                "enabled": True,
+                "expected_revision": 1,
+            },
+        )
+        assert replaced.status_code == 200
+
+        retried = client.post("/v1/submissions", json=request)
+        assert retried.status_code == 202
+        assert retried.json()["template"]["revision"] == 1
+
+        conflict_request = dict(request)
+        conflict_request["files"] = [
+            {"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}
+        ]
+        conflict = client.post("/v1/submissions", json=conflict_request)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["error"] == "submission_conflict"
+
+    job = runner.load_job("submission-1")
+    assert job["job_template"]["revision"] == 1
+    assert job["collection_archive"]["riverhog"]["retain_hot"] is True
+
+
+def test_submission_file_upload_is_scoped_to_registered_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "head_tusd_upload", lambda _url: -1)
+    monkeypatch.setattr(runner, "create_tusd_upload", lambda _path, _length: "http://tusd/files/1")
+
+    with TestClient(runner.app) as client:
+        client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": job_template_definition()},
+        )
+        client.post(
+            "/v1/submissions",
+            json={
+                "submission_id": "submission-1",
+                "template": "camera-archive",
+                "collection_slug": "camera",
+                "collection_timestamp": "20260101T000000.123456Z",
+                "files": [{"path": "video/a.mp4", "bytes": 4}],
+            },
+        )
+        upload = client.post(
+            "/v1/submissions/submission-1/files/video/a.mp4/upload"
+        )
+        unknown = client.post(
+            "/v1/submissions/submission-1/files/video/b.mp4/upload"
+        )
+
+    assert upload.status_code == 201
+    assert upload.json()["protocol"] == "tus"
+    assert upload.json()["length"] == 4
+    assert unknown.status_code == 404
+
+
 def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
 
@@ -2252,435 +2582,6 @@ def test_routing_skips_expensive_tools_for_path_only_runner_route(
     assert routed["files"][0]["resolved_group"] == "state"
 
 
-def test_routing_preflight_uses_submitted_probe_summary(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [
-                {
-                    "path": "phone/IMG_0001.MOV",
-                    "bytes": 123,
-                    "probe_summary": {
-                        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
-                        "duration": 1.5,
-                        "has_audio": True,
-                        "video_stream_count": 1,
-                        "audio_stream_count": 1,
-                        "codec_name": "hevc",
-                        "video_codec_name": "hevc",
-                        "width": 1440,
-                        "height": 1080,
-                        "fps": 30.0,
-                        "audio_codec_name": "aac",
-                        "format_tags": {"com.apple.quicktime.model": "iphone se"},
-                    },
-                }
-            ],
-            "groups": {
-                "live-photo": {
-                    "output_mode": "preserve",
-                    "tasks": [],
-                }
-            },
-            "routing": {
-                "routes": [
-                    {
-                        "id": "iphone-live-photo-sidecar",
-                        "group": "live-photo",
-                        "when": {
-                            "all": [
-                                {"path": {"prefix": "phone", "suffix": ".mov"}},
-                                {"fact": "video.codec", "equals": "hevc"},
-                                {"fact": "audio.codec_name", "equals": "aac"},
-                                {"fact": "ffprobe.duration", "max": 3.0},
-                                {
-                                    "fact": "ffprobe.format_tags.com.apple.quicktime.model",
-                                    "contains": "iphone se",
-                                },
-                            ]
-                        },
-                    }
-                ]
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["matches"] == [
-        {
-            "path": "phone/IMG_0001.MOV",
-            "bytes": 123,
-            "route_id": "iphone-live-photo-sidecar",
-            "route_index": 0,
-            "action": "upload",
-            "pair_kind": None,
-            "pairing_id": None,
-            "pair_role": None,
-            "pair_with": None,
-            "matched_facts": {
-                "audio.codec_name": "aac",
-                "ffprobe.duration": 1.5,
-                "ffprobe.format_tags.com.apple.quicktime.model": "iphone se",
-                "video.codec": "hevc",
-            },
-            "group": "live-photo",
-            "into": None,
-            "collection_rel_path": "phone/IMG_0001.MOV",
-        }
-    ]
-
-
-def test_routing_preflight_uses_submitted_sidecar_facts(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [
-                {"path": "camera/C0001.MP4", "bytes": 100},
-                {
-                    "path": "camera/C0001M01.XML",
-                    "bytes": 20,
-                    "sidecar_facts": {
-                        "exif.make": "example imaging",
-                        "exiftool": {"tags": {"model": "Synthetic Camera"}},
-                    },
-                },
-            ],
-            "groups": {"video": {"output_mode": "video", "tasks": []}},
-            "routing": {
-                "sidecars": [
-                    {
-                        "id": "camera_xml",
-                        "format": "xml",
-                        "path": "{parent}/{stem}M01.XML",
-                        "primary": {"path": {"suffix": ".mp4"}},
-                        "facts": {"source": "exiftool", "tags": ["Make", "Model"]},
-                    }
-                ],
-                "routes": [
-                    {
-                        "id": "sidecar-camera-video",
-                        "group": "video",
-                        "when": {
-                            "all": [
-                                {"path": {"suffix": ".mp4"}},
-                                {
-                                    "fact": "sidecars.camera_xml.facts.exif.make",
-                                    "equals": "example imaging",
-                                },
-                                {
-                                    "fact": "sidecars.camera_xml.facts.exiftool.tags.model",
-                                    "equals": "Synthetic Camera",
-                                },
-                            ]
-                        },
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert [item["action"] for item in payload["matches"]] == ["upload", "evidence"]
-    assert payload["matches"][0]["matched_facts"] == {
-        "sidecars.camera_xml.facts.exif.make": "example imaging",
-        "sidecars.camera_xml.facts.exiftool.tags.model": "Synthetic Camera",
-    }
-
-
-def test_routing_preflight_reports_missing_sidecar_facts(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [
-                {"path": "camera/C0001.MP4", "bytes": 100},
-                {"path": "camera/C0001M01.XML", "bytes": 20},
-            ],
-            "groups": {"video": {"output_mode": "video", "tasks": []}},
-            "routing": {
-                "sidecars": [
-                    {
-                        "id": "camera_xml",
-                        "format": "xml",
-                        "path": "{parent}/{stem}M01.XML",
-                        "primary": {"path": {"suffix": ".mp4"}},
-                        "facts": {"source": "exiftool", "tags": ["Make"]},
-                    }
-                ],
-                "routes": [
-                    {
-                        "id": "sidecar-camera-video",
-                        "group": "video",
-                        "when": {
-                            "fact": "sidecars.camera_xml.facts.exif.make",
-                            "equals": "example imaging",
-                        },
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["unmatched"][0]["path"] == "camera/C0001.MP4"
-    assert payload["unmatched"][0]["reason"] == "sidecar_facts_failed"
-    assert (
-        "configured sidecar facts were not submitted"
-        in (payload["unmatched"][0]["sidecar_facts_error"])
-    )
-
-
-def test_routing_preflight_reports_sidecar_evidence(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [
-                {"path": "phone/IMG_0001.MOV", "bytes": 100},
-                {
-                    "path": "phone/IMG_0001.MOV.xmp",
-                    "bytes": 20,
-                    "routing_facts": {
-                        "exif.date_time_original": "2002:03:04 05:06:07-0700",
-                        "exif.gps_latitude": "3.4567 N",
-                        "exif.gps_longitude": "4.5678 E",
-                    },
-                },
-            ],
-            "groups": {
-                "video": {
-                    "output_mode": "video",
-                    "tasks": ["archive_video"],
-                    "metadata_projection": {
-                        "capture_date_sources": [
-                            {"type": "sidecar", "id": "xmp"},
-                            {"type": "embedded"},
-                        ],
-                        "gps_sources": [
-                            {"type": "sidecar", "id": "xmp"},
-                            {"type": "embedded"},
-                        ],
-                        "device": {
-                            "make": "Apple",
-                            "model": "iPhone SE (2nd generation)",
-                        },
-                        "creators": ["Example Operator"],
-                    },
-                }
-            },
-            "routing": {
-                "sidecars": [
-                    {
-                        "id": "xmp",
-                        "format": "xmp",
-                        "primary": {"path": {"suffix": ".mov"}},
-                    }
-                ],
-                "routes": [
-                    {
-                        "id": "video",
-                        "group": "video",
-                        "when": {"path": {"suffix": ".mov"}},
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert [item["action"] for item in payload["matches"]] == ["upload", "evidence"]
-    assert payload["matches"][1]["sidecar_id"] == "xmp"
-    assert payload["matches"][1]["sidecar_for"] == "phone/IMG_0001.MOV"
-    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
-    assert readout_by_path["phone/IMG_0001.MOV"]["sidecars"] == [
-        {
-            "id": "xmp",
-            "format": "xmp",
-            "path": "phone/IMG_0001.MOV.xmp",
-            "custody": "source_artifacts",
-        }
-    ]
-    projection = readout_by_path["phone/IMG_0001.MOV"]["metadata_projection"]
-    assert projection["ok"] is True
-    assert projection["capture_date"] == {
-        "present": True,
-        "source": "sidecar:xmp:exif.date_time_original",
-        "value": "2002-03-04T05:06:07-07:00",
-    }
-    assert projection["gps"]["present"] is True
-    assert projection["gps"]["source"] == "sidecar:xmp:exif.gps_latitude+exif.gps_longitude"
-    assert projection["gps"]["latitude"] == 3.4567
-    assert projection["gps"]["longitude"] == 4.5678
-    assert readout_by_path["phone/IMG_0001.MOV.xmp"]["sidecar"] == {
-        "id": "xmp",
-        "format": "xmp",
-        "for": "phone/IMG_0001.MOV",
-    }
-    assert readout_by_path["phone/IMG_0001.MOV.xmp"]["custody"] == {
-        "kind": "source_artifact_sidecar"
-    }
-
-
-def test_routing_preflight_keeps_metadata_projection_diagnostic_by_default(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
-            "groups": {
-                "video": {
-                    "output_mode": "video",
-                    "tasks": ["archive_video"],
-                    "metadata_projection": {
-                        "gps": {"latitude": 48.9995, "longitude": -122.7404},
-                        "device": {"make": "Reolink", "model": "E1 Pro"},
-                        "creators": ["Example Operator"],
-                    },
-                }
-            },
-            "routing": {
-                "routes": [
-                    {
-                        "id": "camera-video",
-                        "group": "video",
-                        "when": {"path": {"suffix": ".mp4"}},
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["unmatched"] == []
-    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
-    projection = readout_by_path["camera/C0001.MP4"]["metadata_projection"]
-    assert projection["ok"] is False
-    assert "requires a valid capture date" in projection["error"]
-
-
-def test_routing_preflight_can_enforce_metadata_projection(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "enforce_metadata_projection": True,
-            "files": [{"path": "camera/C0001.MP4", "bytes": 100}],
-            "groups": {
-                "video": {
-                    "output_mode": "video",
-                    "tasks": ["archive_video"],
-                    "metadata_projection": {
-                        "gps": {"latitude": 48.9995, "longitude": -122.7404},
-                        "device": {"make": "Reolink", "model": "E1 Pro"},
-                        "creators": ["Example Operator"],
-                    },
-                }
-            },
-            "routing": {
-                "routes": [
-                    {
-                        "id": "camera-video",
-                        "group": "video",
-                        "when": {"path": {"suffix": ".mp4"}},
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["matches"] == []
-    assert payload["unmatched_files"] == 1
-    [unmatched] = payload["unmatched"]
-    assert unmatched["path"] == "camera/C0001.MP4"
-    assert unmatched["reason"] == "metadata_projection_failed"
-    assert "requires a valid capture date" in unmatched["metadata_projection_error"]
-    readout_by_path = {item["path"]: item for item in payload["readout"]["files"]}
-    assert readout_by_path["camera/C0001.MP4"]["metadata_projection"]["ok"] is False
-
-
-def test_routing_preflight_reports_fallthrough(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-    client = TestClient(runner.app)
-
-    response = client.post(
-        "/v1/routing/preflight",
-        json={
-            "files": [{"path": "phone/IMG_0001.HEIC", "bytes": 123}],
-            "groups": {"video": {"output_mode": "video", "tasks": []}},
-            "routing": {
-                "routes": [
-                    {
-                        "id": "phone-video",
-                        "group": "video",
-                        "when": {"path": {"prefix": "phone", "suffix": ".mov"}},
-                    }
-                ]
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["unmatched"] == [
-        {
-            "path": "phone/IMG_0001.HEIC",
-            "bytes": 123,
-            "reason": "no_matching_route",
-            "probe_error": None,
-            "facts_error": None,
-        }
-    ]
-
-
 def test_completed_structured_file_fails_when_no_route_matches(
     tmp_path: Path,
     monkeypatch,
@@ -3277,7 +3178,7 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
     monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
-    monkeypatch.setenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL", "1")
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()
@@ -4356,7 +4257,7 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
-def test_get_input_upload_does_not_sync_shared_input_tree(
+def test_refresh_input_upload_does_not_sync_shared_input_tree(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -4386,7 +4287,7 @@ def test_get_input_upload_does_not_sync_shared_input_tree(
         ),
     )
 
-    status = runner.get_input_upload("upload-1")
+    status = runner.refresh_input_upload(runner.load_input_upload_raw("upload-1"))
 
     assert status["files_uploaded"] == 1
     assert not (runner.shared_input_upload_root("upload-1") / "camera" / "a.mp4").exists()
@@ -4688,7 +4589,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
     monkeypatch.setattr(runner, "state_lock", tracking_lock)
     monkeypatch.setattr(runner, "create_tusd_upload", fake_create_tusd_upload)
 
-    response = runner.create_or_resume_input_file_upload(upload_id, rel_path)
+    response = runner._create_or_resume_input_file_upload(upload_id, rel_path)
 
     assert response["offset"] == 0
     assert response["length"] == 10
@@ -4761,7 +4662,8 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
     def call_upload(index: int) -> None:
         caller_started[index].set()
         try:
-            responses.append(runner.create_or_resume_input_file_upload(upload_id, rel_path))
+            with runner.input_file_upload_setup_lock(upload_id, rel_path):
+                responses.append(runner._create_or_resume_input_file_upload(upload_id, rel_path))
         except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
             errors.append(exc)
 
@@ -4849,7 +4751,7 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
     monkeypatch.setattr(runner, "state_lock", tracking_lock)
     monkeypatch.setattr(runner, "head_tusd_upload", fake_head_tusd_upload)
 
-    response = runner.create_or_resume_input_file_upload(upload_id, rel_path)
+    response = runner._create_or_resume_input_file_upload(upload_id, rel_path)
 
     assert response["offset"] == 4
     assert response["length"] == 10

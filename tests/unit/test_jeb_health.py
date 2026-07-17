@@ -10,6 +10,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+import jeb.collector as collector_module
 from jeb.collector import Collector, config_from_env
 from jeb.service_api import JebServiceState, start_jeb_service_server
 
@@ -73,17 +76,25 @@ def collector_for(
     collector.add_source(
         "phone",
         adapters=("tus",),
-        policy={
-            "workflow_mode": "collection_archive",
-            "output_mode": "video",
-            "tasks": ["archive_video"],
-            "collection_archive": {"destination": "riverhog"},
-        },
+        template="camera-archive",
         credential="phone-password",
         stable_seconds=0,
         include_extensions=(".txt",),
     )
     return collector
+
+
+@pytest.fixture(autouse=True)
+def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeMunchyRunnerClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def preflight_submission(self, request: object) -> dict[str, object]:
+            _ = request
+            return {"accepted": True}
+
+    monkeypatch.setattr(collector_module, "MunchyRunnerClient", FakeMunchyRunnerClient)
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -148,7 +159,7 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
             {
                 "id": "phone",
                 "adapters": ["ftp", "tus"],
-                "policy": {"workflow_mode": "collection_archive"},
+                "template": "camera-archive",
                 "credential": "phone-password",
                 "cadence": "manual",
             },
@@ -162,7 +173,7 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
         assert listed["per_page"] == 25
         assert listed["total"] == 1
         assert listed["pages"] == 1
-        assert "policy" not in listed["sources"][0]
+        assert listed["sources"][0]["template"] == "camera-archive"
         filtered = read_json(
             f"{base}?q=PHO&enabled=true&adapter=tus&target=munchy"
             "&sort=updated_at&order=desc&all=true"
@@ -341,7 +352,7 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
         assert payload["file_count"] == 1
         assert payload["total_bytes"] == 5
         assert payload["batch_id"]
-        assert payload["job_id"]
+        assert payload["target_submission_id"]
         assert collector.active_attempt_ids() == []
         assert collector.list_attempts(terminal="all")["total"] == 0
         assert not processed.is_set()

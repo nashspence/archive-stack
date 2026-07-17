@@ -17,14 +17,13 @@ from munchy.job_authoring import (
     WORKFLOW_MODES,
     MunchyJobAuthoringError,
     build_review_sweep_plan,
-    build_runner_upload_request,
+    build_submission_upload_request,
     configured_groups,
     configured_job_defaults,
     configured_profiles,
     discover_local_candidates,
     load_munchy_job_config,
     normalize_group_payload,
-    requested_archive_containers,
     routing_report_text,
 )
 from munchy.local_routing import routing_plan_files
@@ -38,8 +37,9 @@ from munchy.runner_client import (
     DEFAULT_UPLOAD_WORKERS,
     ENTITY_ID_STYLE,
     FIELD_STYLE,
+    MunchyAdminClient,
     MunchyRunnerClient,
-    RunnerUploadRequest,
+    SubmissionUploadRequest,
     format_bytes,
     format_job_failure,
     format_job_status_line,
@@ -71,9 +71,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped env
 
 app = typer.Typer(help="Munchy media ingest CLI.")
 profile_app = typer.Typer(help="Encode profile operations.")
+template_app = typer.Typer(help="Server-owned job-template administration.")
 job_app = typer.Typer(help="Runner job operations.")
 routing_app = typer.Typer(help="Routing authoring tools.")
 app.add_typer(profile_app, name="profile")
+app.add_typer(template_app, name="template")
 app.add_typer(job_app, name="job")
 app.add_typer(routing_app, name="routing")
 
@@ -184,6 +186,16 @@ def _mapping(value: object, *, label: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _template_inputs(values: list[str]) -> dict[str, str]:
+    inputs: dict[str, str] = {}
+    for item in values:
+        name, separator, value = item.partition("=")
+        if not separator or not name.strip() or not value.strip():
+            raise typer.BadParameter("--input must use NAME=VALUE", param_hint="--input")
+        inputs[name.strip()] = value.strip()
+    return inputs
+
+
 def _quality(value: int | None) -> str:
     return "default" if value is None else str(value)
 
@@ -283,6 +295,70 @@ def format_jobs(payload: Mapping[str, Any]) -> Any:
         table.add_row("none", "", "", "", "")
     header = RichText(_job_page_header(payload), style="bold")
     return RichGroup(header, table)
+
+
+def _template_page_header(payload: Mapping[str, Any]) -> str:
+    header = (
+        f"templates page {payload.get('page', 1)}/{payload.get('pages', 0)}  "
+        f"per_page={payload.get('per_page', 25)}  "
+        f"total={payload.get('total', 0)}  "
+        f"sort={payload.get('sort', 'name')}  "
+        f"order={payload.get('order', 'asc')}"
+    )
+    if payload.get("query"):
+        header += f"  query={payload.get('query')}"
+    enabled = _mapping(payload.get("filters"), label="filters").get("enabled")
+    if enabled is not None:
+        header += f"  enabled={str(bool(enabled)).lower()}"
+    return header
+
+
+def format_job_templates(payload: Mapping[str, Any]) -> Any:
+    templates = [
+        item for item in _sequence(payload.get("templates")) if isinstance(item, Mapping)
+    ]
+    if not _rich_enabled():
+        lines = [_template_page_header(payload)]
+        lines.extend(
+            f"- {item.get('name')} revision={item.get('revision')} "
+            f"enabled={str(bool(item.get('enabled'))).lower()} digest={item.get('digest')}"
+            for item in templates
+        )
+        if not templates:
+            lines.append("- none")
+        return "\n".join(lines)
+    table = _quiet_table("Template", "Revision", "Enabled", "Digest", "Updated")
+    for item in templates:
+        table.add_row(
+            _entity_text(item.get("name", "")),
+            str(item.get("revision", "")),
+            str(bool(item.get("enabled"))).lower(),
+            str(item.get("digest", ""))[:12],
+            str(item.get("updated_at", "")),
+        )
+    if not table.rows:
+        table.add_row("none", "", "", "", "")
+    return RichGroup(RichText(_template_page_header(payload), style="bold"), table)
+
+
+def format_job_template(payload: Mapping[str, Any]) -> Any:
+    if not _rich_enabled():
+        return "\n".join(
+            [
+                f"template: {payload.get('name', 'unknown')}",
+                f"revision: {payload.get('revision', 'unknown')}",
+                f"enabled: {str(bool(payload.get('enabled'))).lower()}",
+                f"digest: {payload.get('digest', 'unknown')}",
+                f"updated: {payload.get('updated_at', 'unknown')}",
+            ]
+        )
+    table = _detail_table()
+    table.add_row("template", _entity_text(payload.get("name", "unknown")))
+    table.add_row("revision", str(payload.get("revision", "unknown")))
+    table.add_row("enabled", str(bool(payload.get("enabled"))).lower())
+    table.add_row("digest", str(payload.get("digest", "unknown")))
+    table.add_row("updated", str(payload.get("updated_at", "unknown")))
+    return table
 
 
 def _plain_job(job: Mapping[str, Any]) -> str:
@@ -410,110 +486,79 @@ def explain_routing(
         raise typer.Exit(1)
 
 
-def _start_summary(request: RunnerUploadRequest, job: Mapping[str, Any]) -> Any:
+def _submission_summary(
+    request: SubmissionUploadRequest,
+    submission: Mapping[str, Any],
+) -> Any:
     total_bytes = sum(item.bytes for item in request.files)
+    job = _mapping(submission.get("job"), label="job")
+    state = job.get("state", "unknown")
     if not _rich_enabled():
         return "\n".join(
             [
-                f"job: {request.job_id}",
-                f"input upload: {request.input_upload_id}",
+                f"submission: {request.submission_id}",
+                f"template: {request.template}",
                 f"files: {len(request.files)}",
                 f"bytes: {total_bytes}",
-                f"state: {job.get('state', 'unknown')}",
+                f"state: {state}",
             ]
         )
     table = _detail_table()
-    table.add_row("job", _entity_text(request.job_id))
-    table.add_row("input upload", request.input_upload_id)
+    table.add_row("submission", _entity_text(request.submission_id))
+    table.add_row("template", request.template)
     table.add_row("files", str(len(request.files)))
     table.add_row("bytes", format_bytes(total_bytes))
-    table.add_row("state", _attention_text(job.get("state", "unknown")))
-    title = RichText("job start ", style="bold")
-    title.append(request.job_id, style=ENTITY_ID_STYLE)
+    table.add_row("state", _attention_text(state))
+    title = RichText("submission ", style="bold")
+    title.append(request.submission_id, style=ENTITY_ID_STYLE)
     return RichGroup(title, table)
 
 
-def _job_start_plan_payload(
-    request: RunnerUploadRequest,
+def _submission_plan_payload(
+    request: SubmissionUploadRequest,
     *,
     runner_url: str,
-    runner_ready: bool,
+    preflight: Mapping[str, Any],
 ) -> dict[str, Any]:
-    job_payload = request.job_payload
+    template = _mapping(preflight.get("template"), label="template")
     return {
         "dry_run": True,
-        "status": "would_start",
+        "status": "would_submit",
         "runner_url": runner_url,
-        "runner_ready": runner_ready,
-        "job_id": request.job_id,
-        "input_upload_id": request.input_upload_id,
+        "submission_id": request.submission_id,
+        "template": request.template,
+        "template_revision": template.get("revision"),
+        "template_digest": template.get("digest"),
         "files_total": len(request.files),
         "bytes_total": sum(item.bytes for item in request.files),
-        "workflow_mode": job_payload.get("workflow_mode"),
-        "collection_slug": job_payload.get("collection_slug"),
-        "collection_timestamp": job_payload.get("collection_timestamp"),
-        "collection_archive_destination": _mapping(
-            job_payload.get("collection_archive"), label="collection_archive"
-        ).get("destination"),
-        "output_mode": job_payload.get("output_mode"),
-        "tasks": list(job_payload.get("tasks") or []),
-        "groups": sorted(
-            str(group) for group in _mapping(job_payload.get("groups"), label="groups")
-        ),
-        "requested_archive_containers": requested_archive_containers(request),
+        "collection_slug": request.collection_slug,
+        "collection_timestamp": request.collection_timestamp,
+        "workflow_mode": preflight.get("workflow_mode"),
+        "content_inspection": preflight.get("content_inspection"),
         "upload_workers": request.upload_workers,
         "upload_chunk_mib": request.upload_chunk_mib,
     }
 
 
-def format_job_start_plan(payload: Mapping[str, Any]) -> Any:
+def format_submission_plan(payload: Mapping[str, Any]) -> Any:
+    rows = [
+        ("status", str(payload.get("status", "unknown"))),
+        ("runner", str(payload.get("runner_url", "unknown"))),
+        ("submission", str(payload.get("submission_id", "unknown"))),
+        ("template", str(payload.get("template", "unknown"))),
+        ("template revision", str(payload.get("template_revision") or "unknown")),
+        ("workflow", str(payload.get("workflow_mode", "unknown"))),
+        ("collection", str(payload.get("collection_slug") or "n/a")),
+        ("files", str(payload.get("files_total", 0))),
+        ("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0))),
+        ("content inspection", str(payload.get("content_inspection") or "unknown")),
+    ]
     if not _rich_enabled():
-        lines = [
-            "job start dry-run",
-            f"status: {payload.get('status', 'unknown')}",
-            f"runner: {payload.get('runner_url', 'unknown')}",
-            f"runner ready: {str(bool(payload.get('runner_ready'))).lower()}",
-            f"job: {payload.get('job_id', 'unknown')}",
-            f"input upload: {payload.get('input_upload_id', 'unknown')}",
-            f"workflow: {payload.get('workflow_mode', 'unknown')}",
-            f"collection: {payload.get('collection_slug') or 'n/a'}",
-            f"destination: {payload.get('collection_archive_destination') or 'n/a'}",
-            f"output mode: {payload.get('output_mode', 'unknown')}",
-            f"files: {payload.get('files_total', 0)}",
-            f"bytes: {format_bytes(int(payload.get('bytes_total', 0) or 0))}",
-            f"tasks: {', '.join(str(task) for task in _sequence(payload.get('tasks'))) or 'none'}",
-            "groups: "
-            f"{', '.join(str(group) for group in _sequence(payload.get('groups'))) or 'none'}",
-        ]
-        containers = _sequence(payload.get("requested_archive_containers"))
-        if containers:
-            lines.append("containers: " + ", ".join(str(item) for item in containers))
-        return "\n".join(lines)
-
+        return "submission dry-run\n" + "\n".join(f"{name}: {value}" for name, value in rows)
     table = _detail_table()
-    table.add_row("status", _attention_text(payload.get("status", "unknown")))
-    table.add_row("runner", str(payload.get("runner_url", "unknown")))
-    table.add_row("runner ready", str(bool(payload.get("runner_ready"))).lower())
-    table.add_row("job", _entity_text(payload.get("job_id", "unknown")))
-    table.add_row("input upload", str(payload.get("input_upload_id", "unknown")))
-    table.add_row("workflow", str(payload.get("workflow_mode", "unknown")))
-    table.add_row("collection", str(payload.get("collection_slug") or "n/a"))
-    table.add_row("destination", str(payload.get("collection_archive_destination") or "n/a"))
-    table.add_row("output mode", str(payload.get("output_mode", "unknown")))
-    table.add_row("files", str(payload.get("files_total", 0)))
-    table.add_row("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0)))
-    table.add_row(
-        "tasks",
-        ", ".join(str(task) for task in _sequence(payload.get("tasks"))) or "none",
-    )
-    table.add_row(
-        "groups",
-        ", ".join(str(group) for group in _sequence(payload.get("groups"))) or "none",
-    )
-    containers = _sequence(payload.get("requested_archive_containers"))
-    if containers:
-        table.add_row("containers", ", ".join(str(item) for item in containers))
-    return RichGroup(RichText("job start dry-run", style="bold"), table)
+    for name, value in rows:
+        table.add_row(name, value)
+    return RichGroup(RichText("submission dry-run", style="bold"), table)
 
 
 def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
@@ -594,6 +639,184 @@ def format_review_sweep_plan(plan: Mapping[str, Any]) -> Any:
     title = RichText("review sweep plan ", style="bold")
     title.append(state, style=ATTENTION_STYLE if state != "ok" else ENTITY_ID_STYLE)
     return RichGroup(title, detail, routes_table)
+
+
+def _job_template_definition(path: Path) -> dict[str, Any]:
+    try:
+        return load_munchy_job_config(path)
+    except (ConfigError, MunchyJobAuthoringError) as exc:
+        raise typer.BadParameter(str(exc), param_hint=str(path)) from exc
+
+
+def _admin_client(runner_url: str | None) -> MunchyAdminClient:
+    return MunchyAdminClient(runner_url_setting(runner_url))
+
+
+@template_app.command("list")
+def list_job_templates(
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=500)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[str | None, typer.Option("--query", "-q")] = None,
+    enabled: Annotated[str | None, typer.Option("--enabled")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """List server-owned job templates."""
+
+    try:
+        payload = _admin_client(runner_url).list_job_templates(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            query=query,
+            enabled=_optional_bool(enabled, label="--enabled"),
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else format_job_templates(payload), json_mode=json_mode)
+
+
+@template_app.command("show")
+def show_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit full JSON")] = False,
+) -> None:
+    """Show one server-owned job template."""
+
+    try:
+        payload = _admin_client(runner_url).get_job_template(name)
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
+
+
+@template_app.command("check")
+def check_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Validate an expanded job template without storing it."""
+
+    definition = _job_template_definition(path)
+    try:
+        payload = _admin_client(runner_url).validate_job_template(name, definition)
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else f"{name}: ok ({payload.get('digest')})", json_mode=json_mode)
+
+
+@template_app.command("create")
+def create_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    disabled: Annotated[bool, typer.Option("--disabled")] = False,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Create a server-owned job template."""
+
+    definition = _job_template_definition(path)
+    try:
+        payload = _admin_client(runner_url).create_job_template(
+            name,
+            definition,
+            enabled=not disabled,
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
+
+
+@template_app.command("replace")
+def replace_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    disabled: Annotated[bool, typer.Option("--disabled")] = False,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Replace a complete server-owned job template."""
+
+    definition = _job_template_definition(path)
+    client = _admin_client(runner_url)
+    try:
+        current = client.get_job_template(name)
+        payload = client.replace_job_template(
+            name,
+            definition,
+            expected_revision=int(current["revision"]),
+            enabled=not disabled,
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
+
+
+def _set_job_template_enabled(
+    name: str,
+    *,
+    runner_url: str | None,
+    enabled: bool,
+    json_mode: bool,
+) -> None:
+    client = _admin_client(runner_url)
+    try:
+        current = client.get_job_template(name)
+        payload = client.set_job_template_enabled(
+            name,
+            enabled=enabled,
+            expected_revision=int(current["revision"]),
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
+
+
+@template_app.command("enable")
+def enable_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Enable a job template for new submissions."""
+
+    _set_job_template_enabled(name, runner_url=runner_url, enabled=True, json_mode=json_mode)
+
+
+@template_app.command("disable")
+def disable_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Disable a job template for new submissions."""
+
+    _set_job_template_enabled(name, runner_url=runner_url, enabled=False, json_mode=json_mode)
+
+
+@template_app.command("remove")
+def remove_job_template(
+    name: Annotated[str, typer.Argument(help="Job-template name")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+) -> None:
+    """Remove a job template without changing accepted jobs."""
+
+    client = _admin_client(runner_url)
+    try:
+        current = client.get_job_template(name)
+        payload = client.delete_job_template(
+            name,
+            expected_revision=int(current["revision"]),
+        )
+    except Exception as exc:
+        _exit_runner_error(exc)
+    emit(payload, json_mode=True)
 
 
 @profile_app.command("validate")
@@ -693,74 +916,50 @@ def plan_review_sweep(
         raise typer.Exit(1)
 
 
-@job_app.command("start")
-def start_job(
+@app.command("submit")
+def submit(
     source: Annotated[
         Path,
         typer.Argument(
             exists=True,
             readable=True,
-            help="Local file or directory to upload to the runner",
+            help="Local file or directory to upload",
         ),
     ],
+    template: Annotated[
+        str,
+        typer.Option("--template", help="Server-owned job-template name"),
+    ],
+    inputs: Annotated[
+        list[str] | None,
+        typer.Option("--input", help="Template input as NAME=VALUE; repeat as needed"),
+    ] = None,
     runner_url: Annotated[
         str | None,
         typer.Option("--runner-url", help="Munchy runner URL; defaults to MUNCHY_RUNNER_URL"),
     ] = None,
-    config: Annotated[
-        Path | None,
-        typer.Option(
-            "--config",
-            exists=True,
-            dir_okay=False,
-            readable=True,
-            help=f"Munchy job YAML config; defaults to {MUNCHY_CONFIG_ENV}",
-        ),
-    ] = None,
     collection: Annotated[
         str | None,
-        typer.Option("--collection", help="Collection slug for this job"),
+        typer.Option("--collection", help="Collection slug when required by the template"),
     ] = None,
     collection_timestamp: Annotated[
         str | None,
         typer.Option("--timestamp", help="Collection timestamp; defaults to now"),
     ] = None,
-    group: Annotated[
-        str | None,
-        typer.Option("--group", help="Group for direct group-path uploads"),
-    ] = None,
     destination_prefix: Annotated[
         str | None,
-        typer.Option(
-            "--destination-prefix",
-            help="Optional destination path prefix inside the upload",
-        ),
-    ] = None,
-    workflow_mode: Annotated[
-        str | None,
-        typer.Option("--workflow", help="collection-archive or review-only"),
-    ] = None,
-    collection_archive_destination: Annotated[
-        str | None,
-        typer.Option(
-            "--destination",
-            help="Collection archive destination: target or riverhog",
-        ),
+        typer.Option("--prefix", help="Optional path prefix inside the submission"),
     ] = None,
     riverhog_upload_session_on_failure: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--riverhog-upload-session-on-failure",
-            help=(
-                "Riverhog upload session handling when this job fails: "
-                "preserve-for-resume or cancel"
-            ),
+            help="Riverhog upload session handling on failure: preserve-for-resume or cancel",
         ),
-    ] = None,
-    job_id: Annotated[str | None, typer.Option("--job-id", help="Runner job id")] = None,
-    input_upload_id: Annotated[
+    ] = "preserve-for-resume",
+    submission_id: Annotated[
         str | None,
-        typer.Option("--input-upload-id", help="Runner input upload id"),
+        typer.Option("--submission-id", help="Stable submission id; generated by default"),
     ] = None,
     upload_workers: Annotated[
         int,
@@ -780,74 +979,63 @@ def start_job(
     ] = False,
     wait: Annotated[
         bool,
-        typer.Option("--wait/--no-wait", help="Wait until the job reaches safe completion"),
+        typer.Option("--wait/--no-wait", help="Wait until the submission reaches safe completion"),
     ] = True,
     dry_run: Annotated[
         bool,
-        typer.Option(
-            "--dry-run",
-            help="Preview upload and job without creating runner state or uploading files",
-        ),
+        typer.Option("--dry-run", help="Validate the submission without creating or uploading it"),
     ] = False,
     interval: Annotated[float, typer.Option("--interval", min=0.5)] = 10.0,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Upload local media and start a runner job."""
+    """Submit local files through a server-owned job template."""
 
-    with keep_system_awake("munchy job start"):
-        config_path = config or (
-            Path(os.environ[MUNCHY_CONFIG_ENV]) if os.getenv(MUNCHY_CONFIG_ENV) else None
-        )
+    with keep_system_awake("munchy submit"):
         try:
-            request = build_runner_upload_request(
+            request = build_submission_upload_request(
                 source=source,
-                config_path=config_path,
+                template=template,
+                inputs=_template_inputs(inputs or []),
                 collection=collection,
                 collection_timestamp=collection_timestamp,
-                job_id=job_id,
-                input_upload_id=input_upload_id,
+                submission_id=submission_id,
                 destination_prefix=destination_prefix,
-                group=group,
-                workflow_mode=workflow_mode,
-                collection_archive_destination=collection_archive_destination,
                 riverhog_upload_session_on_failure=riverhog_upload_session_on_failure,
                 upload_workers=upload_workers,
                 upload_chunk_mib=upload_chunk_mib,
                 hash_cache=hash_cache,
                 use_hash_cache=not no_hash_cache,
             )
-        except (ConfigError, MunchyJobAuthoringError) as exc:
+        except MunchyJobAuthoringError as exc:
             raise typer.BadParameter(str(exc)) from exc
         resolved_runner_url = runner_url_setting(runner_url)
         client = MunchyRunnerClient(resolved_runner_url)
         try:
-            client.check_ready(
-                str(request.job_payload.get("workflow_mode") or "collection_archive"),
-                requested_containers=requested_archive_containers(request),
-            )
+            preflight = client.preflight_submission(request)
             if dry_run:
-                plan = _job_start_plan_payload(
+                plan = _submission_plan_payload(
                     request,
                     runner_url=resolved_runner_url,
-                    runner_ready=True,
+                    preflight=preflight,
                 )
-                emit(plan if json_mode else format_job_start_plan(plan), json_mode=json_mode)
+                emit(plan if json_mode else format_submission_plan(plan), json_mode=json_mode)
                 return
-            client.create_or_get_input_upload(request)
-            job = client.create_job(request)
+            submission = client.create_submission(request)
             if not json_mode:
-                emit(_start_summary(request, job), json_mode=False)
+                emit(_submission_summary(request, submission), json_mode=False)
             client.upload_files(request)
             if wait:
-                job = client.wait_for_job(request.job_id, interval=interval)
+                submission = client.wait_for_submission(request.submission_id, interval=interval)
+                job = _mapping(submission.get("job"), label="job")
                 if not job_finished_cleanly(job):
-                    typer.echo(format_job_failure(job, label="munchy job"), err=True)
+                    typer.echo(format_job_failure(job, label="munchy submission"), err=True)
                     raise typer.Exit(1)
             elif not json_mode:
+                job = _mapping(submission.get("job"), label="job")
                 typer.echo(format_job_status_line(job), err=True)
         except Exception as exc:
             _exit_runner_error(exc)
-    emit(job if json_mode else format_job(job), json_mode=json_mode)
+    emit(submission if json_mode else _submission_summary(request, submission), json_mode=json_mode)
 
 
 @job_app.command("list")

@@ -30,7 +30,7 @@ def collector_for(env: dict[str, str]) -> Collector:
     collector.add_source(
         "phone",
         adapters=("tus",),
-        policy={"workflow_mode": "collection_archive"},
+        template="phone-archive",
         credential="phone-password",
         cadence="manual",
     )

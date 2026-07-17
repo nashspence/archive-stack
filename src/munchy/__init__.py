@@ -5,7 +5,7 @@ __all__ = [
     "MUNCHY_WEBHOOK_EMOJI",
     "EncodeProfile",
     "MunchyRunnerClient",
-    "RunnerUploadRequest",
+    "SubmissionUploadRequest",
 ]
 
 
@@ -20,11 +20,11 @@ def __getattr__(name: str) -> object:
         return {"MUNCHY_PROFILE_TARGET": MUNCHY_PROFILE_TARGET, "EncodeProfile": EncodeProfile}[
             name
         ]
-    if name in {"MunchyRunnerClient", "RunnerUploadRequest"}:
-        from munchy.runner_client import MunchyRunnerClient, RunnerUploadRequest
+    if name in {"MunchyRunnerClient", "SubmissionUploadRequest"}:
+        from munchy.runner_client import MunchyRunnerClient, SubmissionUploadRequest
 
         return {
             "MunchyRunnerClient": MunchyRunnerClient,
-            "RunnerUploadRequest": RunnerUploadRequest,
+            "SubmissionUploadRequest": SubmissionUploadRequest,
         }[name]
     raise AttributeError(name)

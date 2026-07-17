@@ -11,7 +11,6 @@ import yaml
 from jeb.collector import ATTEMPT_LIST_SORT_FIELDS
 from jeb.listing import add_list_output_arguments, add_list_query_arguments
 from jeb.sources import SOURCE_LIST_SORT_FIELDS
-from munchy.job_authoring import load_munchy_job_config, munchy_job_defaults_from_config
 from riverhog_cli.client import ApiClient
 from riverhog_cli.output import (
     emit,
@@ -101,13 +100,6 @@ def load_object(path: str, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def load_target_policy(path: str, *, target: str) -> dict[str, Any]:
-    payload = load_object(path, label="source policy")
-    if target == "munchy" and payload.get("kind") == "munchy.job":
-        return munchy_job_defaults_from_config(load_munchy_job_config(Path(path)))
-    return payload
-
-
 def source_credential(args: argparse.Namespace) -> str | None:
     if not args.credential_stdin:
         return None
@@ -146,7 +138,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     payload: dict[str, Any] = {
         "id": args.source,
         "adapters": args.adapter,
-        "policy": load_target_policy(args.policy, target=args.target),
+        "template": args.template,
         "enabled": not args.disabled,
         "stable_seconds": args.stable_seconds,
         "collection_slug": args.collection_slug or args.source,
@@ -179,8 +171,8 @@ def cmd_source_set(args: argparse.Namespace) -> int:
     changes = (
         load_object(args.changes, label="source changes") if args.changes is not None else {}
     )
-    if args.policy is not None:
-        changes["policy"] = load_target_policy(args.policy, target=args.target)
+    if args.template is not None:
+        changes["template"] = args.template
     payload = client().update_jeb_source(args.source, changes)
     emit(payload, json_mode=True)
     return 0
@@ -334,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=SOURCE_LIST_SORT_FIELDS,
         default_sort="id",
         default_order="asc",
-        query_help="Search source, collection slug, target, cadence, or adapter.",
+        query_help="Search source, collection slug, target, template, cadence, or adapter.",
     )
     source_state = source_list.add_mutually_exclusive_group()
     source_state.add_argument(
@@ -372,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Enable an ingress adapter; repeat for more than one.",
     )
-    source_add.add_argument("--policy", required=True, help="Target policy JSON/YAML file.")
+    source_add.add_argument("--template", required=True, help="Target job-template name.")
     source_add.add_argument(
         "--credential-stdin",
         action="store_true",
@@ -413,8 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_set.add_argument("source")
     source_set_input = source_set.add_mutually_exclusive_group(required=True)
     source_set_input.add_argument("--changes", help="Source changes JSON/YAML file.")
-    source_set_input.add_argument("--policy", help="Replacement target policy JSON/YAML file.")
-    source_set.add_argument("--target", default="munchy")
+    source_set_input.add_argument("--template", help="Replacement target job-template name.")
     source_set.set_defaults(func=cmd_source_set)
     for action, enabled in (("enable", True), ("disable", False)):
         source_enabled = source_sub.add_parser(action, help=f"{action} a source")

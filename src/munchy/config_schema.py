@@ -301,6 +301,23 @@ MUNCHY_CONFIG_SCHEMA: dict[str, Any] = {
     "properties": {
         "schema_version": {"type": "integer", "const": 1},
         "kind": {"type": "string", "const": "munchy.job"},
+        "inputs": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"},
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "required": {"type": "boolean"},
+                    "enum": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
         "device_profile": DEVICE_PROFILE_REF_SCHEMA,
         "job": JOB_SCHEMA,
         "profiles": {"type": "object", "additionalProperties": {"type": "object"}},
