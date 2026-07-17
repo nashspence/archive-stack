@@ -1931,7 +1931,7 @@ def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
     typer.echo(f"riverhog: {message}", err=True)
 
 
-def main() -> None:
+def main() -> int:
     try:
         app()
     except (
@@ -1942,8 +1942,9 @@ def main() -> None:
         NotADirectoryError,
     ) as exc:
         _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
-        raise typer.Exit(1) from None
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
