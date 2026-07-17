@@ -96,6 +96,7 @@ from munchy.source_artifact_bridge import (
     build_preserve_source_artifacts,
     build_strict_source_artifacts,
 )
+from munchy.template_registry import ensure_template_registry_schema
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
@@ -1425,28 +1426,7 @@ def init_state_store() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS states_kind_updated_at ON states(kind, updated_at)"
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS job_templates (
-                name TEXT PRIMARY KEY,
-                definition TEXT NOT NULL,
-                resolved_job TEXT NOT NULL,
-                digest TEXT NOT NULL,
-                revision INTEGER NOT NULL,
-                enabled INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_templates_enabled_name "
-            "ON job_templates(enabled, name)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_templates_updated_name "
-            "ON job_templates(updated_at, name)"
-        )
+        ensure_template_registry_schema(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS job_summaries (
