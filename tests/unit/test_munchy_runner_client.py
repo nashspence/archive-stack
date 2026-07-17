@@ -848,7 +848,7 @@ def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path
 
     client = MunchyRunnerClient("http://runner")
     json_calls = 0
-    request_calls = 0
+    patch_calls = 0
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         nonlocal json_calls
@@ -861,24 +861,23 @@ def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path
             "length": item.bytes,
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        nonlocal request_calls
-        request_calls += 1
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        nonlocal patch_calls
+        assert upload_url == "http://uploads.test/file"
+        assert offset == 0
+        assert content == b"video"
+        patch_calls += 1
         raise ConnectionResetError(54, "Connection reset by peer")
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     with patch("munchy.runner_client.time.sleep"):
         with contextlib.redirect_stderr(io.StringIO()):
             client.upload_file("upload", item, chunk_bytes=1024)
 
     assert json_calls == 2
-    assert request_calls == 1
+    assert patch_calls == 1
 
 
 def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> None:
@@ -893,7 +892,7 @@ def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> N
 
     client = MunchyRunnerClient("http://runner")
     json_calls = 0
-    request_calls = 0
+    patch_calls = 0
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         nonlocal json_calls
@@ -906,24 +905,22 @@ def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> N
             "length": item.bytes,
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        nonlocal request_calls
-        request_calls += 1
-        raise RunnerHttpError(method, path_or_url, 507, b"temporary storage pressure")
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        nonlocal patch_calls
+        assert offset == 0
+        assert content == b"video"
+        patch_calls += 1
+        raise RunnerHttpError("PATCH", upload_url, 507, b"temporary storage pressure")
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     with patch("munchy.runner_client.time.sleep"):
         with contextlib.redirect_stderr(io.StringIO()):
             client.upload_file("upload", item, chunk_bytes=1024)
 
     assert json_calls == 2
-    assert request_calls == 1
+    assert patch_calls == 1
 
 
 def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
@@ -938,7 +935,7 @@ def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
 
     client = MunchyRunnerClient("http://runner")
     json_calls = 0
-    request_calls = 0
+    patch_calls = 0
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         nonlocal json_calls
@@ -951,29 +948,27 @@ def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
             "length": item.bytes,
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        nonlocal request_calls
-        request_calls += 1
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        nonlocal patch_calls
+        assert offset == 0
+        assert content == b"video"
+        patch_calls += 1
         raise RunnerHttpError(
-            method,
-            path_or_url,
+            "PATCH",
+            upload_url,
             400,
             b"ERR_UPLOAD_INTERRUPTED: upload has been interrupted by another request",
         )
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     with patch("munchy.runner_client.time.sleep"):
         with contextlib.redirect_stderr(io.StringIO()):
             client.upload_file("upload", item, chunk_bytes=1024)
 
     assert json_calls == 2
-    assert request_calls == 1
+    assert patch_calls == 1
 
 
 def test_upload_file_reports_canceled_job_after_tusd_cleanup(tmp_path: Path) -> None:
@@ -1004,20 +999,18 @@ def test_upload_file_reports_canceled_job_after_tusd_cleanup(tmp_path: Path) -> 
             }
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        assert offset == 0
+        assert content == b"video"
         raise RunnerHttpError(
-            method,
-            path_or_url,
+            "PATCH",
+            upload_url,
             404,
             b"ERR_UPLOAD_NOT_FOUND: upload not found",
         )
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     with pytest.raises(RunnerJobTerminalDuringUpload) as exc_info:
         client.upload_file(
@@ -1049,15 +1042,13 @@ def test_upload_file_does_not_retry_non_transient_http_error(tmp_path: Path) -> 
             "length": item.bytes,
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        raise RunnerHttpError(method, path_or_url, 400, b"bad request")
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        assert offset == 0
+        assert content == b"video"
+        raise RunnerHttpError("PATCH", upload_url, 400, b"bad request")
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     with pytest.raises(RunnerHttpError):
         client.upload_file("upload", item, chunk_bytes=1024)
@@ -1075,10 +1066,6 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
     client = MunchyRunnerClient("http://runner")
     offsets: list[int] = []
 
-    class Response:
-        def __init__(self, offset: int) -> None:
-            self.headers = {"Upload-Offset": str(offset)}
-
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         assert method == "POST"
         assert path == "/v1/submissions/upload/files/video/clip.mp4/upload"
@@ -1088,23 +1075,12 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
             "length": item.bytes,
         }
 
-    def fake_request(
-        method: str,
-        path_or_url: str,
-        *,
-        data: bytes | None = None,
-        headers: dict[str, str] | None = None,
-        **_kwargs: object,
-    ) -> tuple[int, bytes, object]:
-        assert method == "PATCH"
-        assert path_or_url == "http://uploads.test/file"
-        assert data is not None
-        assert headers is not None
-        next_offset = int(headers["Upload-Offset"]) + len(data)
-        return 204, b"", Response(next_offset)
+    def fake_patch(upload_url: str, *, offset: int, content: bytes) -> int:
+        assert upload_url == "http://uploads.test/file"
+        return offset + len(content)
 
     client.json = fake_json  # type: ignore[method-assign]
-    client.request = fake_request  # type: ignore[method-assign]
+    client._patch_upload_chunk = fake_patch  # type: ignore[method-assign]
 
     client.upload_file(
         "upload",

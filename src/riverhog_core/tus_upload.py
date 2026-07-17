@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,9 +7,8 @@ from pathlib import Path
 import httpx
 
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
+from tus_transport import TusHttpError, TusTransport
 
-TUS_RESUMABLE = "1.0.0"
-TUS_CHUNK_CONTENT_TYPE = "application/offset+octet-stream"
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
@@ -40,17 +37,16 @@ class TusHttpClient:
         http2: bool = True,
         url_rewriter: Callable[[str], str] | None = None,
     ) -> None:
-        self._headers = dict(headers or {})
-        self._timeout_seconds = timeout_seconds
-        self._verify_tls = verify_tls
-        self._http2 = http2
-        self._url_rewriter = url_rewriter or (lambda value: value)
-        self._client: httpx.Client | None = None
+        self._transport = TusTransport(
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+            verify_tls=verify_tls,
+            http2=http2,
+            url_rewriter=url_rewriter,
+        )
 
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        self._transport.close()
 
     def __enter__(self) -> TusHttpClient:
         return self
@@ -58,25 +54,8 @@ class TusHttpClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def _client_for_request(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(
-                headers=self._headers,
-                timeout=self._timeout_seconds,
-                verify=self._verify_tls,
-                http2=self._http2,
-            )
-        return self._client
-
     def head_offset(self, upload_url: str) -> int:
-        response = self._client_for_request().head(
-            self._url_rewriter(upload_url),
-            headers={"Tus-Resumable": TUS_RESUMABLE},
-        )
-        if response.status_code == 404:
-            return -1
-        response.raise_for_status()
-        return int(response.headers["Upload-Offset"])
+        return self._transport.head_offset(upload_url)
 
     def patch_chunk(
         self,
@@ -86,20 +65,12 @@ class TusHttpClient:
         checksum_algorithm: str,
         content: bytes,
     ) -> int:
-        checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode(
-            "ascii"
-        )
         try:
-            response = self._client_for_request().patch(
-                self._url_rewriter(upload_url),
-                headers={
-                    "Content-Length": str(len(content)),
-                    "Content-Type": TUS_CHUNK_CONTENT_TYPE,
-                    "Tus-Resumable": TUS_RESUMABLE,
-                    "Upload-Offset": str(offset),
-                    "Upload-Checksum": f"{checksum_algorithm} {checksum}",
-                },
+            return self._transport.patch_chunk(
+                upload_url,
+                offset=offset,
                 content=content,
+                checksum_algorithm=checksum_algorithm,
             )
         except httpx.TransportError as exc:
             self.close()
@@ -107,24 +78,19 @@ class TusHttpClient:
                 "upload backend did not accept the chunk before the client timeout; "
                 "retry after resyncing the offset"
             ) from exc
-        if response.status_code in TRANSIENT_HTTP_STATUS_CODES:
-            self.close()
-            raise ServiceUnavailable(
-                "upload backend reported a transient failure; retry after resyncing the offset"
-            )
-        if response.status_code in {400, 409}:
-            message = response.text.strip() or "upload chunk was rejected by tusd"
-            raise Conflict(message)
-        response.raise_for_status()
-        return int(response.headers.get("Upload-Offset", offset + len(content)))
+        except TusHttpError as exc:
+            if exc.status in TRANSIENT_HTTP_STATUS_CODES:
+                self.close()
+                raise ServiceUnavailable(
+                    "upload backend reported a transient failure; retry after resyncing the offset"
+                ) from exc
+            if exc.status in {400, 409}:
+                message = exc.body.decode("utf-8", errors="replace").strip()
+                raise Conflict(message or "upload chunk was rejected by tusd") from exc
+            raise
 
     def delete_upload(self, upload_url: str) -> None:
-        response = self._client_for_request().delete(
-            self._url_rewriter(upload_url),
-            headers={"Tus-Resumable": TUS_RESUMABLE},
-        )
-        if response.status_code not in {200, 204, 404}:
-            response.raise_for_status()
+        self._transport.delete_upload(upload_url)
 
 
 def upload_path_to_tus(

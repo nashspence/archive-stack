@@ -63,6 +63,7 @@ packages = [
   "src/riverhog_api",
   "src/riverhog_cli",
   "src/riverhog_core",
+  "src/tus_transport",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]

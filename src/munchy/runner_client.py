@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from tus_transport import TusHttpError, TusTransport
+
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
 RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
 RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
@@ -1351,8 +1353,11 @@ class MunchyRunnerClient:
         self.base_url = base_url.rstrip("/")
         self.token = runner_token_setting(token)
         self._http = httpx.Client(transport=transport)
+        tus_headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
+        self._tus = TusTransport(client=self._http, headers=tus_headers)
 
     def close(self) -> None:
+        self._tus.close()
         self._http.close()
 
     def __enter__(self) -> MunchyRunnerClient:
@@ -1752,6 +1757,21 @@ class MunchyRunnerClient:
                 time.sleep(retry_delay)
                 retry_delay = next_upload_retry_delay(retry_delay)
 
+    def _patch_upload_chunk(self, upload_url: str, *, offset: int, content: bytes) -> int:
+        try:
+            return self._tus.patch_chunk(
+                upload_url,
+                offset=offset,
+                content=content,
+            )
+        except TusHttpError as exc:
+            raise RunnerHttpError(
+                "PATCH",
+                upload_url,
+                exc.status,
+                exc.body,
+            ) from exc
+
     def _upload_file_once(
         self,
         submission_id: str,
@@ -1789,20 +1809,11 @@ class MunchyRunnerClient:
                 chunk = fh.read(min(chunk_bytes, item.bytes - offset))
                 if not chunk:
                     break
-                _, _, response = self.request(
-                    "PATCH",
+                offset = self._patch_upload_chunk(
                     upload_url,
-                    data=chunk,
-                    headers={
-                        "Tus-Resumable": "1.0.0",
-                        "Upload-Offset": str(offset),
-                        "Content-Type": "application/offset+octet-stream",
-                    },
-                    expect={204},
-                    timeout=300.0,
+                    offset=offset,
+                    content=chunk,
                 )
-                next_offset = response.headers.get("Upload-Offset")
-                offset = int(next_offset) if next_offset else offset + len(chunk)
                 if progress_callback is not None:
                     progress_callback(item, offset)
         if offset != item.bytes:
