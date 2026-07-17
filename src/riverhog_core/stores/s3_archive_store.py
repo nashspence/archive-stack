@@ -4,8 +4,10 @@ import hashlib
 import logging
 import re
 import secrets
-from collections.abc import Iterable, Iterator, Sequence
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
@@ -65,6 +67,18 @@ _LOG = logging.getLogger(__name__)
 class _RestoreHeader(TypedDict):
     ongoing: bool
     expires_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveMultipartTiming:
+    object_id: str
+    stored_bytes: int
+    parts: int
+    concurrency: int
+    elapsed_seconds: float
+    preparation_seconds: float
+    upload_request_seconds: float
+    checkpoint_seconds: float
 
 
 def _multipart_part_size(content_length: int, configured_part_size: int) -> int:
@@ -239,11 +253,18 @@ def _validate_recorded_parts_exist_remotely(
 
 
 class S3ArchiveStore:
-    def __init__(self, config: RuntimeConfig, store: ArchiveStoreConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        store: ArchiveStoreConfig,
+        *,
+        multipart_timing_observer: Callable[[ArchiveMultipartTiming], None] | None = None,
+    ) -> None:
         self._config = config
         self._store = store
         self._bucket = store.bucket
         self._client = create_archive_s3_client(config, store)
+        self._multipart_timing_observer = multipart_timing_observer
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
@@ -1026,6 +1047,7 @@ class S3ArchiveStore:
         extra_args: dict[str, Any],
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> None:
+        started = time.perf_counter()
         upload_state: ArchiveMultipartUploadState | None = None
         part_size = _multipart_part_size(
             content_length,
@@ -1035,15 +1057,28 @@ class S3ArchiveStore:
         session = initial_session
         plans = session.s3_part_plans(object.plaintext_bytes, chunks_per_part=chunks_per_part)
         expected_part_count = len(plans)
+        multipart_concurrency = self._config.archive_multipart_concurrency
         uploaded_bytes = 0
         resumed_part_count = 0
         completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
+        preparation_seconds = 0.0
+        upload_request_seconds = 0.0
+        checkpoint_seconds = 0.0
+
+        def checkpoint(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+            nonlocal checkpoint_seconds
+            checkpoint_started = time.perf_counter()
+            try:
+                return call(*args, **kwargs)
+            finally:
+                checkpoint_seconds += time.perf_counter() - checkpoint_started
 
         if plans[-1].ciphertext_end != content_length:
             raise RuntimeError("encrypted archive content length plan mismatch")
 
         if multipart_tracker is not None:
-            upload_state = multipart_tracker.load_multipart_upload(
+            upload_state = checkpoint(
+                multipart_tracker.load_multipart_upload,
                 collection_id=collection_id,
                 object_id=object_id,
                 object_path=object_key,
@@ -1053,7 +1088,8 @@ class S3ArchiveStore:
             )
             if upload_state is not None:
                 if not upload_state.encryption_state_json:
-                    multipart_tracker.clear_multipart_upload(
+                    checkpoint(
+                        multipart_tracker.clear_multipart_upload,
                         collection_id=collection_id,
                         object_id=object_id,
                         upload_id=upload_state.upload_id,
@@ -1080,7 +1116,8 @@ class S3ArchiveStore:
                     except Exception as exc:
                         if not _is_missing_upload_error(exc):
                             raise
-                        multipart_tracker.clear_multipart_upload(
+                        checkpoint(
+                            multipart_tracker.clear_multipart_upload,
                             collection_id=collection_id,
                             object_id=object_id,
                             upload_id=upload_state.upload_id,
@@ -1109,12 +1146,13 @@ class S3ArchiveStore:
             if upload_state is None:
                 _LOG.info(
                     "starting encrypted S3 multipart upload for %s: size=%s "
-                    "target_part_size=%s parts=%s chunks_per_part=%s",
+                    "target_part_size=%s parts=%s chunks_per_part=%s concurrency=%s",
                     object_key,
                     content_length,
                     part_size,
                     expected_part_count,
                     chunks_per_part,
+                    multipart_concurrency,
                 )
                 response = cast(
                     dict[str, Any],
@@ -1139,7 +1177,8 @@ class S3ArchiveStore:
                     .decode("utf-8"),
                 )
                 if multipart_tracker is not None:
-                    multipart_tracker.save_multipart_upload(
+                    checkpoint(
+                        multipart_tracker.save_multipart_upload,
                         collection_id=collection_id,
                         state=upload_state,
                     )
@@ -1151,7 +1190,8 @@ class S3ArchiveStore:
             uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
             uploaded_parts = len(completed_parts_by_number)
             if multipart_tracker is not None and upload_state is not None:
-                multipart_tracker.record_multipart_upload_progress(
+                checkpoint(
+                    multipart_tracker.record_multipart_upload_progress,
                     collection_id=collection_id,
                     state=upload_state,
                     part=part,
@@ -1173,29 +1213,74 @@ class S3ArchiveStore:
 
         try:
             upload_id = ensure_upload()
-            for plan in plans[resumed_part_count:]:
-                body = _encrypted_object_part_body(
-                    object=object,
-                    session=session,
-                    plan=plan,
-                )
-                response = cast(
-                    dict[str, Any],
-                    self._client.upload_part(
-                        Bucket=self._bucket,
-                        Key=object_key,
-                        UploadId=upload_id,
-                        PartNumber=plan.part_number,
-                        Body=body,
-                    ),
-                )
-                record_completed_part(
-                    ArchiveMultipartUploadedPart(
-                        part_number=plan.part_number,
-                        etag=str(response["ETag"]),
-                        size=len(body),
+            with ThreadPoolExecutor(
+                max_workers=multipart_concurrency,
+                thread_name_prefix="riverhog-s3-encrypted-archive",
+            ) as executor:
+                pending: set[
+                    Future[tuple[ArchiveMultipartUploadedPart, float]]
+                ] = set()
+
+                def upload_part_body(
+                    *,
+                    plan: Any,
+                    body: bytes,
+                ) -> tuple[ArchiveMultipartUploadedPart, float]:
+                    request_started = time.perf_counter()
+                    response = cast(
+                        dict[str, Any],
+                        self._client.upload_part(
+                            Bucket=self._bucket,
+                            Key=object_key,
+                            UploadId=upload_id,
+                            PartNumber=plan.part_number,
+                            Body=body,
+                        ),
                     )
-                )
+                    request_seconds = time.perf_counter() - request_started
+                    return (
+                        ArchiveMultipartUploadedPart(
+                            part_number=plan.part_number,
+                            etag=str(response["ETag"]),
+                            size=len(body),
+                        ),
+                        request_seconds,
+                    )
+
+                def drain_completed(*, return_when: str) -> None:
+                    nonlocal upload_request_seconds
+                    if not pending:
+                        return
+                    done, still_pending = wait(pending, return_when=return_when)
+                    pending.clear()
+                    pending.update(still_pending)
+                    error: BaseException | None = None
+                    for future in done:
+                        try:
+                            part, request_seconds = future.result()
+                            upload_request_seconds += request_seconds
+                            record_completed_part(part)
+                        except BaseException as exc:
+                            error = exc
+                    if error is not None:
+                        for future in pending:
+                            future.cancel()
+                        raise error
+
+                for plan in plans[resumed_part_count:]:
+                    preparation_started = time.perf_counter()
+                    body = _encrypted_object_part_body(
+                        object=object,
+                        session=session,
+                        plan=plan,
+                    )
+                    preparation_seconds += time.perf_counter() - preparation_started
+                    pending.add(executor.submit(upload_part_body, plan=plan, body=body))
+                    if len(pending) >= multipart_concurrency:
+                        drain_completed(return_when=FIRST_COMPLETED)
+
+                while pending:
+                    drain_completed(return_when=FIRST_COMPLETED)
 
             remote_parts = self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
             completed_parts = [
@@ -1221,17 +1306,37 @@ class S3ArchiveStore:
                 },
             )
             if multipart_tracker is not None:
-                multipart_tracker.clear_multipart_upload(
+                checkpoint(
+                    multipart_tracker.clear_multipart_upload,
                     collection_id=collection_id,
                     object_id=object_id,
                     upload_id=upload_id,
                 )
             _LOG.info(
-                "completed encrypted S3 multipart upload for %s: parts=%s bytes=%s",
+                "completed encrypted S3 multipart upload for %s: parts=%s bytes=%s "
+                "elapsed_seconds=%.3f preparation_seconds=%.3f "
+                "upload_request_seconds=%.3f checkpoint_seconds=%.3f",
                 object_key,
                 len(completed_parts),
                 uploaded_bytes,
+                time.perf_counter() - started,
+                preparation_seconds,
+                upload_request_seconds,
+                checkpoint_seconds,
             )
+            if self._multipart_timing_observer is not None:
+                self._multipart_timing_observer(
+                    ArchiveMultipartTiming(
+                        object_id=object_id,
+                        stored_bytes=content_length,
+                        parts=expected_part_count,
+                        concurrency=multipart_concurrency,
+                        elapsed_seconds=time.perf_counter() - started,
+                        preparation_seconds=preparation_seconds,
+                        upload_request_seconds=upload_request_seconds,
+                        checkpoint_seconds=checkpoint_seconds,
+                    )
+                )
         except Exception:
             if upload_state is not None:
                 _LOG.warning(

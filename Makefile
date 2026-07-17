@@ -11,7 +11,7 @@ UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --ex
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput stop-spec build build-app build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -35,6 +35,7 @@ help:
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make postgres-concurrency Run collection deletion race tests against disposable Postgres.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
+		'  make archive-throughput  Measure, verify, and delete an archive upload probe.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make build-app         Build the app image.' \
 		'  make build-test        Build the test image.' \
@@ -50,6 +51,7 @@ help:
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		"  POSTGRES_TESTS='...'   Select the disposable Postgres test file." \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
+		'  ARCHIVE_SOURCE=/path   Existing file for make archive-throughput.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
@@ -88,6 +90,10 @@ tus-throughput:
 		exit 2; \
 	fi
 	$(call UV_CMD,python scripts/tus_throughput.py "$(TUS_URL)" $(args))
+
+archive-throughput:
+	@test -n "$(ARCHIVE_SOURCE)" || { echo "ARCHIVE_SOURCE is required" >&2; exit 2; }
+	$(call UV_CMD,python scripts/archive_upload_throughput.py "$(ARCHIVE_SOURCE)" $(args))
 
 stop-spec:
 	@./scripts/stop_spec.sh

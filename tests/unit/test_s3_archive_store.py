@@ -29,7 +29,7 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveUploadReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.stores.s3_archive_store import S3ArchiveStore
+from riverhog_core.stores.s3_archive_store import ArchiveMultipartTiming, S3ArchiveStore
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
@@ -227,6 +227,8 @@ class _TrackingS3Client(_FakeS3Client):
         self._active_lock = threading.Lock()
         self.active_puts = 0
         self.max_active_puts = 0
+        self.active_upload_parts = 0
+        self.max_active_upload_parts = 0
 
     def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> None:
         with self._active_lock:
@@ -238,6 +240,20 @@ class _TrackingS3Client(_FakeS3Client):
         finally:
             with self._active_lock:
                 self.active_puts -= 1
+
+    def upload_part(self, **kwargs: Any) -> dict[str, str]:
+        with self._active_lock:
+            self.active_upload_parts += 1
+            self.max_active_upload_parts = max(
+                self.max_active_upload_parts,
+                self.active_upload_parts,
+            )
+        try:
+            time.sleep(0.05)
+            return super().upload_part(**kwargs)
+        finally:
+            with self._active_lock:
+                self.active_upload_parts -= 1
 
 
 class _Tracker(ArchiveMultipartUploadTracker):
@@ -463,6 +479,48 @@ def test_upload_resumes_each_data_object_independently(monkeypatch, tmp_path: Pa
         cast(bytes, client.objects[data.object_path]["Body"]),
         "test-archive-passphrase",
     ) == b"".join(archive.data_objects[0].iter_plaintext())
+
+
+def test_encrypted_multipart_upload_pipelines_bounded_provider_requests(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _TrackingS3Client()
+    timings: list[ArchiveMultipartTiming] = []
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.create_archive_s3_client",
+        lambda config, store: client,
+    )
+    config = _config(
+        tmp_path,
+        archive_multipart_part_bytes=5 * 1024 * 1024,
+        archive_multipart_concurrency=3,
+        archive_scrypt_work_factor=1,
+    )
+    store = S3ArchiveStore(
+        config,
+        config.archive_store("deep"),
+        multipart_timing_observer=timings.append,
+    )
+
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=_archive(b"x" * (16 * 1024 * 1024)),
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        multipart_tracker=_Tracker(),
+    )
+
+    assert client.max_active_upload_parts == 3
+    assert timings and timings[0].object_id == "data-000000"
+    assert timings[0].concurrency == 3
+    assert timings[0].parts == 4
+    assert timings[0].preparation_seconds >= 0
+    assert timings[0].upload_request_seconds >= 0
+    assert timings[0].elapsed_seconds >= 0
+    encrypted = cast(bytes, client.objects[receipt.objects[0].object_path]["Body"])
+    assert decrypt_age_scrypt(encrypted, "test-archive-passphrase") == b"x" * (
+        16 * 1024 * 1024
+    )
 
 
 def test_incomplete_multipart_sweep_aborts_only_stale_owned_uploads(

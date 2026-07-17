@@ -352,6 +352,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
             "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
         ),
+        (
+            "archive-throughput",
+            ("ARCHIVE_SOURCE=/tmp/probe.bin", "args=--concurrency 2"),
+            "python scripts/archive_upload_throughput.py /tmp/probe.bin --concurrency 2",
+        ),
     ],
 )
 def test_atomic_local_targets_run_in_locked_uv_environment(
