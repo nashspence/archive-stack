@@ -30,6 +30,8 @@ def env_for(tmp_path: Path, *, sources: str = "camera,phone") -> dict[str, str]:
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "http://runner.test",
+        "JEB_FTP_UID": str(os.getuid()),
+        "JEB_FTP_GID": str(os.getgid()),
     }
 
 
@@ -147,10 +149,19 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
 def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources="camera"))
     source = collector.source_registry.get("camera")
+    ftp_home = tmp_path / "landing" / "camera"
 
     assert source.template == TEST_TEMPLATE
+    assert ftp_home.is_dir()
+    assert ftp_home.stat().st_uid == os.getuid()
+    assert ftp_home.stat().st_gid == os.getgid()
+    assert ftp_home.stat().st_mode & 0o777 == 0o770
     projection = collector.config.ingress.ftp_projection.read_text(encoding="utf-8")
     assert projection.startswith("camera:$argon2id$")
+
+    ftp_home.chmod(0o755)
+    collector.source_registry.initialize()
+    assert ftp_home.stat().st_mode & 0o777 == 0o770
 
     updated = collector.update_source(
         "camera",

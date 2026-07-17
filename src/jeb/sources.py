@@ -517,6 +517,8 @@ class SourceRegistry:
                 ORDER BY id
                 """
             ).fetchall()
+        for row in rows:
+            self._ensure_ftp_home(str(row["id"]))
         lines = [
             self._ftp_record(str(row["id"]), str(row["password_hash"]))
             for row in rows
@@ -534,6 +536,19 @@ class SourceRegistry:
             os.replace(temporary, self.ftp_projection)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _ensure_ftp_home(self, source_id: str) -> None:
+        home = self.landing_dir / source_id
+        home.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chown(home, self.ftp_uid, self.ftp_gid)
+        except PermissionError as exc:
+            current = home.stat()
+            if (current.st_uid, current.st_gid) != (self.ftp_uid, self.ftp_gid):
+                raise SourceRegistryError(
+                    f"Jeb cannot provision FTP landing home ownership: {source_id}"
+                ) from exc
+        home.chmod(0o770)
 
     def _ftp_record(self, source_id: str, password_hash: str) -> str:
         home = (self.landing_dir / source_id).as_posix().rstrip("/") + "/./"
