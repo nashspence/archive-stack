@@ -94,5 +94,6 @@ def test_jeb_tus_proxy_streams_bounded_upload_chunks() -> None:
         "proxy_http_version 1.1;",
         "proxy_read_timeout 240s;",
         "proxy_send_timeout 240s;",
+        "proxy_set_header Content-Type $http_content_type;",
     ):
         assert directive in config
