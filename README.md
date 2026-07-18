@@ -1,8 +1,9 @@
 # riverhog
 
-Riverhog is a generic custody system for encrypted remote collection archives and a
-materialized hot cache. Munchy prepares media, Jeb collects watched drops, and Gogurt
-connects mounted volumes to configured operator actions.
+Riverhog is a generic custody system for encrypted remote collection archives. It accepts
+logical collections without staging plaintext on its host, preserves independently
+restorable archive objects, and gives external applications a stable catalog and retrieval
+interface. Fishbox is the reference local materializer.
 
 ## Custody
 
@@ -17,8 +18,9 @@ Use `make help` for development and validation commands. Use each installed comm
 `--help` output for its current interface. A running API publishes its current OpenAPI
 document at `/openapi.json`.
 
-The minimal [Compose override example](.env.compose.example) and
-[example configurations](config/examples/) are fake, executable starting points.
+The checked Compose stack runs from safe development defaults. The intentionally empty
+[Compose override example](.env.compose.example) is the starting point for local overrides;
+[example configurations](config/examples/) contain fake identities only.
 
 ## Context
 

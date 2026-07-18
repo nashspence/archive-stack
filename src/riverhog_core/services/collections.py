@@ -37,7 +37,12 @@ from riverhog_core.fs_paths import (
     normalize_upload_slug,
     normalize_upload_timestamp,
 )
-from riverhog_core.ports.hot_store import HotStore
+from riverhog_core.ingress_crypto import (
+    create_ingress_encryption,
+    ingress_encryption_descriptor,
+    ingress_plaintext_bytes_for_offset,
+    iter_ingress_plaintext,
+)
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import (
@@ -60,6 +65,7 @@ from riverhog_core.services.resumable_uploads import (
     upload_state_name,
 )
 from riverhog_core.timestamps import parse_utc_timestamp, utc_now, utc_timestamp_now
+from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 from riverhog_core.webhooks import post_webhook
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -68,7 +74,6 @@ _COLLECTION_SORT_FIELDS = {
     "id",
     "bytes",
     "files",
-    "hot_bytes",
 }
 
 
@@ -83,10 +88,8 @@ class _CollectionUploadStats(TypedDict):
     files_pending: int
     files_partial: int
     files_uploaded: int
-    hot_materialized_files: int
     bytes_total: int
     uploaded_bytes: int
-    hot_materialized_bytes: int
     missing_bytes: int
     upload_state_expires_at: str | None
 
@@ -95,11 +98,9 @@ class SqlAlchemyCollectionService:
     def __init__(
         self,
         config: RuntimeConfig,
-        hot_store: HotStore,
         upload_store: UploadStore,
     ) -> None:
         self._config = config
-        self._hot_store = hot_store
         self._upload_store = upload_store
         self._upload_file_ttl = config.upload_file_ttl
         self._upload_session_idle_ttl = config.upload_session_idle_ttl
@@ -113,7 +114,6 @@ class SqlAlchemyCollectionService:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
@@ -159,7 +159,6 @@ class SqlAlchemyCollectionService:
                     upload.collection_id,
                     requested_collection_id,
                 )
-                _ensure_upload_retain_hot_matches(upload, retain_hot)
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
             if upload is None:
                 normalized_collection_id = requested_collection_id or _mint_collection_id(
@@ -172,7 +171,6 @@ class SqlAlchemyCollectionService:
                     ingest_source=ingest_source,
                     notify_json=normalized_notify_json,
                     archive_store=normalized_archive_store,
-                    retain_hot=retain_hot,
                     state="uploading",
                     opened_at=utc_timestamp_now(),
                     last_activity_at=utc_timestamp_now(),
@@ -180,15 +178,13 @@ class SqlAlchemyCollectionService:
                 session.add(upload)
                 for index, item in enumerate(normalized_files, start=1):
                     upload.files.append(
-                        CollectionUploadFileRecord(
+                        _new_collection_upload_file(
+                            self._config,
                             collection_id=normalized_collection_id,
-                            path=item["path"],
+                            path=str(item["path"]),
                             file_order=index,
-                            bytes=item["bytes"],
-                            sha256=item["sha256"],
-                            uploaded_bytes=0,
-                            upload_expires_at=None,
-                            tus_url=None,
+                            bytes=int(item["bytes"]),
+                            sha256=str(item["sha256"]),
                         )
                     )
             else:
@@ -227,7 +223,6 @@ class SqlAlchemyCollectionService:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
@@ -258,7 +253,6 @@ class SqlAlchemyCollectionService:
                 upload = _find_open_upload_session(session, upload_slug=normalized_slug)
 
             if upload is not None:
-                _ensure_upload_retain_hot_matches(upload, retain_hot)
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
                 upload = _sync_and_expire_collection_upload(
                     session,
@@ -303,7 +297,6 @@ class SqlAlchemyCollectionService:
                 ingest_source=ingest_source,
                 notify_json=normalized_notify_json,
                 archive_store=normalized_archive_store,
-                retain_hot=retain_hot,
                 state="open",
                 opened_at=now,
                 last_activity_at=now,
@@ -362,7 +355,7 @@ class SqlAlchemyCollectionService:
             updated, tus_url = create_or_resume_upload_state(
                 current=_upload_lifecycle_state(file_record),
                 target_path=target_path,
-                length=file_record.bytes,
+                length=file_record.ingress_bytes,
                 upload_store=self._upload_store,
                 ttl=self._upload_file_ttl,
             )
@@ -370,29 +363,47 @@ class SqlAlchemyCollectionService:
 
             return {
                 **_collection_upload_file_registration_payload(upload, file_record),
-                **_collection_file_upload_payload(file_record, tus_url=tus_url),
+                **_collection_file_upload_payload(self._config, file_record, tus_url=tus_url),
             }
 
-    def sync_finished_upload_target(self, target_path: str) -> dict[str, object] | None:
-        parsed = _collection_upload_target_parts(target_path)
-        if parsed is None:
-            return None
-        normalized_collection_id, normalized_path = parsed
+    def sync_finished_upload_id(self, upload_id: str) -> dict[str, object] | None:
         staged_webhook_details: dict[str, object] | None = None
         staged_notify: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, normalized_collection_id)
-            if upload is None or upload.state in {"canceled", "expired"}:
-                return None
-            file_record = session.get(
-                CollectionUploadFileRecord,
-                (normalized_collection_id, normalized_path),
+            file_record = session.scalar(
+                select(CollectionUploadFileRecord).where(
+                    CollectionUploadFileRecord.ingress_upload_id == upload_id
+                )
             )
             if file_record is None:
                 return None
-
-            file_record.uploaded_bytes = file_record.bytes
+            normalized_collection_id = file_record.collection_id
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state in {"canceled", "expired"}:
+                return None
+            target_path = _collection_upload_target_path(
+                normalized_collection_id,
+                file_record.path,
+            )
+            content_digest = _sha256_hex_chunks(
+                iter_ingress_plaintext(
+                    self._config,
+                    self._upload_store,
+                    target_path=target_path,
+                    collection_id=normalized_collection_id,
+                    path=file_record.path,
+                    plaintext_bytes=file_record.bytes,
+                    secret_envelope=file_record.ingress_secret_envelope,
+                    state_json=file_record.ingress_state_json,
+                )
+            )
+            if content_digest != file_record.sha256:
+                self._upload_store.delete_target(target_path)
+                file_record.ingress_uploaded_bytes = 0
+                file_record.tus_url = None
+                raise HashMismatch("sha256 did not match expected file hash")
+            file_record.ingress_uploaded_bytes = file_record.ingress_bytes
             file_record.upload_expires_at = None
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session,
@@ -453,15 +464,13 @@ class SqlAlchemyCollectionService:
             )
             or 0
         ) + 1
-        file_record = CollectionUploadFileRecord(
+        file_record = _new_collection_upload_file(
+            self._config,
             collection_id=normalized_collection_id,
             path=normalized_file["path"],
             file_order=file_order,
             bytes=normalized_file["bytes"],
             sha256=normalized_file["sha256"],
-            uploaded_bytes=0,
-            upload_expires_at=None,
-            tus_url=None,
         )
         session.add(file_record)
         return upload, file_record
@@ -653,13 +662,13 @@ class SqlAlchemyCollectionService:
             updated, tus_url = create_or_resume_upload_state(
                 current=_upload_lifecycle_state(file_record),
                 target_path=target_path,
-                length=file_record.bytes,
+                length=file_record.ingress_bytes,
                 upload_store=self._upload_store,
                 ttl=self._upload_file_ttl,
             )
             _apply_upload_lifecycle_state(file_record, updated)
 
-            return _collection_file_upload_payload(file_record, tus_url=tus_url)
+            return _collection_file_upload_payload(self._config, file_record, tus_url=tus_url)
 
     def append_upload_chunk(
         self,
@@ -697,10 +706,10 @@ class SqlAlchemyCollectionService:
             _expire_collection_upload_file(file_record, self._upload_store)
             if file_record.tus_url is None:
                 raise Conflict(f"collection upload file is not resumable: {normalized_path}")
-            if offset != file_record.uploaded_bytes:
+            if offset != file_record.ingress_uploaded_bytes:
                 raise Conflict(
                     f"collection upload offset for {normalized_path} is "
-                    f"{offset}, expected {file_record.uploaded_bytes}"
+                    f"{offset}, expected {file_record.ingress_uploaded_bytes}"
                 )
 
             next_offset, _ = self._upload_store.append_upload_chunk(
@@ -709,18 +718,26 @@ class SqlAlchemyCollectionService:
                 checksum=checksum,
                 content=content,
             )
-            file_record.uploaded_bytes = next_offset
+            file_record.ingress_uploaded_bytes = next_offset
 
-            if next_offset >= file_record.bytes:
+            if next_offset >= file_record.ingress_bytes:
                 file_record.upload_expires_at = None
-                if offset == 0 and len(content) == file_record.bytes:
-                    content_digest = _sha256_hex(content)
-                else:
-                    target_path = _collection_upload_target_path(
-                        normalized_collection_id,
-                        normalized_path,
+                target_path = _collection_upload_target_path(
+                    normalized_collection_id,
+                    normalized_path,
+                )
+                content_digest = _sha256_hex_chunks(
+                    iter_ingress_plaintext(
+                        self._config,
+                        self._upload_store,
+                        target_path=target_path,
+                        collection_id=normalized_collection_id,
+                        path=normalized_path,
+                        plaintext_bytes=file_record.bytes,
+                        secret_envelope=file_record.ingress_secret_envelope,
+                        state_json=file_record.ingress_state_json,
                     )
-                    content_digest = _sha256_hex_chunks(self._upload_store.iter_target(target_path))
+                )
                 if content_digest != file_record.sha256:
                     raise HashMismatch("sha256 did not match expected file hash")
             else:
@@ -736,8 +753,8 @@ class SqlAlchemyCollectionService:
                     staged_notify = _decode_collection_notify_json(upload.notify_json)
 
             response: dict[str, object] = {
-                "offset": file_record.uploaded_bytes,
-                "length": file_record.bytes,
+                "offset": file_record.ingress_uploaded_bytes,
+                "length": file_record.ingress_bytes,
                 "expires_at": file_record.upload_expires_at,
             }
         if staged_webhook_details is not None:
@@ -771,7 +788,11 @@ class SqlAlchemyCollectionService:
             file_record = _get_upload_file(upload.files, normalized_path)
             if file_record.tus_url is None:
                 raise NotFound(f"collection upload file is not resumable: {normalized_path}")
-            return _collection_file_upload_payload(file_record, tus_url=file_record.tus_url)
+            return _collection_file_upload_payload(
+                self._config,
+                file_record,
+                tus_url=file_record.tus_url,
+            )
 
     def cancel_file_upload(self, collection_id: str, path: str) -> None:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -905,34 +926,17 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             CollectionFileRecord.collection_id.label("collection_id"),
             func.count(CollectionFileRecord.path).label("files"),
             func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
-            func.coalesce(
-                func.sum(case((CollectionFileRecord.hot.is_(True), 1), else_=0)),
-                0,
-            ).label("hot_files"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (CollectionFileRecord.hot.is_(True), CollectionFileRecord.bytes),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("hot_bytes"),
         )
         .group_by(CollectionFileRecord.collection_id)
         .subquery()
     )
     files = func.coalesce(file_stats.c.files, 0)
     bytes_total = func.coalesce(file_stats.c.bytes, 0)
-    hot_files = func.coalesce(file_stats.c.hot_files, 0)
-    hot_bytes = func.coalesce(file_stats.c.hot_bytes, 0)
     return (
         select(
             CollectionRecord,
             files.label("files"),
             bytes_total.label("bytes"),
-            hot_files.label("hot_files"),
-            hot_bytes.label("hot_bytes"),
         )
         .options(selectinload(CollectionRecord.archive_copies))
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),
@@ -940,8 +944,6 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             "id": CollectionRecord.id,
             "bytes": bytes_total,
             "files": files,
-            "hot_files": hot_files,
-            "hot_bytes": hot_bytes,
         },
     )
 
@@ -956,8 +958,6 @@ def _collection_summary_from_row(
         id=CollectionId(collection.id),
         files=int(row.files),
         bytes=int(row.bytes),
-        hot_files=int(row.hot_files),
-        hot_bytes=int(row.hot_bytes),
         archive_copies=tuple(
             _collection_archive_status(copy, aggregates=aggregates)
             for copy in sorted(collection.archive_copies, key=lambda item: item.store)
@@ -1057,18 +1057,6 @@ def _ensure_requested_collection_id_matches(
     raise Conflict(
         "collection upload already exists for this slug and manifest with a different "
         f"timestamp: {existing_collection_id}"
-    )
-
-
-def _ensure_upload_retain_hot_matches(
-    upload: CollectionUploadRecord,
-    retain_hot: bool,
-) -> None:
-    if upload.retain_hot == retain_hot:
-        return
-    raise Conflict(
-        "collection upload already exists with a different hot-retention choice: "
-        f"{upload.collection_id}"
     )
 
 
@@ -1231,7 +1219,7 @@ def _get_upload_file_record(
 def _upload_lifecycle_state(file_record: CollectionUploadFileRecord) -> UploadLifecycleState:
     return UploadLifecycleState(
         tus_url=file_record.tus_url,
-        uploaded_bytes=file_record.uploaded_bytes,
+        uploaded_bytes=file_record.ingress_uploaded_bytes,
         upload_expires_at=file_record.upload_expires_at,
     )
 
@@ -1240,12 +1228,44 @@ def _apply_upload_lifecycle_state(
     file_record: CollectionUploadFileRecord, state: UploadLifecycleState
 ) -> None:
     file_record.tus_url = state.tus_url
-    file_record.uploaded_bytes = state.uploaded_bytes
+    file_record.ingress_uploaded_bytes = state.uploaded_bytes
     file_record.upload_expires_at = state.upload_expires_at
 
 
 def _collection_upload_target_path(collection_id: str, path: str) -> str:
     return f"/.riverhog/uploads/collections/{collection_id}/{path}"
+
+
+def _new_collection_upload_file(
+    config: RuntimeConfig,
+    *,
+    collection_id: str,
+    path: str,
+    file_order: int,
+    bytes: int,
+    sha256: str,
+) -> CollectionUploadFileRecord:
+    encryption = create_ingress_encryption(
+        config,
+        collection_id=collection_id,
+        path=path,
+        plaintext_bytes=bytes,
+    )
+    target_path = _collection_upload_target_path(collection_id, path)
+    return CollectionUploadFileRecord(
+        collection_id=collection_id,
+        path=path,
+        file_order=file_order,
+        bytes=bytes,
+        sha256=sha256,
+        ingress_bytes=encryption.ciphertext_bytes,
+        ingress_uploaded_bytes=0,
+        ingress_secret_envelope=encryption.secret_envelope,
+        ingress_state_json=encryption.state_json,
+        ingress_upload_id=tusd_upload_id_for_target_path(target_path),
+        upload_expires_at=None,
+        tus_url=None,
+    )
 
 
 def _collection_upload_target_parts(target_path: str) -> tuple[str, str] | None:
@@ -1266,6 +1286,7 @@ def _collection_upload_target_parts(target_path: str) -> tuple[str, str] | None:
 
 
 def _collection_file_upload_payload(
+    config: RuntimeConfig,
     file_record: CollectionUploadFileRecord,
     *,
     tus_url: str,
@@ -1274,10 +1295,19 @@ def _collection_file_upload_payload(
         "path": file_record.path,
         "protocol": "tus",
         "upload_url": tus_url,
-        "offset": file_record.uploaded_bytes,
-        "length": file_record.bytes,
+        "offset": file_record.ingress_uploaded_bytes,
+        "length": file_record.ingress_bytes,
         "checksum_algorithm": "sha256",
         "expires_at": file_record.upload_expires_at,
+        "encryption": ingress_encryption_descriptor(
+            config,
+            collection_id=file_record.collection_id,
+            path=file_record.path,
+            plaintext_bytes=file_record.bytes,
+            ciphertext_bytes=file_record.ingress_bytes,
+            secret_envelope=file_record.ingress_secret_envelope,
+            state_json=file_record.ingress_state_json,
+        ),
     }
 
 
@@ -1291,7 +1321,7 @@ def _sync_collection_upload_files(
         updated = sync_upload_state(
             current=_upload_lifecycle_state(file_record),
             target_path=_collection_upload_target_path(file_record.collection_id, file_record.path),
-            length=file_record.bytes,
+            length=file_record.ingress_bytes,
             upload_store=upload_store,
             force=force,
         )
@@ -1405,7 +1435,7 @@ def _collection_upload_has_no_live_file_state(
             .where(
                 CollectionUploadFileRecord.collection_id == collection_id,
                 or_(
-                    CollectionUploadFileRecord.uploaded_bytes > 0,
+                    CollectionUploadFileRecord.ingress_uploaded_bytes > 0,
                     CollectionUploadFileRecord.tus_url.is_not(None),
                     CollectionUploadFileRecord.upload_expires_at.is_not(None),
                 ),
@@ -1466,56 +1496,26 @@ def _collection_upload_stats(
 ) -> _CollectionUploadStats:
     session.flush()
     uploaded = and_(
-        CollectionUploadFileRecord.bytes > 0,
-        CollectionUploadFileRecord.uploaded_bytes >= CollectionUploadFileRecord.bytes,
+        CollectionUploadFileRecord.ingress_uploaded_bytes
+        >= CollectionUploadFileRecord.ingress_bytes,
     )
-    partial = and_(CollectionUploadFileRecord.uploaded_bytes > 0, ~uploaded)
+    partial = and_(CollectionUploadFileRecord.ingress_uploaded_bytes > 0, ~uploaded)
+    uploaded_logical_bytes = case((uploaded, CollectionUploadFileRecord.bytes), else_=0)
     row = session.execute(
         select(
             func.count(CollectionUploadFileRecord.path).label("files_total"),
             func.coalesce(
-                func.sum(case((CollectionUploadFileRecord.uploaded_bytes <= 0, 1), else_=0)),
+                func.sum(
+                    case((CollectionUploadFileRecord.ingress_uploaded_bytes <= 0, 1), else_=0)
+                ),
                 0,
             ).label("files_pending"),
             func.coalesce(func.sum(case((partial, 1), else_=0)), 0).label("files_partial"),
             func.coalesce(func.sum(case((uploaded, 1), else_=0)), 0).label("files_uploaded"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (CollectionUploadFileRecord.hot_materialized_at.is_not(None), 1),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("hot_materialized_files"),
             func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes_total"),
-            func.coalesce(func.sum(CollectionUploadFileRecord.uploaded_bytes), 0).label(
-                "uploaded_bytes"
-            ),
+            func.coalesce(func.sum(uploaded_logical_bytes), 0).label("uploaded_bytes"),
             func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            CollectionUploadFileRecord.hot_materialized_at.is_not(None),
-                            CollectionUploadFileRecord.bytes,
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("hot_materialized_bytes"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            CollectionUploadFileRecord.uploaded_bytes
-                            < CollectionUploadFileRecord.bytes,
-                            CollectionUploadFileRecord.bytes
-                            - CollectionUploadFileRecord.uploaded_bytes,
-                        ),
-                        else_=0,
-                    )
-                ),
+                func.sum(CollectionUploadFileRecord.bytes - uploaded_logical_bytes),
                 0,
             ).label("missing_bytes"),
             func.max(CollectionUploadFileRecord.upload_expires_at).label("upload_state_expires_at"),
@@ -1526,10 +1526,8 @@ def _collection_upload_stats(
         "files_pending": int(row.files_pending),
         "files_partial": int(row.files_partial),
         "files_uploaded": int(row.files_uploaded),
-        "hot_materialized_files": int(row.hot_materialized_files),
         "bytes_total": int(row.bytes_total),
         "uploaded_bytes": int(row.uploaded_bytes),
-        "hot_materialized_bytes": int(row.hot_materialized_bytes),
         "missing_bytes": int(row.missing_bytes),
         "upload_state_expires_at": row.upload_state_expires_at,
     }
@@ -1590,17 +1588,14 @@ def _finalized_collection_upload_payload(
     return {
         "collection_id": collection.id,
         "ingest_source": collection.ingest_source,
-        "retain_hot": summary.files > 0 and summary.hot_files == summary.files,
         "archive_store": archive.store if archive is not None else archive_store,
         "state": "finalized",
         "files_total": summary.files,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": summary.files,
-        "hot_materialized_files": summary.hot_files,
         "bytes_total": summary.bytes,
         "uploaded_bytes": summary.bytes,
-        "hot_materialized_bytes": summary.hot_bytes,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -1654,7 +1649,6 @@ def _collection_upload_payload(
     return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
-        "retain_hot": upload.retain_hot,
         "archive_store": upload.archive_store,
         "state": state or _collection_upload_session_state(upload, stats),
         **stats,
@@ -1679,7 +1673,6 @@ def _collection_upload_file_registration_payload(
     return {
         "collection_id": upload.collection_id,
         "ingest_source": upload.ingest_source,
-        "retain_hot": upload.retain_hot,
         "archive_store": upload.archive_store,
         "state": upload.state or "open",
         "file": _collection_upload_file_payload(file_record),
@@ -1694,10 +1687,15 @@ def _collection_upload_file_payload(
         "bytes": file_record.bytes,
         "sha256": file_record.sha256,
         "upload_state": upload_state_name(
-            uploaded_bytes=file_record.uploaded_bytes,
-            length=file_record.bytes,
+            uploaded_bytes=file_record.ingress_uploaded_bytes,
+            length=file_record.ingress_bytes,
         ),
-        "uploaded_bytes": file_record.uploaded_bytes,
+        "uploaded_bytes": ingress_plaintext_bytes_for_offset(
+            state_json=file_record.ingress_state_json,
+            plaintext_bytes=file_record.bytes,
+            ciphertext_bytes=file_record.ingress_bytes,
+            ciphertext_offset=file_record.ingress_uploaded_bytes,
+        ),
         "upload_state_expires_at": file_record.upload_expires_at,
     }
 
@@ -1707,8 +1705,6 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
         "id": str(summary.id),
         "files": summary.files,
         "bytes": summary.bytes,
-        "hot_files": summary.hot_files,
-        "hot_bytes": summary.hot_bytes,
         "archive_copies": [_archive_copy_payload(copy) for copy in summary.archive_copies],
     }
 

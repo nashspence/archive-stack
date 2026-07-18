@@ -11,10 +11,8 @@ from tests.unit.db_helpers import sqlite_url
 CURRENT_TABLES = {
     "archive_copy_jobs",
     "archive_copy_retirements",
-    "archive_restore_files",
-    "archive_restore_objects",
-    "archive_restores",
     "archive_usage_snapshots",
+    "catalog_events",
     "collection_archive_copies",
     "collection_archive_file_objects",
     "collection_archive_object_uploads",
@@ -24,8 +22,11 @@ CURRENT_TABLES = {
     "collection_upload_files",
     "collection_uploads",
     "collections",
-    "fetch_files",
-    "fetches",
+    "retrieval_cache_leases",
+    "retrieval_cache_objects",
+    "retrieval_job_files",
+    "retrieval_job_objects",
+    "retrieval_jobs",
 }
 
 
@@ -42,29 +43,27 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "uploaded_collections",
         "measured_storage_bytes",
     }
-    assert {column["name"] for column in inspector.get_columns("archive_restores")} >= {
-        "restore_id",
+    assert {column["name"] for column in inspector.get_columns("retrieval_jobs")} >= {
+        "id",
+        "app",
         "state",
-        "archive_verification_state",
-        "extraction_state",
-        "materialization_state",
+        "plan_etag",
     }
-    assert {column["name"] for column in inspector.get_columns("fetch_files")} == {
-        "fetch_id",
+    assert {column["name"] for column in inspector.get_columns("retrieval_job_files")} == {
+        "job_id",
         "collection_id",
         "path",
         "file_order",
     }
-    fetch_columns = {
-        column["name"]: column for column in inspector.get_columns("fetches")
+    collection_columns = {
+        column["name"]: column for column in inspector.get_columns("collections")
     }
-    assert set(fetch_columns) == {"id", "label", "state"}
-    assert fetch_columns["id"]["type"].python_type is int
-    assert fetch_columns["label"]["nullable"] is True
-    upload_columns = {
-        column["name"]: column for column in inspector.get_columns("collection_uploads")
+    assert collection_columns["manifest_etag"]["nullable"] is False
+    upload_file_columns = {
+        column["name"]: column for column in inspector.get_columns("collection_upload_files")
     }
-    assert upload_columns["retain_hot"]["default"] in {"1", "true"}
+    assert upload_file_columns["ingress_secret_envelope"]["nullable"] is False
+    assert upload_file_columns["ingress_state_json"]["nullable"] is False
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

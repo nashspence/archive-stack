@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, cast
@@ -26,12 +26,8 @@ from riverhog_cli.output import (
     format_collection_upload,
     format_collection_upload_plan,
     format_collections,
-    format_fetch,
-    format_fetch_files,
-    format_fetches,
     format_file_selectors,
     format_find,
-    format_hot_evict,
     format_list_ids,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
@@ -42,24 +38,20 @@ from riverhog_core.fs_paths import (
     normalize_upload_slug,
     normalize_upload_timestamp,
 )
+from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.timestamps import utc_timestamp_now
 
-app = typer.Typer(help="Riverhog collection and hot-storage CLI.")
+app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
-fetch_app = typer.Typer(help="Collection-file fetch requests.")
-hot_app = typer.Typer(help="Hot-storage operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
-app.add_typer(hot_app, name="hot")
-hot_app.add_typer(fetch_app, name="fetch")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_FILE_CONCURRENCY = 1
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
-DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
 UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS = 30.0
 TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -260,36 +252,6 @@ def _notify_upload_status(status: Callable[[str], None] | None, message: str) ->
     status(message)
 
 
-def _download_progress_logger(
-    estimated_total_bytes: int | None = None,
-) -> Callable[[int, int | None], None]:
-    started_at = time.monotonic()
-    last_logged_at = started_at
-
-    def progress(downloaded_bytes: int, total_bytes: int | None) -> None:
-        nonlocal last_logged_at
-        now = time.monotonic()
-        if now - last_logged_at < DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
-            return
-        elapsed = max(now - started_at, 0.001)
-        rate = downloaded_bytes / elapsed
-        display_total = total_bytes if total_bytes is not None else estimated_total_bytes
-        if display_total is None or display_total <= 0:
-            total_text = "unknown"
-            percent_text = ""
-        else:
-            total_text = _format_bytes(display_total)
-            percent_text = f" ({downloaded_bytes / display_total * 100.0:.1f}%)"
-        _log_upload(
-            "Download progress: "
-            f"{_format_bytes(downloaded_bytes)} / {total_text}{percent_text} "
-            f"at {_format_bytes(int(rate))}/s"
-        )
-        last_logged_at = now
-
-    return progress
-
-
 def _is_transient_upload_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TransportError):
         return True
@@ -340,7 +302,6 @@ def _create_or_resume_collection_upload(
     *,
     ingest_source: str | None,
     upload_timestamp: str | None,
-    retain_hot: bool,
     archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
@@ -351,7 +312,6 @@ def _create_or_resume_collection_upload(
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
             archive_store=archive_store,
-            retain_hot=retain_hot,
         ),
     )
 
@@ -362,7 +322,6 @@ def _create_or_resume_collection_upload_session(
     *,
     ingest_source: str | None,
     upload_timestamp: str | None,
-    retain_hot: bool,
     archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
@@ -372,7 +331,6 @@ def _create_or_resume_collection_upload_session(
             ingest_source=ingest_source,
             upload_timestamp=upload_timestamp,
             archive_store=archive_store,
-            retain_hot=retain_hot,
         ),
     )
 
@@ -435,7 +393,6 @@ def _collection_upload_dry_run_plan(
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
     session_mode: bool,
-    retain_hot: bool,
     archive_store: str | None = None,
 ) -> dict[str, object]:
     try:
@@ -464,7 +421,6 @@ def _collection_upload_dry_run_plan(
         "wait_mode": wait_mode,
         "session": session_mode,
         "archive_store": archive_store,
-        "retain_hot": retain_hot,
         "server_validation": "not_run",
         "created_at": utc_timestamp_now(),
         "files_preview": manifest[:5],
@@ -489,31 +445,40 @@ def _upload_collection_file(
     length_value = file_payload["bytes"]
     if not isinstance(length_value, int):
         raise RuntimeError(f"upload length for {path_value} is not an integer")
-    length = length_value
+    plaintext_length = length_value
     session = _create_or_resume_collection_file_upload(api, collection_id, path_value)
     offset = int(session["offset"])
+    length = int(session["length"])
+    encryption = session.get("encryption")
+    if not isinstance(encryption, Mapping):
+        raise RuntimeError(f"upload encryption descriptor is missing for {path_value}")
+    if int(encryption.get("plaintext_bytes", -1)) != plaintext_length:
+        raise RuntimeError(f"upload plaintext length changed for {path_value}")
+    if int(encryption.get("ciphertext_bytes", -1)) != length:
+        raise RuntimeError(f"upload ciphertext length changed for {path_value}")
     if offset > length:
         raise RuntimeError(
             f"upload offset for {path_value} is {offset}, past expected length {length}"
         )
-    log_file = length >= _upload_file_log_bytes()
+    log_file = plaintext_length >= _upload_file_log_bytes()
     if offset >= length:
         if log_file:
-            _log_upload(f"Already uploaded {path_value} ({_format_bytes(length)})")
+            _log_upload(f"Already uploaded {path_value} ({_format_bytes(plaintext_length)})")
         return
 
     if offset:
-        _log_upload(f"Resuming {path_value} at {_format_bytes(offset)} of {_format_bytes(length)}")
+        _log_upload(f"Resuming encrypted upload {path_value} at {_format_bytes(offset)}")
     elif log_file:
-        _log_upload(f"Uploading {path_value} ({_format_bytes(length)})")
+        _log_upload(f"Uploading {path_value} ({_format_bytes(plaintext_length)})")
 
-    chunk_size = _upload_chunk_bytes()
-    with source_path.open("rb") as handle:
-        while offset < length:
-            handle.seek(offset)
-            chunk = handle.read(min(chunk_size, length - offset))
-            if not chunk:
-                break
+    for part in iter_ingress_upload_parts(
+        source_path,
+        encryption,
+        ciphertext_offset=offset,
+        target_part_bytes=_upload_chunk_bytes(),
+    ):
+        chunk = part.ciphertext
+        while offset == part.ciphertext_offset:
             try:
                 upload_result = api.append_upload_chunk(
                     str(session["upload_url"]),
@@ -568,20 +533,20 @@ def _upload_collection_file(
                     f"continuing at {_format_bytes(recovered_offset)}"
                 )
                 if progress is not None:
-                    progress(recovered_offset - offset)
+                    progress(part.plaintext_bytes)
                 offset = recovered_offset
-                continue
+                break
 
             next_offset = int(upload_result["offset"])
             if next_offset != offset + len(chunk):
                 raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
             if progress is not None:
-                progress(len(chunk))
+                progress(part.plaintext_bytes)
             offset = next_offset
     if offset != length:
         raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
     if log_file:
-        _log_upload(f"Uploaded {path_value} ({_format_bytes(length)})")
+        _log_upload(f"Uploaded {path_value} ({_format_bytes(plaintext_length)})")
 
 
 def _upload_collection_files(
@@ -687,16 +652,13 @@ def _finalized_collection_upload_payload(
         "collection_id": collection_id,
         "ingest_source": collection.get("ingest_source"),
         "archive_store": archive.get("store") if isinstance(archive, dict) else None,
-        "retain_hot": (_optional_int(collection.get("hot_files")) or 0) == files_total,
         "state": "finalized",
         "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": files_total,
-        "hot_materialized_files": _optional_int(collection.get("hot_files")) or 0,
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
-        "hot_materialized_bytes": _optional_int(collection.get("hot_bytes")) or 0,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -825,10 +787,8 @@ def _staged_collection_upload_payload(
             "files_pending": 0,
             "files_partial": 0,
             "files_uploaded": len(manifest),
-            "hot_materialized_files": 0,
             "bytes_total": bytes_total,
             "uploaded_bytes": bytes_total,
-            "hot_materialized_bytes": 0,
             "missing_bytes": 0,
             "upload_state_expires_at": None,
             "files": [
@@ -854,7 +814,6 @@ def _upload_collection_via_session(
     ingest_source: str | None,
     upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
-    retain_hot: bool,
     archive_store: str | None = None,
     json_mode: bool = False,
 ) -> dict[str, object]:
@@ -871,7 +830,6 @@ def _upload_collection_via_session(
         ingest_source=ingest_source,
         upload_timestamp=upload_timestamp,
         archive_store=archive_store,
-        retain_hot=retain_hot,
     )
     collection_id = str(session_payload["collection_id"])
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
@@ -1002,27 +960,6 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
     total_parts = payload.get("archive_total_parts")
     if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
         status += f", parts={uploaded_parts}/{total_parts}"
-    hot_materialized_bytes = payload.get("hot_materialized_bytes")
-    bytes_total = payload.get("bytes_total")
-    if (
-        phase == "materializing_hot"
-        and isinstance(hot_materialized_bytes, int)
-        and isinstance(bytes_total, int)
-        and bytes_total > 0
-    ):
-        percent = hot_materialized_bytes / bytes_total * 100.0
-        status += (
-            f", hot={_format_bytes(hot_materialized_bytes)} / {_format_bytes(bytes_total)} "
-            f"({percent:.1f}%)"
-        )
-    hot_materialized_files = payload.get("hot_materialized_files")
-    files_total = payload.get("files_total")
-    if (
-        phase == "materializing_hot"
-        and isinstance(hot_materialized_files, int)
-        and isinstance(files_total, int)
-    ):
-        status += f", hot_files={hot_materialized_files}/{files_total}"
     latest_failure = payload.get("latest_failure")
     if latest_failure:
         status += f", latest_failure={latest_failure}"
@@ -1033,16 +970,13 @@ _COLLECTION_SORT_FIELDS = {
     "id",
     "bytes",
     "files",
-    "hot_bytes",
 }
 _FIND_SORT_FIELDS = {
     "logical_path",
     "collection_id",
     "collection_path",
     "bytes",
-    "hot",
 }
-_FETCH_FILE_SORT_FIELDS = _FIND_SORT_FIELDS
 
 
 def _collection_list_archive_copies_payload(
@@ -1077,7 +1011,6 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
             "id",
             "files",
             "bytes",
-            "hot_bytes",
         )
         if key in collection
     }
@@ -1166,7 +1099,7 @@ def collection_list_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List collections with archive and hot-storage summaries."""
+    """List collections with archive summaries."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
@@ -1225,10 +1158,6 @@ def upload_cmd(
             help="Hash and preview without creating a session or uploading bytes",
         ),
     ] = False,
-    archive_only: Annotated[
-        bool,
-        typer.Option("--archive-only", help="Skip hot storage after archival"),
-    ] = False,
 ) -> None:
     """Upload a local directory as a collection."""
 
@@ -1255,7 +1184,6 @@ def upload_cmd(
             wait_mode=wait_mode,
             session_mode=session_mode,
             archive_store=archive_store,
-            retain_hot=not archive_only,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
         return
@@ -1270,7 +1198,6 @@ def upload_cmd(
             upload_timestamp=upload_timestamp,
             archive_store=archive_store,
             wait_mode=wait_mode,
-            retain_hot=not archive_only,
             json_mode=json_mode,
         )
         emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
@@ -1294,7 +1221,6 @@ def upload_cmd(
         ingest_source=str(resolved_root),
         upload_timestamp=upload_timestamp,
         archive_store=archive_store,
-        retain_hot=not archive_only,
     )
     collection_id = str(payload["collection_id"])
     upload_files = _response_upload_files(payload)
@@ -1419,10 +1345,6 @@ def find_cmd(
         str | None,
         typer.Option("--collection", help="Restrict results to one collection"),
     ] = None,
-    hot: Annotated[
-        bool | None,
-        typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
-    ] = None,
     all_items: Annotated[
         bool,
         typer.Option("--all", help="Return every matching file"),
@@ -1452,7 +1374,6 @@ def find_cmd(
         sort=sort,
         order=normalized_order,
         collection=collection,
-        hot=hot,
         all_items=all_items,
     )
     if selectors:
@@ -1549,7 +1470,7 @@ def archive_copy_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Copy one collection between archive stores without using hot storage."""
+    """Copy one collection between archive stores."""
 
     payload = client().create_or_resume_archive_copy(
         collection_id,
@@ -1631,320 +1552,6 @@ def archive_retire_cmd(
         challenge=challenge,
     )
     emit(format_archive_copy_retirement_result(payload), json_mode=False)
-
-
-def _parse_file_selections(values: Sequence[str]) -> list[tuple[str, str]]:
-    selections: list[tuple[str, str]] = []
-    for value in values:
-        collection_id, separator, path = value.partition("::")
-        if not separator or not collection_id or not path:
-            raise typer.BadParameter(
-                "file selections must use COLLECTION_ID::PATH",
-                param_hint="--file",
-            )
-        selections.append((collection_id, path))
-    return selections
-
-
-@fetch_app.command("create")
-def fetch_create_cmd(
-    label: Annotated[
-        str | None,
-        typer.Option("--label", "-l", help="Optional human-readable purpose"),
-    ] = None,
-    collections: Annotated[
-        list[str] | None,
-        typer.Argument(help="Optional collection ids to add immediately"),
-    ] = None,
-    files: Annotated[
-        list[str] | None,
-        typer.Option("--file", help="Add COLLECTION_ID::PATH (repeatable)"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Create an editable fetch request."""
-
-    api = client()
-    payload = api.create_fetch(
-        label=label,
-        collections=collections or [],
-        files=_parse_file_selections(files or []),
-    )
-    if json_mode:
-        emit(payload, json_mode=True)
-        return
-    created_id = payload.get("id")
-    if not isinstance(created_id, int):
-        raise typer.BadParameter("server did not return an integer fetch id")
-    status = api.get_fetch_status(created_id)
-    emit(format_fetch(status), json_mode=False)
-
-
-@hot_app.command("evict")
-def hot_evict_cmd(
-    collections: Annotated[
-        list[str] | None,
-        typer.Argument(help="Collection ids whose files should be evicted"),
-    ] = None,
-    files: Annotated[
-        list[str] | None,
-        typer.Option("--file", help="Evict COLLECTION_ID::PATH (repeatable)"),
-    ] = None,
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="Preview selected files without evicting them"),
-    ] = False,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Evict selected hot files backed by verified remote archive objects."""
-
-    if not collections and not files:
-        raise typer.BadParameter("provide at least one collection or --file")
-    payload = client().evict_hot(
-        collections or (),
-        files=_parse_file_selections(files or []),
-        dry_run=dry_run,
-    )
-    emit(payload if json_mode else format_hot_evict(payload), json_mode=json_mode)
-
-
-@fetch_app.command("add")
-def fetch_add_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    collections: Annotated[
-        list[str] | None,
-        typer.Argument(help="Collection ids to add"),
-    ] = None,
-    files: Annotated[
-        list[str] | None,
-        typer.Option("--file", help="Add COLLECTION_ID::PATH (repeatable)"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Add collection files to an editable fetch."""
-
-    api = client()
-    if not collections and not files:
-        raise typer.BadParameter("provide at least one collection or --file")
-    payload = (
-        api.add_fetch_collections(fetch_id, collections) if collections else api.get_fetch(fetch_id)
-    )
-    if files:
-        payload = api.add_fetch_files(fetch_id, _parse_file_selections(files))
-    if json_mode:
-        emit(payload, json_mode=True)
-        return
-    status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status), json_mode=False)
-
-
-@fetch_app.command("remove")
-def fetch_remove_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    collections: Annotated[
-        list[str] | None,
-        typer.Argument(help="Collection ids whose files should be removed"),
-    ] = None,
-    files: Annotated[
-        list[str] | None,
-        typer.Option("--file", help="Remove COLLECTION_ID::PATH (repeatable)"),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Remove collection files from an editable fetch."""
-
-    api = client()
-    if not collections and not files:
-        raise typer.BadParameter("provide at least one collection or --file")
-    payload = (
-        api.remove_fetch_collections(fetch_id, collections)
-        if collections
-        else api.get_fetch(fetch_id)
-    )
-    if files:
-        payload = api.remove_fetch_files(fetch_id, _parse_file_selections(files))
-    if json_mode:
-        emit(payload, json_mode=True)
-        return
-    status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status), json_mode=False)
-
-
-@fetch_app.command("list")
-def fetches_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    state: Annotated[str | None, typer.Option("--state", help="Filter by fetch state")] = None,
-    query: Annotated[
-        str | None, typer.Option("--query", "-q", help="Search id, label, or selected files")
-    ] = None,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching fetch"),
-    ] = False,
-    ids: Annotated[
-        bool,
-        typer.Option("--ids", help="Emit one fetch id per line"),
-    ] = False,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """List fetch requests."""
-
-    if ids and json_mode:
-        raise typer.BadParameter("--ids and --json cannot be used together")
-    payload = client().list_fetches(
-        page=page,
-        per_page=per_page,
-        state=state,
-        query=query,
-        sort=sort,
-        order=order.casefold(),
-        all_items=all_items,
-    )
-    if ids:
-        emit(format_list_ids(payload, "fetches"), json_mode=False)
-        return
-    emit(payload if json_mode else format_fetches(payload), json_mode=json_mode)
-
-
-@fetch_app.command("show")
-def fetch_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Show fetch preflight and progress summary."""
-
-    api = client()
-    status = api.get_fetch_status(fetch_id)
-    if json_mode:
-        emit(status, json_mode=True)
-        return
-    emit(format_fetch(status), json_mode=False)
-
-
-@fetch_app.command("files")
-def fetch_files_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    query: Annotated[
-        str | None, typer.Option("--query", "-q", help="Search logical file paths")
-    ] = None,
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "logical_path",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
-    hot: Annotated[
-        bool | None,
-        typer.Option("--hot/--not-hot", help="Filter by hot-storage availability"),
-    ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching file"),
-    ] = False,
-    selectors: Annotated[
-        bool,
-        typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
-    ] = False,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """List the files selected by a fetch."""
-
-    if selectors and json_mode:
-        raise typer.BadParameter("--selectors and --json cannot be used together")
-    normalized_sort = sort.casefold()
-    if normalized_sort not in _FETCH_FILE_SORT_FIELDS:
-        raise typer.BadParameter(
-            f"sort must be one of {', '.join(sorted(_FETCH_FILE_SORT_FIELDS))}",
-            param_hint="--sort",
-        )
-    normalized_order = order.casefold()
-    if normalized_order not in {"asc", "desc"}:
-        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
-    payload = client().list_fetch_files(
-        fetch_id,
-        page=page,
-        per_page=per_page,
-        sort=normalized_sort,
-        order=normalized_order,
-        query=query,
-        hot=hot,
-        all_items=all_items,
-    )
-    if selectors:
-        emit(format_file_selectors(payload), json_mode=False)
-        return
-    emit(payload if json_mode else format_fetch_files(payload), json_mode=json_mode)
-
-
-@fetch_app.command("start")
-def fetch_start_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Start a fetch, restoring only the archive objects its files require."""
-
-    api = client()
-    payload = api.start_fetch(fetch_id)
-    if json_mode:
-        emit(payload, json_mode=True)
-        return
-    status = api.get_fetch_status(fetch_id)
-    emit(format_fetch(status), json_mode=False)
-
-
-@fetch_app.command("cancel")
-def fetch_cancel_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Cancel an active fetch and return it to draft."""
-
-    payload = client().cancel_fetch(fetch_id)
-    emit(
-        payload if json_mode else format_fetch(payload),
-        json_mode=json_mode,
-    )
-
-
-@fetch_app.command("delete")
-def fetch_delete_cmd(
-    fetch_id: Annotated[int, typer.Argument(help="Fetch id")],
-    confirm: Annotated[
-        int | None,
-        typer.Option(
-            "--confirm",
-            help="Confirm deletion with the complete fetch id",
-        ),
-    ] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Delete an inactive fetch request without changing stored files."""
-
-    api = client()
-    if json_mode and confirm is None:
-        raise typer.BadParameter("--json requires --confirm")
-    if confirm is None:
-        summary = api.get_fetch(fetch_id)
-        typer.echo(
-            "This deletes only the fetch request and its saved file selection. "
-            "Archived collections and hot files are unchanged."
-        )
-        typer.echo(
-            f"fetch: {summary.get('id', fetch_id)} "
-            f"({summary.get('label') or 'unlabeled'}, {summary.get('state', 'unknown')})"
-        )
-        confirm = typer.prompt("Type the complete fetch id to delete it", type=int)
-        if confirm != fetch_id:
-            typer.echo("Confirmation did not match; nothing was deleted.", err=True)
-            raise typer.Abort()
-    payload = api.delete_fetch(fetch_id, confirmation=confirm)
-    emit(
-        payload
-        if json_mode
-        else f"fetch deletion: {payload.get('status', 'unknown')}\nfetch: {fetch_id}",
-        json_mode=json_mode,
-    )
 
 
 def _error_code(exc: BaseException) -> str:

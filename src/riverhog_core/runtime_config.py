@@ -18,6 +18,7 @@ from riverhog_core.operator_reminders import (
 _DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
+DEV_INGRESS_SECRET_KEY = "riverhog-development-ingress-secret-key"
 DEV_ARCHIVE_ACCESS_KEY_IDS = frozenset(
     {
         "minioadmin",
@@ -29,8 +30,6 @@ DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/ri
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
 DEFAULT_ARCHIVE_OBJECT_CONCURRENCY = 4
-DEFAULT_HOT_MATERIALIZATION_CONCURRENCY = 8
-DEFAULT_HOT_SINGLE_PUT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
@@ -150,6 +149,20 @@ def parse_collection_webhooks(values: Mapping[str, str]) -> dict[str, str]:
     return webhooks
 
 
+def _parse_external_app_tokens(value: str) -> dict[str, str]:
+    import json
+
+    if not value.strip():
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS must be a JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS must be a JSON object")
+    return {str(app): str(token) for app, token in payload.items()}
+
+
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     return "/".join(parts)
@@ -191,9 +204,32 @@ class ArchiveStoreConfig:
     prefix: str
     backend: str
     storage_class: str
+    read_mode: str = "immediate"
     cloudfront_base_url: str | None = None
     cloudfront_public_key_id: str | None = None
     cloudfront_private_key_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCacheConfig:
+    endpoint_url: str
+    region: str
+    bucket: str
+    access_key_id: str
+    secret_access_key: str
+    force_path_style: bool = False
+    prefix: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class IngressStoreConfig:
+    endpoint_url: str
+    region: str
+    bucket: str
+    access_key_id: str
+    secret_access_key: str
+    force_path_style: bool = False
+    prefix: str = ""
 
 
 def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
@@ -206,18 +242,11 @@ def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    hot_store_endpoint_url: str = "http://127.0.0.1:9000"
-    hot_store_region: str = "us-east-1"
-    hot_store_bucket: str = "riverhog"
-    hot_store_access_key_id: str = "minioadmin"
-    hot_store_secret_access_key: str = "minioadmin"
-    hot_store_force_path_style: bool = True
     tusd_base_url: str = "http://127.0.0.1:1080/files"
     tusd_hook_secret: str = "dev-tusd-hook-secret"
     s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     tusd_public_base_url: str | None = None
     tusd_public_signing_secret: str | None = None
-    upload_staging_root: Path = field(default_factory=lambda: Path(".riverhog/uploads"))
     tusd_append_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=60))
     database_url: str = ""
     upload_file_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -239,6 +268,7 @@ class RuntimeConfig:
                 prefix="archive",
                 backend="s3",
                 storage_class="DEEP_ARCHIVE",
+                read_mode="immediate",
             )
         }
     )
@@ -247,8 +277,23 @@ class RuntimeConfig:
     archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
     archive_multipart_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=6))
     archive_object_concurrency: int = DEFAULT_ARCHIVE_OBJECT_CONCURRENCY
-    hot_materialization_concurrency: int = DEFAULT_HOT_MATERIALIZATION_CONCURRENCY
-    hot_single_put_max_bytes: int = DEFAULT_HOT_SINGLE_PUT_MAX_BYTES
+    ingress_store: IngressStoreConfig = field(
+        default_factory=lambda: IngressStoreConfig(
+            endpoint_url="http://127.0.0.1:9000",
+            region="us-east-1",
+            bucket="riverhog-ingress",
+            access_key_id="minioadmin",
+            secret_access_key="minioadmin",
+            force_path_style=True,
+        )
+    )
+    ingress_secret_key: str = DEV_INGRESS_SECRET_KEY
+    retrieval_cache: RetrievalCacheConfig | None = None
+    external_app_tokens: Mapping[str, str] = field(default_factory=dict)
+    retrieval_initial_ingestion_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
+    retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
+    retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
+    retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
     archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
     archive_require_explicit_passphrase: bool = False
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
@@ -264,12 +309,9 @@ class RuntimeConfig:
     )
     operator_webhook_reminder_time: str | None = None
     operator_webhook_reminder_timezone: str = "UTC"
-    archive_restore_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
-    archive_restore_estimated_latency: timedelta = field(
-        default_factory=lambda: timedelta(hours=48)
-    )
-    archive_restore_availability_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    archive_restore_retrieval_tier: str = "bulk"
+    retrieval_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
+    retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots", "--no-bitcoin")
     public_base_url: str | None = None
@@ -307,6 +349,10 @@ class RuntimeConfig:
             if missing_fields:
                 raise ValueError(
                     f"archive store {name} has blank required fields: " + ", ".join(missing_fields)
+                )
+            if store.read_mode not in {"immediate", "restore_required"}:
+                raise ValueError(
+                    f"archive store {name} read mode must be immediate or restore_required"
                 )
             cloudfront_fields = {
                 "base URL": store.cloudfront_base_url,
@@ -360,6 +406,69 @@ class RuntimeConfig:
             (*read_order, *[name for name in normalized_archive_stores if name not in read_order]),
         )
         object.__setattr__(self, "archive_stores", normalized_archive_stores)
+        ingress_store = replace(
+            self.ingress_store,
+            prefix=_normalize_prefix(self.ingress_store.prefix),
+        )
+        missing_ingress_fields = [
+            name
+            for name, value in {
+                "endpoint_url": ingress_store.endpoint_url,
+                "region": ingress_store.region,
+                "bucket": ingress_store.bucket,
+                "access_key_id": ingress_store.access_key_id,
+                "secret_access_key": ingress_store.secret_access_key,
+            }.items()
+            if not value.strip()
+        ]
+        if missing_ingress_fields:
+            raise ValueError(
+                "ingress store has blank required fields: " + ", ".join(missing_ingress_fields)
+            )
+        object.__setattr__(self, "ingress_store", ingress_store)
+        if len(self.ingress_secret_key.encode("utf-8")) < 32:
+            raise ValueError("RIVERHOG_INGRESS_SECRET_KEY must contain at least 32 bytes")
+        ingress_development = (
+            (urlsplit(ingress_store.endpoint_url).hostname or "").casefold()
+            in DEV_ARCHIVE_ENDPOINT_HOSTS
+            and ingress_store.access_key_id in DEV_ARCHIVE_ACCESS_KEY_IDS
+        )
+        if not ingress_development and self.ingress_secret_key == DEV_INGRESS_SECRET_KEY:
+            raise ValueError(
+                "RIVERHOG_INGRESS_SECRET_KEY must be explicitly set for a non-development "
+                "ingress store"
+            )
+        restore_required_stores = [
+            name
+            for name, store in normalized_archive_stores.items()
+            if store.read_mode == "restore_required"
+        ]
+        if restore_required_stores and self.retrieval_cache is None:
+            raise ValueError(
+                "RIVERHOG_RETRIEVAL_CACHE_* must be configured for restore-required "
+                "archive stores: " + ", ".join(restore_required_stores)
+            )
+        if self.retrieval_cache is not None:
+            cache = replace(
+                self.retrieval_cache,
+                prefix=_normalize_prefix(self.retrieval_cache.prefix),
+            )
+            missing_cache_fields = [
+                name
+                for name, value in {
+                    "endpoint_url": cache.endpoint_url,
+                    "region": cache.region,
+                    "bucket": cache.bucket,
+                    "access_key_id": cache.access_key_id,
+                    "secret_access_key": cache.secret_access_key,
+                }.items()
+                if not value.strip()
+            ]
+            if missing_cache_fields:
+                raise ValueError(
+                    "retrieval cache has blank required fields: " + ", ".join(missing_cache_fields)
+                )
+            object.__setattr__(self, "retrieval_cache", cache)
         if self.tusd_append_timeout.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT must be > 0")
         if self.s3_max_pool_connections < 1:
@@ -376,10 +485,16 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL must be > 0")
         if self.archive_object_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY must be >= 1")
-        if self.hot_materialization_concurrency < 1:
-            raise ValueError("RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY must be >= 1")
-        if self.hot_single_put_max_bytes < 0:
-            raise ValueError("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES must be >= 0")
+        if self.retrieval_initial_ingestion_lease.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE must be > 0")
+        if self.retrieval_default_lease.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_DEFAULT_LEASE must be > 0")
+        if self.retrieval_max_lease < self.retrieval_default_lease:
+            raise ValueError(
+                "RIVERHOG_RETRIEVAL_MAX_LEASE must be at least RIVERHOG_RETRIEVAL_DEFAULT_LEASE"
+            )
+        if self.retrieval_cache_sweep_interval.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL must be > 0")
         if self.archive_scrypt_work_factor < 1 or self.archive_scrypt_work_factor > 22:
             raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be in 1..22")
         if not self.archive_passphrase:
@@ -392,8 +507,7 @@ class RuntimeConfig:
         if self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE and non_development_stores:
             raise ValueError(
                 "RIVERHOG_ARCHIVE_PASSPHRASE must be explicitly set to a "
-                "non-development secret for archive store(s): "
-                + ", ".join(non_development_stores)
+                "non-development secret for archive store(s): " + ", ".join(non_development_stores)
             )
         if (
             self.archive_require_explicit_passphrase
@@ -404,16 +518,13 @@ class RuntimeConfig:
                 "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a "
                 "non-development secret"
             )
-        if self.operator_webhook_url:
-            minimum_ready_ttl = self.webhook_timeout + self.operator_webhook_retry_delay
-            if self.archive_restore_availability_ttl < minimum_ready_ttl:
-                raise ValueError(
-                    "invalid operator webhook timing: "
-                    "RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL must be at least "
-                    "the outbound webhook "
-                    "timeout plus RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY when operator "
-                    "notifications are configured"
-                )
+        normalized_app_tokens: dict[str, str] = {}
+        for app, token in self.external_app_tokens.items():
+            normalized_app = _normalize_archive_store_name(str(app))
+            if not str(token):
+                raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS values must be non-empty")
+            normalized_app_tokens[normalized_app] = str(token)
+        object.__setattr__(self, "external_app_tokens", normalized_app_tokens)
         normalized_webhooks: dict[str, str] = {}
         for recipient, url in self.collection_webhook_urls.items():
             normalized_recipient = _normalize_notify_recipient(
@@ -438,11 +549,6 @@ class RuntimeConfig:
             normalize_reminder_time(self.operator_webhook_reminder_time),
         )
         reminder_zone(self.operator_webhook_reminder_timezone)
-        object.__setattr__(
-            self,
-            "upload_staging_root",
-            self.upload_staging_root.expanduser().resolve(),
-        )
 
     def operator_webhook_next_reminder_at(self, current: datetime) -> datetime | None:
         return next_operator_reminder_at(
@@ -462,13 +568,6 @@ class RuntimeConfig:
 
 def _parse_archive_stores(
     values: Mapping[str, str],
-    *,
-    hot_store_endpoint_url: str,
-    hot_store_region: str,
-    hot_store_bucket: str,
-    hot_store_access_key_id: str,
-    hot_store_secret_access_key: str,
-    hot_store_force_path_style: bool,
 ) -> tuple[str, tuple[str, ...], dict[str, ArchiveStoreConfig]]:
     names = tuple(
         dict.fromkeys(
@@ -496,24 +595,25 @@ def _parse_archive_stores(
         ).strip()
         stores[name] = ArchiveStoreConfig(
             name=name,
-            endpoint_url=values.get(f"{prefix}ENDPOINT_URL", hot_store_endpoint_url).rstrip("/"),
-            region=values.get(f"{prefix}REGION", hot_store_region),
-            bucket=values.get(f"{prefix}BUCKET", hot_store_bucket),
-            access_key_id=values.get(f"{prefix}ACCESS_KEY_ID", hot_store_access_key_id),
-            secret_access_key=values.get(f"{prefix}SECRET_ACCESS_KEY", hot_store_secret_access_key),
-            force_path_style=_parse_bool(
-                values.get(f"{prefix}FORCE_PATH_STYLE", str(hot_store_force_path_style).lower())
-            ),
+            endpoint_url=values.get(f"{prefix}ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/"),
+            region=values.get(f"{prefix}REGION", "us-east-1"),
+            bucket=values.get(f"{prefix}BUCKET", "riverhog-archive"),
+            access_key_id=values.get(f"{prefix}ACCESS_KEY_ID", "minioadmin"),
+            secret_access_key=values.get(f"{prefix}SECRET_ACCESS_KEY", "minioadmin"),
+            force_path_style=_parse_bool(values.get(f"{prefix}FORCE_PATH_STYLE", "true")),
             prefix=_normalize_prefix(values.get(f"{prefix}PREFIX", "archive")),
             backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
             storage_class=values.get(f"{prefix}STORAGE_CLASS", "DEEP_ARCHIVE").strip()
             or "DEEP_ARCHIVE",
+            read_mode=_parse_choice(
+                values.get(f"{prefix}READ_MODE", "immediate"),
+                name=f"{prefix}READ_MODE",
+                allowed={"immediate", "restore_required"},
+            ),
             cloudfront_base_url=cloudfront_base_url,
             cloudfront_public_key_id=cloudfront_public_key_id,
             cloudfront_private_key_path=(
-                Path(cloudfront_private_key_path_raw)
-                if cloudfront_private_key_path_raw
-                else None
+                Path(cloudfront_private_key_path_raw) if cloudfront_private_key_path_raw else None
             ),
         )
     if write_store not in stores:
@@ -543,24 +643,21 @@ def load_runtime_config() -> RuntimeConfig:
     upload_file_ttl = parse_duration(ttl_raw)
     upload_session_idle_ttl = parse_duration(session_idle_ttl_raw)
     upload_expiry_sweep_interval = parse_duration(sweep_raw)
-    hot_store_endpoint_url = os.getenv(
-        "RIVERHOG_HOT_STORE_ENDPOINT_URL", "http://127.0.0.1:9000"
-    ).rstrip("/")
-    hot_store_region = os.getenv("RIVERHOG_HOT_STORE_REGION", "us-east-1")
-    hot_store_bucket = os.getenv("RIVERHOG_HOT_STORE_BUCKET", "riverhog")
-    hot_store_access_key_id = os.getenv("RIVERHOG_HOT_STORE_ACCESS_KEY_ID", "minioadmin")
-    hot_store_secret_access_key = os.getenv("RIVERHOG_HOT_STORE_SECRET_ACCESS_KEY", "minioadmin")
-    hot_store_force_path_style = _parse_bool(
-        os.getenv("RIVERHOG_HOT_STORE_FORCE_PATH_STYLE", "true")
-    )
     s3_max_pool_connections = _parse_int(
         os.getenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", str(DEFAULT_S3_MAX_POOL_CONNECTIONS)),
         name="RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         minimum=1,
     )
-    upload_staging_root = Path(
-        os.getenv("RIVERHOG_UPLOAD_STAGING_ROOT", ".riverhog/uploads").strip()
-        or ".riverhog/uploads"
+    ingress_store = IngressStoreConfig(
+        endpoint_url=os.getenv("RIVERHOG_INGRESS_ENDPOINT_URL", "http://127.0.0.1:9000")
+        .strip()
+        .rstrip("/"),
+        region=os.getenv("RIVERHOG_INGRESS_REGION", "us-east-1").strip(),
+        bucket=os.getenv("RIVERHOG_INGRESS_BUCKET", "riverhog-ingress").strip(),
+        access_key_id=os.getenv("RIVERHOG_INGRESS_ACCESS_KEY_ID", "minioadmin").strip(),
+        secret_access_key=os.getenv("RIVERHOG_INGRESS_SECRET_ACCESS_KEY", "minioadmin").strip(),
+        force_path_style=_parse_bool(os.getenv("RIVERHOG_INGRESS_FORCE_PATH_STYLE", "true")),
+        prefix=os.getenv("RIVERHOG_INGRESS_PREFIX", "").strip(),
     )
 
     archive_multipart_part_bytes = _parse_bytes(
@@ -590,19 +687,6 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
         minimum=1,
     )
-    hot_materialization_concurrency = _parse_int(
-        os.getenv(
-            "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
-            str(DEFAULT_HOT_MATERIALIZATION_CONCURRENCY),
-        ),
-        name="RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
-        minimum=1,
-    )
-    hot_single_put_max_bytes = _parse_bytes(
-        os.getenv("RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES", "64MiB"),
-        name="RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
-        minimum=0,
-    )
     archive_retry_delay = parse_duration(os.getenv("RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY", "5m"))
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
@@ -626,28 +710,36 @@ def load_runtime_config() -> RuntimeConfig:
     operator_webhook_reminder_timezone = (
         os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
     )
-    archive_restore_sweep_interval = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL", "30s")
+    retrieval_sweep_interval = parse_duration(os.getenv("RIVERHOG_RETRIEVAL_SWEEP_INTERVAL", "30s"))
+    retrieval_estimated_latency = parse_duration(
+        os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
     )
-    archive_restore_estimated_latency = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_RESTORE_ESTIMATED_LATENCY", "48h")
-    )
-    archive_restore_availability_ttl = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL", "24h")
-    )
-    archive_restore_retrieval_tier = _parse_choice(
-        os.getenv("RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER", "bulk"),
-        name="RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
+    retrieval_tier = _parse_choice(
+        os.getenv("RIVERHOG_RETRIEVAL_TIER", "bulk"),
+        name="RIVERHOG_RETRIEVAL_TIER",
         allowed={"bulk", "standard"},
     )
-    archive_write_store, archive_read_order, archive_stores = _parse_archive_stores(
-        os.environ,
-        hot_store_endpoint_url=hot_store_endpoint_url,
-        hot_store_region=hot_store_region,
-        hot_store_bucket=hot_store_bucket,
-        hot_store_access_key_id=hot_store_access_key_id,
-        hot_store_secret_access_key=hot_store_secret_access_key,
-        hot_store_force_path_style=hot_store_force_path_style,
+    archive_write_store, archive_read_order, archive_stores = _parse_archive_stores(os.environ)
+    cache_values = {
+        "endpoint_url": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL", "").strip().rstrip("/"),
+        "region": os.getenv("RIVERHOG_RETRIEVAL_CACHE_REGION", "").strip(),
+        "bucket": os.getenv("RIVERHOG_RETRIEVAL_CACHE_BUCKET", "").strip(),
+        "access_key_id": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "").strip(),
+        "secret_access_key": os.getenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "").strip(),
+    }
+    configured_cache_fields = [name for name, value in cache_values.items() if value]
+    if configured_cache_fields and len(configured_cache_fields) != len(cache_values):
+        raise ValueError("RIVERHOG_RETRIEVAL_CACHE_* configuration is incomplete")
+    retrieval_cache = (
+        RetrievalCacheConfig(
+            **cache_values,
+            force_path_style=_parse_bool(
+                os.getenv("RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE", "false")
+            ),
+            prefix=os.getenv("RIVERHOG_RETRIEVAL_CACHE_PREFIX", "").strip(),
+        )
+        if configured_cache_fields
+        else None
     )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
     ots_stamp_command = _parse_command(
@@ -684,14 +776,9 @@ def load_runtime_config() -> RuntimeConfig:
             "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
         )
     return RuntimeConfig(
-        hot_store_endpoint_url=hot_store_endpoint_url,
-        hot_store_region=hot_store_region,
-        hot_store_bucket=hot_store_bucket,
-        hot_store_access_key_id=hot_store_access_key_id,
-        hot_store_secret_access_key=hot_store_secret_access_key,
-        hot_store_force_path_style=hot_store_force_path_style,
         s3_max_pool_connections=s3_max_pool_connections,
-        upload_staging_root=upload_staging_root,
+        ingress_store=ingress_store,
+        ingress_secret_key=os.getenv("RIVERHOG_INGRESS_SECRET_KEY", DEV_INGRESS_SECRET_KEY).strip(),
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"
         ),
@@ -716,8 +803,18 @@ def load_runtime_config() -> RuntimeConfig:
         archive_multipart_max_age=archive_multipart_max_age,
         archive_multipart_sweep_interval=archive_multipart_sweep_interval,
         archive_object_concurrency=archive_object_concurrency,
-        hot_materialization_concurrency=hot_materialization_concurrency,
-        hot_single_put_max_bytes=hot_single_put_max_bytes,
+        retrieval_cache=retrieval_cache,
+        external_app_tokens=_parse_external_app_tokens(
+            os.getenv("RIVERHOG_EXTERNAL_APP_TOKENS", "")
+        ),
+        retrieval_initial_ingestion_lease=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE", "30d")
+        ),
+        retrieval_default_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "7d")),
+        retrieval_max_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "30d")),
+        retrieval_cache_sweep_interval=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "1h")
+        ),
         archive_passphrase=archive_passphrase,
         archive_require_explicit_passphrase=archive_require_explicit_passphrase,
         archive_scrypt_work_factor=archive_scrypt_work_factor,
@@ -731,10 +828,9 @@ def load_runtime_config() -> RuntimeConfig:
         operator_webhook_reminder_interval=operator_webhook_reminder_interval,
         operator_webhook_reminder_time=operator_webhook_reminder_time,
         operator_webhook_reminder_timezone=operator_webhook_reminder_timezone,
-        archive_restore_sweep_interval=archive_restore_sweep_interval,
-        archive_restore_estimated_latency=archive_restore_estimated_latency,
-        archive_restore_availability_ttl=archive_restore_availability_ttl,
-        archive_restore_retrieval_tier=archive_restore_retrieval_tier,
+        retrieval_sweep_interval=retrieval_sweep_interval,
+        retrieval_estimated_latency=retrieval_estimated_latency,
+        retrieval_tier=retrieval_tier,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         public_base_url=public_base_url,

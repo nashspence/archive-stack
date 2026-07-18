@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import os
 import secrets
 from urllib.parse import unquote, urlsplit
@@ -13,7 +11,6 @@ from starlette.concurrency import run_in_threadpool
 from riverhog_api.deps import default_container
 from riverhog_core.domain.errors import BadRequest
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 router = APIRouter(tags=["internal"], include_in_schema=False)
 _HOOK_SECRET_HEADER = "x-riverhog-tusd-hook-secret"
@@ -37,14 +34,8 @@ def _hook_error(message: str) -> JSONResponse:
     )
 
 
-def _target_path_from_metadata(metadata: dict[object, object]) -> str:
-    target_path_b64 = metadata.get("target_path_b64")
-    if target_path_b64:
-        try:
-            return base64.b64decode(str(target_path_b64), validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
-            return ""
-    return str(metadata.get("target_path", ""))
+def _upload_id_from_metadata(metadata: dict[object, object]) -> str:
+    return str(metadata.get("upload_id", ""))
 
 
 def _authorized_bearer(request: Request) -> bool:
@@ -97,25 +88,20 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
     if not isinstance(metadata, dict):
         return _hook_error("missing target_path metadata")
 
-    raw_target_path = _target_path_from_metadata(metadata).lstrip("/")
-    if not raw_target_path:
-        return _hook_error("missing target_path metadata")
-    if raw_target_path.startswith("collections/"):
-        return _hook_error("target_path must not point into committed hot storage")
-    if not raw_target_path.startswith(".riverhog/uploads/"):
-        return _hook_error("target_path must stay within .riverhog/uploads/")
-    if any(part in {"", ".", ".."} for part in raw_target_path.split("/")):
-        return _hook_error("target_path must be normalized")
+    upload_id = _upload_id_from_metadata(metadata)
+    if not upload_id.startswith(".riverhog/uploads/by-target/"):
+        return _hook_error("missing or invalid upload_id metadata")
+    digest = upload_id.removeprefix(".riverhog/uploads/by-target/")
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return _hook_error("missing or invalid upload_id metadata")
 
     if hook_type == "pre-create":
-        return _json_response(
-            {"ChangeFileInfo": {"ID": tusd_upload_id_for_target_path(raw_target_path)}}
-        )
+        return _json_response({"ChangeFileInfo": {"ID": upload_id}})
 
     try:
         await run_in_threadpool(
-            default_container().collections.sync_finished_upload_target,
-            raw_target_path,
+            default_container().collections.sync_finished_upload_id,
+            upload_id,
         )
     except BadRequest as exc:
         return _hook_error(exc.message)

@@ -43,7 +43,7 @@ def sync_upload_state(
             # Another worker may have consumed and deleted the backing upload between
             # loading the row and syncing the current offset. Preserve the current
             # lifecycle state here so a stale sync cannot roll committed progress back
-            # to zero during fetch completion.
+            # after the backing upload was consumed.
             return current
         offset = length
 

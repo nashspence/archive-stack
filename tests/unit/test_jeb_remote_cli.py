@@ -267,22 +267,23 @@ def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  #
     assert "eligible files: 1" in output
 
 
-def test_jeb_remote_cli_enrolls_and_plans_source_purge(
-    capsys, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
-    assert jeb_cli.main(
-        [
-            "source",
-            "add",
-            "camera",
-            "--adapter",
-            "ftp",
-            "--template",
-            "camera-review",
-        ]
-    ) == 0
+    assert (
+        jeb_cli.main(
+            [
+                "source",
+                "add",
+                "camera",
+                "--adapter",
+                "ftp",
+                "--template",
+                "camera-review",
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
     assert jeb_cli.main(["source", "remove", "camera", "--purge", "--dry-run"]) == 0
 

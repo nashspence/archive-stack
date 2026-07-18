@@ -22,7 +22,7 @@ FILES = {"document.txt": b"archive copy retirement\n"}
 
 
 def _service(path: Path):
-    config, archive = seed_archive_copy(path, FILES, hot=False, store="deep")
+    config, archive = seed_archive_copy(path, FILES, store="deep")
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = CollectionArchiveCopyRecord(collection_id=COLLECTION_ID, store="b2")
         session.add(copy)

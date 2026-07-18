@@ -202,9 +202,7 @@ def _format_list_ids(
     return "\n".join(
         str(item[id_key])
         for item in _sequence(payload.get(key))
-        if isinstance(item, Mapping)
-        and item.get(id_key) is not None
-        and item.get(id_key) != ""
+        if isinstance(item, Mapping) and item.get(id_key) is not None and item.get(id_key) != ""
     )
 
 

@@ -46,10 +46,10 @@ def _ensure_schema_indexes(engine: Engine) -> None:
     statements = (
         "CREATE INDEX IF NOT EXISTS idx_collection_upload_files_collection_order "
         "ON collection_upload_files (collection_id, file_order)",
-        "CREATE INDEX IF NOT EXISTS ix_fetch_files_collection "
-        "ON fetch_files (collection_id, fetch_id)",
-        "CREATE INDEX IF NOT EXISTS ix_archive_restores_state_created "
-        "ON archive_restores (state, created_at, restore_id)",
+        "CREATE INDEX IF NOT EXISTS ix_retrieval_jobs_due "
+        "ON retrieval_jobs (state, next_poll_at, id)",
+        "CREATE INDEX IF NOT EXISTS ix_retrieval_cache_leases_expiry "
+        "ON retrieval_cache_leases (expires_at, owner)",
     )
     with engine.begin() as connection:
         for statement in statements:
@@ -85,10 +85,8 @@ def initialize_db(database_url: str) -> None:
     from riverhog_core.catalog_models import (  # noqa: PLC0415
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
-        ArchiveRestoreFileRecord,
-        ArchiveRestoreObjectRecord,
-        ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
+        CatalogEventRecord,
         CollectionArchiveCopyRecord,
         CollectionArchiveFileObjectRecord,
         CollectionArchiveObjectRecord,
@@ -98,17 +96,18 @@ def initialize_db(database_url: str) -> None:
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
-        FetchFileRecord,
-        FetchRecord,
+        RetrievalCacheLeaseRecord,
+        RetrievalCacheObjectRecord,
+        RetrievalJobFileRecord,
+        RetrievalJobObjectRecord,
+        RetrievalJobRecord,
     )
 
     _ = (
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
-        ArchiveRestoreFileRecord,
-        ArchiveRestoreObjectRecord,
-        ArchiveRestoreRecord,
         ArchiveUsageSnapshotRecord,
+        CatalogEventRecord,
         CollectionArchiveCopyRecord,
         CollectionArchiveFileObjectRecord,
         CollectionArchiveObjectRecord,
@@ -118,8 +117,11 @@ def initialize_db(database_url: str) -> None:
         CollectionRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
-        FetchRecord,
-        FetchFileRecord,
+        RetrievalJobRecord,
+        RetrievalJobFileRecord,
+        RetrievalJobObjectRecord,
+        RetrievalCacheObjectRecord,
+        RetrievalCacheLeaseRecord,
     )
     engine = create_catalog_engine(database_url)
     Base.metadata.create_all(engine)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,22 +20,19 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     return RuntimeConfig(database_url=sqlite_url(tmp_path / "state.sqlite3"), **overrides)
 
 
-def test_restore_ready_window_covers_webhook_retry(tmp_path: Path) -> None:
-    with pytest.raises(
-        ValueError, match="RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL must be at least"
-    ):
+def test_retrieval_max_lease_covers_the_default_lease(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_MAX_LEASE must be at least"):
         _config(
             tmp_path,
-            operator_webhook_url="http://example.invalid/operator",
-            archive_restore_availability_ttl=timedelta(seconds=5),
-            webhook_timeout=timedelta(seconds=5),
-            operator_webhook_retry_delay=timedelta(seconds=1),
+            retrieval_default_lease=timedelta(days=8),
+            retrieval_max_lease=timedelta(days=7),
         )
 
 
-def test_restore_window_is_independent_without_webhook(tmp_path: Path) -> None:
-    config = _config(tmp_path, archive_restore_availability_ttl=timedelta(seconds=4))
-    assert config.archive_restore_availability_ttl == timedelta(seconds=4)
+def test_restore_required_store_requires_retrieval_cache(tmp_path: Path) -> None:
+    deep = _config(tmp_path).archive_store("deep")
+    with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE"):
+        _config(tmp_path, archive_stores={"deep": replace(deep, read_mode="restore_required")})
 
 
 def test_load_runtime_config_parses_archive_security_settings(
@@ -74,9 +72,7 @@ def test_load_runtime_config_parses_collection_webhooks(
 
     config = load_runtime_config()
 
-    assert config.collection_webhook_urls == {
-        "operator": "https://operator.example.test/hook"
-    }
+    assert config.collection_webhook_urls == {"operator": "https://operator.example.test/hook"}
     assert config.collection_webhook_default_recipients == ("operator",)
 
 
@@ -99,18 +95,21 @@ def test_load_runtime_config_parses_upload_lifecycle_settings(
     assert config.upload_expiry_sweep_interval == timedelta(seconds=45)
 
 
-def test_load_runtime_config_parses_archive_restore_settings(
+def test_load_runtime_config_parses_retrieval_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_RESTORE_ESTIMATED_LATENCY", "6h")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL", "2d")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER", "standard")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "6h")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_TIER", "standard")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE", "20d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "2d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "20d")
 
     config = load_runtime_config()
 
-    assert config.archive_restore_estimated_latency == timedelta(hours=6)
-    assert config.archive_restore_availability_ttl == timedelta(days=2)
-    assert config.archive_restore_retrieval_tier == "standard"
+    assert config.retrieval_estimated_latency == timedelta(hours=6)
+    assert config.retrieval_tier == "standard"
+    assert config.retrieval_initial_ingestion_lease == timedelta(days=20)
+    assert config.retrieval_default_lease == timedelta(days=2)
 
 
 def test_load_runtime_config_builds_named_archive_stores(

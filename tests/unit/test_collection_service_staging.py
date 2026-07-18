@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
-
-import pytest
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -12,48 +9,29 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
-    CollectionUploadRecord,
 )
-from riverhog_core.domain.errors import Conflict
-from riverhog_core.ports.hot_store import HotStore
-from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from tests.unit.db_helpers import sqlite_url
 
 
-class UnusedStore:
-    def __getattr__(self, name: str) -> object:
-        raise AssertionError(f"store method should not be used: {name}")
+class UploadStoreStub:
+    def __init__(self) -> None:
+        self.lengths: list[int] = []
+
+    def create_upload(self, target_path: str, length: int) -> str:
+        self.lengths.append(length)
+        return f"http://tusd.invalid/files/{target_path.rsplit('/', 1)[-1]}"
+
+    def get_offset(self, tus_url: str) -> int:
+        return 0
 
 
-def _service(path: Path) -> SqlAlchemyCollectionService:
-    store = UnusedStore()
+def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyCollectionService:
     return SqlAlchemyCollectionService(
         RuntimeConfig(database_url=sqlite_url(path)),
-        cast(HotStore, store),
-        cast(UploadStore, store),
+        store or UploadStoreStub(),
     )
-
-
-def _seed(path: Path) -> None:
-    factory = make_session_factory(sqlite_url(path))
-    with session_scope(factory) as session:
-        for collection_id, size, hot in (
-            ("2025/20250101T000000Z__alpha", 10, True),
-            ("2025/20250102T000000Z__beta", 20, False),
-        ):
-            session.add(CollectionRecord(id=collection_id))
-            session.add(
-                CollectionFileRecord(
-                    collection_id=collection_id,
-                    path="file.txt",
-                    bytes=size,
-                    sha256=("a" if collection_id.endswith("__alpha") else "b") * 64,
-                    hot=hot,
-                )
-            )
-        session.add(_archive_copy("deep", stored_bytes=14))
 
 
 def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyRecord:
@@ -97,35 +75,40 @@ def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyReco
     return copy
 
 
-def test_collection_summary_reports_hot_and_archive_state(tmp_path: Path) -> None:
+def _seed(path: Path) -> None:
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        for collection_id, size in (
+            ("2025/20250101T000000Z__alpha", 10),
+            ("2025/20250102T000000Z__beta", 20),
+        ):
+            session.add(CollectionRecord(id=collection_id, manifest_etag="0" * 64))
+            session.add(
+                CollectionFileRecord(
+                    collection_id=collection_id,
+                    path="file.txt",
+                    bytes=size,
+                    sha256=("a" if collection_id.endswith("__alpha") else "b") * 64,
+                )
+            )
+        session.add(_archive_copy("deep", stored_bytes=14))
+
+
+def test_collection_summary_reports_each_archive_copy(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed(path)
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        session.add(_archive_copy("b2", stored_bytes=15))
 
     summary = _service(path).get("2025/20250101T000000Z__alpha")
 
     assert summary.files == 1
     assert summary.bytes == 10
-    assert summary.hot_files == 1
-    assert summary.hot_bytes == 10
-    assert summary.archive_copies[0].store == "deep"
-    assert summary.archive_copies[0].state.value == "uploaded"
-
-
-def test_collection_summary_reports_each_named_archive_copy(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    initialize_db(sqlite_url(path))
-    _seed(path)
-    factory = make_session_factory(sqlite_url(path))
-    with session_scope(factory) as session:
-        session.add(_archive_copy("b2", stored_bytes=15))
-
-    summary = _service(path).get("2025/20250101T000000Z__alpha")
-
     assert [copy.store for copy in summary.archive_copies] == ["b2", "deep"]
 
 
-def test_collection_list_sorts_current_catalog_fields(tmp_path: Path) -> None:
+def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed(path)
@@ -138,121 +121,44 @@ def test_collection_list_sorts_current_catalog_fields(tmp_path: Path) -> None:
         order="desc",
     )
 
-    assert [str(collection.id) for collection in page.collections] == [
-        "2025/20250102T000000Z__beta",
-        "2025/20250101T000000Z__alpha",
+    assert [(str(item.id), item.files, item.bytes) for item in page.collections] == [
+        ("2025/20250102T000000Z__beta", 1, 20),
+        ("2025/20250101T000000Z__alpha", 1, 10),
     ]
 
 
-def test_collection_list_returns_all_database_summaries_in_one_page(tmp_path: Path) -> None:
+def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    _seed(path)
-
-    page = _service(path).list(
-        page=2,
-        per_page=1,
-        q="2025/",
-        sort="id",
-        order="asc",
-        all_items=True,
-    )
-
-    assert page.page == 1
-    assert page.per_page == 2
-    assert page.pages == 1
-    assert [
-        (str(collection.id), collection.files, collection.bytes, collection.hot_bytes)
-        for collection in page.collections
-    ] == [
-        ("2025/20250101T000000Z__alpha", 1, 10, 10),
-        ("2025/20250102T000000Z__beta", 1, 20, 0),
-    ]
-
-
-def test_collection_upload_progress_uses_catalog_aggregates(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    initialize_db(sqlite_url(path))
-    service = _service(path)
-    files = [
-        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
-        {"path": "two.txt", "bytes": 20, "sha256": "b" * 64},
-    ]
-
-    created = service.create_or_resume_upload(
-        upload_slug="progress",
-        upload_timestamp="20250103T000000Z",
-        files=files,
-    )
-    factory = make_session_factory(sqlite_url(path))
-    with session_scope(factory) as session:
-        first = session.get(
-            CollectionUploadFileRecord,
-            ("2025/20250103T000000Z__progress", "one.txt"),
-        )
-        assert first is not None
-        first.uploaded_bytes = 10
-        first.hot_materialized_at = "2026-07-15T00:00:00Z"
-        second = session.get(
-            CollectionUploadFileRecord,
-            ("2025/20250103T000000Z__progress", "two.txt"),
-        )
-        assert second is not None
-        second.uploaded_bytes = 5
-        second.upload_expires_at = "2099-07-16T00:00:00Z"
-
-    progress = service.get_upload("2025/20250103T000000Z__progress")
-
-    assert created["files_total"] == 2
-    assert created["retain_hot"] is True
-    assert created["bytes_total"] == 30
-    assert progress["files_pending"] == 0
-    assert progress["files_partial"] == 1
-    assert progress["files_uploaded"] == 1
-    assert progress["hot_materialized_files"] == 1
-    assert progress["uploaded_bytes"] == 15
-    assert progress["hot_materialized_bytes"] == 10
-    assert progress["missing_bytes"] == 15
-    assert progress["upload_state_expires_at"] == "2099-07-16T00:00:00Z"
-
-
-def test_upload_session_persists_hot_retention_choice(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    initialize_db(sqlite_url(path))
-    service = _service(path)
-
+    upload_store = UploadStoreStub()
+    service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
-        upload_slug="retained",
+        upload_slug="encrypted",
         upload_timestamp="20250103T000000Z",
-        retain_hot=True,
+    )
+    collection_id = str(created["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
     )
 
-    assert created["retain_hot"] is True
-    factory = make_session_factory(sqlite_url(path))
-    with session_scope(factory) as session:
-        upload = session.get(CollectionUploadRecord, "2025/20250103T000000Z__retained")
-        assert upload is not None
-        assert upload.retain_hot is True
+    preflight = service.create_or_resume_file_upload(collection_id, "one.txt")
+    repeated = service.create_or_resume_file_upload(collection_id, "one.txt")
 
-    with pytest.raises(Conflict, match="different hot-retention choice"):
-        service.create_or_resume_upload_session(
-            upload_slug="retained",
-            upload_timestamp="20250103T000000Z",
-            retain_hot=False,
-        )
+    encryption = preflight["encryption"]
+    assert isinstance(encryption, dict)
+    assert encryption["format"] == "age-v1-scrypt-resumable"
+    assert encryption["plaintext_bytes"] == 10
+    assert preflight["length"] == encryption["ciphertext_bytes"]
+    assert int(preflight["length"]) > 10
+    assert repeated["encryption"] == encryption
+    assert upload_store.lengths == [preflight["length"]]
 
-
-def test_collection_upload_matches_finalized_manifest_in_database(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    initialize_db(sqlite_url(path))
-    _seed(path)
-
-    payload = _service(path).create_or_resume_upload(
-        upload_slug="alpha",
-        upload_timestamp="20250101T000000Z",
-        files=[{"path": "file.txt", "bytes": 10, "sha256": "a" * 64}],
-    )
-
-    assert payload["state"] == "finalized"
-    assert payload["files_total"] == 1
-    assert payload["bytes_total"] == 10
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+        assert record is not None
+        assert record.ingress_secret_envelope.startswith("v1.")
+        assert record.ingress_secret_envelope != encryption["passphrase"]
+        assert encryption["passphrase"] not in record.ingress_state_json

@@ -1,38 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import datetime
-from typing import Protocol, TypedDict
+from collections.abc import Iterator, Sequence
+from datetime import datetime, timedelta
+from typing import Protocol
 
-from riverhog_core.domain.models import (
-    ArchiveRestoreListPage,
-    ArchiveRestoreSummary,
-    ArchiveUsageReport,
-    CollectionListPage,
-    CollectionSummary,
-    FetchListPage,
-    FetchSummary,
-)
+from riverhog_core.domain.models import ArchiveUsageReport, CollectionListPage, CollectionSummary
 
 JsonObject = dict[str, object]
-
-
-class FileStatePayload(TypedDict):
-    logical_path: str
-    collection_id: str
-    collection_path: str
-    bytes: int
-    sha256: str
-    hot: bool
-
-
-class FilesPayload(TypedDict):
-    path: str
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    files: list[FileStatePayload]
 
 
 class CollectionService(Protocol):
@@ -44,7 +18,6 @@ class CollectionService(Protocol):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def create_or_resume_upload_session(
@@ -54,7 +27,6 @@ class CollectionService(Protocol):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def register_upload_session_file(
@@ -67,7 +39,7 @@ class CollectionService(Protocol):
         collection_id: str,
         file: dict[str, object],
     ) -> JsonObject: ...
-    def sync_finished_upload_target(self, target_path: str) -> JsonObject | None: ...
+    def sync_finished_upload_id(self, upload_id: str) -> JsonObject | None: ...
     def complete_upload_session(self, collection_id: str) -> JsonObject: ...
     def cancel_upload_session(self, collection_id: str) -> JsonObject: ...
     def get_upload(self, collection_id: str) -> JsonObject: ...
@@ -102,6 +74,47 @@ class CollectionDeletionService(Protocol):
     def delete(self, collection_id: str, *, challenge: str) -> JsonObject: ...
 
 
+class RetrievalService(Protocol):
+    def collection_manifest(self, collection_id: str) -> tuple[JsonObject, str]: ...
+    def resource_list(self) -> list[dict[str, str]]: ...
+    def change_list(self, *, after: int = 0, limit: int = 1000) -> JsonObject: ...
+    def plan(
+        self,
+        files: Sequence[tuple[str, str]],
+        *,
+        lease: timedelta | None = None,
+    ) -> JsonObject: ...
+    def create(
+        self,
+        *,
+        app: str,
+        files: Sequence[tuple[str, str]],
+        plan_etag: str,
+        lease: timedelta | None = None,
+    ) -> JsonObject: ...
+    def get(self, *, app: str, job_id: str) -> JsonObject: ...
+    def acknowledge(self, *, app: str, job_id: str) -> JsonObject: ...
+    def cancel(self, *, app: str, job_id: str) -> JsonObject: ...
+    def content_metadata(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        path: str,
+    ) -> tuple[int, str]: ...
+    def content(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        path: str,
+    ) -> tuple[Iterator[bytes], int, str]: ...
+    def process_due(self, *, limit: int = 10) -> int: ...
+    def sweep(self) -> int: ...
+
+
 class SearchService(Protocol):
     def search(
         self,
@@ -112,14 +125,13 @@ class SearchService(Protocol):
         sort: str,
         order: str,
         collection: str | None = None,
-        hot: bool | None = None,
         all_items: bool = False,
     ) -> JsonObject: ...
 
 
 class ArchiveUploadService(Protocol):
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
-    def publish_restore_catalog(self) -> int: ...
+    def publish_archive_catalog(self) -> int: ...
     def abort_incomplete_multipart_uploads(
         self,
         *,
@@ -147,94 +159,3 @@ class ArchiveCopyRetirementService(Protocol):
 
 class ArchiveReportingService(Protocol):
     def get_report(self, *, collection: str | None = None) -> ArchiveUsageReport: ...
-
-
-class ArchiveRestoreService(Protocol):
-    def list(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        sort: str,
-        order: str,
-        terminal: str = "all",
-        state: str | None = None,
-        collection: str | None = None,
-    ) -> ArchiveRestoreListPage: ...
-    def get(self, restore_id: str) -> ArchiveRestoreSummary: ...
-    def create_or_resume_for_collection(self, collection_id: str) -> ArchiveRestoreSummary: ...
-    def list_for_fetch(
-        self,
-        fetch_id: int,
-        *,
-        page: int,
-        per_page: int,
-        sort: str,
-        order: str,
-        state: str | None = None,
-    ) -> ArchiveRestoreListPage: ...
-    def create_or_resume_for_fetch(self, fetch_id: int) -> ArchiveRestoreListPage: ...
-    def cancel_for_fetch(self, fetch_id: int) -> ArchiveRestoreListPage: ...
-    def cancel(self, restore_id: str) -> ArchiveRestoreSummary: ...
-    def process_due_restores(self, *, limit: int = 100) -> int: ...
-    def repair_missing_fetch_hot_files(self, *, limit: int = 100) -> int: ...
-
-
-class FetchService(Protocol):
-    def create(
-        self,
-        *,
-        label: str | None = None,
-        collections: Sequence[str] | None = None,
-        files: Sequence[tuple[str, str]] | None = None,
-    ) -> FetchSummary: ...
-    def list(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        state: str | None = None,
-        q: str | None = None,
-        sort: str = "id",
-        order: str = "asc",
-        all_items: bool = False,
-    ) -> FetchListPage: ...
-    def add_collections(self, fetch_id: int, collections: Sequence[str]) -> FetchSummary: ...
-    def remove_collections(self, fetch_id: int, collections: Sequence[str]) -> FetchSummary: ...
-    def add_files(self, fetch_id: int, files: Sequence[tuple[str, str]]) -> FetchSummary: ...
-    def remove_files(self, fetch_id: int, files: Sequence[tuple[str, str]]) -> FetchSummary: ...
-    def start(self, fetch_id: int) -> FetchSummary: ...
-    def cancel(self, fetch_id: int) -> FetchSummary: ...
-    def delete(self, fetch_id: int, *, confirmation: int) -> JsonObject: ...
-    def evict(
-        self,
-        collections: Sequence[str] = (),
-        *,
-        files: Sequence[tuple[str, str]] = (),
-        dry_run: bool = False,
-    ) -> JsonObject: ...
-    def get(self, fetch_id: int) -> FetchSummary: ...
-    def status(self, fetch_id: int) -> JsonObject: ...
-    def files(
-        self,
-        fetch_id: int,
-        *,
-        page: int,
-        per_page: int,
-        sort: str,
-        order: str,
-        q: str | None = None,
-        hot: bool | None = None,
-        all_items: bool = False,
-    ) -> JsonObject: ...
-
-
-class FileService(Protocol):
-    def query_by_path(
-        self,
-        raw_path: str,
-        *,
-        page: int,
-        per_page: int,
-    ) -> dict[str, object]: ...
-    def get_content(self, raw_path: str) -> bytes: ...

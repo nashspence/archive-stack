@@ -11,16 +11,13 @@ from riverhog_core.ports.archive_store import ArchiveStore
 from riverhog_core.timestamps import utc_timestamp_now
 
 
-def publish_archive_restore_catalog(
+def publish_archive_catalog(
     *,
     store_name: str,
     archive_store: ArchiveStore,
     session_factory: sessionmaker[Session],
     excluded_collection_ids: Collection[str] = (),
 ) -> int:
-    publish = getattr(archive_store, "publish_restore_catalog", None)
-    if not callable(publish):
-        return 0
     with session_scope(session_factory) as session:
         statement = (
             select(CollectionArchiveCopyRecord)
@@ -35,7 +32,7 @@ def publish_archive_restore_catalog(
         archives = session.scalars(
             statement.order_by(CollectionArchiveCopyRecord.collection_id)
         ).all()
-        entries = [
+        entries: list[dict[str, object]] = [
             {
                 "collection_id": archive.collection_id,
                 "archive_storage_prefix": archive.archive_storage_prefix,
@@ -60,7 +57,7 @@ def publish_archive_restore_catalog(
             }
             for archive in archives
         ]
-    publish(
+    archive_store.publish_archive_catalog(
         entries=entries,
         generated_at=utc_timestamp_now(),
     )

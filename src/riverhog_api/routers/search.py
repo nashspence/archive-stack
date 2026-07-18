@@ -21,11 +21,9 @@ def search(
         "collection_id",
         "collection_path",
         "bytes",
-        "hot",
     ] = Query("logical_path"),
     order: Literal["asc", "desc"] = Query("asc"),
     collection: str | None = Query(None, min_length=1),
-    hot: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
 ) -> SearchResponse:
     payload = container.search.search(
@@ -35,7 +33,6 @@ def search(
         sort=sort,
         order=order,
         collection=collection,
-        hot=hot,
         all_items=all_items,
     )
     files = cast(list[dict[str, object]], payload["files"])

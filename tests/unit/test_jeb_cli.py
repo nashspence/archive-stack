@@ -173,20 +173,14 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert payload["attempts"][0]["source_id"] == "camera"
     assert payload["attempts"][0]["total_bytes"] == 6
 
-    assert (
-        jeb_main(["attempt", "list", "--terminal", "all", "--source", "phone", "--json"])
-        == 0
-    )
+    assert jeb_main(["attempt", "list", "--terminal", "all", "--source", "phone", "--json"]) == 0
 
     filtered = json.loads(capsys.readouterr().out)
     assert filtered["total"] == 1
     assert filtered["filters"]["source"] == "phone"
     assert filtered["attempts"][0]["source_id"] == "phone"
 
-    assert (
-        jeb_main(["attempt", "list", "--terminal", "all", "--query", "camera", "--json"])
-        == 0
-    )
+    assert jeb_main(["attempt", "list", "--terminal", "all", "--query", "camera", "--json"]) == 0
 
     queried = json.loads(capsys.readouterr().out)
     assert queried["total"] == 1
@@ -222,10 +216,7 @@ def test_jeb_attempts_source_filter_treats_slug_as_literal(
     capsys.readouterr()
 
     assert (
-        jeb_main(
-            ["attempt", "list", "--terminal", "all", "--source", "front_door", "--json"]
-        )
-        == 0
+        jeb_main(["attempt", "list", "--terminal", "all", "--source", "front_door", "--json"]) == 0
     )
 
     payload = json.loads(capsys.readouterr().out)

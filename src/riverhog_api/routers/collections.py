@@ -58,7 +58,6 @@ def create_or_resume_collection_upload(
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
-        retain_hot=request.retain_hot,
         notify=request.notify.model_dump() if request.notify is not None else None,
     )
     return CollectionUploadSessionOut.model_validate(payload)
@@ -74,7 +73,6 @@ def create_or_resume_collection_upload_session(
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
-        retain_hot=request.retain_hot,
         notify=request.notify.model_dump() if request.notify is not None else None,
     )
     return CollectionUploadSessionOut.model_validate(payload)

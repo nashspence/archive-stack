@@ -25,14 +25,18 @@ def _config(path: Path) -> RuntimeConfig:
 def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
+        session.add(
+            CollectionRecord(
+                id="2025/20250102T030405Z__docs",
+                manifest_etag="0" * 64,
+            )
+        )
         session.add(
             CollectionFileRecord(
                 collection_id="2025/20250102T030405Z__docs",
                 path="readme.txt",
                 bytes=12,
                 sha256="a" * 64,
-                hot=True,
             )
         )
         copy = CollectionArchiveCopyRecord(
@@ -119,7 +123,11 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
                 file_order=1,
                 bytes=7,
                 sha256="d" * 64,
-                uploaded_bytes=7,
+                ingress_bytes=7,
+                ingress_uploaded_bytes=7,
+                ingress_secret_envelope="fixture-envelope",
+                ingress_state_json="{}",
+                ingress_upload_id="fixture-upload",
             )
         )
 

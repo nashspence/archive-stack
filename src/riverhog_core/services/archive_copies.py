@@ -23,7 +23,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
+from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import (
     apply_archive_receipt,
     archive_copy_identity,
@@ -188,11 +188,11 @@ class SqlAlchemyArchiveCopyService:
                 status = source_store.prepare_archive_objects_read(
                     collection_id=collection_id,
                     objects=data_objects,
-                    retrieval_tier=self._config.archive_restore_retrieval_tier,
+                    retrieval_tier=self._config.retrieval_tier,
                     hold_days=_read_hold_days(self._config),
                     requested_at=current_text,
                     estimated_ready_at=format_utc_timestamp(
-                        current + self._config.archive_restore_estimated_latency
+                        current + self._config.retrieval_estimated_latency
                     ),
                 )
                 job.read_requested_at = current_text
@@ -216,7 +216,7 @@ class SqlAlchemyArchiveCopyService:
             if status.state != "ready":
                 job.state = "waiting"
                 job.next_attempt_at = format_utc_timestamp(
-                    current + self._config.archive_restore_sweep_interval
+                    current + self._config.retrieval_sweep_interval
                 )
                 return
             job.state = "copying"
@@ -284,7 +284,7 @@ class SqlAlchemyArchiveCopyService:
             collection_id=collection_id,
             objects=data_objects,
         )
-        publish_archive_restore_catalog(
+        publish_archive_catalog(
             store_name=destination_store,
             archive_store=destination,
             session_factory=self._session_factory,
@@ -432,4 +432,4 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
 
 
 def _read_hold_days(config: RuntimeConfig) -> int:
-    return max(1, int(config.archive_restore_availability_ttl.total_seconds() // 86400) + 1)
+    return max(1, int(config.retrieval_max_lease.total_seconds() // 86400) + 1)

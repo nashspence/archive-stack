@@ -3,13 +3,14 @@ from __future__ import annotations
 import base64
 import threading
 from collections.abc import Iterator
-from pathlib import Path
+from typing import Any
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
 from riverhog_core.domain.errors import Conflict, NotFound, ServiceUnavailable
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.stores.s3_support import create_ingress_s3_client, delete_exact_object
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 _TIMEOUT = 300.0
@@ -29,9 +30,9 @@ class _TusdHttpUploadStore:
         self._clients = threading.local()
 
     def _metadata_header(self, target_path: str) -> str:
-        target_path_b64 = base64.b64encode(target_path.encode("utf-8")).decode("ascii")
-        encoded = base64.b64encode(target_path_b64.encode("ascii")).decode("ascii")
-        return f"target_path_b64 {encoded}"
+        upload_id = tusd_upload_id_for_target_path(target_path)
+        encoded = base64.b64encode(upload_id.encode("utf-8")).decode("ascii")
+        return f"upload_id {encoded}"
 
     def _tus_headers(self, **headers: str) -> dict[str, str]:
         return {
@@ -53,7 +54,7 @@ class _TusdHttpUploadStore:
             (parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment)
         )
 
-    def _client(self, name: str, *, timeout: float) -> httpx.Client:
+    def _http_client(self, name: str, *, timeout: float) -> httpx.Client:
         clients = getattr(self._clients, "items", None)
         if clients is None:
             clients = {}
@@ -74,7 +75,7 @@ class _TusdHttpUploadStore:
 
     def create_upload(self, target_path: str, length: int) -> str:
         try:
-            response = self._client("control", timeout=_TIMEOUT).post(
+            response = self._http_client("control", timeout=_TIMEOUT).post(
                 self._tusd_base_url,
                 headers=self._tus_headers(
                     **{
@@ -92,7 +93,7 @@ class _TusdHttpUploadStore:
 
     def get_offset(self, tus_url: str) -> int:
         try:
-            response = self._client("control", timeout=_TIMEOUT).head(
+            response = self._http_client("control", timeout=_TIMEOUT).head(
                 tus_url,
                 headers=self._tus_headers(),
             )
@@ -113,7 +114,7 @@ class _TusdHttpUploadStore:
         content: bytes,
     ) -> tuple[int, str | None]:
         try:
-            response = self._client("append", timeout=self._append_timeout_seconds).patch(
+            response = self._http_client("append", timeout=self._append_timeout_seconds).patch(
                 tus_url,
                 headers=self._tus_headers(
                     **{
@@ -138,7 +139,7 @@ class _TusdHttpUploadStore:
 
     def cancel_upload(self, tus_url: str) -> None:
         try:
-            response = self._client("control", timeout=_TIMEOUT).delete(
+            response = self._http_client("control", timeout=_TIMEOUT).delete(
                 tus_url,
                 headers=self._tus_headers(),
             )
@@ -159,27 +160,33 @@ class _TusdHttpUploadStore:
 class TusdUploadStore(_TusdHttpUploadStore):
     def __init__(self, config: RuntimeConfig) -> None:
         super().__init__(config)
-        self._root = config.upload_staging_root
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._store = config.ingress_store
+        self._s3 = create_ingress_s3_client(config, self._store)
 
     @staticmethod
     def _upload_id(target_path: str) -> str:
         return tusd_upload_id_for_target_path(target_path)
 
-    def _path_for_upload_id(self, upload_id: str) -> Path:
-        path = (self._root / upload_id.lstrip("/")).resolve()
-        if not path.is_relative_to(self._root):
-            raise ValueError("upload id escaped upload staging root")
-        return path
-
-    def _target_path(self, target_path: str) -> Path:
-        return self._path_for_upload_id(self._upload_id(target_path))
+    def _object_key(self, upload_id: str) -> str:
+        parts = [part for part in (self._store.prefix, upload_id.lstrip("/")) if part]
+        return "/".join(parts)
 
     def read_target(self, target_path: str) -> bytes:
-        path = self._target_path(target_path)
         try:
-            return path.read_bytes()
-        except FileNotFoundError as exc:
+            response = self._s3.get_object(
+                Bucket=self._store.bucket,
+                Key=self._object_key(self._upload_id(target_path)),
+            )
+            body = response["Body"]
+            try:
+                return bytes(body.read())
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+        except Exception as exc:
+            if not _is_missing_object(exc):
+                raise
             raise NotFound(f"upload target not found: {target_path}") from exc
 
     def iter_target(
@@ -196,20 +203,33 @@ class TusdUploadStore(_TusdHttpUploadStore):
         if size == 0:
             return
 
-        path = self._target_path(target_path)
+        request: dict[str, object] = {
+            "Bucket": self._store.bucket,
+            "Key": self._object_key(self._upload_id(target_path)),
+        }
+        if offset or size is not None:
+            end = "" if size is None else str(offset + size - 1)
+            request["Range"] = f"bytes={offset}-{end}"
         try:
-            with path.open("rb") as source:
-                source.seek(offset)
-                remaining = size
-                while remaining is None or remaining > 0:
-                    chunk_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
-                    chunk = source.read(chunk_size)
-                    if not chunk:
-                        return
+            response = self._s3.get_object(**request)
+            body = response["Body"]
+            remaining = size
+            try:
+                for chunk in body.iter_chunks(chunk_size=1024 * 1024):
                     if remaining is not None:
+                        chunk = chunk[:remaining]
                         remaining -= len(chunk)
-                    yield chunk
-        except FileNotFoundError as exc:
+                    if chunk:
+                        yield chunk
+                    if remaining == 0:
+                        return
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+        except Exception as exc:
+            if not _is_missing_object(exc):
+                raise
             raise NotFound(f"upload target not found: {target_path}") from exc
 
     def delete_target(self, target_path: str) -> None:
@@ -222,21 +242,27 @@ class TusdUploadStore(_TusdHttpUploadStore):
             self._delete_upload_id(upload_id)
 
     def _delete_upload_id(self, upload_id: str) -> None:
-        path = self._path_for_upload_id(upload_id)
-        for candidate in (
-            path,
-            path.with_name(f"{path.name}.info"),
-            path.with_name(f"{path.name}.part"),
-        ):
-            try:
-                candidate.unlink()
-            except FileNotFoundError:
-                pass
+        for suffix in ("", ".info", ".part"):
+            self._delete_all_versions(self._object_key(f"{upload_id}{suffix}"))
 
-        parent = path.parent
-        while parent != self._root:
-            try:
-                parent.rmdir()
-            except OSError:
-                return
-            parent = parent.parent
+    def _delete_all_versions(self, object_key: str) -> None:
+        delete_exact_object(
+            self._s3,
+            bucket=self._store.bucket,
+            key=object_key,
+        )
+
+
+def _is_missing_object(exc: Exception) -> bool:
+    response: Any = getattr(exc, "response", {})
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    if isinstance(error, dict) and str(error.get("Code", "")) in {
+        "404",
+        "NoSuchKey",
+        "NotFound",
+    }:
+        return True
+    metadata = response.get("ResponseMetadata", {})
+    return isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 404

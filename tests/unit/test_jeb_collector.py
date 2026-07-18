@@ -255,7 +255,7 @@ def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> No
     assert {
         "idx_jeb_batch_attempts_batch_state",
         "idx_jeb_batch_attempts_created",
-            "idx_jeb_batch_attempts_target_submission",
+        "idx_jeb_batch_attempts_target_submission",
         "idx_jeb_batch_attempts_state",
         "idx_jeb_batch_attempts_state_updated",
         "idx_jeb_batch_attempts_updated",
@@ -572,9 +572,7 @@ def test_jeb_attempt_alerts_use_source_notify_recipients(tmp_path: Path) -> None
         env_for(tmp_path, sources="camera"),
         notifier=notifier,
         options={
-            "camera": {
-                "notify": {"enabled": True, "recipients": ["operator", "collaborator"]}
-            }
+            "camera": {"notify": {"enabled": True, "recipients": ["operator", "collaborator"]}}
         },
     )
     batch_id = collector.archive_now(source_id="camera", process=False)
@@ -595,9 +593,7 @@ def test_jeb_target_preflight_alerts_and_status_use_source_context(tmp_path: Pat
         env_for(tmp_path, sources="camera,phone"),
         notifier=notifier,
         options={
-            "camera": {
-                "notify": {"enabled": True, "recipients": ["operator", "collaborator"]}
-            }
+            "camera": {"notify": {"enabled": True, "recipients": ["operator", "collaborator"]}}
         },
     )
     clean_statuses = {

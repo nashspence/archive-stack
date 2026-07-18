@@ -65,9 +65,7 @@ LOG = logging.getLogger("jeb")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
 SOURCE_REMOVAL_TTL = timedelta(minutes=15)
-SOURCE_REMOVAL_CHALLENGE = re.compile(
-    r"^(remove|purge)-source-(\d+)-([0-9a-f]{64})$"
-)
+SOURCE_REMOVAL_CHALLENGE = re.compile(r"^(remove|purge)-source-(\d+)-([0-9a-f]{64})$")
 SOURCE_PURGE_WARNING = (
     "DANGER: Jeb-managed upload, landing, or staged files selected by this plan may be "
     "the only copies. Purging permanently removes them, and Jeb cannot determine whether "
@@ -506,9 +504,7 @@ class Collector:
             "CREATE INDEX IF NOT EXISTS idx_jeb_batches_source_period "
             "ON batches(source_id, collection_timestamp)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_source ON batches(source_id, id)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jeb_batches_source ON batches(source_id, id)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jeb_batches_target ON batches(target_name, id)"
         )
@@ -845,9 +841,7 @@ class Collector:
         attempts = [self._attempt_summary(row) for row in rows]
         result_page = 1 if all_items else page
         result_per_page = total if all_items else per_page
-        result_pages = (
-            (1 if total else 0) if all_items else (total + per_page - 1) // per_page
-        )
+        result_pages = (1 if total else 0) if all_items else (total + per_page - 1) // per_page
         return {
             "page": result_page,
             "per_page": result_per_page,
@@ -1133,9 +1127,7 @@ class Collector:
             for row in attempt_rows
             if str(row["state"]) not in TERMINAL_STATES
         ]
-        staged_files = filesystem_listing(
-            *(Path(str(row["staging_path"])) for row in staged_rows)
-        )
+        staged_files = filesystem_listing(*(Path(str(row["staging_path"])) for row in staged_rows))
         tus_scan = scan_incomplete_tus_uploads(
             self.config.ingress,
             self.source_registry,
@@ -1151,11 +1143,7 @@ class Collector:
         managed_file_count = (
             landing_files["file_count"] + staged_files["file_count"] + len(tus_uploads)
         )
-        managed_bytes = (
-            landing_files["bytes"]
-            + staged_files["bytes"]
-            + tus_bytes
-        )
+        managed_bytes = landing_files["bytes"] + staged_files["bytes"] + tus_bytes
         blockers: list[str] = []
         if not purge:
             if managed_file_count:
@@ -1237,9 +1225,7 @@ class Collector:
         else:
             expires = source_removal_expiry(supplied)
             if utc_now() > expires:
-                raise UnrecoverableJebError(
-                    "source removal plan has expired; request a new plan"
-                )
+                raise UnrecoverableJebError("source removal plan has expired; request a new plan")
             plan = self.source_removal_plan(
                 source_id,
                 purge=source_removal_is_purge(supplied),
@@ -1247,9 +1233,7 @@ class Collector:
             )
             expected = str(plan.get("challenge") or "")
             if not secrets.compare_digest(expected, supplied):
-                raise UnrecoverableJebError(
-                    "source removal plan changed; request a new plan"
-                )
+                raise UnrecoverableJebError("source removal plan changed; request a new plan")
             blockers = [str(item) for item in plan["blockers"]]
             if blockers:
                 raise UnrecoverableJebError("source removal is blocked: " + "; ".join(blockers))
@@ -2007,13 +1991,9 @@ class Collector:
             try:
                 source = self.source_by_id(source_id)
             except KeyError as exc:
-                raise UnrecoverableJebError(
-                    f"source {source_id!r} is not enrolled"
-                ) from exc
+                raise UnrecoverableJebError(f"source {source_id!r} is not enrolled") from exc
             if not source.enabled:
-                raise UnrecoverableJebError(
-                    f"source {source_id!r} is disabled"
-                )
+                raise UnrecoverableJebError(f"source {source_id!r} is disabled")
             failed_attempt = self.latest_failed_attempt_for_source(source.id)
             attempt_id: str | None
             if failed_attempt is not None:
@@ -2056,13 +2036,9 @@ class Collector:
             try:
                 source = self.source_by_id(source_id)
             except KeyError as exc:
-                raise UnrecoverableJebError(
-                    f"source {source_id!r} is not enrolled"
-                ) from exc
+                raise UnrecoverableJebError(f"source {source_id!r} is not enrolled") from exc
             if not source.enabled:
-                raise UnrecoverableJebError(
-                    f"source {source_id!r} is disabled"
-                )
+                raise UnrecoverableJebError(f"source {source_id!r} is disabled")
             target = self.target_by_name(source.target)
             base_payload: dict[str, Any] = {
                 "source": source.id,
@@ -2131,8 +2107,7 @@ class Collector:
             duplicates = sorted(path for path in set(target_paths) if target_paths.count(path) > 1)
             if duplicates:
                 raise UnrecoverableJebError(
-                    f"source {source.id} has duplicate upload path(s): "
-                    + ", ".join(duplicates[:5])
+                    f"source {source.id} has duplicate upload path(s): " + ", ".join(duplicates[:5])
                 )
             total = sum(item.bytes for item in accepted_files)
             if total < source.threshold_bytes:
@@ -2921,9 +2896,7 @@ class MunchyTargetRunner:
                         f"Munchy submission returned invalid job state: {submission}"
                     )
                 if not job_finished_cleanly(job):
-                    raise UnrecoverableJebError(
-                        f"Munchy submission did not finish cleanly: {job}"
-                    )
+                    raise UnrecoverableJebError(f"Munchy submission did not finish cleanly: {job}")
                 collector.set_attempt_state(attempt_id, "target_complete")
         finally:
             client.close()
@@ -3110,10 +3083,7 @@ def filesystem_listing(*roots: Path) -> dict[str, Any]:
 def source_removal_challenge(plan: Mapping[str, Any], expires_at: datetime) -> str:
     payload = stable_json(plan).encode("utf-8")
     action = "purge" if bool(plan["purge"]) else "remove"
-    return (
-        f"{action}-source-{int(expires_at.timestamp())}-"
-        f"{hashlib.sha256(payload).hexdigest()}"
-    )
+    return f"{action}-source-{int(expires_at.timestamp())}-{hashlib.sha256(payload).hexdigest()}"
 
 
 def source_removal_expiry(challenge: str) -> datetime:
@@ -3141,9 +3111,7 @@ def terminate_tus_upload(config: JebIngressConfig, upload_id: str) -> None:
         if response.status_code != 404:
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        raise UnrecoverableJebError(
-            f"could not terminate incomplete upload {upload_id}"
-        ) from exc
+        raise UnrecoverableJebError(f"could not terminate incomplete upload {upload_id}") from exc
     (config.tus_staging_dir / upload_id).unlink(missing_ok=True)
     (config.tus_staging_dir / f"{upload_id}.info").unlink(missing_ok=True)
 

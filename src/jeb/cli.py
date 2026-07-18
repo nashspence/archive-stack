@@ -180,9 +180,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
 
 
 def cmd_source_set(args: argparse.Namespace) -> int:
-    changes = (
-        load_object(args.changes, label="source changes") if args.changes is not None else {}
-    )
+    changes = load_object(args.changes, label="source changes") if args.changes is not None else {}
     if args.template is not None:
         changes["template"] = args.template
     payload = client().update_jeb_source(args.source, changes)
@@ -290,9 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=ATTEMPT_LIST_SORT_FIELDS,
         default_sort="updated_at",
         default_order="desc",
-        query_help=(
-            "Search attempt, batch, job, collection, target, state, timestamp, or error."
-        ),
+        query_help=("Search attempt, batch, job, collection, target, state, timestamp, or error."),
     )
     attempt_list.add_argument(
         "--terminal",

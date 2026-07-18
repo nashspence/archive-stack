@@ -12,7 +12,12 @@ from tests.unit.db_helpers import sqlite_url
 def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
+        session.add(
+            CollectionRecord(
+                id="2025/20250102T030405Z__docs",
+                manifest_etag="0" * 64,
+            )
+        )
         session.add_all(
             [
                 CollectionFileRecord(
@@ -20,21 +25,18 @@ def _seed(path: Path) -> None:
                     path="letters/cover.txt",
                     bytes=13,
                     sha256="a" * 64,
-                    hot=True,
                 ),
                 CollectionFileRecord(
                     collection_id="2025/20250102T030405Z__docs",
                     path="tax/invoice.pdf",
                     bytes=34,
                     sha256="b" * 64,
-                    hot=False,
                 ),
                 CollectionFileRecord(
                     collection_id="2025/20250102T030405Z__docs",
                     path="tax/receipt.pdf",
                     bytes=21,
                     sha256="c" * 64,
-                    hot=True,
                 ),
             ]
         )
@@ -57,7 +59,6 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
     assert payload == {
         "query": "tax",
         "collection": "2025/20250102T030405Z__docs",
-        "hot": None,
         "page": 2,
         "per_page": 1,
         "total": 2,
@@ -71,30 +72,9 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
                 "collection_path": "tax/receipt.pdf",
                 "bytes": 21,
                 "sha256": "c" * 64,
-                "hot": True,
             }
         ],
     }
-
-
-def test_search_files_filters_hot_state(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    initialize_db(sqlite_url(path))
-    _seed(path)
-
-    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
-        q=None,
-        collection="2025/20250102T030405Z__docs",
-        hot=False,
-        page=1,
-        per_page=25,
-        sort="logical_path",
-        order="asc",
-    )
-
-    assert [file["logical_path"] for file in payload["files"]] == [
-        "2025/20250102T030405Z__docs/tax/invoice.pdf"
-    ]
 
 
 def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:

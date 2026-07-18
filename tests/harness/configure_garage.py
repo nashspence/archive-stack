@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.stores.s3_support import create_archive_s3_client, create_hot_store_client
+from riverhog_core.stores.s3_support import (
+    create_archive_s3_client,
+    create_ingress_s3_client,
+    create_retrieval_cache_s3_client,
+)
 
 EXPECTED_LIFECYCLE_CONFIGURATION = {
     "Rules": [
@@ -38,13 +42,16 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
 
 
 def _lifecycle_targets(config) -> list[tuple[object, str]]:
-    targets: list[tuple[object, str]] = [(create_hot_store_client(config), config.hot_store_bucket)]
+    ingress = config.ingress_store
+    targets: list[tuple[object, str]] = [
+        (create_ingress_s3_client(config, ingress), ingress.bucket)
+    ]
     storage_signature = (
-        config.hot_store_endpoint_url,
-        config.hot_store_region,
-        config.hot_store_bucket,
-        config.hot_store_access_key_id,
-        config.hot_store_force_path_style,
+        ingress.endpoint_url,
+        ingress.region,
+        ingress.bucket,
+        ingress.access_key_id,
+        ingress.force_path_style,
     )
     seen = {storage_signature}
     for store in config.archive_stores.values():
@@ -59,6 +66,17 @@ def _lifecycle_targets(config) -> list[tuple[object, str]]:
             continue
         seen.add(archive_signature)
         targets.append((create_archive_s3_client(config, store), store.bucket))
+    if config.retrieval_cache is not None:
+        cache = config.retrieval_cache
+        cache_signature = (
+            cache.endpoint_url,
+            cache.region,
+            cache.bucket,
+            cache.access_key_id,
+            cache.force_path_style,
+        )
+        if cache_signature not in seen:
+            targets.append((create_retrieval_cache_s3_client(config, cache), cache.bucket))
     return targets
 
 

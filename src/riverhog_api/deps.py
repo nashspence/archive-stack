@@ -15,27 +15,23 @@ from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
-from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
-from riverhog_core.services.fetches import SqlAlchemyFetchService
-from riverhog_core.services.files import SqlAlchemyFileService
 from riverhog_core.services.interfaces import (
     ArchiveCopyRetirementService,
     ArchiveCopyService,
     ArchiveReportingService,
-    ArchiveRestoreService,
     ArchiveUploadService,
     CollectionDeletionService,
     CollectionService,
-    FetchService,
-    FileService,
+    RetrievalService,
     SearchService,
 )
+from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
-from riverhog_core.stores.s3_hot_store import S3HotStore
+from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.stores.s3_support import ensure_bucket_exists
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 
@@ -49,9 +45,7 @@ class ServiceContainer:
     archive_copies: ArchiveCopyService
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_reporting: ArchiveReportingService
-    archive_restores: ArchiveRestoreService
-    fetches: FetchService
-    files: FileService
+    retrieval: RetrievalService
 
 
 @lru_cache(maxsize=1)
@@ -59,26 +53,28 @@ def default_container() -> ServiceContainer:
     config = load_runtime_config()
     initialize_db(config.database_url)
     ensure_bucket_exists(config)
-    hot_store = S3HotStore(config)
+    retrieval_cache = S3RetrievalCache(config) if config.retrieval_cache is not None else None
     archive_stores = ArchiveStoreRegistry(
-        {name: S3ArchiveStore(config, store) for name, store in config.archive_stores.items()}
+        {
+            name: S3ArchiveStore(config, store, retrieval_cache=retrieval_cache)
+            for name, store in config.archive_stores.items()
+        }
     )
     upload_store = TusdUploadStore(config)
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     return ServiceContainer(
-        collections=SqlAlchemyCollectionService(config, hot_store, upload_store),
+        collections=SqlAlchemyCollectionService(config, upload_store),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
             archive_stores,
-            hot_store,
             upload_store,
+            retrieval_cache,
         ),
         search=SqlAlchemySearchService(config),
         archive_uploads=SqlAlchemyArchiveUploadService(
             config,
             archive_stores,
-            hot_store,
             upload_store,
             proof_stamper=proof_stamper,
         ),
@@ -92,14 +88,12 @@ def default_container() -> ServiceContainer:
             archive_stores,
         ),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
-        archive_restores=SqlAlchemyArchiveRestoreService(
+        retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
-            hot_store,
+            retrieval_cache,
             proof_verifier=proof_verifier,
         ),
-        fetches=SqlAlchemyFetchService(config, archive_stores, hot_store),
-        files=SqlAlchemyFileService(config, hot_store),
     )
 
 

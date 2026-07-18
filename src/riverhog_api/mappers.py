@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
-    ArchiveRestoreCollection,
-    ArchiveRestoreListPage,
-    ArchiveRestoreNotificationStatus,
-    ArchiveRestoreProgress,
-    ArchiveRestoreSummary,
     ArchiveUsageCollection,
     ArchiveUsageReport,
     ArchiveUsageSnapshot,
@@ -14,8 +9,6 @@ from riverhog_core.domain.models import (
     CollectionListPage,
     CollectionManifestStatus,
     CollectionSummary,
-    FetchListPage,
-    FetchSummary,
 )
 
 
@@ -89,8 +82,6 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "id": str(summary.id),
         "files": summary.files,
         "bytes": summary.bytes,
-        "hot_files": summary.hot_files,
-        "hot_bytes": summary.hot_bytes,
         "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
     }
 
@@ -102,91 +93,4 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "total": summary.total,
         "pages": summary.pages,
         "collections": [map_collection(collection) for collection in summary.collections],
-    }
-
-
-def map_archive_restore_notification(
-    summary: ArchiveRestoreNotificationStatus,
-) -> dict[str, object]:
-    return {
-        "webhook_configured": summary.webhook_configured,
-        "failure_count": summary.failure_count,
-        "last_failure_at": summary.last_failure_at,
-        "last_failure": summary.last_failure,
-    }
-
-
-def map_archive_restore_progress(summary: ArchiveRestoreProgress) -> dict[str, object]:
-    return {
-        "archive_verification": summary.archive_verification,
-        "extraction": summary.extraction,
-        "materialization": summary.materialization,
-    }
-
-
-def map_archive_restore_collection(summary: ArchiveRestoreCollection) -> dict[str, object]:
-    return {
-        "id": str(summary.id),
-        "archive_copy": map_archive(summary.archive_copy),
-        "stored_bytes": summary.stored_bytes,
-    }
-
-
-def map_archive_restore(summary: ArchiveRestoreSummary) -> dict[str, object]:
-    return {
-        "id": summary.id,
-        "state": summary.state.value,
-        "created_at": summary.created_at,
-        "requested_at": summary.requested_at,
-        "ready_at": summary.ready_at,
-        "expires_at": summary.expires_at,
-        "completed_at": summary.completed_at,
-        "canceled_at": summary.canceled_at,
-        "latest_message": summary.latest_message,
-        "warnings": list(summary.warnings),
-        "notification": map_archive_restore_notification(summary.notification),
-        "progress": map_archive_restore_progress(summary.progress),
-        "collections": [
-            map_archive_restore_collection(collection) for collection in summary.collections
-        ],
-    }
-
-
-def map_archive_restore_list(summary: ArchiveRestoreListPage) -> dict[str, object]:
-    return {
-        "page": summary.page,
-        "per_page": summary.per_page,
-        "total": summary.total,
-        "pages": summary.pages,
-        "sort": summary.sort,
-        "order": summary.order,
-        "terminal": summary.terminal,
-        "state": summary.state,
-        "collection": summary.collection,
-        "restores": [map_archive_restore(restore) for restore in summary.restores],
-    }
-
-
-def map_fetch(summary: FetchSummary) -> dict[str, object]:
-    return {
-        "id": summary.id,
-        "label": summary.label,
-        "collections": [str(collection) for collection in summary.collections],
-        "state": summary.state.value,
-        "files": summary.files,
-        "bytes": summary.bytes,
-        "hot_files": summary.hot_files,
-        "hot_bytes": summary.hot_bytes,
-        "missing_files": summary.missing_files,
-        "missing_bytes": summary.missing_bytes,
-    }
-
-
-def map_fetch_list(summary: FetchListPage) -> dict[str, object]:
-    return {
-        "page": summary.page,
-        "per_page": summary.per_page,
-        "total": summary.total,
-        "pages": summary.pages,
-        "fetches": [map_fetch(fetch) for fetch in summary.fetches],
     }

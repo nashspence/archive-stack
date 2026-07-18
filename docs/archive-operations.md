@@ -11,8 +11,8 @@ bucket permissions, provider contacts, and archive-passphrase custody current. P
 exercise object listing, metadata reads, retrieval requests, and downloads in every store.
 
 After account, credential, provider, or storage-class changes, run an authenticated archive
-report and fetch known files from the affected store. A report or object listing alone does
-not establish recoverability.
+report and retrieve known files through the external application interface from the affected
+store. A report or object listing alone does not establish recoverability.
 
 An AWS archive store may route encrypted object downloads through a private CloudFront
 distribution while retaining S3 as the authority for writes, metadata, restore state, and
@@ -28,9 +28,9 @@ durable copies.
 ## Archive copies
 
 `riverhog archive copy --help` copies a collection between configured archive stores. The
-background job verifies the source object set, prepares cold objects for reading when
-necessary, writes an independently encrypted destination object set without using hot
-storage, and records it only after destination verification.
+background job verifies the source object set, prepares provider-managed archive objects for
+reading when necessary, writes an independently encrypted destination object set, and
+records it only after destination verification.
 
 `riverhog archive retire --help` removes one exact collection-and-store copy. Inspect the
 plan and confirm the exact collection, selected store, retained verification candidates,
@@ -44,9 +44,11 @@ object set and refreshing the affected encrypted catalogs.
 the exact collection id, sole-copy warning, affected objects and bytes, active-work blockers,
 and short-lived challenge before execution.
 
-Successful deletion removes the collection's hot files, archive objects in every store,
+Successful deletion removes archive objects in every store, leased retrieval-cache objects,
 recovery-catalog entries, and catalog projections. Provider retention, object versions,
-minimum-storage duration, or billing timing may delay visible cost changes.
+minimum-storage duration, or billing timing may delay visible cost changes. External
+applications discover deletion through ResourceSync and decide how to handle their own
+local copies.
 
 Direct provider credentials can bypass Riverhog's ceremony. Protect those credentials and
 treat provider-console or raw-object deletion as an exceptional custody operation.

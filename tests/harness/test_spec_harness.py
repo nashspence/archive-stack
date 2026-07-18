@@ -1,268 +1,144 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.requests import Request
 
-from riverhog_api.app import create_app
-from riverhog_api.deps import ServiceContainer
+from riverhog_api.routers.resourcesync import resourcesync_resource_list
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import (
-    CollectionArchiveCopyRecord,
-    CollectionArchiveObjectRecord,
-    CollectionFileRecord,
-    CollectionRecord,
-)
-from riverhog_core.ports.archive_store import ArchiveStore
-from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing, HotFileStat
+from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
 from riverhog_core.ports.upload_store import UploadStore
-from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
-from riverhog_core.services.archive_restores import SqlAlchemyArchiveRestoreService
-from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
-from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
-from riverhog_core.services.fetches import SqlAlchemyFetchService
-from riverhog_core.services.files import SqlAlchemyFileService
-from riverhog_core.services.interfaces import ArchiveCopyRetirementService, ArchiveCopyService
+from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from tests.fixtures.crypto import FixtureProofVerifier
-from tests.unit.db_helpers import sqlite_url
+from tests.unit.archive_object_fixtures import (
+    COLLECTION_ID,
+    MemoryArchiveStore,
+    as_archive_store,
+    seed_archive_copy,
+)
 
 
-class MemoryHotStore:
-    def __init__(self) -> None:
-        self.files: dict[tuple[str, str], bytes] = {}
-
-    def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None:
-        self.files[(collection_id, path)] = content
-
-    def put_collection_file_stream(
-        self,
-        collection_id: str,
-        path: str,
-        chunks: Iterable[bytes],
-        *,
-        content_length: int,
-        sha256: str | None = None,
-    ) -> None:
-        _ = sha256
-        content = b"".join(chunks)
-        assert len(content) == content_length
-        self.files[(collection_id, path)] = content
-
-    def get_collection_file(self, collection_id: str, path: str) -> bytes:
-        return self.files[(collection_id, path)]
-
-    def iter_collection_file(
-        self,
-        collection_id: str,
-        path: str,
-        *,
-        offset: int = 0,
-        size: int | None = None,
-    ) -> Iterator[bytes]:
-        content = self.get_collection_file(collection_id, path)
-        yield content[offset:] if size is None else content[offset : offset + size]
-
-    def stat_collection_file(self, collection_id: str, path: str) -> HotFileStat | None:
-        content = self.files.get((collection_id, path))
-        if content is None:
-            return None
-        return HotFileStat(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
-
-    def has_collection_file(self, collection_id: str, path: str) -> bool:
-        return (collection_id, path) in self.files
-
-    def delete_collection_file(self, collection_id: str, path: str) -> None:
-        self.files.pop((collection_id, path), None)
-
-    def list_collection_files(self, collection_id: str) -> HotCollectionListing:
-        files = tuple(
-            HotCollectionFile(path=path, bytes=len(content))
-            for (current_collection, path), content in sorted(self.files.items())
-            if current_collection == collection_id
-        )
-        return HotCollectionListing(
-            files=files,
-            file_count=len(files),
-            total_bytes=sum(file.bytes for file in files),
-        )
-
-
-class IdleArchiveUploadService:
-    def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
-        _ = limit
-        return 0
-
-    def publish_restore_catalog(self) -> int:
-        return 0
-
-    def abort_incomplete_multipart_uploads(self, **_: object) -> int:
-        return 0
-
-    def process_due_uploads(self, *, limit: int = 1) -> int:
-        _ = limit
-        return 0
-
-
-class IdleArchiveCopyService:
-    def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int:
-        _ = limit
-        return 0
-
-    def process_due(self, *, limit: int = 1) -> int:
-        _ = limit
-        return 0
+@dataclass(frozen=True)
+class Harness:
+    collections: SqlAlchemyCollectionService
+    search: SqlAlchemySearchService
+    archive_reporting: SqlAlchemyArchiveReportingService
+    retrieval: SqlAlchemyRetrievalService
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
-    path = tmp_path / "catalog.sqlite3"
-    database_url = sqlite_url(path)
-    initialize_db(database_url)
-    config = RuntimeConfig(database_url=database_url)
-    hot_store = MemoryHotStore()
+def harness(tmp_path: Path) -> Harness:
     content = b"current archive contract\n"
-    hot_store.put_collection_file("2025/20250102T030405Z__docs", "readme.txt", content)
-    factory = make_session_factory(database_url)
-    with session_scope(factory) as session:
-        session.add(CollectionRecord(id="2025/20250102T030405Z__docs"))
-        session.add(
-            CollectionFileRecord(
-                collection_id="2025/20250102T030405Z__docs",
-                path="readme.txt",
-                bytes=len(content),
-                sha256=hashlib.sha256(content).hexdigest(),
-                hot=True,
-            )
-        )
-        copy = CollectionArchiveCopyRecord(
-            collection_id="2025/20250102T030405Z__docs",
-            store="deep",
-            state="uploaded",
-            archive_storage_prefix="collections/docs",
-            backend="s3",
-            storage_class="STANDARD",
-            last_uploaded_at="2026-07-14T00:00:00Z",
-            last_verified_at="2026-07-14T00:00:00Z",
-        )
-        for order, (object_id, kind, stored_bytes, digest) in enumerate(
-            (
-                ("data-000000", "file", 100, "a" * 64),
-                ("manifest", "manifest", 20, "b" * 64),
-                ("proof", "proof", 10, "c" * 64),
-            )
-        ):
-            copy.objects.append(
-                CollectionArchiveObjectRecord(
-                    collection_id=copy.collection_id,
-                    store=copy.store,
-                    object_id=object_id,
-                    object_order=order,
-                    kind=kind,
-                    object_path=f"collections/docs/{object_id}.age",
-                    plaintext_bytes=stored_bytes - 1,
-                    stored_bytes=stored_bytes,
-                    sha256=digest,
-                    backend="s3",
-                    storage_class="STANDARD",
-                    uploaded_at="2026-07-14T00:00:00Z",
-                    verified_at="2026-07-14T00:00:00Z",
-                )
-            )
-        session.add(copy)
-
-    unused = cast(object, object())
-    archive_stores = ArchiveStoreRegistry(
-        {"deep": cast(ArchiveStore, unused)},
+    config, archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        {"readme.txt": content},
     )
-    container = ServiceContainer(
-        collections=SqlAlchemyCollectionService(
-            config,
-            hot_store,
-            cast(UploadStore, unused),
-        ),
-        collection_deletions=cast(SqlAlchemyCollectionDeletionService, unused),
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        collection = session.get(CollectionRecord, COLLECTION_ID)
+        assert collection is not None
+        session.add(
+            CatalogEventRecord(
+                change="created",
+                collection_id=COLLECTION_ID,
+                occurred_at="2026-07-18T00:00:00.000000Z",
+                manifest_etag=collection.manifest_etag,
+            )
+        )
+    archive_stores = ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))})
+    return Harness(
+        collections=SqlAlchemyCollectionService(config, cast(UploadStore, object())),
         search=SqlAlchemySearchService(config),
-        archive_uploads=cast(SqlAlchemyArchiveUploadService, IdleArchiveUploadService()),
-        archive_copies=cast(ArchiveCopyService, IdleArchiveCopyService()),
-        archive_copy_retirements=cast(ArchiveCopyRetirementService, unused),
         archive_reporting=SqlAlchemyArchiveReportingService(config),
-        archive_restores=SqlAlchemyArchiveRestoreService(
+        retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
-            hot_store,
+            None,
             proof_verifier=FixtureProofVerifier(),
         ),
-        fetches=SqlAlchemyFetchService(config, archive_stores, hot_store),
-        files=SqlAlchemyFileService(config, hot_store),
     )
-    app = create_app(
-        container=container,
-        upload_expiry_reaper_interval=3600,
-        archive_upload_reaper_interval=3600,
-        archive_restore_reaper_interval=3600,
+
+
+def _request() -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "https",
+            "server": ("riverhog.example.test", 443),
+            "path": "/resourcesync/resourcelist.xml",
+            "root_path": "",
+            "query_string": b"",
+            "headers": [],
+        }
     )
-    with TestClient(app) as test_client:
-        yield test_client
 
 
-def test_collection_search_and_archive_report_share_current_identity(
-    client: TestClient,
-) -> None:
-    collection = client.get("/v1/collections/2025/20250102T030405Z__docs").json()
-    search = client.get("/v1/search", params={"q": "readme"}).json()
-    archive = client.get("/v1/archive").json()
+def test_catalog_search_and_archive_report_share_current_identity(harness: Harness) -> None:
+    collection = harness.collections.get(COLLECTION_ID)
+    search = harness.search.search(
+        q="readme",
+        page=1,
+        per_page=25,
+        sort="logical_path",
+        order="asc",
+    )
+    archive = harness.archive_reporting.get_report()
+    resources = resourcesync_resource_list(
+        _request(),
+        "fishbox",
+        SimpleNamespace(retrieval=harness.retrieval),
+    )
 
-    assert collection["id"] == "2025/20250102T030405Z__docs"
-    assert [(copy["store"], copy["state"]) for copy in collection["archive_copies"]] == [
+    assert str(collection.id) == COLLECTION_ID
+    assert [(copy.store, copy.state.value) for copy in collection.archive_copies] == [
         ("deep", "uploaded")
     ]
-    assert search["files"][0]["logical_path"] == ("2025/20250102T030405Z__docs/readme.txt")
-    assert archive["totals"]["uploaded_collections"] == 1
-    assert archive["totals"]["measured_storage_bytes"] == 130
+    assert search["files"][0]["logical_path"] == f"{COLLECTION_ID}/readme.txt"
+    assert archive.totals.uploaded_collections == 1
+    assert COLLECTION_ID.encode() in resources.body
 
 
-def test_hot_fetch_completes_when_collection_is_available(client: TestClient) -> None:
-    created = client.post(
-        "/v1/fetches",
-        json={
-            "label": "documentation",
-            "collections": ["2025/20250102T030405Z__docs"],
-        },
-    ).json()
-    started = client.post(f"/v1/fetches/{created['id']}/start").json()
-    status = client.get(f"/v1/fetches/{created['id']}/status").json()
-    content = client.get("/v1/files/2025/20250102T030405Z__docs/readme.txt/content")
+def test_external_app_retrieves_one_manifest_selected_file(harness: Harness) -> None:
+    manifest, etag = harness.retrieval.collection_manifest(COLLECTION_ID)
+    assert manifest["files"] == [
+        {
+            "path": "readme.txt",
+            "bytes": len(b"current archive contract\n"),
+            "sha256": hashlib.sha256(b"current archive contract\n").hexdigest(),
+        }
+    ]
+    changes = harness.retrieval.change_list()
+    assert changes["changes"][0]["etag"] == etag
 
-    assert started["state"] == "done"
-    assert status["hot_files"] == 1
-    assert status["missing_files"] == 0
-    assert status["next_action"]["action"] == "none"
-    assert content.content == b"current archive contract\n"
-
-
-def test_inactive_fetch_can_be_explicitly_deleted(client: TestClient) -> None:
-    created = client.post(
-        "/v1/fetches",
-        json={
-            "collections": ["2025/20250102T030405Z__docs"],
-        },
-    ).json()
-
-    deleted = client.request(
-        "DELETE",
-        f"/v1/fetches/{created['id']}",
-        json={"confirmation": created["id"]},
+    files = [(COLLECTION_ID, "readme.txt")]
+    plan = harness.retrieval.plan(files)
+    job = harness.retrieval.create(
+        app="fishbox",
+        files=files,
+        plan_etag=str(plan["etag"]),
+    )
+    chunks, byte_count, sha256 = harness.retrieval.content(
+        app="fishbox",
+        job_id=str(job["id"]),
+        collection_id=COLLECTION_ID,
+        path="readme.txt",
     )
 
-    assert deleted.status_code == 200
-    assert deleted.json() == {"status": "deleted", "id": created["id"]}
-    assert created["label"] is None
-    assert client.get(f"/v1/fetches/{created['id']}").status_code == 404
+    content = b"".join(chunks)
+    assert job["state"] == "ready"
+    assert byte_count == len(content)
+    assert sha256 == hashlib.sha256(content).hexdigest()
+    assert content == b"current archive contract\n"
+    assert harness.retrieval.acknowledge(app="fishbox", job_id=str(job["id"]))["state"] == (
+        "completed"
+    )

@@ -31,7 +31,8 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
+from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.stores.s3_archive_store import (
     ArchiveMultipartTiming,
     S3ArchiveStore,
@@ -72,6 +73,7 @@ class _FakeS3Client:
         self.aborted_uploads: list[tuple[str, str]] = []
         self.multipart_page_size: int | None = None
         self.multipart_list_requests: list[dict[str, object]] = []
+        self.versions: dict[str, set[str]] = {}
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         _ = Bucket
@@ -222,6 +224,36 @@ class _FakeS3Client:
         _ = Bucket
         self.objects.pop(Key, None)
 
+    def get_paginator(self, name: str):
+        assert name == "list_object_versions"
+        client = self
+
+        class Paginator:
+            def paginate(self, *, Bucket: str, Prefix: str):
+                _ = Bucket
+                return [
+                    {
+                        "Versions": [
+                            {"Key": key, "VersionId": version_id}
+                            for key, version_ids in client.versions.items()
+                            if key.startswith(Prefix)
+                            for version_id in sorted(version_ids)
+                        ]
+                    }
+                ]
+
+        return Paginator()
+
+    def delete_objects(self, *, Bucket: str, Delete: dict[str, object]) -> None:
+        _ = Bucket
+        for entry in cast(list[dict[str, str]], Delete["Objects"]):
+            key = entry["Key"]
+            version_id = entry.get("VersionId")
+            if version_id is None:
+                self.objects.pop(key, None)
+                continue
+            self.versions.get(key, set()).discard(version_id)
+
     def restore_object(self, *, Bucket: str, Key: str, RestoreRequest: object) -> None:
         _ = Bucket, RestoreRequest
         self.restore_requests.append(Key)
@@ -267,6 +299,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
     def __init__(self) -> None:
         self.states: dict[str, ArchiveMultipartUploadState] = {}
         self.parts: dict[str, list[ArchiveMultipartUploadedPart]] = {}
+        self.cache_receipts: dict[str, RetrievalCacheReceipt] = {}
 
     def load_multipart_upload(self, **kwargs: object) -> ArchiveMultipartUploadState | None:
         object_id = str(kwargs["object_id"])
@@ -298,15 +331,72 @@ class _Tracker(ArchiveMultipartUploadTracker):
         self.states.pop(object_id, None)
         self.parts.pop(object_id, None)
 
+    def load_ingestion_cache(
+        self,
+        *,
+        collection_id: str,
+        object_id: str,
+    ) -> RetrievalCacheReceipt | None:
+        _ = collection_id
+        return self.cache_receipts.get(object_id)
+
+    def save_ingestion_cache(
+        self,
+        *,
+        collection_id: str,
+        object_id: str,
+        receipt: RetrievalCacheReceipt,
+    ) -> None:
+        _ = collection_id
+        self.cache_receipts[object_id] = receipt
+
+
+class _MemoryRetrievalCache:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str | None], bytes] = {}
+
+    def put(
+        self,
+        *,
+        source_store: str,
+        collection_id: str,
+        object_id: str,
+        content: Iterator[bytes],
+        content_length: int,
+    ) -> RetrievalCacheReceipt:
+        body = b"".join(content)
+        assert len(body) == content_length
+        object_path = f"cache/{source_store}/{collection_id}/{object_id}"
+        version_id = hashlib.sha256(body).hexdigest()[:16]
+        self.objects[(object_path, version_id)] = body
+        return RetrievalCacheReceipt(
+            object_path=object_path,
+            version_id=version_id,
+            stored_bytes=len(body),
+            stored_sha256=hashlib.sha256(body).hexdigest(),
+            cached_at="2026-07-18T00:00:00.000000Z",
+            verified_at="2026-07-18T00:00:00.000000Z",
+        )
+
+    def iter_object(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        expected_bytes: int,
+        expected_sha256: str,
+    ) -> Iterator[bytes]:
+        body = self.objects[(object_path, version_id)]
+        assert len(body) == expected_bytes
+        assert hashlib.sha256(body).hexdigest() == expected_sha256
+        yield body
+
+    def delete(self, *, object_path: str, version_id: str | None) -> None:
+        del self.objects[(object_path, version_id)]
+
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        hot_store_endpoint_url="http://example.invalid:9000",
-        hot_store_region="us-east-1",
-        hot_store_bucket="riverhog",
-        hot_store_access_key_id="test-access",
-        hot_store_secret_access_key="test-secret",
-        hot_store_force_path_style=True,
         archive_passphrase="test-archive-passphrase",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
@@ -459,6 +549,58 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
         assert len(plaintext) == current.plaintext_bytes
         assert hashlib.sha256(plaintext).hexdigest() == current.sha256
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
+
+
+def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.create_archive_s3_client",
+        lambda config, store: client,
+    )
+    config = _config(tmp_path, archive_scrypt_work_factor=1)
+    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    config = replace(
+        config,
+        archive_stores={"deep": deep},
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.example.invalid",
+            region="us-east-1",
+            bucket="retrieval-cache",
+            access_key_id="key",
+            secret_access_key="secret",
+        ),
+    )
+    cache = _MemoryRetrievalCache()
+    tracker = _Tracker()
+    store = S3ArchiveStore(config, deep, retrieval_cache=cache)  # type: ignore[arg-type]
+    archive = _archive()
+    expected_plaintext = b"".join(archive.data_objects[0].iter_plaintext())
+
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        multipart_tracker=tracker,
+    )
+
+    data = receipt.require_object("data-000000")
+    assert data.ingestion_cache is not None
+    cached = cache.objects[(data.ingestion_cache.object_path, data.ingestion_cache.version_id)]
+    assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
+    assert decrypt_age_scrypt(cached, config.archive_passphrase) == expected_plaintext
+
+    client.objects.pop(data.object_path)
+    resumed = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        multipart_tracker=tracker,
+    )
+    assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
+    assert resumed.require_object("data-000000").ingestion_cache == data.ingestion_cache
 
 
 def test_archive_download_uses_s3_when_cloudfront_is_unconfigured(
@@ -679,9 +821,7 @@ def test_encrypted_multipart_upload_pipelines_bounded_provider_requests(
     assert timings[0].upload_request_seconds >= 0
     assert timings[0].elapsed_seconds >= 0
     encrypted = cast(bytes, client.objects[receipt.objects[0].object_path]["Body"])
-    assert decrypt_age_scrypt(encrypted, "test-archive-passphrase") == b"x" * (
-        16 * 1024 * 1024
-    )
+    assert decrypt_age_scrypt(encrypted, "test-archive-passphrase") == b"x" * (16 * 1024 * 1024)
 
 
 def test_incomplete_multipart_sweep_aborts_only_stale_owned_uploads(
@@ -774,9 +914,16 @@ def test_verification_and_deletion_cover_the_complete_object_set(
     with pytest.raises(ArchiveVerificationError):
         store.verify_collection_archive(collection_id=COLLECTION_ID, archive=identity)
     client.objects[identity.objects[0].object_path]["ContentLength"] -= 1
+    for archive_object in identity.objects:
+        client.versions[archive_object.object_path] = {"historic", "current"}
+    client.versions[f"{identity.objects[0].object_path}.neighbor"] = {"untouched"}
 
     store.delete_collection_archive(collection_id=COLLECTION_ID, objects=identity.objects)
     assert not client.objects
+    assert all(
+        not client.versions[archive_object.object_path] for archive_object in identity.objects
+    )
+    assert client.versions[f"{identity.objects[0].object_path}.neighbor"] == {"untouched"}
 
 
 def test_store_plaintext_limit_reserves_age_framing(monkeypatch, tmp_path: Path) -> None:

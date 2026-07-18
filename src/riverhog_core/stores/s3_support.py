@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
+from riverhog_core.runtime_config import (
+    ArchiveStoreConfig,
+    IngressStoreConfig,
+    RetrievalCacheConfig,
+    RuntimeConfig,
+)
 
 _MISSING_BUCKET_CODES = {"404", "NoSuchBucket", "NotFound"}
 
@@ -41,18 +46,32 @@ def _create_s3_client(
     )
 
 
-def create_hot_store_client(config: RuntimeConfig) -> Any:
+def create_archive_s3_client(config: RuntimeConfig, store: ArchiveStoreConfig) -> Any:
     return _create_s3_client(
-        endpoint_url=config.hot_store_endpoint_url,
-        region=config.hot_store_region,
-        access_key_id=config.hot_store_access_key_id,
-        secret_access_key=config.hot_store_secret_access_key,
-        force_path_style=config.hot_store_force_path_style,
+        endpoint_url=store.endpoint_url,
+        region=store.region,
+        access_key_id=store.access_key_id,
+        secret_access_key=store.secret_access_key,
+        force_path_style=store.force_path_style,
         max_pool_connections=config.s3_max_pool_connections,
     )
 
 
-def create_archive_s3_client(config: RuntimeConfig, store: ArchiveStoreConfig) -> Any:
+def create_retrieval_cache_s3_client(
+    config: RuntimeConfig,
+    cache: RetrievalCacheConfig,
+) -> Any:
+    return _create_s3_client(
+        endpoint_url=cache.endpoint_url,
+        region=cache.region,
+        access_key_id=cache.access_key_id,
+        secret_access_key=cache.secret_access_key,
+        force_path_style=cache.force_path_style,
+        max_pool_connections=config.s3_max_pool_connections,
+    )
+
+
+def create_ingress_s3_client(config: RuntimeConfig, store: IngressStoreConfig) -> Any:
     return _create_s3_client(
         endpoint_url=store.endpoint_url,
         region=store.region,
@@ -74,6 +93,20 @@ def _bucket_missing(exc: Exception) -> bool:
     return isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 404
 
 
+def _object_version_listing_unsupported(exc: Exception) -> bool:
+    response = getattr(exc, "response", {})
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    if isinstance(error, dict) and str(error.get("Code", "")) in {
+        "NotImplemented",
+        "UnsupportedOperation",
+    }:
+        return True
+    metadata = response.get("ResponseMetadata", {})
+    return isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 501
+
+
 def _ensure_bucket_exists(client: Any, *, bucket: str, region: str) -> None:
     try:
         client.head_bucket(Bucket=bucket)
@@ -89,12 +122,14 @@ def _ensure_bucket_exists(client: Any, *, bucket: str, region: str) -> None:
 
 
 def ensure_bucket_exists(config: RuntimeConfig) -> None:
+    seen: set[tuple[str, str]] = set()
+    ingress = config.ingress_store
     _ensure_bucket_exists(
-        create_hot_store_client(config),
-        bucket=config.hot_store_bucket,
-        region=config.hot_store_region,
+        create_ingress_s3_client(config, ingress),
+        bucket=ingress.bucket,
+        region=ingress.region,
     )
-    seen = {(config.hot_store_endpoint_url, config.hot_store_bucket)}
+    seen.add((ingress.endpoint_url, ingress.bucket))
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:
@@ -105,35 +140,74 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
             region=store.region,
         )
         seen.add(signature)
+    if config.retrieval_cache is not None:
+        cache = config.retrieval_cache
+        signature = (cache.endpoint_url, cache.bucket)
+        if signature not in seen:
+            _ensure_bucket_exists(
+                create_retrieval_cache_s3_client(config, cache),
+                bucket=cache.bucket,
+                region=cache.region,
+            )
 
 
 def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> None:
-    client = create_hot_store_client(config)
-    for prefix in prefixes:
-        paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=config.hot_store_bucket, Prefix=prefix):
-            contents = page.get("Contents", [])
-            if not contents:
-                continue
-            client.delete_objects(
-                Bucket=config.hot_store_bucket,
-                Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
-            )
-
-    seen = {(config.hot_store_endpoint_url, config.hot_store_bucket)}
+    ingress = config.ingress_store
+    ingress_client = create_ingress_s3_client(config, ingress)
+    _delete_object_versions(ingress_client, bucket=ingress.bucket, prefixes=prefixes)
+    seen: set[tuple[str, str]] = {(ingress.endpoint_url, ingress.bucket)}
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:
             continue
         archive_client = create_archive_s3_client(config, store)
-        for prefix in prefixes:
-            paginator = archive_client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=store.bucket, Prefix=prefix):
-                contents = page.get("Contents", [])
-                if not contents:
-                    continue
-                archive_client.delete_objects(
-                    Bucket=store.bucket,
-                    Delete={"Objects": [{"Key": entry["Key"]} for entry in contents]},
-                )
+        _delete_object_versions(archive_client, bucket=store.bucket, prefixes=prefixes)
         seen.add(signature)
+    if config.retrieval_cache is not None:
+        cache = config.retrieval_cache
+        cache_client = create_retrieval_cache_s3_client(config, cache)
+        _delete_object_versions(cache_client, bucket=cache.bucket, prefixes=prefixes)
+
+
+def _delete_object_versions(client: Any, *, bucket: str, prefixes: list[str]) -> None:
+    for prefix in prefixes:
+        current = client.get_paginator("list_objects_v2")
+        for page in current.paginate(Bucket=bucket, Prefix=prefix):
+            objects = [{"Key": entry["Key"]} for entry in page.get("Contents", [])]
+            if objects:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        try:
+            paginator = client.get_paginator("list_object_versions")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                versions = [
+                    {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+                    for entry in [
+                        *(page.get("Versions") or ()),
+                        *(page.get("DeleteMarkers") or ()),
+                    ]
+                ]
+                if versions:
+                    client.delete_objects(Bucket=bucket, Delete={"Objects": versions})
+        except Exception as exc:
+            if not _object_version_listing_unsupported(exc):
+                raise
+
+
+def delete_exact_object(client: Any, *, bucket: str, key: str) -> None:
+    client.delete_object(Bucket=bucket, Key=key)
+    try:
+        paginator = client.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=bucket, Prefix=key):
+            versions = [
+                {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+                for entry in [
+                    *(page.get("Versions") or ()),
+                    *(page.get("DeleteMarkers") or ()),
+                ]
+                if entry.get("Key") == key
+            ]
+            if versions:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": versions})
+    except Exception as exc:
+        if not _object_version_listing_unsupported(exc):
+            raise

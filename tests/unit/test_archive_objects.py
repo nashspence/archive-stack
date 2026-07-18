@@ -219,9 +219,7 @@ def test_real_stored_object_boundary_plans_ordered_segments_without_reading_cont
         max_plaintext_object_bytes=plaintext_limit,
     )
 
-    assert [(obj.kind, obj.plaintext_bytes) for obj in at_limit] == [
-        ("file", plaintext_limit)
-    ]
+    assert [(obj.kind, obj.plaintext_bytes) for obj in at_limit] == [("file", plaintext_limit)]
     assert [(obj.kind, obj.plaintext_bytes) for obj in over_limit] == [
         ("segment", plaintext_limit),
         ("segment", 1),

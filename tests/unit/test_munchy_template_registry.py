@@ -83,9 +83,7 @@ def test_template_registry_snapshot_restores_only_authoritative_templates(
     assert restore_template_registry_snapshot(snapshot, target) == 2
     assert _rows(target) == _rows(source)
     with closing(sqlite3.connect(target)) as conn:
-        assert conn.execute("SELECT * FROM job_summaries").fetchall() == [
-            ("target-job", "running")
-        ]
+        assert conn.execute("SELECT * FROM job_summaries").fetchall() == [("target-job", "running")]
 
 
 def test_template_registry_restore_requires_explicit_replacement(tmp_path: Path) -> None:

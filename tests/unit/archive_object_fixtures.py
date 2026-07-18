@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from riverhog_core.archive_objects import (
     CollectionArchive,
+    CollectionArchiveDataObject,
     CollectionArchiveSourceFile,
     build_collection_archive,
 )
@@ -17,6 +18,7 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
 )
+from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
@@ -25,7 +27,6 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
-from riverhog_core.ports.hot_store import HotCollectionFile, HotCollectionListing, HotFileStat
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import apply_archive_receipt
 from tests.fixtures.crypto import FixtureProofStamper
@@ -112,7 +113,6 @@ def seed_archive_copy(
     path: Path,
     files: dict[str, bytes],
     *,
-    hot: bool = False,
     store: str = "deep",
     backend: str = "s3",
     storage_class: str = "STANDARD",
@@ -123,7 +123,11 @@ def seed_archive_copy(
     current = archive or make_archive(files)
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        collection = CollectionRecord(id=current.collection_id)
+        _manifest, manifest_etag = portable_collection_manifest(
+            current.collection_id,
+            ((file.path, file.bytes, file.sha256) for file in current.files),
+        )
+        collection = CollectionRecord(id=current.collection_id, manifest_etag=manifest_etag)
         session.add(collection)
         for file in current.files:
             session.add(
@@ -132,7 +136,6 @@ def seed_archive_copy(
                     path=file.path,
                     bytes=file.bytes,
                     sha256=file.sha256,
-                    hot=hot,
                 )
             )
         copy = CollectionArchiveCopyRecord(collection_id=current.collection_id, store=store)
@@ -177,17 +180,25 @@ class MemoryArchiveStore:
         backend: str = "s3",
         storage_class: str = "STANDARD",
         ready: bool = True,
+        read_mode: str = "immediate",
     ) -> None:
         self.archive = archive
         self.backend = backend
         self.storage_class = storage_class
         self.ready = ready
+        self._read_mode = read_mode
         self.prepared: list[tuple[str, ...]] = []
         self.read: list[str] = []
         self.cleaned: list[tuple[str, ...]] = []
         self.verified: list[tuple[str, ...]] = []
         self.deleted: list[tuple[str, ...]] = []
         self.catalog_entries: list[dict[str, object]] = []
+
+    def read_mode(self) -> str:
+        return self._read_mode
+
+    def abort_incomplete_multipart_uploads(self, **_: object) -> int:
+        return 0
 
     def new_collection_archive_storage_prefix(self) -> str:
         return f"archives/{self.backend}/new-copy"
@@ -205,7 +216,23 @@ class MemoryArchiveStore:
     ) -> CollectionArchiveUploadReceipt:
         _ = multipart_tracker
         assert collection_id == archive.collection_id
-        self.archive = archive
+        materialized_objects: list[CollectionArchiveDataObject] = []
+        for current in archive.data_objects:
+            content = b"".join(current.iter_plaintext())
+            materialized_objects.append(
+                CollectionArchiveDataObject(
+                    object_id=current.object_id,
+                    kind=current.kind,
+                    plaintext_bytes=current.plaintext_bytes,
+                    sha256=current.sha256,
+                    placements=current.placements,
+                    _chunks=lambda content=content: iter((content,)),
+                    _chunks_range=lambda offset, size, content=content: iter(
+                        (content[offset : offset + size],)
+                    ),
+                )
+            )
+        self.archive = replace(archive, data_objects=tuple(materialized_objects))
         return archive_receipt(
             archive,
             backend=self.backend,
@@ -231,7 +258,7 @@ class MemoryArchiveStore:
         assert collection_id == COLLECTION_ID
         self.deleted.append(tuple(current.object_id for current in objects))
 
-    def publish_restore_catalog(
+    def publish_archive_catalog(
         self,
         *,
         entries: Sequence[dict[str, object]],
@@ -273,6 +300,14 @@ class MemoryArchiveStore:
         else:
             yield from self.archive.require_object(object.object_id).iter_plaintext()
 
+    def iter_stored_archive_object(
+        self,
+        *,
+        collection_id: str,
+        object: ArchiveObjectIdentity,
+    ) -> Iterator[bytes]:
+        yield from self.iter_archive_object(collection_id=collection_id, object=object)
+
     def cleanup_archive_objects_read(
         self,
         *,
@@ -282,78 +317,7 @@ class MemoryArchiveStore:
         self.cleaned.append(tuple(current.object_id for current in objects))
 
 
-class MemoryHotStore:
-    def __init__(self, files: dict[tuple[str, str], bytes] | None = None) -> None:
-        self.files = dict(files or {})
-        self.deleted: list[tuple[str, str]] = []
-
-    def stat_collection_file(self, collection_id: str, path: str) -> HotFileStat | None:
-        content = self.files.get((collection_id, path))
-        if content is None:
-            return None
-        return HotFileStat(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
-
-    def has_collection_file(self, collection_id: str, path: str) -> bool:
-        return (collection_id, path) in self.files
-
-    def get_collection_file(self, collection_id: str, path: str) -> bytes:
-        return self.files[(collection_id, path)]
-
-    def put_collection_file(self, collection_id: str, path: str, content: bytes) -> None:
-        self.files[(collection_id, path)] = content
-
-    def iter_collection_file(
-        self,
-        collection_id: str,
-        path: str,
-        *,
-        offset: int = 0,
-        size: int | None = None,
-    ) -> Iterator[bytes]:
-        content = self.files[(collection_id, path)]
-        yield content[offset:] if size is None else content[offset : offset + size]
-
-    def put_collection_file_stream(
-        self,
-        collection_id: str,
-        path: str,
-        chunks: Iterable[bytes],
-        *,
-        content_length: int,
-        sha256: str | None = None,
-    ) -> None:
-        content = b"".join(chunks)
-        assert len(content) == content_length
-        if sha256 is not None:
-            assert hashlib.sha256(content).hexdigest() == sha256
-        self.files[(collection_id, path)] = content
-
-    def delete_collection_file(self, collection_id: str, path: str) -> None:
-        self.deleted.append((collection_id, path))
-        if (collection_id, path) not in self.files:
-            raise FileNotFoundError(path)
-        del self.files[(collection_id, path)]
-
-    def list_collection_files(self, collection_id: str) -> HotCollectionListing:
-        files = tuple(
-            HotCollectionFile(path=path, bytes=len(content))
-            for (current_collection, path), content in sorted(self.files.items())
-            if current_collection == collection_id
-        )
-        return HotCollectionListing(
-            files=files,
-            file_count=len(files),
-            total_bytes=sum(current.bytes for current in files),
-        )
-
-
 def as_archive_store(store: MemoryArchiveStore):
     from riverhog_core.ports.archive_store import ArchiveStore
 
     return cast(ArchiveStore, store)
-
-
-def as_hot_store(store: MemoryHotStore):
-    from riverhog_core.ports.hot_store import HotStore
-
-    return cast(HotStore, store)

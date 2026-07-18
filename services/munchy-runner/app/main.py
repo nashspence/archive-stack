@@ -101,6 +101,7 @@ from munchy.template_registry import ensure_template_registry_schema
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
+from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.operator_reminders import (
     next_operator_reminder_at,
     normalize_reminder_time,
@@ -114,7 +115,6 @@ from riverhog_core.timestamps import (
     utc_now,
     utc_timestamp_now,
 )
-from riverhog_core.tus_upload import TusUploadLease, upload_path_to_tus
 from riverhog_core.webhooks import build_munchy_job_payload
 
 LOGGING = {
@@ -587,7 +587,6 @@ class RiverhogHandoffOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_store: str | None = None
-    retain_hot: bool = True
 
 
 class CommandHandoffOptions(BaseModel):
@@ -6396,9 +6395,6 @@ def compact_riverhog_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "archive_uploaded_parts",
         "archive_total_parts",
         "archive_store",
-        "retain_hot",
-        "hot_materialized_files",
-        "hot_materialized_bytes",
     ]
     return {key: payload[key] for key in keep_keys if key in payload}
 
@@ -6418,15 +6414,12 @@ def finalized_riverhog_payload_from_collection(
         "collection_id": collection_id,
         "state": "finalized",
         "archive_store": archive.get("store") if isinstance(archive, dict) else None,
-        "retain_hot": int(collection.get("hot_files") or 0) == files_total,
         "files_total": files_total,
         "files_pending": 0,
         "files_partial": 0,
         "files_uploaded": files_total,
-        "hot_materialized_files": int(collection.get("hot_files") or 0),
         "bytes_total": bytes_total,
         "uploaded_bytes": bytes_total,
-        "hot_materialized_bytes": int(collection.get("hot_bytes") or 0),
         "missing_bytes": 0,
         "upload_state_expires_at": None,
         "latest_failure": None,
@@ -6565,7 +6558,6 @@ def ensure_riverhog_session(
                 str | None,
                 riverhog_handoff_options(job).get("archive_store"),
             ),
-            retain_hot=bool(riverhog_handoff_options(job).get("retain_hot", True)),
             notify=riverhog_collection_notify_config(job),
         )
         update_remote_state_from_payload(job, payload)
@@ -6754,14 +6746,21 @@ def riverhog_upload_artifact(
         record["state"] = "registered"
         touch_riverhog_session_state(job)
     offset = int(session["offset"])
-    if offset > length:
+    ingress_length = int(session["length"])
+    encryption = session.get("encryption")
+    if not isinstance(encryption, Mapping):
+        raise RuntimeError(f"riverhog upload encryption is missing for {rel_path}")
+    if int(encryption.get("plaintext_bytes", -1)) != length:
+        raise RuntimeError(f"riverhog upload plaintext length changed for {rel_path}")
+    if int(encryption.get("ciphertext_bytes", -1)) != ingress_length:
+        raise RuntimeError(f"riverhog upload ciphertext length changed for {rel_path}")
+    if offset > ingress_length:
         raise RuntimeError(f"riverhog upload offset for {rel_path} is past expected length")
     with riverhog_upload_lock(job_id):
-        record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
-        record["state"] = "uploading" if offset < length else "uploaded"
+        record["state"] = "uploading" if offset < ingress_length else "uploaded"
         touch_riverhog_session_state(job)
 
-    if offset >= length:
+    if offset >= ingress_length:
         confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
         with riverhog_upload_lock(job_id):
             record["uploaded_at"] = record.get("uploaded_at") or utc_timestamp_now()
@@ -6774,29 +6773,22 @@ def riverhog_upload_artifact(
         )
         return True
 
-    while offset < length:
-
-        def mark_progress(bytes_sent: int) -> None:
-            nonlocal offset
-            offset += bytes_sent
-            with riverhog_upload_lock(job_id):
-                record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
-                record["state"] = "uploading"
-                touch_riverhog_session_state(job)
-
+    while offset < ingress_length:
+        part = next(
+            iter_ingress_upload_parts(
+                source_path,
+                encryption,
+                ciphertext_offset=offset,
+                target_part_bytes=RIVERHOG_HANDOFF_CHUNK_BYTES,
+            )
+        )
         try:
-            result = upload_path_to_tus(
-                client=api.tus_client(),
-                source_path=source_path,
-                lease=TusUploadLease(
-                    upload_url=str(session["upload_url"]),
-                    offset=offset,
-                    length=length,
-                    checksum_algorithm=str(session["checksum_algorithm"]),
-                ),
-                chunk_bytes=RIVERHOG_HANDOFF_CHUNK_BYTES,
-                cancel_check=lambda: raise_if_job_canceled(job_id),
-                progress=mark_progress,
+            raise_if_job_canceled(job_id)
+            next_offset = api.tus_client().patch_chunk(
+                str(session["upload_url"]),
+                offset=offset,
+                checksum_algorithm=str(session["checksum_algorithm"]),
+                content=part.ciphertext,
             )
         except (httpx.TransportError, Conflict, ServiceUnavailable) as exc:
             log.warning(
@@ -6813,19 +6805,27 @@ def riverhog_upload_artifact(
                     f"riverhog upload offset for {rel_path} moved backward to "
                     f"{recovered_offset}; expected at least {offset}"
                 ) from exc
-            if recovered_offset > length:
+            if recovered_offset > ingress_length:
                 raise RuntimeError(
                     f"riverhog upload offset for {rel_path} is past expected length"
                 ) from exc
             offset = recovered_offset
-            with riverhog_upload_lock(job_id):
-                record["uploaded_bytes"] = max(int(record.get("uploaded_bytes") or 0), offset)
-                touch_riverhog_session_state(job)
             continue
-        offset = result.offset
+        if next_offset != offset + len(part.ciphertext):
+            raise RuntimeError(f"riverhog upload offset advanced unexpectedly for {rel_path}")
+        offset = next_offset
+        with riverhog_upload_lock(job_id):
+            record["uploaded_bytes"] = max(
+                int(record.get("uploaded_bytes") or 0),
+                part.plaintext_start + part.plaintext_bytes,
+            )
+            record["state"] = "uploading"
+            touch_riverhog_session_state(job)
 
-    if offset != length:
-        raise RuntimeError(f"riverhog upload for {rel_path} stopped at {offset} of {length} bytes")
+    if offset != ingress_length:
+        raise RuntimeError(
+            f"riverhog upload for {rel_path} stopped at {offset} of {ingress_length} bytes"
+        )
     confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
     with riverhog_upload_lock(job_id):
         record["uploaded_bytes"] = length
@@ -7475,8 +7475,6 @@ def compact_riverhog_progress_metrics(progress: dict[str, Any] | None) -> dict[s
         "archive_total_bytes",
         "archive_uploaded_parts",
         "archive_total_parts",
-        "hot_materialized_files",
-        "hot_materialized_bytes",
         "finalized",
         "safe_to_delete",
     )
@@ -7960,17 +7958,6 @@ class RiverhogHandoffAdapter:
                     "items_done": progress.get("archive_uploaded_parts"),
                     "items_total": progress.get("archive_total_parts"),
                     "item_label": "parts",
-                }
-            )
-        if progress.get("retain_hot"):
-            stages.append(
-                {
-                    "id": "hot",
-                    "label": "Riverhog Hot Materialization",
-                    "items_done": progress.get("hot_materialized_files"),
-                    "items_total": progress.get("destination_files_total"),
-                    "bytes_done": progress.get("hot_materialized_bytes"),
-                    "bytes_total": progress.get("destination_bytes_total"),
                 }
             )
         return {
@@ -9133,11 +9120,6 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
     archive_total_bytes = int(last_payload.get("archive_total_bytes") or 0)
     archive_uploaded_parts = last_payload.get("archive_uploaded_parts")
     archive_total_parts = last_payload.get("archive_total_parts")
-    hot_materialized_files = int(last_payload.get("hot_materialized_files") or 0)
-    hot_materialized_bytes = int(last_payload.get("hot_materialized_bytes") or 0)
-    retain_hot = bool(
-        last_payload.get("retain_hot", riverhog_handoff_options(job).get("retain_hot", True))
-    )
     destination_files_total = int(last_payload.get("files_total") or primary_files_total)
     destination_bytes_total = int(last_payload.get("bytes_total") or bytes_total)
     finalized = state_name == "finalized" or str(last_payload.get("state") or "") == "finalized"
@@ -9185,9 +9167,6 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
         "archive_total_bytes": archive_total_bytes,
         "archive_uploaded_parts": archive_uploaded_parts,
         "archive_total_parts": archive_total_parts,
-        "retain_hot": retain_hot,
-        "hot_materialized_files": hot_materialized_files,
-        "hot_materialized_bytes": hot_materialized_bytes,
         "destination_files_total": destination_files_total,
         "destination_bytes_total": destination_bytes_total,
         "finalized": finalized,
@@ -10278,7 +10257,7 @@ def capabilities() -> dict[str, Any]:
             "destinations": {
                 "command": {"options": ["exclude"]},
                 "rclone": {"options": ["location", "mode", "exclude"]},
-                "riverhog": {"options": ["archive_store", "retain_hot"]},
+                "riverhog": {"options": ["archive_store"]},
             },
             "failure_actions": ["preserve_for_resume", "cancel"],
             "template_fields": [

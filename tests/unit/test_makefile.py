@@ -123,11 +123,12 @@ def _read_log_lines(log_path: Path) -> list[str]:
     return log_path.read_text().splitlines()
 
 
-def test_checked_in_compose_uses_supported_tusd_filesystem_storage_flag() -> None:
+def test_checked_in_compose_streams_tusd_into_the_ingress_object_store() -> None:
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
 
-    assert '- "-upload-dir"' in compose_text
-    assert '- "-dir"' not in compose_text
+    assert '- "-s3-bucket"' in compose_text
+    assert '- "-s3-endpoint"' in compose_text
+    assert '"pre-create,post-finish"' in compose_text
 
 
 def _assert_unique_yaml_mapping_keys(node: Node) -> None:
@@ -173,6 +174,7 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         "BACKEND",
         "CLASS",
         "PATH",
+        "MODE",
     }
 
     example_names = {
@@ -248,12 +250,9 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
     topology_fields = {
         "database_url",
         "public_base_url",
-        "hot_store_access_key_id",
-        "hot_store_endpoint_url",
-        "hot_store_region",
-        "hot_store_secret_access_key",
+        "ingress_store",
+        "retrieval_cache",
         "tusd_base_url",
-        "upload_staging_root",
     }
     archive_topology_fields = {
         "access_key_id",
@@ -261,6 +260,7 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         "endpoint_url",
         "region",
         "secret_access_key",
+        "prefix",
     }
     for defaults in (runtime_defaults, compose_defaults):
         for store in defaults["archive_stores"].values():
@@ -287,6 +287,7 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORE_DEEP_PREFIX",
         "RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND",
         "RIVERHOG_ARCHIVE_STORE_DEEP_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_READ_MODE",
         "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
         "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
         "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
@@ -295,6 +296,7 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID",
         "RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY",
         "RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORE_B2_READ_MODE",
         "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         "RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE",
@@ -305,14 +307,20 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
         "RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
-        "RIVERHOG_ARCHIVE_RESTORE_SWEEP_INTERVAL",
-        "RIVERHOG_ARCHIVE_RESTORE_ESTIMATED_LATENCY",
-        "RIVERHOG_ARCHIVE_RESTORE_AVAILABILITY_TTL",
-        "RIVERHOG_ARCHIVE_RESTORE_RETRIEVAL_TIER",
         "RIVERHOG_API_TOKEN",
         "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
-        "RIVERHOG_HOT_MATERIALIZATION_CONCURRENCY",
-        "RIVERHOG_HOT_SINGLE_PUT_MAX_BYTES",
+        "RIVERHOG_INGRESS_ENDPOINT_URL",
+        "RIVERHOG_INGRESS_BUCKET",
+        "RIVERHOG_INGRESS_SECRET_KEY",
+        "RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL",
+        "RIVERHOG_RETRIEVAL_CACHE_BUCKET",
+        "RIVERHOG_EXTERNAL_APP_TOKENS",
+        "RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE",
+        "RIVERHOG_RETRIEVAL_DEFAULT_LEASE",
+        "RIVERHOG_RETRIEVAL_MAX_LEASE",
+        "RIVERHOG_RETRIEVAL_SWEEP_INTERVAL",
+        "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY",
+        "RIVERHOG_RETRIEVAL_TIER",
         "RIVERHOG_COLLECTION_WEBHOOKS",
         "RIVERHOG_COLLECTION_WEBHOOK_DEFAULT_RECIPIENTS",
         "RIVERHOG_TUSD_PUBLIC_SIGNING_SECRET",
@@ -325,7 +333,7 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         assert required <= set(compose["services"][service]["environment"])
         assert (
             compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_B2_PREFIX"]
-            == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-archive}"
+            == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-}"
         )
 
 

@@ -19,7 +19,7 @@ FILES = {"document.txt": b"archive copy service\n", "notes.txt": b"small notes\n
 
 
 def _service(path: Path, *, source_ready: bool = True):
-    config, archive = seed_archive_copy(path, FILES, hot=False)
+    config, archive = seed_archive_copy(path, FILES)
     b2_config = replace(
         config.archive_store("deep"),
         name="b2",

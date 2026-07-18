@@ -3,8 +3,7 @@ kind: munchy.job
 job:
   handoff:
     destination: riverhog
-    options:
-      retain_hot: true
+    options: {}
   notify:
     enabled: false
     recipients:

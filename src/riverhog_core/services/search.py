@@ -12,7 +12,7 @@ from riverhog_core.domain.errors import BadRequest
 from riverhog_core.fs_paths import PathNormalizationError, normalize_collection_id
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"logical_path", "collection_id", "collection_path", "bytes", "hot"}
+_SORT_FIELDS = {"logical_path", "collection_id", "collection_path", "bytes"}
 
 
 def _like_pattern(value: str) -> str:
@@ -46,12 +46,6 @@ def _order_expressions(
             asc(CollectionFileRecord.collection_id),
             asc(CollectionFileRecord.path),
         )
-    if sort == "hot":
-        return (
-            direction(CollectionFileRecord.hot),
-            asc(CollectionFileRecord.collection_id),
-            asc(CollectionFileRecord.path),
-        )
     raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
 
 
@@ -68,7 +62,6 @@ class SqlAlchemySearchService:
         sort: str,
         order: str,
         collection: str | None = None,
-        hot: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, object]:
         if page < 1:
@@ -101,9 +94,6 @@ class SqlAlchemySearchService:
             )
         if normalized_collection is not None:
             filters.append(CollectionFileRecord.collection_id == normalized_collection)
-        if hot is not None:
-            filters.append(CollectionFileRecord.hot.is_(hot))
-
         with session_scope(self._session_factory) as session:
             total = session.scalar(
                 select(func.count()).select_from(CollectionFileRecord).where(*filters)
@@ -115,7 +105,6 @@ class SqlAlchemySearchService:
                     CollectionFileRecord.path,
                     CollectionFileRecord.bytes,
                     CollectionFileRecord.sha256,
-                    CollectionFileRecord.hot,
                 )
                 .where(*filters)
                 .order_by(*_order_expressions(sort, order))
@@ -127,7 +116,6 @@ class SqlAlchemySearchService:
         return {
             "query": query,
             "collection": normalized_collection,
-            "hot": hot,
             "page": 1 if all_items else page,
             "per_page": total_count if all_items else per_page,
             "total": total_count,
@@ -147,7 +135,6 @@ class SqlAlchemySearchService:
                     "collection_path": row.path,
                     "bytes": row.bytes,
                     "sha256": row.sha256,
-                    "hot": row.hot,
                 }
                 for row in rows
             ],

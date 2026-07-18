@@ -33,9 +33,7 @@ SOURCE_LIST_SORT_FIELDS = frozenset(
         "updated_at",
     }
 )
-DEFAULT_INCLUDE_EXTENSIONS = frozenset(
-    {".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"}
-)
+DEFAULT_INCLUDE_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"})
 PASSWORD_HASHER = PasswordHasher()
 
 
@@ -61,6 +59,7 @@ class SourceConfig:
     weekday: int
     hour: int
     minute: int
+
     def summary(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -231,9 +230,7 @@ class SourceRegistry:
         if page < 1:
             raise SourceRegistryError("page must be >= 1")
         if not 1 <= per_page <= MAX_LIST_PAGE_SIZE:
-            raise SourceRegistryError(
-                f"per_page must be between 1 and {MAX_LIST_PAGE_SIZE}"
-            )
+            raise SourceRegistryError(f"per_page must be between 1 and {MAX_LIST_PAGE_SIZE}")
         if sort not in SOURCE_LIST_SORT_FIELDS:
             raise SourceRegistryError(
                 "sort must be one of: " + ", ".join(sorted(SOURCE_LIST_SORT_FIELDS))
@@ -314,9 +311,7 @@ class SourceRegistry:
                 ).fetchall()
         result_page = 1 if all_items else page
         result_per_page = total if all_items else per_page
-        result_pages = (
-            (1 if total else 0) if all_items else (total + per_page - 1) // per_page
-        )
+        result_pages = (1 if total else 0) if all_items else (total + per_page - 1) // per_page
         return {
             "page": result_page,
             "per_page": result_per_page,
@@ -519,10 +514,7 @@ class SourceRegistry:
             ).fetchall()
         for row in rows:
             self._ensure_ftp_home(str(row["id"]))
-        lines = [
-            self._ftp_record(str(row["id"]), str(row["password_hash"]))
-            for row in rows
-        ]
+        lines = [self._ftp_record(str(row["id"]), str(row["password_hash"])) for row in rows]
         self.ftp_projection.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.ftp_projection.with_name(
             f".{self.ftp_projection.name}.{uuid.uuid4().hex}.part"
@@ -552,10 +544,7 @@ class SourceRegistry:
 
     def _ftp_record(self, source_id: str, password_hash: str) -> str:
         home = (self.landing_dir / source_id).as_posix().rstrip("/") + "/./"
-        return (
-            f"{source_id}:{password_hash}:{self.ftp_uid}:{self.ftp_gid}::{home}"
-            "::::::::::::\n"
-        )
+        return f"{source_id}:{password_hash}:{self.ftp_uid}:{self.ftp_gid}::{home}::::::::::::\n"
 
     def _source(self, connection: sqlite3.Connection, row: sqlite3.Row) -> SourceConfig:
         return SourceConfig(

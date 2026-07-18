@@ -115,9 +115,7 @@ def normalize_job_template(
 
     raw = deepcopy(dict(definition))
     if raw.get("schema_version") != 1 or raw.get("kind") != "munchy.job":
-        raise JobTemplateError(
-            "job template requires schema_version: 1 and kind: munchy.job"
-        )
+        raise JobTemplateError("job template requires schema_version: 1 and kind: munchy.job")
     if "device_profile" in raw:
         raise JobTemplateError(
             "job templates must be expanded before upload; device_profile is an authoring input"
@@ -138,9 +136,7 @@ def normalize_job_template(
     placeholders = sorted(_input_placeholders(defaults))
     undeclared = sorted(set(placeholders) - set(inputs))
     if undeclared:
-        raise JobTemplateError(
-            "job template uses undeclared input(s): " + ", ".join(undeclared)
-        )
+        raise JobTemplateError("job template uses undeclared input(s): " + ", ".join(undeclared))
     if inputs:
         raw["inputs"] = inputs
     return raw, defaults

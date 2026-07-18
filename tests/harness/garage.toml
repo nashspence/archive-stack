@@ -9,7 +9,7 @@ rpc_public_addr = "garage:3901"
 rpc_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [s3_api]
-hot_store_region = "garage"
+s3_region = "garage"
 api_bind_addr = "0.0.0.0:3900"
 
 [admin]

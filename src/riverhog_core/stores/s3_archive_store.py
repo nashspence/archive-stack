@@ -50,8 +50,9 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
+from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
-from riverhog_core.stores.s3_support import create_archive_s3_client
+from riverhog_core.stores.s3_support import create_archive_s3_client, delete_exact_object
 from riverhog_core.timestamps import format_utc_timestamp, utc_timestamp_now
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
@@ -266,12 +267,14 @@ class S3ArchiveStore:
         config: RuntimeConfig,
         store: ArchiveStoreConfig,
         *,
+        retrieval_cache: RetrievalCache | None = None,
         multipart_timing_observer: Callable[[ArchiveMultipartTiming], None] | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._bucket = store.bucket
         self._client = create_archive_s3_client(config, store)
+        self._retrieval_cache = retrieval_cache
         self._multipart_timing_observer = multipart_timing_observer
         self._cloudfront_signer: CloudFrontSigner | None = None
         self._cloudfront_client: httpx.Client | None = None
@@ -297,6 +300,9 @@ class S3ArchiveStore:
                 follow_redirects=False,
                 timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
             )
+
+    def read_mode(self) -> str:
+        return self._store.read_mode
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
@@ -403,6 +409,7 @@ class S3ArchiveStore:
         expected_sha256: str,
         expected_storage_class: str,
         uploaded_at: str | None = None,
+        ingestion_cache: RetrievalCacheReceipt | None = None,
     ) -> ArchiveObjectUploadReceipt:
         _validate_uploaded_collection_metadata(
             object_key=object_key,
@@ -435,6 +442,7 @@ class S3ArchiveStore:
                 fallback=verified_at,
             ),
             verified_at=verified_at,
+            ingestion_cache=ingestion_cache,
         )
 
     def upload_collection_archive(
@@ -569,7 +577,7 @@ class S3ArchiveStore:
         ):
             raise ValueError("collection archive paths are outside one owned archive prefix")
         for path in object_paths:
-            self._client.delete_object(Bucket=self._bucket, Key=path)
+            delete_exact_object(self._client, bucket=self._bucket, key=path)
         remaining = [
             path for path in object_paths if self._head_object(object_key=path) is not None
         ]
@@ -578,7 +586,7 @@ class S3ArchiveStore:
                 "collection archive deletion could not be verified: " + ", ".join(remaining)
             )
 
-    def publish_restore_catalog(
+    def publish_archive_catalog(
         self,
         *,
         entries: Sequence[dict[str, object]],
@@ -671,8 +679,23 @@ class S3ArchiveStore:
             archive_storage_class=self._store.storage_class,
             kind=kind,
         )
+        cache_required = self.read_mode() == "restore_required" and data_object is not None
+        ingestion_cache: RetrievalCacheReceipt | None = None
+        if cache_required:
+            if self._retrieval_cache is None:
+                raise RuntimeError("restore-required archive ingest requires a retrieval cache")
+            if multipart_tracker is None:
+                raise RuntimeError("restore-required archive ingest requires cache checkpointing")
+            ingestion_cache = multipart_tracker.load_ingestion_cache(
+                collection_id=collection_id,
+                object_id=object_id,
+            )
         existing = self._head_object(object_key=object_key)
         if existing is not None:
+            if cache_required and ingestion_cache is None:
+                raise RuntimeError(
+                    "restore-required archive object exists without its ingestion cache receipt"
+                )
             return self._collection_receipt_from_head(
                 object_id=object_id,
                 kind=kind,
@@ -681,20 +704,52 @@ class S3ArchiveStore:
                 expected_bytes=plaintext_bytes,
                 expected_sha256=sha256,
                 expected_storage_class=storage_class,
+                ingestion_cache=ingestion_cache,
             )
 
         age_session: ResumableAgeScryptSession | None = None
         if data_object is not None:
-            age_session = ResumableAgeScryptSession.create(
-                self._config.archive_passphrase,
-                log_n=self._config.archive_scrypt_work_factor,
-                plaintext_size=plaintext_bytes,
-            )
-            content_length = age_ciphertext_len_for_plaintext_len(
-                plaintext_bytes,
-                age_prefix_len=len(age_session.age_prefix),
-            )
-            content = _iter_encrypted_object(object=data_object, session=age_session)
+            if ingestion_cache is not None:
+                assert self._retrieval_cache is not None
+                content_length = ingestion_cache.stored_bytes
+                content = self._retrieval_cache.iter_object(
+                    object_path=ingestion_cache.object_path,
+                    version_id=ingestion_cache.version_id,
+                    expected_bytes=ingestion_cache.stored_bytes,
+                    expected_sha256=ingestion_cache.stored_sha256,
+                )
+            else:
+                age_session = ResumableAgeScryptSession.create(
+                    self._config.archive_passphrase,
+                    log_n=self._config.archive_scrypt_work_factor,
+                    plaintext_size=plaintext_bytes,
+                )
+                content_length = age_ciphertext_len_for_plaintext_len(
+                    plaintext_bytes,
+                    age_prefix_len=len(age_session.age_prefix),
+                )
+                content = _iter_encrypted_object(object=data_object, session=age_session)
+                if cache_required:
+                    assert self._retrieval_cache is not None
+                    ingestion_cache = self._retrieval_cache.put(
+                        source_store=self._store.name,
+                        collection_id=collection_id,
+                        object_id=object_id,
+                        content=content,
+                        content_length=content_length,
+                    )
+                    assert multipart_tracker is not None
+                    multipart_tracker.save_ingestion_cache(
+                        collection_id=collection_id,
+                        object_id=object_id,
+                        receipt=ingestion_cache,
+                    )
+                    content = self._retrieval_cache.iter_object(
+                        object_path=ingestion_cache.object_path,
+                        version_id=ingestion_cache.version_id,
+                        expected_bytes=ingestion_cache.stored_bytes,
+                        expected_sha256=ingestion_cache.stored_sha256,
+                    )
         else:
             plaintext = _single_put_body(content)
             content = encrypt_age_scrypt(
@@ -729,7 +784,7 @@ class S3ArchiveStore:
         ):
             extra_args["StorageClass"] = storage_class
         if _should_use_multipart(content=content, content_length=content_length):
-            if data_object is not None and data_object.supports_ranges:
+            if data_object is not None and data_object.supports_ranges and not cache_required:
                 if age_session is None:
                     raise RuntimeError("encrypted object upload session was not initialized")
                 self._put_encrypted_object_multipart(
@@ -775,6 +830,7 @@ class S3ArchiveStore:
             expected_sha256=sha256,
             expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
+            ingestion_cache=ingestion_cache,
         )
 
     def _put_archive_object_multipart(
@@ -1249,9 +1305,7 @@ class S3ArchiveStore:
                 max_workers=multipart_concurrency,
                 thread_name_prefix="riverhog-s3-encrypted-archive",
             ) as executor:
-                pending: set[
-                    Future[tuple[ArchiveMultipartUploadedPart, float]]
-                ] = set()
+                pending: set[Future[tuple[ArchiveMultipartUploadedPart, float]]] = set()
 
                 def upload_part_body(
                     *,
@@ -1481,7 +1535,7 @@ class S3ArchiveStore:
         ]
         if not statuses:
             return ArchiveReadStatus(state="ready", ready_at=requested_at)
-        return _combine_fetch_materialization_statuses(statuses)
+        return _combine_archive_read_statuses(statuses)
 
     def _request_collection_object_restore(
         self,
@@ -1553,7 +1607,7 @@ class S3ArchiveStore:
         ]
         if not statuses:
             return ArchiveReadStatus(state="ready", ready_at=requested_at)
-        return _combine_fetch_materialization_statuses(statuses)
+        return _combine_archive_read_statuses(statuses)
 
     def _collection_object_restore_status(
         self,
@@ -1579,23 +1633,37 @@ class S3ArchiveStore:
                 state="requested",
                 ready_at=estimated_ready_at,
                 expires_at=estimated_expires_at,
-                message="Collection archive restore is still in progress.",
+                message="AWS archive retrieval is still in progress.",
             )
         if restore["ongoing"]:
             return ArchiveReadStatus(
                 state="requested",
                 ready_at=estimated_ready_at,
                 expires_at=restore["expires_at"] or estimated_expires_at,
-                message="Collection archive restore is still in progress.",
+                message="AWS archive retrieval is still in progress.",
             )
         return ArchiveReadStatus(
             state="ready",
             ready_at=utc_timestamp_now(),
             expires_at=restore["expires_at"],
-            message="Collection archive object is restored and readable.",
+            message="AWS archive object is readable.",
         )
 
     def iter_archive_object(
+        self,
+        *,
+        collection_id: str,
+        object: ArchiveObjectIdentity,
+    ) -> Iterator[bytes]:
+        yield from iter_decrypt_age_scrypt(
+            self.iter_stored_archive_object(
+                collection_id=collection_id,
+                object=object,
+            ),
+            self._config.archive_passphrase,
+        )
+
+    def iter_stored_archive_object(
         self,
         *,
         collection_id: str,
@@ -1614,16 +1682,12 @@ class S3ArchiveStore:
             estimated_expires_at=None,
         )
         if status.state != "ready":
-            raise RuntimeError(f"Archive object is not restored yet: {object_path}")
+            raise RuntimeError(f"Archive object is not readable yet: {object_path}")
         if self._cloudfront_client is None or self._cloudfront_signer is None:
             response = self._client.get_object(Bucket=self._bucket, Key=object_path)
             body = response["Body"]
             try:
-                chunks = body.iter_chunks(chunk_size=1024 * 1024)
-                yield from iter_decrypt_age_scrypt(
-                    chunks,
-                    self._config.archive_passphrase,
-                )
+                yield from body.iter_chunks(chunk_size=1024 * 1024)
             finally:
                 close = getattr(body, "close", None)
                 if callable(close):
@@ -1655,10 +1719,7 @@ class S3ArchiveStore:
                         "CloudFront archive download length does not match verified metadata: "
                         f"{object_path}"
                     )
-                yield from iter_decrypt_age_scrypt(
-                    response.iter_bytes(chunk_size=1024 * 1024),
-                    self._config.archive_passphrase,
-                )
+                yield from response.iter_bytes(chunk_size=1024 * 1024)
         except httpx.HTTPError:
             raise RuntimeError(f"CloudFront archive download failed: {object_path}") from None
 
@@ -1675,7 +1736,7 @@ class S3ArchiveStore:
         return self._store.backend.casefold() == "aws"
 
 
-def _combine_fetch_materialization_statuses(
+def _combine_archive_read_statuses(
     statuses: list[ArchiveReadStatus],
 ) -> ArchiveReadStatus:
     if any(status.state == "expired" for status in statuses):
@@ -1685,13 +1746,13 @@ def _combine_fetch_materialization_statuses(
             state="ready",
             ready_at=_max_timestamp(status.ready_at for status in statuses),
             expires_at=_min_timestamp(status.expires_at for status in statuses),
-            message="Archive objects are restored and readable.",
+            message="Archive objects are readable.",
         )
     return ArchiveReadStatus(
         state="requested",
         ready_at=_max_timestamp(status.ready_at for status in statuses),
         expires_at=_min_timestamp(status.expires_at for status in statuses),
-        message="Archive object restoration is still in progress.",
+        message="Archive object retrieval is still in progress.",
     )
 
 

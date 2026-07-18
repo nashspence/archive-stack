@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import case, func, or_, select
@@ -21,14 +20,19 @@ from riverhog_core.archive_objects import (
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
 )
+from riverhog_core.ingress_crypto import iter_ingress_plaintext
 from riverhog_core.operator_reminders import operator_reminder_due
+from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -37,11 +41,11 @@ from riverhog_core.ports.archive_store import (
     ArchiveStore,
     CollectionArchiveUploadReceipt,
 )
-from riverhog_core.ports.hot_store import HotStore
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
+from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import (
@@ -57,7 +61,15 @@ from riverhog_core.webhooks import post_webhook
 
 _LOG = logging.getLogger(__name__)
 
-CollectionUploadFileEntry = tuple[str, int, str, str]
+
+@dataclass(frozen=True, slots=True)
+class CollectionUploadFileEntry:
+    path: str
+    bytes: int
+    sha256: str
+    target_path: str
+    ingress_secret_envelope: str
+    ingress_state_json: str
 
 
 class SqlAlchemyArchiveUploadService:
@@ -65,14 +77,12 @@ class SqlAlchemyArchiveUploadService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        hot_store: HotStore | None = None,
         upload_store: UploadStore | None = None,
         *,
         proof_stamper: ProofStamper | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
-        self._hot_store = hot_store
         self._upload_store = upload_store
         self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
         self._session_factory = make_session_factory(config.database_url)
@@ -92,8 +102,8 @@ class SqlAlchemyArchiveUploadService:
                         func.sum(
                             case(
                                 (
-                                    CollectionUploadFileRecord.uploaded_bytes
-                                    < CollectionUploadFileRecord.bytes,
+                                    CollectionUploadFileRecord.ingress_uploaded_bytes
+                                    < CollectionUploadFileRecord.ingress_bytes,
                                     1,
                                 ),
                                 else_=0,
@@ -139,8 +149,8 @@ class SqlAlchemyArchiveUploadService:
                 )
         return requeued
 
-    def publish_restore_catalog(self) -> int:
-        return self._publish_restore_catalog()
+    def publish_archive_catalog(self) -> int:
+        return self._publish_archive_catalog()
 
     def abort_incomplete_multipart_uploads(
         self,
@@ -220,13 +230,12 @@ class SqlAlchemyArchiveUploadService:
         manifest_bytes: bytes | None = None
         proof_bytes: bytes | None = None
         archive: CollectionArchive | None = None
-        retain_hot = True
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None or upload.state != "archiving":
                 return
-            retain_hot = upload.retain_hot
             archive_store = self._archive_stores.require(upload.archive_store)
+            archive_store_name = upload.archive_store
             upload_stats = _collection_upload_stats(session, collection_id)
             if (
                 upload_stats["files_total"] == 0
@@ -247,7 +256,7 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_last_attempt_at = current_text
             upload.archive_next_attempt_at = current_text
             if receipt is not None:
-                upload.archive_phase = "materializing_hot" if retain_hot else "finalizing"
+                upload.archive_phase = "finalizing"
             elif manifest_bytes is not None and proof_bytes is not None:
                 upload.archive_phase = "planned"
             else:
@@ -263,11 +272,13 @@ class SqlAlchemyArchiveUploadService:
                 )
             ).all()
             upload_files = [
-                (
-                    file_record.path,
-                    file_record.bytes,
-                    file_record.sha256,
-                    _collection_upload_target_path(collection_id, file_record.path),
+                CollectionUploadFileEntry(
+                    path=file_record.path,
+                    bytes=file_record.bytes,
+                    sha256=file_record.sha256,
+                    target_path=_collection_upload_target_path(collection_id, file_record.path),
+                    ingress_secret_envelope=file_record.ingress_secret_envelope,
+                    ingress_state_json=file_record.ingress_state_json,
                 )
                 for file_record in sorted_files
             ]
@@ -283,17 +294,32 @@ class SqlAlchemyArchiveUploadService:
             }
             target_path_by_archive_path: dict[str, str] = {}
             archive_files: list[CollectionArchiveFile] = []
-            for path, _bytes, sha256, target_path in upload_files:
-                target_path_by_archive_path[path] = target_path
-                archive_files.append(CollectionArchiveFile(path=path, bytes=_bytes, sha256=sha256))
+            entries_by_path = {entry.path: entry for entry in upload_files}
+            for entry in upload_files:
+                target_path_by_archive_path[entry.path] = entry.target_path
+                archive_files.append(
+                    CollectionArchiveFile(
+                        path=entry.path,
+                        bytes=entry.bytes,
+                        sha256=entry.sha256,
+                    )
+                )
 
             def _read_archive_file_chunks(
                 path: str,
                 offset: int = 0,
                 size: int | None = None,
             ) -> Iterator[bytes]:
-                return upload_store.iter_target(
-                    target_path_by_archive_path[path],
+                entry = entries_by_path[path]
+                return iter_ingress_plaintext(
+                    self._config,
+                    upload_store,
+                    target_path=target_path_by_archive_path[path],
+                    collection_id=collection_id,
+                    path=path,
+                    plaintext_bytes=entry.bytes,
+                    secret_envelope=entry.ingress_secret_envelope,
+                    state_json=entry.ingress_state_json,
                     offset=offset,
                     size=size,
                 )
@@ -393,23 +419,17 @@ class SqlAlchemyArchiveUploadService:
         try:
             if receipt is None:
                 raise RuntimeError("collection archive receipt was not recorded")
-            if retain_hot:
-                self._materialize_collection_files(
-                    collection_id=collection_id,
-                    upload_files=upload_files,
-                )
-            else:
-                self._delete_collection_upload_targets(
-                    collection_id=collection_id,
-                    upload_files=upload_files,
-                )
             self._finalize_archived_collection(
                 collection_id=collection_id,
                 receipt=receipt,
                 archive=archive,
                 upload_files=upload_files,
             )
-            self._publish_restore_catalog()
+            self._delete_collection_upload_targets(
+                collection_id=collection_id,
+                upload_files=upload_files,
+            )
+            self._publish_archive_catalog()
             self._post_collection_webhooks(
                 event="collections.finalized",
                 collection_id=collection_id,
@@ -418,8 +438,7 @@ class SqlAlchemyArchiveUploadService:
                     "archive_storage_prefix": archive_storage_prefix,
                     "archive_objects": len(receipt.objects),
                     "archive_total_bytes": sum(current.stored_bytes for current in receipt.objects),
-                    "archive_store": upload.archive_store,
-                    "retain_hot": retain_hot,
+                    "archive_store": archive_store_name,
                 },
             )
         except Exception as exc:
@@ -448,184 +467,17 @@ class SqlAlchemyArchiveUploadService:
                 )
             return
 
-    def _materialize_one_collection_file(
-        self,
-        *,
-        collection_id: str,
-        path: str,
-        target_path: str,
-        byte_count: int,
-        sha256: str,
-    ) -> None:
-        hot_store = self._hot_store
-        upload_store = self._upload_store
-        if hot_store is None or upload_store is None:
-            raise RuntimeError("hot storage is unavailable for retained-hot upload")
-        if _hot_file_matches(
-            hot_store,
-            collection_id=collection_id,
-            path=path,
-            expected_bytes=byte_count,
-            expected_sha256=sha256,
-        ):
-            self._mark_collection_upload_file_materialized(collection_id=collection_id, path=path)
-            return
-
-        digest = hashlib.sha256()
-
-        def digesting_chunks() -> Iterator[bytes]:
-            for chunk in upload_store.iter_target(target_path):
-                digest.update(chunk)
-                yield chunk
-
-        resumable_put = getattr(hot_store, "put_collection_file_stream_resumable", None)
-        if callable(resumable_put):
-            resumable_put(
-                collection_id,
-                path,
-                digesting_chunks(),
-                content_length=byte_count,
-                sha256=sha256,
-                multipart_tracker=_SqlAlchemyHotMultipartUploadTracker(
-                    self._session_factory,
-                    path=path,
-                ),
-            )
-        else:
-            hot_store.put_collection_file_stream(
-                collection_id,
-                path,
-                digesting_chunks(),
-                content_length=byte_count,
-                sha256=sha256,
-            )
-        if digest.hexdigest() != sha256:
-            hot_store.delete_collection_file(collection_id, path)
-            raise ValueError(
-                f"materialized hot collection file sha256 mismatch: {collection_id}/{path}"
-            )
-        if not _hot_file_matches(
-            hot_store,
-            collection_id=collection_id,
-            path=path,
-            expected_bytes=byte_count,
-            expected_sha256=sha256,
-        ):
-            raise ValueError(
-                f"materialized hot collection file metadata mismatch: {collection_id}/{path}"
-            )
-        self._mark_collection_upload_file_materialized(collection_id=collection_id, path=path)
-
-    def _materialize_collection_files(
-        self,
-        *,
-        collection_id: str,
-        upload_files: list[CollectionUploadFileEntry],
-    ) -> None:
-        remaining = self._unmaterialized_collection_upload_files(
-            collection_id=collection_id,
-            upload_files=upload_files,
-        )
-        if not remaining:
-            return
-        self._record_archive_phase(
-            collection_id=collection_id,
-            phase="materializing_hot",
-            updated_at=format_utc_timestamp(utc_now()),
-        )
-        max_workers = min(self._config.hot_materialization_concurrency, len(remaining))
-        _LOG.info(
-            "materializing collection files in hot storage for %s: files=%s concurrency=%s",
-            collection_id,
-            len(remaining),
-            max_workers,
-        )
-        if max_workers == 1:
-            for path, _bytes, sha256, target_path in remaining:
-                self._materialize_collection_file_and_cleanup(
-                    collection_id=collection_id,
-                    path=path,
-                    target_path=target_path,
-                    byte_count=_bytes,
-                    sha256=sha256,
-                )
-            return
-
-        executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="riverhog-hot-materialize",
-        )
-        futures: list[Future[None]] = []
-        try:
-            for path, _bytes, sha256, target_path in remaining:
-                futures.append(
-                    executor.submit(
-                        self._materialize_collection_file_and_cleanup,
-                        collection_id=collection_id,
-                        path=path,
-                        target_path=target_path,
-                        byte_count=_bytes,
-                        sha256=sha256,
-                    )
-                )
-            for future in as_completed(futures):
-                future.result()
-        except Exception:
-            for future in futures:
-                future.cancel()
-            raise
-        finally:
-            executor.shutdown(wait=True, cancel_futures=True)
-
-    def _materialize_collection_file_and_cleanup(
-        self,
-        *,
-        collection_id: str,
-        path: str,
-        target_path: str,
-        byte_count: int,
-        sha256: str,
-    ) -> None:
-        self._materialize_one_collection_file(
-            collection_id=collection_id,
-            path=path,
-            target_path=target_path,
-            byte_count=byte_count,
-            sha256=sha256,
-        )
-        self._delete_upload_target(
-            collection_id=collection_id,
-            target_path=target_path,
-        )
-
     def _delete_collection_upload_targets(
         self,
         *,
         collection_id: str,
         upload_files: list[CollectionUploadFileEntry],
     ) -> None:
-        for _path, _bytes, _sha256, target_path in upload_files:
+        for entry in upload_files:
             self._delete_upload_target(
                 collection_id=collection_id,
-                target_path=target_path,
+                target_path=entry.target_path,
             )
-
-    def _unmaterialized_collection_upload_files(
-        self,
-        *,
-        collection_id: str,
-        upload_files: list[CollectionUploadFileEntry],
-    ) -> list[CollectionUploadFileEntry]:
-        with session_scope(self._session_factory) as session:
-            materialized_paths = set(
-                session.scalars(
-                    select(CollectionUploadFileRecord.path).where(
-                        CollectionUploadFileRecord.collection_id == collection_id,
-                        CollectionUploadFileRecord.hot_materialized_at.is_not(None),
-                    )
-                ).all()
-            )
-        return [entry for entry in upload_files if entry[0] not in materialized_paths]
 
     def _delete_upload_target(self, *, collection_id: str, target_path: str) -> None:
         upload_store = self._upload_store
@@ -641,25 +493,13 @@ class SqlAlchemyArchiveUploadService:
                 exc_info=True,
             )
 
-    def _mark_collection_upload_file_materialized(self, *, collection_id: str, path: str) -> None:
-        with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, collection_id)
-            file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
-            if upload is None or file_record is None:
-                return
-            current_text = format_utc_timestamp(utc_now())
-            file_record.hot_materialized_at = current_text
-            upload.archive_phase = "materializing_hot"
-            upload.archive_phase_updated_at = current_text
-            upload.archive_failure = None
-
     def _finalize_archived_collection(
         self,
         *,
         collection_id: str,
         receipt: CollectionArchiveUploadReceipt,
         archive: CollectionArchive,
-        upload_files: list[tuple[str, int, str, str]],
+        upload_files: list[CollectionUploadFileEntry],
     ) -> None:
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
@@ -668,36 +508,34 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase = "finalizing"
             upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
             session.flush()
-            if upload.retain_hot:
-                unmaterialized = [
-                    file_record.path
-                    for file_record in upload.files
-                    if file_record.hot_materialized_at is None
-                ]
-                if unmaterialized:
-                    raise RuntimeError(f"collection has unmaterialized files: {unmaterialized[0]}")
+            _manifest, manifest_etag = portable_collection_manifest(
+                collection_id,
+                ((row.path, row.bytes, row.sha256) for row in upload_files),
+            )
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 collection = CollectionRecord(
                     id=collection_id,
+                    manifest_etag=manifest_etag,
                     ingest_source=upload.ingest_source,
                     notify_json=upload.notify_json,
                 )
                 session.add(collection)
                 session.flush()
+            elif collection.manifest_etag != manifest_etag:
+                raise RuntimeError("immutable portable collection manifest changed")
             elif not collection.notify_json and upload.notify_json:
                 collection.notify_json = upload.notify_json
             existing_paths = {file_record.path for file_record in collection.files}
-            for path, _bytes, sha256, _target_path in upload_files:
-                if path in existing_paths:
+            for entry in upload_files:
+                if entry.path in existing_paths:
                     continue
                 collection.files.append(
                     CollectionFileRecord(
                         collection_id=collection_id,
-                        path=path,
-                        bytes=_bytes,
-                        sha256=sha256,
-                        hot=upload.retain_hot,
+                        path=entry.path,
+                        bytes=entry.bytes,
+                        sha256=entry.sha256,
                     )
                 )
             copy = session.get(
@@ -711,8 +549,62 @@ class SqlAlchemyArchiveUploadService:
                 )
                 session.add(copy)
             apply_archive_receipt(copy, receipt, archive)
+            session.flush()
+            self._record_ingestion_cache(
+                session,
+                collection_id=collection_id,
+                store=upload.archive_store,
+                receipt=receipt,
+            )
+            session.add(
+                CatalogEventRecord(
+                    change="created",
+                    collection_id=collection_id,
+                    occurred_at=format_utc_timestamp(utc_now()),
+                    manifest_etag=manifest_etag,
+                )
+            )
             session.delete(upload)
             record_archive_usage_snapshot(session, config=self._config)
+
+    def _record_ingestion_cache(
+        self,
+        session: Session,
+        *,
+        collection_id: str,
+        store: str,
+        receipt: CollectionArchiveUploadReceipt,
+    ) -> None:
+        expires_at = format_utc_timestamp(
+            utc_now() + self._config.retrieval_initial_ingestion_lease
+        )
+        for current in receipt.objects:
+            cached = current.ingestion_cache
+            if cached is None:
+                continue
+            session.merge(
+                RetrievalCacheObjectRecord(
+                    source_store=store,
+                    collection_id=collection_id,
+                    object_id=current.object_id,
+                    object_path=cached.object_path,
+                    version_id=cached.version_id,
+                    stored_bytes=cached.stored_bytes,
+                    stored_sha256=cached.stored_sha256,
+                    cached_at=cached.cached_at,
+                    verified_at=cached.verified_at,
+                )
+            )
+            session.flush()
+            session.merge(
+                RetrievalCacheLeaseRecord(
+                    owner="initial-ingestion",
+                    source_store=store,
+                    collection_id=collection_id,
+                    object_id=current.object_id,
+                    expires_at=expires_at,
+                )
+            )
 
     def _record_completed_archive(
         self,
@@ -733,15 +625,15 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_storage_prefix = archive_storage_prefix_from_object_path(
                 receipt.require_object("manifest").object_path
             )
-            upload.archive_phase = "materializing_hot" if upload.retain_hot else "finalizing"
+            upload.archive_phase = "finalizing"
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _publish_restore_catalog(self) -> int:
+    def _publish_archive_catalog(self) -> int:
         published = 0
         for store_name, archive_store in self._archive_stores.items():
             try:
-                published += publish_archive_restore_catalog(
+                published += publish_archive_catalog(
                     store_name=store_name,
                     archive_store=archive_store,
                     session_factory=self._session_factory,
@@ -1066,110 +958,55 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
             record.multipart_parts_json = None
             record.encryption_state_json = None
 
-
-class _SqlAlchemyHotMultipartUploadTracker(ArchiveMultipartUploadTracker):
-    def __init__(self, session_factory: sessionmaker[Session], *, path: str) -> None:
-        self._session_factory = session_factory
-        self._path = path
-
-    def load_multipart_upload(
+    def load_ingestion_cache(
         self,
         *,
         collection_id: str,
         object_id: str,
-        object_path: str,
-        part_size: int,
-        content_length: int,
-        sha256: str,
-    ) -> ArchiveMultipartUploadState | None:
+    ) -> RetrievalCacheReceipt | None:
         with session_scope(self._session_factory) as session:
-            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
-            if file_record is None:
+            record = session.get(
+                CollectionArchiveObjectUploadRecord,
+                (collection_id, object_id),
+            )
+            if record is None or not record.cache_object_path:
                 return None
-            if not file_record.hot_multipart_upload_id:
+            if (
+                record.cache_stored_bytes is None
+                or record.cache_stored_sha256 is None
+                or record.cache_cached_at is None
+                or record.cache_verified_at is None
+            ):
                 return None
-            if int(file_record.hot_multipart_part_size or 0) != part_size:
-                return None
-            if int(file_record.bytes) != content_length:
-                return None
-            if file_record.sha256 != sha256:
-                return None
-            return ArchiveMultipartUploadState(
-                object_id=object_id,
-                upload_id=file_record.hot_multipart_upload_id,
-                object_path=object_path,
-                part_size=part_size,
-                content_length=content_length,
-                sha256=sha256,
-                parts=_multipart_parts_from_json(file_record.hot_multipart_parts_json),
+            return RetrievalCacheReceipt(
+                object_path=record.cache_object_path,
+                version_id=record.cache_version_id,
+                stored_bytes=record.cache_stored_bytes,
+                stored_sha256=record.cache_stored_sha256,
+                cached_at=record.cache_cached_at,
+                verified_at=record.cache_verified_at,
             )
 
-    def save_multipart_upload(
-        self,
-        *,
-        collection_id: str,
-        state: ArchiveMultipartUploadState,
-    ) -> None:
-        with session_scope(self._session_factory) as session:
-            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
-            if file_record is None:
-                return
-            file_record.hot_multipart_upload_id = state.upload_id
-            file_record.hot_multipart_part_size = state.part_size
-            file_record.hot_multipart_parts_json = _multipart_parts_to_json(())
-            file_record.hot_multipart_uploaded_bytes = 0
-            file_record.hot_multipart_uploaded_parts = 0
-            file_record.hot_multipart_total_parts = max(
-                1,
-                (state.content_length + state.part_size - 1) // state.part_size,
-            )
-
-    def record_multipart_upload_progress(
-        self,
-        *,
-        collection_id: str,
-        state: ArchiveMultipartUploadState,
-        part: ArchiveMultipartUploadedPart,
-        uploaded_bytes: int,
-        uploaded_parts: int,
-        total_parts: int,
-    ) -> None:
-        with session_scope(self._session_factory) as session:
-            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
-            if file_record is None:
-                return
-            if file_record.hot_multipart_upload_id != state.upload_id:
-                return
-            parts = _multipart_parts_from_json(file_record.hot_multipart_parts_json)
-            parts_by_number = {current.part_number: current for current in parts}
-            parts_by_number[part.part_number] = part
-            file_record.hot_multipart_parts_json = _multipart_parts_to_json(
-                tuple(parts_by_number[number] for number in sorted(parts_by_number))
-            )
-            file_record.hot_multipart_uploaded_bytes = uploaded_bytes
-            file_record.hot_multipart_uploaded_parts = uploaded_parts
-            file_record.hot_multipart_total_parts = total_parts
-
-    def clear_multipart_upload(
+    def save_ingestion_cache(
         self,
         *,
         collection_id: str,
         object_id: str,
-        upload_id: str,
+        receipt: RetrievalCacheReceipt,
     ) -> None:
-        _ = object_id
         with session_scope(self._session_factory) as session:
-            file_record = session.get(CollectionUploadFileRecord, (collection_id, self._path))
-            if file_record is None:
-                return
-            if file_record.hot_multipart_upload_id != upload_id:
-                return
-            file_record.hot_multipart_upload_id = None
-            file_record.hot_multipart_part_size = None
-            file_record.hot_multipart_parts_json = None
-            file_record.hot_multipart_uploaded_bytes = None
-            file_record.hot_multipart_uploaded_parts = None
-            file_record.hot_multipart_total_parts = None
+            record = session.get(
+                CollectionArchiveObjectUploadRecord,
+                (collection_id, object_id),
+            )
+            if record is None:
+                raise RuntimeError("archive object upload state was not planned")
+            record.cache_object_path = receipt.object_path
+            record.cache_version_id = receipt.version_id
+            record.cache_stored_bytes = receipt.stored_bytes
+            record.cache_stored_sha256 = receipt.stored_sha256
+            record.cache_cached_at = receipt.cached_at
+            record.cache_verified_at = receipt.verified_at
 
 
 def _multipart_parts_from_json(raw: str | None) -> tuple[ArchiveMultipartUploadedPart, ...]:
@@ -1197,30 +1034,6 @@ def _multipart_parts_to_json(parts: tuple[ArchiveMultipartUploadedPart, ...]) ->
         [{"part_number": part.part_number, "etag": part.etag, "size": part.size} for part in parts],
         separators=(",", ":"),
     )
-
-
-def _hot_file_matches(
-    hot_store: HotStore,
-    *,
-    collection_id: str,
-    path: str,
-    expected_bytes: int,
-    expected_sha256: str,
-) -> bool:
-    stat = hot_store.stat_collection_file(collection_id, path)
-    if stat is None:
-        return False
-    if stat.bytes != expected_bytes:
-        return False
-    if stat.sha256 is not None:
-        return stat.sha256 == expected_sha256
-
-    digest = hashlib.sha256()
-    byte_count = 0
-    for chunk in hot_store.iter_collection_file(collection_id, path):
-        digest.update(chunk)
-        byte_count += len(chunk)
-    return byte_count == expected_bytes and digest.hexdigest() == expected_sha256
 
 
 def _ensure_archive_storage_prefix(
@@ -1260,7 +1073,7 @@ def _archive_receipt_from_json(raw: str | None) -> CollectionArchiveUploadReceip
 def _archive_upload_receipt_to_payload(
     receipt: ArchiveObjectUploadReceipt,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "object_id": receipt.object_id,
         "kind": receipt.kind,
         "object_path": receipt.object_path,
@@ -1272,11 +1085,36 @@ def _archive_upload_receipt_to_payload(
         "uploaded_at": receipt.uploaded_at,
         "verified_at": receipt.verified_at,
     }
+    if receipt.ingestion_cache is not None:
+        payload["ingestion_cache"] = {
+            "object_path": receipt.ingestion_cache.object_path,
+            "version_id": receipt.ingestion_cache.version_id,
+            "stored_bytes": receipt.ingestion_cache.stored_bytes,
+            "stored_sha256": receipt.ingestion_cache.stored_sha256,
+            "cached_at": receipt.ingestion_cache.cached_at,
+            "verified_at": receipt.ingestion_cache.verified_at,
+        }
+    return payload
 
 
 def _archive_upload_receipt_from_payload(payload: object) -> ArchiveObjectUploadReceipt:
     if not isinstance(payload, dict):
         raise ValueError("archive upload receipt payload must be an object")
+    cache_payload = payload.get("ingestion_cache")
+    ingestion_cache = None
+    if isinstance(cache_payload, dict):
+        ingestion_cache = RetrievalCacheReceipt(
+            object_path=str(cache_payload["object_path"]),
+            version_id=(
+                str(cache_payload["version_id"])
+                if cache_payload.get("version_id") is not None
+                else None
+            ),
+            stored_bytes=int(cache_payload["stored_bytes"]),
+            stored_sha256=str(cache_payload["stored_sha256"]),
+            cached_at=str(cache_payload["cached_at"]),
+            verified_at=str(cache_payload["verified_at"]),
+        )
     return ArchiveObjectUploadReceipt(
         object_id=str(payload["object_id"]),
         kind=str(payload["kind"]),
@@ -1288,6 +1126,7 @@ def _archive_upload_receipt_from_payload(payload: object) -> ArchiveObjectUpload
         storage_class=str(payload["storage_class"]),
         uploaded_at=str(payload["uploaded_at"]),
         verified_at=str(payload["verified_at"]) if payload.get("verified_at") is not None else None,
+        ingestion_cache=ingestion_cache,
     )
 
 

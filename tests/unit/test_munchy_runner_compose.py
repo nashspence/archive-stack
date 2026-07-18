@@ -16,9 +16,7 @@ def test_runner_compose_exposes_every_runtime_setting() -> None:
     )
     environment = set(compose["services"]["munchy-runner"]["environment"])
     tree = ast.parse(
-        (REPO_ROOT / "services" / "munchy-runner" / "app" / "main.py").read_text(
-            encoding="utf-8"
-        )
+        (REPO_ROOT / "services" / "munchy-runner" / "app" / "main.py").read_text(encoding="utf-8")
     )
     runtime_settings = {
         node.args[0].value

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 
 from riverhog_core.archive_objects import CollectionArchive
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class ArchiveObjectUploadReceipt:
     storage_class: str
     uploaded_at: str
     verified_at: str | None = None
+    ingestion_cache: RetrievalCacheReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,21 @@ class ArchiveMultipartUploadTracker(Protocol):
         upload_id: str,
     ) -> None: ...
 
+    def load_ingestion_cache(
+        self,
+        *,
+        collection_id: str,
+        object_id: str,
+    ) -> RetrievalCacheReceipt | None: ...
+
+    def save_ingestion_cache(
+        self,
+        *,
+        collection_id: str,
+        object_id: str,
+        receipt: RetrievalCacheReceipt,
+    ) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ArchiveReadStatus:
@@ -132,6 +149,7 @@ class ArchiveReadStatus:
 
 
 class ArchiveStore(Protocol):
+    def read_mode(self) -> str: ...
     def new_collection_archive_storage_prefix(self) -> str: ...
 
     def max_plaintext_object_bytes(self) -> int: ...
@@ -165,7 +183,7 @@ class ArchiveStore(Protocol):
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None: ...
 
-    def publish_restore_catalog(
+    def publish_archive_catalog(
         self,
         *,
         entries: Sequence[dict[str, object]],
@@ -194,6 +212,13 @@ class ArchiveStore(Protocol):
     ) -> ArchiveReadStatus: ...
 
     def iter_archive_object(
+        self,
+        *,
+        collection_id: str,
+        object: ArchiveObjectIdentity,
+    ) -> Iterator[bytes]: ...
+
+    def iter_stored_archive_object(
         self,
         *,
         collection_id: str,

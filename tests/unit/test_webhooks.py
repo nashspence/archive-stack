@@ -6,12 +6,6 @@ from pathlib import Path
 
 from riverhog_core.webhooks import (
     WebhookConfig,
-    build_archive_restore_canceled_payload,
-    build_archive_restore_completed_payload,
-    build_archive_restore_failed_payload,
-    build_archive_restore_ready_payload,
-    build_archive_restore_retrying_payload,
-    build_archive_restore_started_payload,
     build_collection_lifecycle_payload,
     build_jeb_event_payload,
     build_munchy_job_payload,
@@ -22,7 +16,6 @@ CONFIG = WebhookConfig(
     url="https://example.invalid/webhook",
     base_url="https://riverhog.example.invalid",
 )
-COLLECTIONS = [{"collection_id": "2025/20250102T030405Z__docs"}]
 CONTRACT_PATH = (
     Path(__file__).resolve().parents[2]
     / "contracts"
@@ -43,7 +36,7 @@ def _collection_details(event: str) -> dict[str, object]:
     if event == "collections.finalized":
         return {
             **common,
-            "archive_storage_prefix": "archive/opaque-docs",
+            "archive_storage_prefix": "opaque-docs",
             "archive_objects": 3,
             "archive_store": "b2",
             "archive_total_bytes": 20,
@@ -64,61 +57,6 @@ def _collection_details(event: str) -> dict[str, object]:
 
 
 def _all_operator_payloads() -> list[dict[str, object]]:
-    archive_payloads = [
-        build_archive_restore_started_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            retrieval_tier="bulk",
-            estimated_ready_at="2026-07-16T00:00:00Z",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-        ),
-        build_archive_restore_ready_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            expires_at="2026-07-17T00:00:00Z",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-        ),
-        build_archive_restore_completed_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-        ),
-        build_archive_restore_retrying_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-            attempts=2,
-            failed_at="2026-07-14T00:00:00Z",
-            next_retry_at="2026-07-14T00:05:00Z",
-            retry_delay_seconds=300,
-            error="temporary network failure",
-        ),
-        build_archive_restore_failed_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-            attempts=1,
-            failed_at="2026-07-14T00:00:00Z",
-            error="manifest mismatch",
-        ),
-        build_archive_restore_canceled_payload(
-            config=CONFIG,
-            restore_id="ar-docs-1",
-            collections=COLLECTIONS,
-            delivered_at=NOW,
-        ),
-    ]
-    collection_events = (
-        "collections.upload_staged",
-        "collections.finalized",
-        "collections.archive_retrying",
-        "collections.archive_failed",
-    )
     collection_payloads = [
         build_collection_lifecycle_payload(
             config=CONFIG,
@@ -127,7 +65,12 @@ def _all_operator_payloads() -> list[dict[str, object]]:
             delivered_at=NOW,
             details=_collection_details(event),
         )
-        for event in collection_events
+        for event in (
+            "collections.upload_staged",
+            "collections.finalized",
+            "collections.archive_retrying",
+            "collections.archive_failed",
+        )
     ]
     job = {
         "job_id": "job-docs-1",
@@ -136,15 +79,6 @@ def _all_operator_payloads() -> list[dict[str, object]]:
         "phase": "working",
         "state": "running",
     }
-    munchy_events = (
-        "job.received",
-        "review.handoff",
-        "archive.handoff",
-        "collection_archive.handoff",
-        "job.issue",
-        "job.upload_waiting.reminder",
-        "job.succeeded",
-    )
     munchy_payloads = [
         build_munchy_job_payload(
             event=event,
@@ -162,7 +96,15 @@ def _all_operator_payloads() -> list[dict[str, object]]:
                 else None
             ),
         )
-        for event in munchy_events
+        for event in (
+            "job.received",
+            "review.handoff",
+            "archive.handoff",
+            "collection_archive.handoff",
+            "job.issue",
+            "job.upload_waiting.reminder",
+            "job.succeeded",
+        )
     ]
     jeb_payload = build_jeb_event_payload(
         event="jeb.issue",
@@ -179,7 +121,7 @@ def _all_operator_payloads() -> list[dict[str, object]]:
         delivered_at=NOW,
         details={"component": "routing", "error": "no route matched"},
     )
-    return [*archive_payloads, *collection_payloads, *munchy_payloads, jeb_payload]
+    return [*collection_payloads, *munchy_payloads, jeb_payload]
 
 
 def test_every_operator_event_has_a_valid_payload_builder() -> None:
@@ -190,80 +132,7 @@ def test_every_operator_event_has_a_valid_payload_builder() -> None:
     assert built == declared
 
 
-def test_operator_contract_contains_only_runtime_enforced_fields() -> None:
-    contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-
-    assert set(contract) == {"schema_version", "surface", "payload", "receiver_rendering", "events"}
-    event_fields = {
-        "event",
-        "operator_urgency",
-        "operator_action",
-        "operator_action_by_component",
-        "canonical_notification",
-        "required_payload_fields",
-        "type_values",
-    }
-    assert all(set(event) <= event_fields for event in contract["events"])
-
-
-def test_archive_restore_started_payload_names_retrieval_and_collection() -> None:
-    payload = build_archive_restore_started_payload(
-        config=CONFIG,
-        restore_id="ar-docs-1",
-        retrieval_tier="bulk",
-        estimated_ready_at="2026-07-16T00:00:00Z",
-        collections=COLLECTIONS,
-        delivered_at=NOW,
-    )
-
-    assert payload["event"] == "archive_restore.started"
-    assert payload["type"] == "archive_restore"
-    assert payload["retrieval_tier"] == "bulk"
-    assert payload["collections"] == [
-        {
-            "collection_id": "2025/20250102T030405Z__docs",
-            "collection_url": "https://riverhog.example.invalid/v1/collections/2025/20250102T030405Z__docs",
-        }
-    ]
-
-
-def test_archive_restore_ready_payload_describes_automatic_materialization() -> None:
-    payload = build_archive_restore_ready_payload(
-        config=CONFIG,
-        restore_id="ar-docs-1",
-        expires_at="2026-07-17T00:00:00Z",
-        collections=COLLECTIONS,
-        delivered_at=NOW,
-    )
-    assert payload["operator_action"] == "wait for automatic materialization"
-
-
-def test_archive_restore_completion_requires_no_operator_action() -> None:
-    payload = build_archive_restore_completed_payload(
-        config=CONFIG,
-        restore_id="ar-docs-1",
-        collections=COLLECTIONS,
-        delivered_at=NOW,
-    )
-    assert payload["operator_action"] == "none"
-    assert "hot storage" in str(payload["operator_message"])
-
-
-def test_archive_restore_failure_is_actionable() -> None:
-    payload = build_archive_restore_failed_payload(
-        config=CONFIG,
-        restore_id="ar-docs-1",
-        collections=COLLECTIONS,
-        delivered_at=NOW,
-        attempts=1,
-        failed_at="2026-07-14T00:00:00Z",
-        error="manifest mismatch",
-    )
-    assert payload["event"] == "archive_restore.failed"
-    assert "archive retrieval logs" in str(payload["operator_action"])
-
-
-def test_collection_lifecycle_payload_uses_collection_identity() -> None:
+def test_collection_lifecycle_payload_uses_immutable_collection_identity() -> None:
     payload = build_collection_lifecycle_payload(
         config=CONFIG,
         event="collections.finalized",
@@ -271,5 +140,6 @@ def test_collection_lifecycle_payload_uses_collection_identity() -> None:
         delivered_at=NOW,
         details=_collection_details("collections.finalized"),
     )
+
     assert payload["collection_id"] == "2025/20250102T030405Z__docs"
     assert payload["type"] == "collection_lifecycle"

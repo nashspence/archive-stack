@@ -1,80 +1,87 @@
 # Architecture
 
-Riverhog accepts logical collections, preserves each as independently encrypted objects
-in one or more named archive stores, and materializes selected files into a fast hot cache.
-PostgreSQL records identity, object placement, archive copies, and current materialization;
-object stores hold the bytes.
+Riverhog accepts logical collections and preserves each as independently encrypted objects
+in one or more named archive stores. PostgreSQL records immutable logical identity, object
+placement, archive copies, external catalog events, retrieval work, and cache leases. Object
+stores hold encrypted bytes.
 
-## Custody model
+## Ingress and custody
 
-A collection is the deletion unit. Its files have stable relative paths, sizes, and
-SHA-256 digests. Riverhog accepts a collection only after every required archive object,
-the encrypted manifest, and its OpenTimestamps proof are uploaded and verified. Uploads
-target the configured default archive store and retain hot files unless the caller
-explicitly requests archive-only storage.
+A collection is the deletion unit. Its immutable name contains its second-precision creation
+time and slug. Each file has an immutable relative path, size, SHA-256 digest, and optional
+portable metadata supplied by the client.
 
-Archive stores are the durable authority. Upload staging is temporary ingest state, and
-hot storage is a replaceable materialization for browsing and direct access. A collection's
-logical contents are immutable while present; changing them means accepting a new collection
-or deliberately deleting the existing collection. Its archive-copy set can change through
-guarded copy and retirement operations.
+Authenticated preflight creates a random per-file ingress secret and returns it to that
+client once as part of the upload descriptor. The secret is envelope-encrypted in the
+catalog. Clients stream independently framed age ciphertext through TUS into the configured
+ingress object store; TUS metadata carries only an opaque upload identifier. Riverhog reads
+and decrypts bounded ranges while constructing the permanent archive, so its host never
+needs space for a complete file or collection. It removes ingress objects only after the
+archive copy is complete and verified.
 
 Each archive copy contains:
 
 - packs containing files smaller than 16 MiB, with at most 32 MiB of file payload per pack;
-- one object per file from 16 MiB through the store's maximum plaintext size;
+- one object per file from 16 MiB through the maximum plaintext object size;
 - sequential objects for larger files;
-- a manifest mapping every logical file byte to its object or pack member;
+- a portable manifest mapping every logical byte to its object or pack member;
 - a proof binding that manifest.
 
-Every stored object is independently age encrypted and checksummed. No encrypted object may
-exceed 32 GiB; Riverhog derives the plaintext segment ceiling from the exact age framing
-overhead. The manifest and proof are independently readable standard-class objects. Archive
-object keys are opaque, and plaintext archive-root guidance contains no collection identity.
-Riverhog validates the manifest/proof binding without requiring a Bitcoin node during
-recovery; the timestamp evidence remains available for independent chain audit.
+Every object is independently age encrypted and checksummed. No encrypted object exceeds
+32 GiB. The manifest and proof remain immediately readable even when data objects use an
+archive class that requires provider-side retrieval. Archive object keys are opaque, and
+plaintext archive-root guidance contains no collection identity.
 
-An archive copy job reads and verifies every source object, writes and verifies an equivalent
-destination object set, then records the new copy. It does not materialize files in hot
-storage. Source reads are prepared only when the selected store requires retrieval.
+Archive stores are the durable authority. A collection's archive-copy set can change only
+through guarded copy and retirement operations. An archive copy reads and verifies the
+source object set, writes and verifies an equivalent destination set, and records the copy
+only after completion.
 
-## Retrieval
+## External applications and retrieval
 
-A fetch records an exact set of logical files. Collection arguments are a convenience that
-select every file in each named collection. Riverhog prepares and reads only the data objects
-mapped to missing selected files, validates the manifest/proof binding, verifies object and
-file checksums, then materializes those files. A shared small-file pack is fetched once when
-any of its members is selected.
+Riverhog publishes portable collection manifests and current collection changes through a
+narrow ResourceSync profile. External applications keep their own desired state and data;
+Riverhog does not track whether an application has materialized a file.
 
-Eviction accepts the same collection-or-file selection boundary. Before removing a hot file,
-Riverhog verifies a recorded archive copy containing its required data objects, manifest,
-and proof.
+An application submits exact immutable file references from a retrieval plan. Riverhog
+chooses a complete archive copy and creates an application-owned retrieval job. Immediately
+readable objects are served from their archive store. For a store whose provider requires
+retrieval preparation, Riverhog performs that work asynchronously and copies the existing
+archive ciphertext into a separate retrieval-cache store. Application leases bound cache
+retention, and acknowledgment releases the job's leases. The initial archive copy retains
+the same ciphertext in that cache for a configurable 30-day lease when the write store
+requires retrieval preparation.
+
+The content endpoint reconstructs one logical file, supports validators and byte ranges,
+and verifies archive and file checksums. Fishbox is the reference external application: its
+CLI owns a local directory and SQLite catalog, follows ResourceSync changes, obtains
+retrieval jobs, verifies downloads, and atomically publishes local files. Other applications
+use the same interface and remain isolated from Fishbox state.
 
 ## Component boundaries
 
-- Riverhog owns custody, search, retrieval, and hot-cache state.
+- Riverhog owns custody, search, portable catalog publication, retrieval preparation, and
+  verified logical-file delivery.
+- Fishbox owns one local materialization, including its directory, SQLite state, selection,
+  repair, audit, and eviction.
 - Munchy owns media discovery, routing, transformation, metadata projection, and assembly
-  before handing completed artifacts to a named destination adapter. Its core job lifecycle
-  depends only on the adapter contract; the Riverhog adapter owns collection submission,
-  remote progress, cancellation, and the final custody receipt.
+  before handing completed artifacts to a named destination adapter.
 - Jeb owns source enrollment and credentials, transport-neutral landing, watched-drop
-  scheduling, and named target submission. Ingress adapters publish completed files into
-  source landing directories, and target runners own destination-specific submission and
-  cancellation.
+  scheduling, and named target submission.
 - Gogurt maps mounted-volume markers to configured operator actions.
-- Downstream private configuration owns real device identity, destinations, recipients,
-  remotes, and deployment topology.
+- Downstream private configuration owns real identity, destinations, recipients, remotes,
+  application tokens, and deployment topology.
 
 ## Core terms
 
-- **Collection:** the logical deletion unit and namespace for archived files.
+- **Collection:** the immutable logical namespace and deletion unit.
 - **Archive object:** one independently encrypted pack, file, segment, manifest, or proof.
-- **Archive store:** a named remote object-store destination with its own access and read
-  behavior.
+- **Archive store:** a named durable object-store destination with defined read behavior.
 - **Archive copy:** one verified object set for a collection in one archive store.
-- **Hot storage:** the replaceable materialized cache of verified logical files.
-- **Fetch:** a named selection of files to keep materialized in hot storage.
-- **Restore:** retrieval and verification of the archive objects needed to materialize
-  selected files.
+- **Ingress store:** temporary encrypted upload storage.
+- **Retrieval cache:** leased encrypted storage used only for archive objects whose provider
+  cannot make them immediately readable.
+- **Retrieval plan:** a stable resolution of logical files to one complete archive copy.
+- **Retrieval job:** application-owned preparation and lease state for one plan.
 - **Handoff:** Munchy's delivery of completed artifacts through one named destination
-  adapter; adapter-confirmed safety controls release of local work.
+  adapter.

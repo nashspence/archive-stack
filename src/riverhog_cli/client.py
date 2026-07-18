@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
+from xml.etree import ElementTree
 
 import httpx
 
@@ -72,6 +73,7 @@ class ApiClient:
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
         self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", self.http2)
         self._request_client: httpx.Client | None = None
+        self._download_client: httpx.Client | None = None
         self._upload_client: TusHttpClient | None = None
 
     def _make_client(self, *, timeout_seconds: float) -> httpx.Client:
@@ -102,6 +104,9 @@ class ApiClient:
         if self._request_client is not None:
             self._request_client.close()
             self._request_client = None
+        if self._download_client is not None:
+            self._download_client.close()
+            self._download_client = None
         if self._upload_client is not None:
             self._upload_client.close()
             self._upload_client = None
@@ -119,6 +124,16 @@ class ApiClient:
         if self.host_header:
             headers["Host"] = self.host_header
         return headers
+
+    def _persistent_download_client(self) -> httpx.Client:
+        if self._download_client is None:
+            self._download_client = self._make_client(
+                timeout_seconds=_timeout_seconds(
+                    "RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS",
+                    _DOWNLOAD_TIMEOUT_SECONDS,
+                )
+            )
+        return self._download_client
 
     def tus_client(self) -> TusHttpClient:
         if self._upload_client is None:
@@ -190,13 +205,11 @@ class ApiClient:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "slug": slug,
             "files": [dict(file) for file in files],
-            "retain_hot": retain_hot,
         }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
@@ -215,10 +228,9 @@ class ApiClient:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        retain_hot: bool = True,
         notify: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"slug": slug, "retain_hot": retain_hot}
+        payload: dict[str, Any] = {"slug": slug}
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         if upload_timestamp is not None:
@@ -284,7 +296,6 @@ class ApiClient:
         sort: str = "logical_path",
         order: str = "asc",
         collection: str | None = None,
-        hot: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
@@ -297,8 +308,6 @@ class ApiClient:
             params["q"] = query
         if collection:
             params["collection"] = collection
-        if hot is not None:
-            params["hot"] = hot
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/search", params=params)
@@ -400,39 +409,6 @@ class ApiClient:
             },
         )
 
-    def list_archive_restores(
-        self,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "created_at",
-        order: str = "desc",
-        terminal: str = "all",
-        state: str | None = None,
-        collection: str | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-            "terminal": terminal,
-        }
-        if state is not None:
-            params["state"] = state
-        if collection is not None:
-            params["collection"] = collection
-        return self._json("GET", "/v1/archive-restores", params=params)
-
-    def get_archive_restore(self, restore_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/archive-restores/{quote(restore_id, safe='/')}")
-
-    def cancel_archive_restore(self, restore_id: str) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/archive-restores/{quote(restore_id, safe='/')}/cancel",
-        )
-
     def _download(
         self,
         path: str,
@@ -440,203 +416,128 @@ class ApiClient:
         *,
         progress: DownloadProgress | None = None,
     ) -> bytes | int:
-        timeout_seconds = _timeout_seconds(
-            "RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS",
-            _DOWNLOAD_TIMEOUT_SECONDS,
-        )
-        with self._make_client(timeout_seconds=timeout_seconds) as client:
-            if output is None:
-                response = client.get(path)
+        client = self._persistent_download_client()
+        if output is None:
+            response = client.get(path)
+            self._raise_for_error(response)
+            return response.content
+
+        with client.stream("GET", path) as response:
+            if not response.is_success:
+                response.read()
                 self._raise_for_error(response)
-                return response.content
 
-            with client.stream("GET", path) as response:
-                if not response.is_success:
-                    response.read()
-                    self._raise_for_error(response)
+            content_length = response.headers.get("Content-Length")
+            try:
+                total_bytes = int(content_length) if content_length is not None else None
+            except ValueError:
+                total_bytes = None
+            tmp_output = output.with_name(f".{output.name}.part")
+            output.parent.mkdir(parents=True, exist_ok=True)
 
-                content_length = response.headers.get("Content-Length")
-                try:
-                    total_bytes = int(content_length) if content_length is not None else None
-                except ValueError:
-                    total_bytes = None
-                tmp_output = output.with_name(f".{output.name}.part")
-                output.parent.mkdir(parents=True, exist_ok=True)
+            downloaded = 0
+            try:
+                with tmp_output.open("wb") as handle:
+                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        if progress is not None:
+                            progress(downloaded, total_bytes)
+            except httpx.TransportError as exc:
+                tmp_output.unlink(missing_ok=True)
+                self.close()
+                raise ServiceUnavailable(
+                    "download stream was interrupted before completion; "
+                    "the partial file was discarded"
+                ) from exc
+            tmp_output.replace(output)
+            return downloaded
 
-                downloaded = 0
-                try:
-                    with tmp_output.open("wb") as handle:
-                        for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                            if not chunk:
-                                continue
-                            handle.write(chunk)
-                            downloaded += len(chunk)
-                            if progress is not None:
-                                progress(downloaded, total_bytes)
-                except httpx.TransportError as exc:
-                    tmp_output.unlink(missing_ok=True)
-                    self.close()
-                    raise ServiceUnavailable(
-                        "download stream was interrupted before completion; "
-                        "the partial file was discarded"
-                    ) from exc
-                tmp_output.replace(output)
-                return downloaded
-
-    def list_fetches(
-        self,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        state: str | None = None,
-        query: str | None = None,
-        sort: str = "id",
-        order: str = "asc",
-        all_items: bool = False,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-        }
-        if state is not None:
-            params["state"] = state
-        if query:
-            params["q"] = query
-        if all_items:
-            params["all"] = True
-        return self._json("GET", "/v1/fetches", params=params)
-
-    def create_fetch(
-        self,
-        *,
-        label: str | None,
-        collections: Sequence[str],
-        files: Sequence[tuple[str, str]] = (),
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/fetches",
-            json={
-                "label": label,
-                "collections": list(collections),
-                "files": _file_selections_payload(files),
-            },
+    def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/resourcesync/changelist.xml",
+            params={"after": after},
         )
+        root = ElementTree.fromstring(response.content)
+        changes: list[dict[str, Any]] = []
+        for url in root:
+            loc = next((child.text for child in url if child.tag.endswith("loc")), None)
+            metadata = next((child for child in url if child.tag.endswith("md")), None)
+            if loc is None or metadata is None:
+                continue
+            collection_id = loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+            changes.append(
+                {
+                    "collection_id": collection_id,
+                    "change": metadata.attrib.get("change"),
+                    "datetime": metadata.attrib.get("datetime"),
+                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
+                }
+            )
+        return {"cursor": int(root.attrib.get("data-cursor", after)), "changes": changes}
 
-    def add_fetch_collections(
-        self,
-        fetch_id: int,
-        collections: Sequence[str],
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/fetches/{fetch_id}/collections",
-            json={"collections": list(collections)},
-        )
-
-    def remove_fetch_collections(
-        self,
-        fetch_id: int,
-        collections: Sequence[str],
-    ) -> dict[str, Any]:
-        return self._json(
-            "DELETE",
-            f"/v1/fetches/{fetch_id}/collections",
-            json={"collections": list(collections)},
-        )
-
-    def add_fetch_files(
-        self,
-        fetch_id: int,
-        files: Sequence[tuple[str, str]],
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/fetches/{fetch_id}/files",
-            json={"files": _file_selections_payload(files)},
-        )
-
-    def remove_fetch_files(
-        self,
-        fetch_id: int,
-        files: Sequence[tuple[str, str]],
-    ) -> dict[str, Any]:
-        return self._json(
-            "DELETE",
-            f"/v1/fetches/{fetch_id}/files",
-            json={"files": _file_selections_payload(files)},
-        )
-
-    def start_fetch(self, fetch_id: int) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/fetches/{fetch_id}/start",
-        )
-
-    def cancel_fetch(self, fetch_id: int) -> dict[str, Any]:
-        return self._json("POST", f"/v1/fetches/{fetch_id}/cancel")
-
-    def delete_fetch(self, fetch_id: int, *, confirmation: int) -> dict[str, Any]:
-        return self._json(
-            "DELETE",
-            f"/v1/fetches/{fetch_id}",
-            json={"confirmation": confirmation},
-        )
-
-    def evict_hot(
-        self,
-        collections: Sequence[str] = (),
-        *,
-        files: Sequence[tuple[str, str]] = (),
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/hot/evict",
-            json={
-                "collections": list(collections),
-                "files": _file_selections_payload(files),
-                "dry_run": dry_run,
-            },
-        )
-
-    def get_fetch(self, fetch_id: int) -> dict[str, Any]:
-        return self._json("GET", f"/v1/fetches/{fetch_id}")
-
-    def get_fetch_status(self, fetch_id: int) -> dict[str, Any]:
-        return self._json("GET", f"/v1/fetches/{fetch_id}/status")
-
-    def list_fetch_files(
-        self,
-        fetch_id: int,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "logical_path",
-        order: str = "asc",
-        query: str | None = None,
-        hot: bool | None = None,
-        all_items: bool = False,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-        }
-        if query:
-            params["q"] = query
-        if hot is not None:
-            params["hot"] = hot
-        if all_items:
-            params["all"] = True
+    def get_portable_collection_manifest(self, collection_id: str) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/fetches/{fetch_id}/files",
-            params=params,
+            f"/v1/catalog/collections/{quote(collection_id, safe='/')}/manifest",
         )
+
+    def plan_retrieval(
+        self,
+        files: Sequence[tuple[str, str]],
+        *,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        if lease_seconds is not None:
+            payload["lease_seconds"] = lease_seconds
+        return self._json("POST", "/v1/retrieval-plans", json=payload)
+
+    def create_retrieval_job(
+        self,
+        files: Sequence[tuple[str, str]],
+        *,
+        plan_etag: str,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        if lease_seconds is not None:
+            payload["lease_seconds"] = lease_seconds
+        return self._json(
+            "POST",
+            "/v1/retrieval-jobs",
+            json=payload,
+            headers={"If-Match": f'"{plan_etag}"'},
+        )
+
+    def get_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
+
+    def cancel_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
+
+    def acknowledge_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/retrieval-jobs/{quote(job_id, safe='')}/ack")
+
+    def download_retrieval_file(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        path: str,
+        output: Path,
+        progress: DownloadProgress | None = None,
+    ) -> int:
+        result = self._download(
+            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
+            f"collection_id={quote(collection_id, safe='')}&path={quote(path, safe='')}",
+            output,
+            progress=progress,
+        )
+        return int(result)
 
     def append_upload_chunk(
         self,
@@ -656,19 +557,6 @@ class ApiClient:
             "offset": next_offset,
             "expires_at": None,
         }
-
-    def query_files(
-        self,
-        path: str,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            "/v1/files",
-            params={"path": path, "page": page, "per_page": per_page},
-        )
 
     def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
         return self._json(

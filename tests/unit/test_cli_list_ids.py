@@ -37,30 +37,6 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
     assert result.stdout == ("2025/20250101T000000Z__alpha\n2025/20250102T000000Z__beta\n")
 
 
-def test_fetch_list_all_ids_uses_the_same_pipeable_shape(monkeypatch) -> None:
-    class FakeClient:
-        def list_fetches(self, **kwargs: Any) -> dict[str, object]:
-            assert kwargs["all_items"] is True
-            assert kwargs["query"] == "docs"
-            return {
-                "page": 1,
-                "per_page": 2,
-                "total": 2,
-                "pages": 1,
-                "fetches": [{"id": 1}, {"id": 2}],
-            }
-
-    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
-
-    result = runner.invoke(
-        app,
-        ["hot", "fetch", "list", "--query", "docs", "--all", "--ids"],
-    )
-
-    assert result.exit_code == 0
-    assert result.stdout == "1\n2\n"
-
-
 def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
     class FakeClient:
         def search(self, query: str | None, **kwargs: Any) -> dict[str, object]:
@@ -88,32 +64,6 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
         "2025/20250101T000000Z__docs::tax/invoice.pdf\n"
         "2025/20250102T000000Z__docs::tax/invoice.pdf\n"
     )
-
-
-def test_fetch_files_all_selectors_uses_the_same_pipeable_shape(monkeypatch) -> None:
-    class FakeClient:
-        def list_fetch_files(self, fetch_id: int, **kwargs: Any) -> dict[str, object]:
-            assert fetch_id == 1
-            assert kwargs["query"] == "photo"
-            assert kwargs["all_items"] is True
-            return {
-                "files": [
-                    {
-                        "collection_id": "2025/20250101T000000Z__camera",
-                        "collection_path": "dcim/photo.jpg",
-                    }
-                ]
-            }
-
-    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
-
-    result = runner.invoke(
-        app,
-        ["hot", "fetch", "files", "1", "-q", "photo", "--all", "--selectors"],
-    )
-
-    assert result.exit_code == 0
-    assert result.stdout == "2025/20250101T000000Z__camera::dcim/photo.jpg\n"
 
 
 def test_riverhog_closes_its_shared_api_client(monkeypatch) -> None:

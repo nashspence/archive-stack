@@ -101,9 +101,9 @@ class TusTransport:
             "Upload-Offset": str(offset),
         }
         if checksum_algorithm is not None:
-            checksum = base64.b64encode(
-                hashlib.new(checksum_algorithm, content).digest()
-            ).decode("ascii")
+            checksum = base64.b64encode(hashlib.new(checksum_algorithm, content).digest()).decode(
+                "ascii"
+            )
             headers["Upload-Checksum"] = f"{checksum_algorithm} {checksum}"
         response = self._client_for_request().patch(
             self._url_rewriter(upload_url),

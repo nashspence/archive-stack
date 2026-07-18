@@ -238,6 +238,25 @@ class ResumableAgeScryptSession:
         nonce = _chunk_nonce(chunk_index, final=final)
         return ChaCha20Poly1305(self._payload_key).encrypt(nonce, plaintext, b"")
 
+    def decrypt_chunk(self, chunk_index: int, ciphertext: bytes, *, final: bool) -> bytes:
+        """Decrypt one authenticated payload chunk from this session."""
+
+        if chunk_index < 0:
+            raise ValueError("chunk_index must be non-negative")
+        if len(ciphertext) < AEAD_TAG_SIZE or len(ciphertext) > CHUNK_SIZE + AEAD_TAG_SIZE:
+            raise AgeFormatError("age payload chunk has an invalid ciphertext length")
+        try:
+            plaintext = ChaCha20Poly1305(self._payload_key).decrypt(
+                _chunk_nonce(chunk_index, final=final),
+                ciphertext,
+                b"",
+            )
+        except InvalidTag as exc:
+            raise AgeDecryptError("age payload authentication failed") from exc
+        if not final and len(plaintext) != CHUNK_SIZE:
+            raise AgeFormatError("non-final age payload chunk decrypted to non-64KiB plaintext")
+        return plaintext
+
     def encrypt_plaintext(self, plaintext: bytes) -> bytes:
         """Encrypt a complete plaintext into a standard binary .age file."""
 

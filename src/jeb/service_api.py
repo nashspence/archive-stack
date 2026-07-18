@@ -504,9 +504,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             else None
                         ),
                         target=str(payload.get("target") or "munchy"),
-                        notify=(
-                            _mapping(payload, "notify") if "notify" in payload else None
-                        ),
+                        notify=(_mapping(payload, "notify") if "notify" in payload else None),
                         threshold_bytes=int(payload.get("threshold_bytes", 0)),
                         cleanup=cast(
                             Literal["never", "after_target_success"],

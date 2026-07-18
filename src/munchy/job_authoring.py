@@ -354,9 +354,7 @@ def render_job_template(
     try:
         return value.format(**values)
     except KeyError as exc:
-        raise MunchyJobAuthoringError(
-            f"unknown handoff template field: {exc.args[0]}"
-        ) from exc
+        raise MunchyJobAuthoringError(f"unknown handoff template field: {exc.args[0]}") from exc
 
 
 def discover_local_candidates(

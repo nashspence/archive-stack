@@ -58,10 +58,7 @@ def _archive_copy_states(payload: Mapping[str, object]) -> str:
 def format_find(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "files")]
     for file in _items(payload, "files"):
-        lines.append(
-            f"- {file.get('logical_path', 'unknown')}  {_bytes(file.get('bytes'))}  "
-            f"hot={str(bool(file.get('hot'))).lower()}"
-        )
+        lines.append(f"- {file.get('logical_path', 'unknown')}  {_bytes(file.get('bytes'))}")
     return "\n".join(lines)
 
 
@@ -71,7 +68,6 @@ def format_collections(payload: Mapping[str, object]) -> str:
         lines.append(
             f"- {collection.get('id', 'unknown')}  files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
-            f"hot={_bytes(collection.get('hot_bytes'))}  "
             f"archive={_archive_copy_states(collection)}"
         )
     return "\n".join(lines)
@@ -85,7 +81,6 @@ def format_collection_summary(
         f"collection {payload.get('id', 'unknown')}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
-        f"hot: {_bytes(payload.get('hot_bytes'))}",
         f"archive copies: {_archive_copy_states(payload)}",
     ]
     for archive in _items(payload, "archive_copies"):
@@ -108,22 +103,14 @@ def format_collection_deletion_plan(payload: Mapping[str, object]) -> str:
         if isinstance(archive_objects, Sequence) and not isinstance(archive_objects, (str, bytes))
         else 0
     )
-    archive_restores = payload.get("archive_restores")
-    archive_restore_count = (
-        len(archive_restores)
-        if isinstance(archive_restores, Sequence) and not isinstance(archive_restores, (str, bytes))
-        else 0
-    )
     lines = [
         str(payload.get("warning", "DANGER: This collection deletion is permanent.")),
         "",
         f"collection deletion plan: {payload.get('collection_id', 'unknown')}",
         f"status: {payload.get('status', 'unknown')}",
         f"files: {payload.get('file_count', 0)} ({_bytes(payload.get('bytes'))})",
-        f"hot: {payload.get('hot_files', 0)} ({_bytes(payload.get('hot_bytes'))})",
         f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
         f"archive objects: {archive_object_count}",
-        f"archive restores: {archive_restore_count}",
     ]
     blockers = payload.get("blockers")
     if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
@@ -205,7 +192,6 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files_uploaded', 0)}/{payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('uploaded_bytes'))}/{_bytes(payload.get('bytes_total'))}",
-        "hot storage: retained" if payload.get("retain_hot") else "hot storage: archive only",
     ]
     if payload.get("archive_phase"):
         lines.append(f"archive phase: {payload['archive_phase']}")
@@ -221,64 +207,8 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
         f"collection upload dry-run: {identity}",
         f"files: {payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('bytes_total'))}",
-        "hot storage: retained" if payload.get("retain_hot") else "hot storage: archive only",
     ]
     return "\n".join(lines)
-
-
-def format_fetches(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "fetches")]
-    for fetch in _items(payload, "fetches"):
-        label = fetch.get("label")
-        label_text = f"  {label}" if label else ""
-        lines.append(
-            f"- {fetch.get('id', 'unknown')}{label_text}  "
-            f"state={fetch.get('state', 'unknown')}  "
-            f"hot={fetch.get('hot_files', 0)}/{fetch.get('files', 0)}"
-        )
-    return "\n".join(lines)
-
-
-def format_fetch(payload: Mapping[str, object]) -> str:
-    lines = [
-        f"fetch {payload.get('id', 'unknown')}",
-        f"state: {payload.get('state', 'unknown')}",
-        f"files: {payload.get('files', 0)} ({_bytes(payload.get('bytes'))})",
-        f"hot: {payload.get('hot_files', 0)} ({_bytes(payload.get('hot_bytes'))})",
-        f"missing: {payload.get('missing_files', 0)} ({_bytes(payload.get('missing_bytes'))})",
-    ]
-    if payload.get("label"):
-        lines.insert(1, f"label: {payload['label']}")
-    collections = payload.get("collections")
-    if isinstance(collections, Sequence) and not isinstance(collections, (str, bytes)):
-        lines.append("collections: " + ", ".join(str(collection) for collection in collections))
-    action = payload.get("next_action")
-    if isinstance(action, Mapping):
-        lines.append(f"next: {action.get('action', 'none')} — {action.get('reason', '')}")
-    restores = payload.get("archive_restores")
-    if isinstance(restores, Mapping) and int(restores.get("total", 0) or 0):
-        lines.append(f"archive restores: {restores.get('total', 0)}")
-    return "\n".join(lines)
-
-
-def format_fetch_files(payload: Mapping[str, object]) -> str:
-    return format_find({**payload, "query": payload.get("q")})
-
-
-def format_hot_evict(payload: Mapping[str, object]) -> str:
-    return "\n".join(
-        [
-            f"hot eviction: {payload.get('status', 'unknown')}",
-            (
-                f"selected: {payload.get('selected_files', 0)} "
-                f"({_bytes(payload.get('selected_bytes'))})"
-            ),
-            (
-                f"affected: {payload.get('would_evict_files', 0)} "
-                f"({_bytes(payload.get('would_evict_bytes'))})"
-            ),
-        ]
-    )
 
 
 def format_archive_report(payload: Mapping[str, object]) -> str:
@@ -304,26 +234,6 @@ def format_archive_copy_job(payload: Mapping[str, object]) -> str:
     ]
     if payload.get("failure"):
         lines.append(f"failure: {payload['failure']}")
-    return "\n".join(lines)
-
-
-def format_archive_restores(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "archive restores")]
-    for restore in _items(payload, "restores"):
-        lines.append(
-            f"- {restore.get('id', 'unknown')}  state={restore.get('state', 'unknown')}  "
-            f"collections={len(_items(restore, 'collections'))}"
-        )
-    return "\n".join(lines)
-
-
-def format_archive_restore(payload: Mapping[str, object]) -> str:
-    lines = [
-        f"archive restore {payload.get('id', 'unknown')}",
-        f"state: {payload.get('state', 'unknown')}",
-    ]
-    if payload.get("latest_message"):
-        lines.append(f"message: {payload['latest_message']}")
     return "\n".join(lines)
 
 

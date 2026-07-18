@@ -26,9 +26,11 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["environment"]["JEB_TUSD_BASE_URL"] == (
         "${JEB_TUSD_BASE_URL:-" + runtime.ingress.tusd_base_url + "}"
     )
-    max_age_default = service["environment"]["JEB_TUS_INCOMPLETE_MAX_AGE"].removeprefix(
-        "${JEB_TUS_INCOMPLETE_MAX_AGE:-"
-    ).removesuffix("}")
+    max_age_default = (
+        service["environment"]["JEB_TUS_INCOMPLETE_MAX_AGE"]
+        .removeprefix("${JEB_TUS_INCOMPLETE_MAX_AGE:-")
+        .removesuffix("}")
+    )
     assert parse_duration(max_age_default) == runtime.ingress.tus_incomplete_max_age_seconds
     assert all(
         volume.get("target", "").startswith(("/landing", "/state")) for volume in service["volumes"]
@@ -79,9 +81,9 @@ def test_jeb_service_image_runs_service_entrypoint() -> None:
 
 
 def test_jeb_tus_proxy_streams_bounded_upload_chunks() -> None:
-    config = (
-        REPO / "services" / "jeb" / "adapters" / "tus" / "nginx.conf"
-    ).read_text(encoding="utf-8")
+    config = (REPO / "services" / "jeb" / "adapters" / "tus" / "nginx.conf").read_text(
+        encoding="utf-8"
+    )
 
     assert config.count("client_max_body_size 128m;") == 2
     for directive in (

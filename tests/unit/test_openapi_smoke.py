@@ -3,71 +3,48 @@ from __future__ import annotations
 from riverhog_api.app import create_app
 
 
-def test_openapi_describes_collection_archive_and_fetch_boundaries() -> None:
-    document = create_app().openapi()
-    paths = document["paths"]
+def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
+    paths = create_app().openapi()["paths"]
 
     assert {
+        "/.well-known/resourcesync",
+        "/resourcesync/resourcelist.xml",
+        "/resourcesync/changelist.xml",
         "/v1/archive",
         "/v1/archive/copies",
-        "/v1/archive-restores",
-        "/v1/archive-restores/{archive_restore_id}",
+        "/v1/catalog/collections/{collection_id}/manifest",
         "/v1/collections",
         "/v1/collections/{collection_id}",
         "/v1/collections/{collection_id}/deletion-plan",
         "/v1/collections/{collection_id}/delete",
-        "/v1/fetches",
-        "/v1/fetches/{fetch_id}",
-        "/v1/fetches/{fetch_id}/start",
-        "/v1/fetches/{fetch_id}/status",
-        "/v1/hot/evict",
+        "/v1/retrieval-plans",
+        "/v1/retrieval-jobs",
+        "/v1/retrieval-jobs/{job_id}",
+        "/v1/retrieval-jobs/{job_id}/content",
+        "/v1/retrieval-jobs/{job_id}/ack",
         "/v1/search",
     }.issubset(paths)
+    assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]
 
 
-def test_fetch_start_is_a_single_state_transition() -> None:
-    operation = create_app().openapi()["paths"]["/v1/fetches/{fetch_id}/start"]["post"]
-    assert operation["responses"]["200"]["description"] == "Successful Response"
-
-
-def test_archive_restore_schema_is_collection_materialization() -> None:
+def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
-    restore = schemas["ArchiveRestoreOut"]
 
-    assert set(restore["required"]) >= {
-        "id",
-        "state",
-        "collections",
-        "progress",
+    assert set(schemas["RetrievalPlanOut"]["required"]) == {
+        "format",
+        "lease_seconds",
+        "files",
+        "objects",
+        "etag",
     }
+    assert {"id", "state", "plan_etag", "files"} <= set(schemas["RetrievalJobOut"]["required"])
 
 
-def test_collection_upload_requests_retain_hot_storage_by_default() -> None:
+def test_collection_file_preflight_requires_client_side_encryption() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
-
-    assert schemas["CreateOrResumeCollectionUploadRequest"]["properties"]["retain_hot"] == {
-        "type": "boolean",
-        "title": "Retain Hot",
-        "default": True,
-    }
-    assert (
-        schemas["CreateOrResumeCollectionUploadSessionRequest"]["properties"]["retain_hot"][
-            "default"
-        ]
-        is True
-    )
-
-
-def test_collection_file_upload_response_reports_storage_policy() -> None:
-    schemas = create_app().openapi()["components"]["schemas"]
+    encryption = schemas["CollectionUploadEncryptionOut"]
     response = schemas["CollectionUploadSessionFileUploadOut"]
 
-    assert response["properties"]["retain_hot"] == {
-        "type": "boolean",
-        "title": "Retain Hot",
-    }
-    assert response["properties"]["archive_store"] == {
-        "type": "string",
-        "title": "Archive Store",
-    }
-    assert {"retain_hot", "archive_store"} <= set(response["required"])
+    assert encryption["properties"]["format"]["const"] == "age-v1-scrypt-resumable"
+    assert encryption["properties"]["passphrase"]["writeOnly"] is True
+    assert {"encryption", "length", "offset", "archive_store"} <= set(response["required"])

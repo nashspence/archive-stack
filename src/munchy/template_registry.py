@@ -45,12 +45,10 @@ def ensure_template_registry_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS job_templates_enabled_name "
-        "ON job_templates(enabled, name)"
+        "CREATE INDEX IF NOT EXISTS job_templates_enabled_name ON job_templates(enabled, name)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS job_templates_updated_name "
-        "ON job_templates(updated_at, name)"
+        "CREATE INDEX IF NOT EXISTS job_templates_updated_name ON job_templates(updated_at, name)"
     )
 
 
@@ -119,9 +117,10 @@ def create_template_registry_snapshot(source_db: Path, snapshot_db: Path) -> int
     online_copy = _temporary_path(snapshot_db.parent, "runner-online-copy")
     pending_snapshot = _temporary_path(snapshot_db.parent, "template-registry")
     try:
-        with closing(_connect_read_only(source_db)) as source, closing(
-            sqlite3.connect(online_copy)
-        ) as consistent:
+        with (
+            closing(_connect_read_only(source_db)) as source,
+            closing(sqlite3.connect(online_copy)) as consistent,
+        ):
             source.backup(consistent)
             _quick_check(consistent, label="runner database snapshot")
             _require_template_schema(consistent, label="runner database snapshot")

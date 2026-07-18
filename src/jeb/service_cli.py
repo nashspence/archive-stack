@@ -90,9 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         sort_fields=ATTEMPT_LIST_SORT_FIELDS,
         default_sort="updated_at",
         default_order="desc",
-        query_help=(
-            "Search attempt, batch, job, collection, target, state, timestamp, or error."
-        ),
+        query_help=("Search attempt, batch, job, collection, target, state, timestamp, or error."),
     )
     attempt_list.add_argument(
         "--terminal",

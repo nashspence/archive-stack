@@ -49,7 +49,6 @@ class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     ingest_source: str | None = None
     upload_timestamp: str | None = None
     archive_store: str | None = None
-    retain_hot: bool = True
     notify: CollectionNotifyConfig | None = None
 
 
@@ -58,7 +57,6 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     ingest_source: str | None = None
     upload_timestamp: str | None = None
     archive_store: str | None = None
-    retain_hot: bool = True
     notify: CollectionNotifyConfig | None = None
 
 
@@ -70,8 +68,6 @@ class CollectionSummaryOut(RiverhogModel):
     id: str
     files: int
     bytes: int
-    hot_files: int
-    hot_bytes: int
     archive_copies: list[ArchiveCopyOut]
 
 
@@ -86,7 +82,6 @@ class ListCollectionsResponse(RiverhogModel):
 class CollectionDeletionFileOut(RiverhogModel):
     path: str
     bytes: int
-    hot: bool
 
 
 class CollectionDeletionObjectOut(RiverhogModel):
@@ -94,11 +89,6 @@ class CollectionDeletionObjectOut(RiverhogModel):
     kind: Literal["pack", "file", "segment", "manifest", "proof"]
     object_path: str
     stored_bytes: int
-
-
-class CollectionDeletionHotObjectOut(RiverhogModel):
-    path: str
-    bytes: int
 
 
 class CollectionDeletionUploadFileOut(RiverhogModel):
@@ -115,13 +105,10 @@ class CollectionDeletionPlanOut(RiverhogModel):
     files: list[CollectionDeletionFileOut]
     file_count: int
     bytes: int
-    hot_objects: list[CollectionDeletionHotObjectOut]
-    hot_files: int
-    hot_bytes: int
     archive_objects: list[CollectionDeletionObjectOut]
     remote_storage_bytes: int
     upload_files: list[CollectionDeletionUploadFileOut]
-    archive_restores: list[str]
+    manifest_etag: str
     metadata_rows: dict[str, int]
     blockers: list[str]
     billing_note: str
@@ -151,7 +138,6 @@ class CollectionUploadFileOut(RiverhogModel):
 class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
-    retain_hot: bool
     archive_store: str
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut
@@ -160,17 +146,14 @@ class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: str
     ingest_source: str | None
-    retain_hot: bool
     archive_store: str
     state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
     files_total: int
     files_pending: int
     files_partial: int
     files_uploaded: int
-    hot_materialized_files: int = 0
     bytes_total: int
     uploaded_bytes: int
-    hot_materialized_bytes: int = 0
     missing_bytes: int
     upload_state_expires_at: str | None
     latest_failure: str | None = None
@@ -186,6 +169,15 @@ class CollectionUploadSessionOut(RiverhogModel):
     collection: CollectionSummaryOut | None
 
 
+class CollectionUploadEncryptionOut(RiverhogModel):
+    format: Literal["age-v1-scrypt-resumable"]
+    passphrase: str = Field(json_schema_extra={"writeOnly": True})
+    state: dict[str, object]
+    plaintext_bytes: int
+    ciphertext_bytes: int
+    chunk_bytes: int
+
+
 class CollectionFileUploadSessionOut(RiverhogModel):
     path: str
     protocol: str
@@ -194,12 +186,12 @@ class CollectionFileUploadSessionOut(RiverhogModel):
     length: int
     checksum_algorithm: str
     expires_at: str | None
+    encryption: CollectionUploadEncryptionOut
 
 
 class CollectionUploadSessionFileUploadOut(CollectionFileUploadSessionOut):
     collection_id: str
     ingest_source: str | None
-    retain_hot: bool
     archive_store: str
     state: Literal["open", "uploading"]
     file: CollectionUploadFileOut

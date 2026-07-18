@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import (
+    IngressStoreConfig,
+    RetrievalCacheConfig,
+    RuntimeConfig,
+)
 from tests.harness import configure_garage
 from tests.unit.db_helpers import sqlite_url
 
@@ -28,12 +32,22 @@ class _FakeS3Client:
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        hot_store_endpoint_url="http://example.invalid:9000",
-        hot_store_region="us-east-1",
-        hot_store_bucket="riverhog",
-        hot_store_access_key_id="test-access",
-        hot_store_secret_access_key="test-secret",
-        hot_store_force_path_style=True,
+        ingress_store=IngressStoreConfig(
+            endpoint_url="http://garage:3900",
+            region="garage",
+            bucket="riverhog-ingress",
+            access_key_id="GK000000000000000000000002",
+            secret_access_key="2" * 64,
+            force_path_style=True,
+        ),
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="http://garage:3900",
+            region="garage",
+            bucket="riverhog-retrieval-cache",
+            access_key_id="GK000000000000000000000002",
+            secret_access_key="2" * 64,
+            force_path_style=True,
+        ),
         tusd_base_url="http://example.invalid:1080/files",
         tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
@@ -46,26 +60,31 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     return replace(config, archive_stores={"deep": store})
 
 
-def test_lifecycle_targets_uses_archive_bucket_when_distinct(tmp_path: Path) -> None:
+def test_lifecycle_targets_cover_each_distinct_object_store_bucket(tmp_path: Path) -> None:
     config = _config(tmp_path, archive_bucket="riverhog-archive")
-    hot_client = _FakeS3Client()
+    ingress_client = _FakeS3Client()
     archive_client = _FakeS3Client()
+    cache_client = _FakeS3Client()
 
-    original_hot = configure_garage.create_hot_store_client
+    original_ingress = configure_garage.create_ingress_s3_client
     original_archive = configure_garage.create_archive_s3_client
-    configure_garage.create_hot_store_client = lambda current: hot_client  # type: ignore[assignment]
+    original_cache = configure_garage.create_retrieval_cache_s3_client
+    configure_garage.create_ingress_s3_client = lambda *args: ingress_client  # type: ignore[assignment]
     configure_garage.create_archive_s3_client = (  # type: ignore[assignment]
         lambda current, store: archive_client
     )
+    configure_garage.create_retrieval_cache_s3_client = lambda *args: cache_client  # type: ignore[assignment]
     try:
         targets = configure_garage._lifecycle_targets(config)
     finally:
-        configure_garage.create_hot_store_client = original_hot  # type: ignore[assignment]
+        configure_garage.create_ingress_s3_client = original_ingress  # type: ignore[assignment]
         configure_garage.create_archive_s3_client = original_archive  # type: ignore[assignment]
+        configure_garage.create_retrieval_cache_s3_client = original_cache  # type: ignore[assignment]
 
     assert targets == [
-        (hot_client, "riverhog"),
+        (ingress_client, "riverhog-ingress"),
         (archive_client, "riverhog-archive"),
+        (cache_client, "riverhog-retrieval-cache"),
     ]
 
 

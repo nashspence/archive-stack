@@ -4,14 +4,17 @@ Read [README.md](README.md) for the product entrypoint.
 
 ## Boundaries
 
-Riverhog owns generic collection custody, named archive stores and copies, hot-cache
-materialization, fetches, and search. Munchy owns generic media ingest, Jeb owns generic
-watched-drop collection, and Gogurt owns mounted-volume actions. Keep public code generic;
-real identity and deployment topology belong downstream.
+Riverhog owns generic collection custody, named archive stores and copies, collection
+search, ResourceSync catalog publication, and logical-file retrieval. Fishbox owns local
+materialization. Munchy owns generic media ingest, Jeb owns generic watched-drop collection,
+and Gogurt owns mounted-volume actions. Keep public code generic; real identity and
+deployment topology belong downstream.
 
 ## Safety
 
 - Treat configured archive stores as the durable authority.
+- Keep ingress and retrieval-cache objects encrypted whenever they leave a client or
+  Riverhog process.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
 - Treat catalog and object-store mutations as one custody operation.
 - Never expose secrets or private deployment identity in public code, fixtures, logs,

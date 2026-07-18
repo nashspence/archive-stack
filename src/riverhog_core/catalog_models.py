@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, ForeignKeyConstraint, Index, Integer, String, Text, true
+from sqlalchemy import BigInteger, ForeignKeyConstraint, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -10,6 +10,7 @@ class CollectionRecord(Base):
     __tablename__ = "collections"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    manifest_etag: Mapped[str] = mapped_column(String(64))
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
     files: Mapped[list[CollectionFileRecord]] = relationship(
@@ -58,17 +59,6 @@ class CollectionFileRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    hot: Mapped[bool] = mapped_column(Boolean, default=True)
-    hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
-        BigInteger, default=0, nullable=True
-    )
-    hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -220,151 +210,140 @@ class ArchiveCopyJobRecord(Base):
     )
 
 
-class ArchiveRestoreRecord(Base):
-    __tablename__ = "archive_restores"
+class CatalogEventRecord(Base):
+    __tablename__ = "catalog_events"
 
-    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    change: Mapped[str] = mapped_column(String)
+    collection_id: Mapped[str] = mapped_column(String)
+    occurred_at: Mapped[str] = mapped_column(String)
+    manifest_etag: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
+
+
+class RetrievalJobRecord(Base):
+    __tablename__ = "retrieval_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    app: Mapped[str] = mapped_column(String)
     state: Mapped[str] = mapped_column(String)
+    plan_etag: Mapped[str] = mapped_column(String(64))
+    constraints_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String)
     requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     canceled_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    latest_message: Mapped[str | None] = mapped_column(String, nullable=True)
-    retrieval_tier: Mapped[str] = mapped_column(String)
-    hold_days: Mapped[int] = mapped_column(Integer)
-    warnings_json: Mapped[str] = mapped_column(String)
-    failure_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_failure_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    started_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    started_notification_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    started_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    completed_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    completed_notification_next_attempt_at: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
-    completed_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    canceled_notification_sent_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    canceled_notification_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    canceled_notification_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_verification_state: Mapped[str | None] = mapped_column(
-        String, default="pending", nullable=True
-    )
-    extraction_state: Mapped[str | None] = mapped_column(String, default="pending", nullable=True)
-    materialization_state: Mapped[str | None] = mapped_column(
-        String, default="pending", nullable=True
-    )
-    __table_args__ = (
-        Index("ix_archive_restores_state_created", "state", "created_at", "restore_id"),
-    )
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    files: Mapped[list[ArchiveRestoreFileRecord]] = relationship(
-        back_populates="restore",
+    __table_args__ = (Index("ix_retrieval_jobs_due", "state", "next_poll_at", "id"),)
+
+    files: Mapped[list[RetrievalJobFileRecord]] = relationship(
+        back_populates="job",
         cascade="all, delete-orphan",
     )
-    objects: Mapped[list[ArchiveRestoreObjectRecord]] = relationship(
-        back_populates="restore",
+    objects: Mapped[list[RetrievalJobObjectRecord]] = relationship(
+        back_populates="job",
         cascade="all, delete-orphan",
     )
 
 
-class ArchiveRestoreFileRecord(Base):
-    __tablename__ = "archive_restore_files"
+class RetrievalJobFileRecord(Base):
+    __tablename__ = "retrieval_job_files"
 
-    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
-    archive_store: Mapped[str] = mapped_column(String)
     file_order: Mapped[int] = mapped_column(Integer)
 
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["restore_id"],
-            ["archive_restores.restore_id"],
-            ondelete="CASCADE",
-        ),
+        ForeignKeyConstraint(["job_id"], ["retrieval_jobs.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["collection_id", "path"],
             ["collection_files.collection_id", "collection_files.path"],
-            ondelete="CASCADE",
         ),
-        ForeignKeyConstraint(
-            ["collection_id", "archive_store"],
-            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
-        ),
-        Index("idx_archive_restore_files_order", "restore_id", "file_order"),
+        Index("ix_retrieval_job_files_order", "job_id", "file_order"),
     )
 
-    restore: Mapped[ArchiveRestoreRecord] = relationship(back_populates="files")
-    archive_copy: Mapped[CollectionArchiveCopyRecord] = relationship()
+    job: Mapped[RetrievalJobRecord] = relationship(back_populates="files")
 
 
-class ArchiveRestoreObjectRecord(Base):
-    __tablename__ = "archive_restore_objects"
+class RetrievalJobObjectRecord(Base):
+    __tablename__ = "retrieval_job_objects"
 
-    restore_id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
-    archive_store: Mapped[str] = mapped_column(String, primary_key=True)
+    source_store: Mapped[str] = mapped_column(String, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_order: Mapped[int] = mapped_column(Integer)
+    read_mode: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
+        ForeignKeyConstraint(["job_id"], ["retrieval_jobs.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
-            ["restore_id"],
-            ["archive_restores.restore_id"],
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["collection_id", "archive_store", "object_id"],
+            ["collection_id", "source_store", "object_id"],
             [
                 "collection_archive_objects.collection_id",
                 "collection_archive_objects.store",
                 "collection_archive_objects.object_id",
             ],
         ),
-        Index("idx_archive_restore_objects_order", "restore_id", "object_order"),
+        Index("ix_retrieval_job_objects_order", "job_id", "object_order"),
     )
 
-    restore: Mapped[ArchiveRestoreRecord] = relationship(back_populates="objects")
-    archive_object: Mapped[CollectionArchiveObjectRecord] = relationship()
+    job: Mapped[RetrievalJobRecord] = relationship(back_populates="objects")
 
 
-class FetchRecord(Base):
-    __tablename__ = "fetches"
+class RetrievalCacheObjectRecord(Base):
+    __tablename__ = "retrieval_cache_objects"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    label: Mapped[str | None] = mapped_column(String, nullable=True)
-    state: Mapped[str] = mapped_column(String)
-    files: Mapped[list[FetchFileRecord]] = relationship(
-        back_populates="fetch",
-        cascade="all, delete-orphan",
-    )
-
-
-class FetchFileRecord(Base):
-    __tablename__ = "fetch_files"
-
-    fetch_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_store: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
-    path: Mapped[str] = mapped_column(String, primary_key=True)
-    file_order: Mapped[int] = mapped_column(Integer)
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_path: Mapped[str] = mapped_column(String)
+    version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stored_bytes: Mapped[int] = mapped_column(BigInteger)
+    stored_sha256: Mapped[str] = mapped_column(String(64))
+    cached_at: Mapped[str] = mapped_column(String)
+    verified_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
-        ForeignKeyConstraint(["fetch_id"], ["fetches.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
-            ["collection_id", "path"],
-            ["collection_files.collection_id", "collection_files.path"],
+            ["collection_id", "source_store", "object_id"],
+            [
+                "collection_archive_objects.collection_id",
+                "collection_archive_objects.store",
+                "collection_archive_objects.object_id",
+            ],
             ondelete="CASCADE",
         ),
-        Index("idx_fetch_files_order", "fetch_id", "file_order"),
-        Index("ix_fetch_files_collection", "collection_id", "fetch_id"),
     )
 
-    fetch: Mapped[FetchRecord] = relationship(back_populates="files")
+
+class RetrievalCacheLeaseRecord(Base):
+    __tablename__ = "retrieval_cache_leases"
+
+    owner: Mapped[str] = mapped_column(String, primary_key=True)
+    source_store: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    expires_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_store", "collection_id", "object_id"],
+            [
+                "retrieval_cache_objects.source_store",
+                "retrieval_cache_objects.collection_id",
+                "retrieval_cache_objects.object_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index("ix_retrieval_cache_leases_expiry", "expires_at", "owner"),
+    )
 
 
 class CollectionUploadRecord(Base):
@@ -375,12 +354,6 @@ class CollectionUploadRecord(Base):
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
     notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_store: Mapped[str] = mapped_column(String, nullable=False)
-    retain_hot: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-        server_default=true(),
-        nullable=False,
-    )
     opened_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_activity_at: Mapped[str | None] = mapped_column(String, nullable=True)
     closed_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -414,20 +387,13 @@ class CollectionUploadFileRecord(Base):
     file_order: Mapped[int] = mapped_column(Integer)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    ingress_bytes: Mapped[int] = mapped_column(BigInteger)
+    ingress_uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    ingress_secret_envelope: Mapped[str] = mapped_column(Text)
+    ingress_state_json: Mapped[str] = mapped_column(Text)
+    ingress_upload_id: Mapped[str] = mapped_column(String)
     upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_materialized_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    hot_multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    hot_multipart_uploaded_bytes: Mapped[int | None] = mapped_column(
-        BigInteger, default=0, nullable=True
-    )
-    hot_multipart_uploaded_parts: Mapped[int | None] = mapped_column(
-        Integer, default=0, nullable=True
-    )
-    hot_multipart_total_parts: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -436,6 +402,7 @@ class CollectionUploadFileRecord(Base):
             ondelete="CASCADE",
         ),
         Index("idx_collection_upload_files_collection_order", "collection_id", "file_order"),
+        Index("ux_collection_upload_files_ingress_id", "ingress_upload_id", unique=True),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
@@ -458,6 +425,12 @@ class CollectionArchiveObjectUploadRecord(Base):
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     uploaded_parts: Mapped[int] = mapped_column(Integer, default=0)
     total_parts: Mapped[int] = mapped_column(Integer, default=0)
+    cache_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cache_cached_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

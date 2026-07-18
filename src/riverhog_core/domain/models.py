@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from riverhog_core.domain.enums import ArchiveRestoreState, ArchiveState, FetchState
-from riverhog_core.domain.types import CollectionId, FetchId, Sha256Hex
+from riverhog_core.domain.enums import ArchiveState
+from riverhog_core.domain.types import CollectionId, Sha256Hex
 
 
 @dataclass(frozen=True)
@@ -62,65 +62,10 @@ class ArchiveUsageReport:
 
 
 @dataclass(frozen=True)
-class ArchiveRestoreNotificationStatus:
-    webhook_configured: bool
-    failure_count: int = 0
-    last_failure_at: str | None = None
-    last_failure: str | None = None
-
-
-@dataclass(frozen=True)
-class ArchiveRestoreProgress:
-    archive_verification: str = "pending"
-    extraction: str = "pending"
-    materialization: str = "pending"
-
-
-@dataclass(frozen=True)
-class ArchiveRestoreCollection:
-    id: CollectionId
-    archive_copy: ArchiveCopyStatus
-    stored_bytes: int
-
-
-@dataclass(frozen=True)
-class ArchiveRestoreSummary:
-    id: str
-    state: ArchiveRestoreState
-    created_at: str
-    requested_at: str | None
-    ready_at: str | None
-    expires_at: str | None
-    completed_at: str | None
-    canceled_at: str | None
-    latest_message: str | None
-    warnings: tuple[str, ...]
-    notification: ArchiveRestoreNotificationStatus
-    progress: ArchiveRestoreProgress
-    collections: tuple[ArchiveRestoreCollection, ...]
-
-
-@dataclass(frozen=True)
-class ArchiveRestoreListPage:
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    sort: str
-    order: str
-    terminal: str
-    state: str | None
-    collection: str | None
-    restores: list[ArchiveRestoreSummary]
-
-
-@dataclass(frozen=True)
 class CollectionSummary:
     id: CollectionId
     files: int
     bytes: int
-    hot_files: int
-    hot_bytes: int
     archive_copies: tuple[ArchiveCopyStatus, ...] = ()
 
 
@@ -131,29 +76,6 @@ class CollectionListPage:
     total: int
     pages: int
     collections: list[CollectionSummary]
-
-
-@dataclass(frozen=True)
-class FetchSummary:
-    id: FetchId
-    label: str | None
-    collections: tuple[CollectionId, ...]
-    state: FetchState
-    files: int
-    bytes: int
-    hot_files: int = 0
-    hot_bytes: int = 0
-    missing_files: int = 0
-    missing_bytes: int = 0
-
-
-@dataclass(frozen=True)
-class FetchListPage:
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    fetches: list[FetchSummary]
 
 
 @dataclass(frozen=True)

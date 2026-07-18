@@ -20,7 +20,8 @@ from riverhog_core.catalog_models import (
         (CollectionArchiveObjectRecord, "stored_bytes"),
         (ArchiveUsageSnapshotRecord, "measured_storage_bytes"),
         (CollectionUploadFileRecord, "bytes"),
-        (CollectionUploadFileRecord, "uploaded_bytes"),
+        (CollectionUploadFileRecord, "ingress_bytes"),
+        (CollectionUploadFileRecord, "ingress_uploaded_bytes"),
     ],
 )
 def test_catalog_byte_columns_use_bigint(

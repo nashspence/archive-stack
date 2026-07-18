@@ -16,15 +16,12 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    ArchiveRestoreFileRecord,
-    ArchiveRestoreRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionRecord,
-    FetchFileRecord,
-    FetchRecord,
+    RetrievalJobObjectRecord,
+    RetrievalJobRecord,
 )
-from riverhog_core.domain.enums import ArchiveRestoreState, FetchState
 from riverhog_core.domain.errors import (
     BadRequest,
     Conflict,
@@ -34,7 +31,7 @@ from riverhog_core.domain.errors import (
 )
 from riverhog_core.ports.archive_store import ArchiveVerificationError
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_restore_catalog
+from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import (
     archive_copy_aggregates,
     archive_copy_identity,
@@ -46,14 +43,7 @@ from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _PLAN_TTL = timedelta(minutes=15)
 _CHALLENGE_RE = re.compile(r"^retire-copy-(\d+)-([0-9a-f]{64})$")
-_ACTIVE_RESTORE_STATES = {
-    ArchiveRestoreState.REQUESTED.value,
-    ArchiveRestoreState.READY.value,
-}
-_ACTIVE_FETCH_STATES = {
-    FetchState.QUEUED_ARCHIVE.value,
-    FetchState.RESTORING_ARCHIVE.value,
-}
+_ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _ACTIVE_COPY_STATES = {"requested", "waiting", "copying"}
 _RETIREMENT_WARNING = (
     f"{ARCHIVE_CUSTODY_WARNING}\n\n"
@@ -165,7 +155,7 @@ class SqlAlchemyArchiveCopyRetirementService:
 
         target_store = self._archive_stores.require(normalized_store)
         if already_absent:
-            publish_archive_restore_catalog(
+            publish_archive_catalog(
                 store_name=normalized_store,
                 archive_store=target_store,
                 session_factory=self._session_factory,
@@ -178,7 +168,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                 supplied_challenge,
                 plan,
             )
-            publish_archive_restore_catalog(
+            publish_archive_catalog(
                 store_name=verified_store,
                 archive_store=self._archive_stores.require(verified_store),
                 session_factory=self._session_factory,
@@ -199,7 +189,7 @@ class SqlAlchemyArchiveCopyRetirementService:
             collection_id=normalized_id,
             objects=target_objects,
         )
-        publish_archive_restore_catalog(
+        publish_archive_catalog(
             store_name=normalized_store,
             archive_store=target_store,
             session_factory=self._session_factory,
@@ -291,19 +281,20 @@ class SqlAlchemyArchiveCopyRetirementService:
                 return _result(plan, status="already_absent", verified_store=verified_store)
             if not secrets.compare_digest(active.challenge, challenge):
                 raise Conflict("archive copy retirement challenge does not match active retirement")
-            active_restores = session.scalars(
-                select(ArchiveRestoreRecord.restore_id)
-                .join(ArchiveRestoreFileRecord)
+            active_retrievals = session.scalars(
+                select(RetrievalJobRecord.id)
+                .join(RetrievalJobObjectRecord)
                 .where(
-                    ArchiveRestoreFileRecord.collection_id == collection_id,
-                    ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
+                    RetrievalJobObjectRecord.collection_id == collection_id,
+                    RetrievalJobObjectRecord.source_store == store,
+                    RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
                 )
-                .order_by(ArchiveRestoreRecord.restore_id)
+                .order_by(RetrievalJobRecord.id)
             ).all()
-            if active_restores:
+            if active_retrievals:
                 raise Conflict(
-                    "archive restore became active during archive copy retirement: "
-                    + ", ".join(active_restores)
+                    "retrieval became active during archive copy retirement: "
+                    + ", ".join(active_retrievals)
                 )
             copy_jobs = session.execute(
                 select(
@@ -322,16 +313,17 @@ class SqlAlchemyArchiveCopyRetirementService:
                         for source_store, destination_store in copy_jobs
                     )
                 )
-            terminal_restores = session.scalars(
-                select(ArchiveRestoreRecord)
-                .join(ArchiveRestoreFileRecord)
+            terminal_retrievals = session.scalars(
+                select(RetrievalJobRecord)
+                .join(RetrievalJobObjectRecord)
                 .where(
-                    ArchiveRestoreFileRecord.collection_id == collection_id,
-                    ArchiveRestoreFileRecord.archive_store == store,
+                    RetrievalJobObjectRecord.collection_id == collection_id,
+                    RetrievalJobObjectRecord.source_store == store,
+                    ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
                 )
             ).unique()
-            for restore in terminal_restores:
-                session.delete(restore)
+            for retrieval in terminal_retrievals:
+                session.delete(retrieval)
             session.delete(active)
             session.flush()
             target = session.get(CollectionArchiveCopyRecord, (collection_id, store))
@@ -384,23 +376,15 @@ def _build_plan(
         (copy for copy in copies if archive_copy_is_complete(copy)),
         key=lambda copy: (read_rank.get(copy.store, len(read_rank)), copy.store),
     )
-    active_restores = db.scalars(
-        select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreFileRecord)
+    active_retrievals = db.scalars(
+        select(RetrievalJobRecord.id)
+        .join(RetrievalJobObjectRecord)
         .where(
-            ArchiveRestoreFileRecord.collection_id == collection_id,
-            ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
+            RetrievalJobObjectRecord.collection_id == collection_id,
+            RetrievalJobObjectRecord.source_store == store,
+            RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
         )
-        .order_by(ArchiveRestoreRecord.restore_id)
-    ).all()
-    active_fetches = db.scalars(
-        select(FetchRecord.id)
-        .join(FetchFileRecord)
-        .where(
-            FetchFileRecord.collection_id == collection_id,
-            FetchRecord.state.in_(_ACTIVE_FETCH_STATES),
-        )
-        .order_by(FetchRecord.id)
+        .order_by(RetrievalJobRecord.id)
     ).all()
     copy_jobs = db.execute(
         select(
@@ -421,22 +405,21 @@ def _build_plan(
         )
         .order_by(ArchiveCopyRetirementRecord.store)
     ).all()
-    terminal_restore_ids = db.scalars(
-        select(ArchiveRestoreRecord.restore_id)
-        .join(ArchiveRestoreFileRecord)
+    terminal_retrieval_ids = db.scalars(
+        select(RetrievalJobRecord.id)
+        .join(RetrievalJobObjectRecord)
         .where(
-            ArchiveRestoreFileRecord.collection_id == collection_id,
-            ArchiveRestoreFileRecord.archive_store == store,
-            ~ArchiveRestoreRecord.state.in_(_ACTIVE_RESTORE_STATES),
+            RetrievalJobObjectRecord.collection_id == collection_id,
+            RetrievalJobObjectRecord.source_store == store,
+            ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
         )
-        .order_by(ArchiveRestoreRecord.restore_id)
+        .order_by(RetrievalJobRecord.id)
     ).all()
 
     blockers: list[str] = []
     if db.get(CollectionDeletionRecord, collection_id) is not None:
         blockers.append(f"collection deletion is active: {collection_id}")
-    blockers.extend(f"archive restore is active: {restore_id}" for restore_id in active_restores)
-    blockers.extend(f"fetch is active: {fetch_id}" for fetch_id in active_fetches)
+    blockers.extend(f"retrieval is active: {job_id}" for job_id in active_retrievals)
     blockers.extend(
         f"archive copy is active: {source_store} -> {destination_store}"
         for source_store, destination_store in copy_jobs
@@ -477,7 +460,7 @@ def _build_plan(
             }
             for copy in retained
         ],
-        "retired_restore_records": list(terminal_restore_ids),
+        "retired_retrieval_jobs": list(terminal_retrieval_ids),
         "blockers": blockers,
         "verification_note": (
             "Execution requires a different retained copy to pass current remote "

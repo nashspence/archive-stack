@@ -52,12 +52,14 @@ munchy = "munchy_cli.main:main"
 jeb = "jeb.cli:main"
 jeb-service = "jeb.service_cli:main"
 gogurt = "gogurt.cli:main"
+fishbox = "fishbox.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/munchy",
   "src/munchy_cli",
   "src/gogurt",
+  "src/fishbox",
   "src/jeb",
   "src/riverhog_age",
   "src/riverhog_api",
