@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
@@ -61,20 +61,23 @@ def _file_selections_payload(
     return [{"collection_id": collection_id, "path": path} for collection_id, path in files]
 
 
-class ApiClient:
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+class _HttpApiClient:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        *,
+        token_env: str,
+    ) -> None:
         self.base_url = (
             base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000"
         ).rstrip("/")
-        self.token = token or os.getenv("RIVERHOG_TOKEN")
-        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
+        self.token = token or os.getenv(token_env)
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
-        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", self.http2)
         self._request_client: httpx.Client | None = None
         self._download_client: httpx.Client | None = None
-        self._upload_client: TusHttpClient | None = None
 
     def _make_client(self, *, timeout_seconds: float) -> httpx.Client:
         headers = {"Accept": "application/json"}
@@ -107,23 +110,12 @@ class ApiClient:
         if self._download_client is not None:
             self._download_client.close()
             self._download_client = None
-        if self._upload_client is not None:
-            self._upload_client.close()
-            self._upload_client = None
 
-    def __enter__(self) -> ApiClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
-
-    def _upload_headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if self.host_header:
-            headers["Host"] = self.host_header
-        return headers
 
     def _persistent_download_client(self) -> httpx.Client:
         if self._download_client is None:
@@ -134,20 +126,6 @@ class ApiClient:
                 )
             )
         return self._download_client
-
-    def tus_client(self) -> TusHttpClient:
-        if self._upload_client is None:
-            self._upload_client = TusHttpClient(
-                headers=self._upload_headers(),
-                timeout_seconds=_timeout_seconds(
-                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
-                    _UPLOAD_TIMEOUT_SECONDS,
-                ),
-                verify_tls=self.verify_tls,
-                http2=self.upload_http2,
-                url_rewriter=self._upload_url,
-            )
-        return self._upload_client
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.is_success:
@@ -182,6 +160,187 @@ class ApiClient:
         self._raise_for_error(response)
         return response
 
+    def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        payload = self._request(method, path, **kwargs).json()
+        if not isinstance(payload, dict):
+            raise BadRequest("API returned a non-object JSON payload")
+        return payload
+
+    def _download(
+        self,
+        path: str,
+        output: Path | None = None,
+        *,
+        progress: DownloadProgress | None = None,
+    ) -> bytes | int:
+        client = self._persistent_download_client()
+        if output is None:
+            response = client.get(path)
+            self._raise_for_error(response)
+            return response.content
+
+        with client.stream("GET", path) as response:
+            if not response.is_success:
+                response.read()
+                self._raise_for_error(response)
+
+            content_length = response.headers.get("Content-Length")
+            try:
+                total_bytes = int(content_length) if content_length is not None else None
+            except ValueError:
+                total_bytes = None
+            tmp_output = output.with_name(f".{output.name}.part")
+            output.parent.mkdir(parents=True, exist_ok=True)
+
+            downloaded = 0
+            try:
+                with tmp_output.open("wb") as handle:
+                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        if progress is not None:
+                            progress(downloaded, total_bytes)
+            except httpx.TransportError as exc:
+                tmp_output.unlink(missing_ok=True)
+                self.close()
+                raise ServiceUnavailable(
+                    "download stream was interrupted before completion; "
+                    "the partial file was discarded"
+                ) from exc
+            tmp_output.replace(output)
+            return downloaded
+
+
+class ExternalAppClient(_HttpApiClient):
+    """Client for the ResourceSync and retrieval surface exposed to external apps."""
+
+    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+        super().__init__(base_url, token, token_env="RIVERHOG_APP_TOKEN")
+
+    def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/resourcesync/changelist.xml",
+            params={"after": after},
+        )
+        root = ElementTree.fromstring(response.content)
+        changes: list[dict[str, Any]] = []
+        for url in root:
+            loc = next((child.text for child in url if child.tag.endswith("loc")), None)
+            metadata = next((child for child in url if child.tag.endswith("md")), None)
+            if loc is None or metadata is None:
+                continue
+            collection_id = loc.split("/v1/catalog/collections/", 1)[-1].rsplit(
+                "/manifest", 1
+            )[0]
+            changes.append(
+                {
+                    "collection_id": collection_id,
+                    "change": metadata.attrib.get("change"),
+                    "datetime": metadata.attrib.get("datetime"),
+                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
+                }
+            )
+        return {"cursor": int(root.attrib.get("data-cursor", after)), "changes": changes}
+
+    def get_portable_collection_manifest(self, collection_id: str) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/catalog/collections/{quote(collection_id, safe='/')}/manifest",
+        )
+
+    def plan_retrieval(
+        self,
+        files: Sequence[tuple[str, str]],
+        *,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        if lease_seconds is not None:
+            payload["lease_seconds"] = lease_seconds
+        return self._json("POST", "/v1/retrieval-plans", json=payload)
+
+    def create_retrieval_job(
+        self,
+        files: Sequence[tuple[str, str]],
+        *,
+        plan_etag: str,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        if lease_seconds is not None:
+            payload["lease_seconds"] = lease_seconds
+        return self._json(
+            "POST",
+            "/v1/retrieval-jobs",
+            json=payload,
+            headers={"If-Match": f'"{plan_etag}"'},
+        )
+
+    def get_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
+
+    def cancel_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
+
+    def acknowledge_retrieval_job(self, job_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/retrieval-jobs/{quote(job_id, safe='')}/ack")
+
+    def download_retrieval_file(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        path: str,
+        output: Path,
+        progress: DownloadProgress | None = None,
+    ) -> int:
+        result = self._download(
+            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
+            f"collection_id={quote(collection_id, safe='')}&path={quote(path, safe='')}",
+            output,
+            progress=progress,
+        )
+        return int(result)
+
+
+class ApiClient(_HttpApiClient):
+    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+        super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
+        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
+        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", self.http2)
+        self._upload_client: TusHttpClient | None = None
+
+    def close(self) -> None:
+        super().close()
+        if self._upload_client is not None:
+            self._upload_client.close()
+            self._upload_client = None
+
+    def _upload_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.host_header:
+            headers["Host"] = self.host_header
+        return headers
+
+    def tus_client(self) -> TusHttpClient:
+        if self._upload_client is None:
+            self._upload_client = TusHttpClient(
+                headers=self._upload_headers(),
+                timeout_seconds=_timeout_seconds(
+                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
+                    _UPLOAD_TIMEOUT_SECONDS,
+                ),
+                verify_tls=self.verify_tls,
+                http2=self.upload_http2,
+                url_rewriter=self._upload_url,
+            )
+        return self._upload_client
+
     def _upload_url(self, upload_url: str) -> str:
         if self.upload_base_url is None:
             return upload_url
@@ -190,12 +349,6 @@ class ApiClient:
             return upload_url
         base = urlsplit(self.upload_base_url)
         return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, parsed.fragment))
-
-    def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        payload = self._request(method, path, **kwargs).json()
-        if not isinstance(payload, dict):
-            raise BadRequest("API returned a non-object JSON payload")
-        return payload
 
     def create_or_resume_collection_upload(
         self,
@@ -408,136 +561,6 @@ class ApiClient:
                 "challenge": challenge,
             },
         )
-
-    def _download(
-        self,
-        path: str,
-        output: Path | None = None,
-        *,
-        progress: DownloadProgress | None = None,
-    ) -> bytes | int:
-        client = self._persistent_download_client()
-        if output is None:
-            response = client.get(path)
-            self._raise_for_error(response)
-            return response.content
-
-        with client.stream("GET", path) as response:
-            if not response.is_success:
-                response.read()
-                self._raise_for_error(response)
-
-            content_length = response.headers.get("Content-Length")
-            try:
-                total_bytes = int(content_length) if content_length is not None else None
-            except ValueError:
-                total_bytes = None
-            tmp_output = output.with_name(f".{output.name}.part")
-            output.parent.mkdir(parents=True, exist_ok=True)
-
-            downloaded = 0
-            try:
-                with tmp_output.open("wb") as handle:
-                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                        if not chunk:
-                            continue
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        if progress is not None:
-                            progress(downloaded, total_bytes)
-            except httpx.TransportError as exc:
-                tmp_output.unlink(missing_ok=True)
-                self.close()
-                raise ServiceUnavailable(
-                    "download stream was interrupted before completion; "
-                    "the partial file was discarded"
-                ) from exc
-            tmp_output.replace(output)
-            return downloaded
-
-    def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
-        response = self._request(
-            "GET",
-            "/resourcesync/changelist.xml",
-            params={"after": after},
-        )
-        root = ElementTree.fromstring(response.content)
-        changes: list[dict[str, Any]] = []
-        for url in root:
-            loc = next((child.text for child in url if child.tag.endswith("loc")), None)
-            metadata = next((child for child in url if child.tag.endswith("md")), None)
-            if loc is None or metadata is None:
-                continue
-            collection_id = loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
-            changes.append(
-                {
-                    "collection_id": collection_id,
-                    "change": metadata.attrib.get("change"),
-                    "datetime": metadata.attrib.get("datetime"),
-                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
-                }
-            )
-        return {"cursor": int(root.attrib.get("data-cursor", after)), "changes": changes}
-
-    def get_portable_collection_manifest(self, collection_id: str) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/catalog/collections/{quote(collection_id, safe='/')}/manifest",
-        )
-
-    def plan_retrieval(
-        self,
-        files: Sequence[tuple[str, str]],
-        *,
-        lease_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
-        if lease_seconds is not None:
-            payload["lease_seconds"] = lease_seconds
-        return self._json("POST", "/v1/retrieval-plans", json=payload)
-
-    def create_retrieval_job(
-        self,
-        files: Sequence[tuple[str, str]],
-        *,
-        plan_etag: str,
-        lease_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
-        if lease_seconds is not None:
-            payload["lease_seconds"] = lease_seconds
-        return self._json(
-            "POST",
-            "/v1/retrieval-jobs",
-            json=payload,
-            headers={"If-Match": f'"{plan_etag}"'},
-        )
-
-    def get_retrieval_job(self, job_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
-
-    def cancel_retrieval_job(self, job_id: str) -> dict[str, Any]:
-        return self._json("DELETE", f"/v1/retrieval-jobs/{quote(job_id, safe='')}")
-
-    def acknowledge_retrieval_job(self, job_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/retrieval-jobs/{quote(job_id, safe='')}/ack")
-
-    def download_retrieval_file(
-        self,
-        job_id: str,
-        *,
-        collection_id: str,
-        path: str,
-        output: Path,
-        progress: DownloadProgress | None = None,
-    ) -> int:
-        result = self._download(
-            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
-            f"collection_id={quote(collection_id, safe='')}&path={quote(path, safe='')}",
-            output,
-            progress=progress,
-        )
-        return int(result)
 
     def append_upload_chunk(
         self,

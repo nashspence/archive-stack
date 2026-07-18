@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 from pathlib import Path
 from typing import Any
 
 from typer.testing import CliRunner
 
-from fishbox import cli as fishbox
+from riverhog_cli import local as local_materialization
 
-COLLECTION_ID = "2026/20260102T030405Z__fishbox"
+COLLECTION_ID = "2026/20260102T030405Z__local"
 CONTENT = b"locally materialized archive file\n"
 MANIFEST = {
     "format": "riverhog-collection/v1",
@@ -22,6 +24,22 @@ MANIFEST = {
     ],
 }
 JOB_FILES = [{"collection_id": COLLECTION_ID, **MANIFEST["files"][0]}]
+
+
+def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> None:
+    imports = {
+        (node.module, alias.name)
+        for node in ast.walk(ast.parse(inspect.getsource(local_materialization)))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+        for alias in node.names
+        if node.module.startswith("riverhog")
+    }
+
+    assert imports == {
+        ("riverhog_cli.client", "ExternalAppClient"),
+        ("riverhog_core.fs_paths", "normalize_collection_id"),
+        ("riverhog_core.fs_paths", "normalize_relpath"),
+    }
 
 
 class FakeApi:
@@ -90,18 +108,18 @@ class FakeApi:
         return {"id": job_id, "state": "completed"}
 
 
-def test_fishbox_materializes_repairs_and_preserves_remote_deletions(
+def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    target = tmp_path / "fishbox"
+    target = tmp_path / "local"
     api = FakeApi()
-    monkeypatch.setenv("FISHBOX_TARGET", str(target))
-    monkeypatch.setattr(fishbox, "ApiClient", lambda: api)
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ExternalAppClient", lambda: api)
     runner = CliRunner()
 
-    added = runner.invoke(fishbox.app, ["add", COLLECTION_ID])
-    synced = runner.invoke(fishbox.app, ["sync"])
+    added = runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID])
+    synced = runner.invoke(local_materialization.local_app, ["sync"])
     output = target / COLLECTION_ID / "notes/one.txt"
 
     assert added.exit_code == 0
@@ -110,35 +128,35 @@ def test_fishbox_materializes_repairs_and_preserves_remote_deletions(
     assert api.acknowledged == ["job-1"]
 
     output.write_bytes(b"unexpected local bytes")
-    repaired = runner.invoke(fishbox.app, ["repair"])
+    repaired = runner.invoke(local_materialization.local_app, ["repair"])
     assert repaired.exit_code == 0
     assert output.read_bytes() == CONTENT
-    assert list((target / ".fishbox-quarantine").rglob("one.txt"))
+    assert list((target / ".riverhog-local-quarantine").rglob("one.txt"))
 
     api.deleted = True
-    after_deletion = runner.invoke(fishbox.app, ["sync"])
-    listed = runner.invoke(fishbox.app, ["list"])
+    after_deletion = runner.invoke(local_materialization.local_app, ["sync"])
+    listed = runner.invoke(local_materialization.local_app, ["list"])
 
     assert after_deletion.exit_code == 0
     assert output.read_bytes() == CONTENT
     assert "remote-deleted" in listed.stdout
 
 
-def test_fishbox_removal_cancels_active_retrieval_before_changing_desired_state(
+def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    target = tmp_path / "fishbox"
+    target = tmp_path / "local"
     api = FakeApi()
     api.job_state = "requested"
-    monkeypatch.setenv("FISHBOX_TARGET", str(target))
-    monkeypatch.setattr(fishbox, "ApiClient", lambda: api)
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ExternalAppClient", lambda: api)
     runner = CliRunner()
 
-    assert runner.invoke(fishbox.app, ["add", COLLECTION_ID]).exit_code == 0
-    assert runner.invoke(fishbox.app, ["sync"]).exit_code == 0
-    removed = runner.invoke(fishbox.app, ["remove", COLLECTION_ID])
+    assert runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID]).exit_code == 0
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+    removed = runner.invoke(local_materialization.local_app, ["remove", COLLECTION_ID])
 
     assert removed.exit_code == 0
     assert api.canceled == ["job-1"]
-    assert runner.invoke(fishbox.app, ["list"]).stdout == ""
+    assert runner.invoke(local_materialization.local_app, ["list"]).stdout == ""

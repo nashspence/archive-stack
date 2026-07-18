@@ -184,7 +184,7 @@ def _services(
 def _create_retrieval(service: SqlAlchemyRetrievalService) -> dict[str, object]:
     files = [(COLLECTION_ID, FILE_PATH)]
     plan = service.plan(files)
-    return service.create(app="fishbox", files=files, plan_etag=str(plan["etag"]))
+    return service.create(app="local", files=files, plan_etag=str(plan["etag"]))
 
 
 def test_active_retrieval_blocks_collection_deletion(database_url: str) -> None:
@@ -197,7 +197,7 @@ def test_active_retrieval_blocks_collection_deletion(database_url: str) -> None:
     assert blocked["status"] == "blocked"
     assert blocked["challenge"] is None
     assert blocked["blockers"] == [f"retrieval job is active: {job['id']}"]
-    retrieval.acknowledge(app="fishbox", job_id=str(job["id"]))
+    retrieval.acknowledge(app="local", job_id=str(job["id"]))
     assert deletion.plan(COLLECTION_ID)["status"] == "ready"
 
 

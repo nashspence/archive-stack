@@ -11,24 +11,27 @@ from typing import Annotated, Any
 
 import typer
 
-from riverhog_cli.client import ApiClient
+from riverhog_cli.client import ExternalAppClient
 from riverhog_core.fs_paths import normalize_collection_id, normalize_relpath
 
-app = typer.Typer(no_args_is_help=True, help="🐟 Maintain a local Riverhog materialization.")
+local_app = typer.Typer(
+    no_args_is_help=True,
+    help="Maintain selected archive collections in a local directory.",
+)
 
 
 def _target() -> Path:
-    raw = os.getenv("FISHBOX_TARGET", "").strip()
+    raw = os.getenv("RIVERHOG_LOCAL_ROOT", "").strip()
     if not raw:
-        raise typer.BadParameter("FISHBOX_TARGET is required")
+        raise typer.BadParameter("RIVERHOG_LOCAL_ROOT is required")
     target = Path(raw).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     return target
 
 
 def _database(target: Path) -> Path:
-    raw = os.getenv("FISHBOX_DATABASE", "").strip()
-    return Path(raw).expanduser().resolve() if raw else target / ".fishbox.sqlite3"
+    raw = os.getenv("RIVERHOG_LOCAL_DATABASE", "").strip()
+    return Path(raw).expanduser().resolve() if raw else target / ".riverhog-local.sqlite3"
 
 
 def _connect(target: Path) -> sqlite3.Connection:
@@ -102,7 +105,7 @@ def _store_manifest(db: sqlite3.Connection, payload: dict[str, Any]) -> None:
 def _output_path(target: Path, collection_id: str, path: str) -> Path:
     output = (target / collection_id / path).resolve()
     if not output.is_relative_to(target):
-        raise RuntimeError("materialization path escapes FISHBOX_TARGET")
+        raise RuntimeError("materialization path escapes RIVERHOG_LOCAL_ROOT")
     return output
 
 
@@ -118,7 +121,7 @@ def _matches(path: Path, *, byte_count: int, sha256: str) -> bool:
     return path.is_file() and path.stat().st_size == byte_count and _sha256(path) == sha256
 
 
-def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
+def _refresh_catalog(db: sqlite3.Connection, api: ExternalAppClient) -> None:
     row = db.execute("SELECT value FROM settings WHERE key = 'catalog_cursor'").fetchone()
     after = int(row["value"]) if row is not None else 0
     changes = api.catalog_changes(after=after)
@@ -171,7 +174,7 @@ def _missing_files(
         if not repair:
             typer.echo(f"mismatch retained: {row['collection_id']}/{row['path']}", err=True)
             continue
-        quarantine = target / ".fishbox-quarantine" / row["collection_id"] / row["path"]
+        quarantine = target / ".riverhog-local-quarantine" / row["collection_id"] / row["path"]
         quarantine.parent.mkdir(parents=True, exist_ok=True)
         candidate = quarantine
         index = 1
@@ -183,7 +186,12 @@ def _missing_files(
     return missing
 
 
-def _download_job(db: sqlite3.Connection, target: Path, api: ApiClient, job: dict[str, Any]) -> int:
+def _download_job(
+    db: sqlite3.Connection,
+    target: Path,
+    api: ExternalAppClient,
+    job: dict[str, Any],
+) -> int:
     downloaded = 0
     for current in job["files"]:
         collection_id = str(current["collection_id"])
@@ -196,7 +204,7 @@ def _download_job(db: sqlite3.Connection, target: Path, api: ApiClient, job: dic
                 continue
             typer.echo(f"mismatch retained: {collection_id}/{path}", err=True)
             continue
-        staging = output.with_name(f".{output.name}.fishbox-download")
+        staging = output.with_name(f".{output.name}.riverhog-download")
         staging.unlink(missing_ok=True)
         api.download_retrieval_file(
             str(job["id"]),
@@ -218,7 +226,7 @@ def _download_job(db: sqlite3.Connection, target: Path, api: ApiClient, job: dic
     return downloaded
 
 
-def _cancel_active_retrievals(db: sqlite3.Connection, api: ApiClient) -> None:
+def _cancel_active_retrievals(db: sqlite3.Connection, api: ExternalAppClient) -> None:
     for row in db.execute("SELECT id FROM retrieval_jobs ORDER BY updated_at"):
         job = api.get_retrieval_job(str(row["id"]))
         if job["state"] in {"requested", "ready", "failed"}:
@@ -228,7 +236,7 @@ def _cancel_active_retrievals(db: sqlite3.Connection, api: ApiClient) -> None:
 
 def _sync(*, wait: bool, repair: bool) -> None:
     target = _target()
-    with closing(_connect(target)) as db, ApiClient() as api:
+    with closing(_connect(target)) as db, ExternalAppClient() as api:
         _refresh_catalog(db, api)
         active = db.execute(
             "SELECT id FROM retrieval_jobs ORDER BY updated_at DESC LIMIT 1"
@@ -276,34 +284,33 @@ def _sync(*, wait: bool, repair: bool) -> None:
         typer.echo(f"materialized {count} file(s)")
 
 
-@app.command("add")
+@local_app.command("add")
 def add_collection(collection_id: Annotated[str, typer.Argument(help="Collection name")]) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
-    with closing(_connect(target)) as db, ApiClient() as api:
+    with closing(_connect(target)) as db, ExternalAppClient() as api:
         _store_manifest(db, api.get_portable_collection_manifest(normalized))
         db.commit()
     typer.echo(f"desired collection added: {normalized}")
 
 
-@app.command("remove")
+@local_app.command("remove")
 def remove_collection(
     collection_id: Annotated[str, typer.Argument(help="Collection name")],
 ) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
-    with closing(_connect(target)) as db, ApiClient() as api:
+    with closing(_connect(target)) as db, ExternalAppClient() as api:
         _cancel_active_retrievals(db, api)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         db.commit()
     typer.echo(f"desired collection removed; local files retained: {normalized}")
 
 
-@app.command("list")
+@local_app.command("list")
 def list_collections() -> None:
     target = _target()
-    with closing(_connect(target)) as db, ApiClient() as api:
-        _cancel_active_retrievals(db, api)
+    with closing(_connect(target)) as db:
         rows = list(
             db.execute(
                 """
@@ -321,21 +328,21 @@ def list_collections() -> None:
         typer.echo(f"{row['collection_id']}  {status}  {row['files']} files  {row['bytes']} bytes")
 
 
-@app.command("sync")
+@local_app.command("sync")
 def sync(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
 ) -> None:
     _sync(wait=wait, repair=False)
 
 
-@app.command("repair")
+@local_app.command("repair")
 def repair(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
 ) -> None:
     _sync(wait=wait, repair=True)
 
 
-@app.command("audit")
+@local_app.command("audit")
 def audit() -> None:
     target = _target()
     problems = 0
@@ -356,7 +363,7 @@ def audit() -> None:
     typer.echo("materialization matches all desired files")
 
 
-@app.command("evict")
+@local_app.command("evict")
 def evict(
     collection_id: Annotated[str, typer.Argument(help="Collection name")],
     confirm: Annotated[bool, typer.Option(help="Confirm local file removal")] = False,
@@ -383,11 +390,3 @@ def evict(
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         db.commit()
     typer.echo(f"evicted local collection: {normalized}")
-
-
-def main() -> None:
-    app()
-
-
-if __name__ == "__main__":
-    main()

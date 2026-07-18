@@ -53,17 +53,18 @@ the same ciphertext in that cache for a configurable 30-day lease when the write
 requires retrieval preparation.
 
 The content endpoint reconstructs one logical file, supports validators and byte ranges,
-and verifies archive and file checksums. Fishbox is the reference external application: its
-CLI owns a local directory and SQLite catalog, follows ResourceSync changes, obtains
-retrieval jobs, verifies downloads, and atomically publishes local files. Other applications
-use the same interface and remain isolated from Fishbox state.
+and verifies archive and file checksums. The default client's `local` subtree is the
+reference external application: it owns a local directory and SQLite catalog, follows
+ResourceSync changes, obtains retrieval jobs, verifies downloads, and atomically publishes
+local files. Other applications use the same interface and remain isolated from its state.
 
 ## Component boundaries
 
 - Riverhog owns custody, search, portable catalog publication, retrieval preparation, and
   verified logical-file delivery.
-- Fishbox owns one local materialization, including its directory, SQLite state, selection,
-  repair, audit, and eviction.
+- The `riverhog local` client owns one local materialization, including its directory,
+  SQLite state, selection, repair, audit, and eviction. It uses only the external-application
+  API and credential.
 - Munchy owns media discovery, routing, transformation, metadata projection, and assembly
   before handing completed artifacts to a named destination adapter.
 - Jeb owns source enrollment and credentials, transport-neutral landing, watched-drop

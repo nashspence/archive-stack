@@ -15,6 +15,7 @@ import httpx
 import typer
 
 from riverhog_cli.client import ApiClient
+from riverhog_cli.local import local_app
 from riverhog_cli.output import (
     emit,
     format_archive_copy_job,
@@ -46,6 +47,7 @@ collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
+app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024

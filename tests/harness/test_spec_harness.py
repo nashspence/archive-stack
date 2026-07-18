@@ -95,7 +95,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
     archive = harness.archive_reporting.get_report()
     resources = resourcesync_resource_list(
         _request(),
-        "fishbox",
+        "local",
         SimpleNamespace(retrieval=harness.retrieval),
     )
 
@@ -123,12 +123,12 @@ def test_external_app_retrieves_one_manifest_selected_file(harness: Harness) -> 
     files = [(COLLECTION_ID, "readme.txt")]
     plan = harness.retrieval.plan(files)
     job = harness.retrieval.create(
-        app="fishbox",
+        app="local",
         files=files,
         plan_etag=str(plan["etag"]),
     )
     chunks, byte_count, sha256 = harness.retrieval.content(
-        app="fishbox",
+        app="local",
         job_id=str(job["id"]),
         collection_id=COLLECTION_ID,
         path="readme.txt",
@@ -139,6 +139,6 @@ def test_external_app_retrieves_one_manifest_selected_file(harness: Harness) -> 
     assert byte_count == len(content)
     assert sha256 == hashlib.sha256(content).hexdigest()
     assert content == b"current archive contract\n"
-    assert harness.retrieval.acknowledge(app="fishbox", job_id=str(job["id"]))["state"] == (
+    assert harness.retrieval.acknowledge(app="local", job_id=str(job["id"]))["state"] == (
         "completed"
     )

@@ -3,7 +3,8 @@
 Riverhog is a generic custody system for encrypted remote collection archives. It accepts
 logical collections without staging plaintext on its host, preserves independently
 restorable archive objects, and gives external applications a stable catalog and retrieval
-interface. Fishbox is the reference local materializer.
+interface. The default client's `riverhog local` commands are the reference external
+application and maintain selected collections in a client-owned local directory.
 
 ## Custody
 

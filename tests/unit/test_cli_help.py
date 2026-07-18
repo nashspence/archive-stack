@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from fishbox.cli import app as fishbox_app
 from riverhog_cli.main import app
 
 runner = CliRunner()
@@ -24,8 +23,8 @@ def test_collection_upload_help_exposes_archive_store_selection() -> None:
     assert "--archive-store" in result.stdout
 
 
-def test_fishbox_help_names_local_materialization_operations() -> None:
-    result = runner.invoke(fishbox_app, ["--help"])
+def test_riverhog_local_help_names_materialization_operations() -> None:
+    result = runner.invoke(app, ["local", "--help"])
 
     assert result.exit_code == 0
     for command in ("add", "sync", "repair", "audit", "evict"):

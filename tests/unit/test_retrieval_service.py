@@ -131,12 +131,12 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
 
     plan = service.plan(selection)
     job = service.create(
-        app="fishbox",
+        app="local",
         files=selection,
         plan_etag=str(plan["etag"]),
     )
     chunks, byte_count, sha256 = service.content(
-        app="fishbox",
+        app="local",
         job_id=str(job["id"]),
         collection_id=COLLECTION_ID,
         path="two.txt",
@@ -155,7 +155,7 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
             collection_id=COLLECTION_ID,
             path="two.txt",
         )
-    assert service.acknowledge(app="fishbox", job_id=str(job["id"]))["state"] == "completed"
+    assert service.acknowledge(app="local", job_id=str(job["id"]))["state"] == "completed"
 
 
 def test_app_can_cancel_its_ready_retrieval_job(tmp_path: Path) -> None:
@@ -168,9 +168,9 @@ def test_app_can_cancel_its_ready_retrieval_job(tmp_path: Path) -> None:
     )
     selection = [(COLLECTION_ID, "one.txt")]
     plan = service.plan(selection)
-    job = service.create(app="fishbox", files=selection, plan_etag=str(plan["etag"]))
+    job = service.create(app="local", files=selection, plan_etag=str(plan["etag"]))
 
-    canceled = service.cancel(app="fishbox", job_id=str(job["id"]))
+    canceled = service.cancel(app="local", job_id=str(job["id"]))
 
     assert canceled["state"] == "canceled"
     assert canceled["canceled_at"] is not None
@@ -202,7 +202,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     selection = [(COLLECTION_ID, "one.txt")]
     plan = service.plan(selection)
     job = service.create(
-        app="fishbox",
+        app="local",
         files=selection,
         plan_etag=str(plan["etag"]),
     )
@@ -210,9 +210,9 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     assert job["state"] == "requested"
     assert store.prepared == [("data-000000",)]
     assert service.process_due(limit=1) == 1
-    job = service.get(app="fishbox", job_id=str(job["id"]))
+    job = service.get(app="local", job_id=str(job["id"]))
     chunks, _size, _sha256 = service.content(
-        app="fishbox",
+        app="local",
         job_id=str(job["id"]),
         collection_id=COLLECTION_ID,
         path="one.txt",
@@ -223,7 +223,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
         assert session.query(RetrievalCacheObjectRecord).count() == 1
         assert session.query(RetrievalCacheLeaseRecord).count() == 1
 
-    service.acknowledge(app="fishbox", job_id=str(job["id"]))
+    service.acknowledge(app="local", job_id=str(job["id"]))
     assert service.sweep() == 1
     assert len(cache.deleted) == 1
 
@@ -281,10 +281,10 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
         (SECOND_COLLECTION_ID, "three.txt"),
     ]
     plan = service.plan(selection)
-    job = service.create(app="fishbox", files=selection, plan_etag=str(plan["etag"]))
+    job = service.create(app="local", files=selection, plan_etag=str(plan["etag"]))
 
     assert service.process_due(limit=1) == 1
-    assert service.get(app="fishbox", job_id=str(job["id"]))["state"] == "requested"
+    assert service.get(app="local", job_id=str(job["id"]))["state"] == "requested"
     with session_scope(make_session_factory(config.database_url)) as session:
         cached = session.query(RetrievalCacheObjectRecord).one()
         lease = session.query(RetrievalCacheLeaseRecord).one()

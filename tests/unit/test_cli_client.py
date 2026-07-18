@@ -4,10 +4,20 @@ from typing import Any
 
 import httpx
 
-from riverhog_cli.client import ApiClient
+from riverhog_cli.client import ApiClient, ExternalAppClient
 
 
 class RecordingClient(ApiClient):
+    def __init__(self) -> None:
+        super().__init__(base_url="http://example.invalid")
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        self.calls.append((method, path, kwargs))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, path))
+
+
+class RecordingExternalAppClient(ExternalAppClient):
     def __init__(self) -> None:
         super().__init__(base_url="http://example.invalid")
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
@@ -61,7 +71,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
 
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
-    client = RecordingClient()
+    client = RecordingExternalAppClient()
     files = [("2025/20250102T030405Z__docs", "invoice.pdf")]
 
     client.plan_retrieval(files, lease_seconds=3600)
@@ -84,3 +94,12 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
             {"json": payload, "headers": {"If-Match": '"' + "a" * 64 + '"'}},
         ),
     ]
+
+
+def test_operator_and_external_app_clients_use_separate_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_TOKEN", "operator-token")
+    monkeypatch.setenv("RIVERHOG_APP_TOKEN", "app-token")
+
+    assert ApiClient().token == "operator-token"
+    assert ExternalAppClient().token == "app-token"
+    assert not hasattr(ApiClient, "plan_retrieval")

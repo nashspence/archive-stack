@@ -5,10 +5,11 @@ Read [README.md](README.md) for the product entrypoint.
 ## Boundaries
 
 Riverhog owns generic collection custody, named archive stores and copies, collection
-search, ResourceSync catalog publication, and logical-file retrieval. Fishbox owns local
-materialization. Munchy owns generic media ingest, Jeb owns generic watched-drop collection,
-and Gogurt owns mounted-volume actions. Keep public code generic; real identity and
-deployment topology belong downstream.
+search, ResourceSync catalog publication, and logical-file retrieval. The default client's
+`local` subtree is the reference external application and owns its local materialization.
+Munchy owns generic media ingest, Jeb owns generic watched-drop collection, and Gogurt owns
+mounted-volume actions. Keep public code generic; real identity and deployment topology
+belong downstream.
 
 ## Safety
 
