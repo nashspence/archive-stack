@@ -7,18 +7,28 @@ from pathlib import Path
 
 import pytest
 
-from munchy.job_templates import job_template_digest
+from munchy.job_templates import job_template_digest, normalize_job_template
 from munchy.template_registry import (
     TemplateRegistryError,
     create_template_registry_snapshot,
     ensure_template_registry_schema,
     inspect_template_registry_snapshot,
     restore_template_registry_snapshot,
+    validate_template_registry,
 )
 
 
 def _definition(label: str) -> dict[str, object]:
-    return {"schema_version": 1, "kind": "munchy.job", "output": {"label": label}}
+    return {
+        "schema_version": 1,
+        "kind": "munchy.job",
+        "job": {
+            "handoff": {
+                "destination": "riverhog",
+                "options": {"archive_store": label},
+            }
+        },
+    }
 
 
 def _insert_template(
@@ -29,6 +39,7 @@ def _insert_template(
     enabled: bool,
 ) -> None:
     definition = _definition(name)
+    definition, resolved_job = normalize_job_template(definition)
     conn.execute(
         """
         INSERT INTO job_templates(
@@ -38,7 +49,7 @@ def _insert_template(
         (
             name,
             json.dumps(definition, sort_keys=True),
-            json.dumps({"output": name}, sort_keys=True),
+            json.dumps(resolved_job, sort_keys=True),
             job_template_digest(definition),
             revision,
             int(enabled),
@@ -103,3 +114,31 @@ def test_template_registry_restore_requires_explicit_replacement(tmp_path: Path)
 
     assert restore_template_registry_snapshot(snapshot, target, replace=True) == 1
     assert _rows(target)[0][0] == "source"
+
+
+def test_template_registry_validation_uses_the_current_job_template_contract(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "runner.sqlite3"
+    with closing(sqlite3.connect(source)) as conn:
+        ensure_template_registry_schema(conn)
+        _insert_template(conn, name="archive-example", revision=1, enabled=True)
+        conn.commit()
+
+    assert validate_template_registry(source) == 1
+
+    with closing(sqlite3.connect(source)) as conn:
+        definition = _definition("archive-example")
+        definition["job"] = {"handoff": {"destination": "unsupported"}}
+        conn.execute(
+            "UPDATE job_templates SET definition = ?, digest = ? WHERE name = ?",
+            (
+                json.dumps(definition, sort_keys=True),
+                job_template_digest(definition),
+                "archive-example",
+            ),
+        )
+        conn.commit()
+
+    with pytest.raises(TemplateRegistryError, match="current job-template contract"):
+        validate_template_registry(source)

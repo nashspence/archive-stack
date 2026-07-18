@@ -10,7 +10,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
-from munchy.job_templates import job_template_digest
+from munchy.job_templates import JobTemplateError, job_template_digest, normalize_job_template
 
 JOB_TEMPLATE_COLUMNS = (
     "name",
@@ -90,6 +90,20 @@ def _validate_template_rows(conn: sqlite3.Connection, *, label: str) -> int:
             raise TemplateRegistryError(
                 f"{label} template {name} definition and resolved job must be objects"
             )
+        try:
+            normalized_definition, expected_resolved_job = normalize_job_template(definition)
+        except JobTemplateError as exc:
+            raise TemplateRegistryError(
+                f"{label} template {name} does not satisfy the current job-template contract"
+            ) from exc
+        if normalized_definition != definition:
+            raise TemplateRegistryError(
+                f"{label} template {name} definition is not canonical"
+            )
+        if expected_resolved_job != resolved_job:
+            raise TemplateRegistryError(
+                f"{label} template {name} resolved job does not match its definition"
+            )
         if str(row[3]) != job_template_digest(definition):
             raise TemplateRegistryError(f"{label} template {name} has an invalid digest")
         if int(row[4]) < 1:
@@ -100,6 +114,13 @@ def _validate_template_rows(conn: sqlite3.Connection, *, label: str) -> int:
             raise TemplateRegistryError(f"{label} template {name} has a blank timestamp")
         count += 1
     return count
+
+
+def validate_template_registry(source_db: Path) -> int:
+    with closing(_connect_read_only(Path(source_db))) as source:
+        _quick_check(source, label="template registry")
+        _require_template_schema(source, label="template registry")
+        return _validate_template_rows(source, label="template registry")
 
 
 def _temporary_path(parent: Path, stem: str) -> Path:
@@ -269,4 +290,5 @@ __all__ = [
     "ensure_template_registry_schema",
     "inspect_template_registry_snapshot",
     "restore_template_registry_snapshot",
+    "validate_template_registry",
 ]

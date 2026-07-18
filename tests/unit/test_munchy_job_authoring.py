@@ -8,6 +8,7 @@ from munchy.device_profiles import instantiate_device_profile, load_device_profi
 from munchy.job_authoring import (
     build_review_sweep_plan,
     load_munchy_job_config,
+    load_munchy_job_definition,
     munchy_job_defaults_from_config,
 )
 from riverhog_core.config_yaml import ConfigError
@@ -121,6 +122,11 @@ job:
 """.strip(),
         encoding="utf-8",
     )
+
+    definition = load_munchy_job_definition(path)
+    assert isinstance(definition["job"]["routing"]["sidecars"], dict)
+    assert isinstance(definition["job"]["routing"]["gates"], dict)
+    assert "device_profile" not in definition
 
     config = load_munchy_job_config(path)
     defaults = munchy_job_defaults_from_config(config)

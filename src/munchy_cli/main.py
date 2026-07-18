@@ -23,6 +23,7 @@ from munchy.job_authoring import (
     configured_profiles,
     discover_local_candidates,
     load_munchy_job_config,
+    load_munchy_job_definition,
     normalize_group_payload,
     routing_report_text,
 )
@@ -656,7 +657,7 @@ def format_review_sweep_plan(plan: Mapping[str, Any]) -> Any:
 
 def _job_template_definition(path: Path) -> dict[str, Any]:
     try:
-        return load_munchy_job_config(path)
+        return load_munchy_job_definition(path)
     except (ConfigError, MunchyJobAuthoringError) as exc:
         raise typer.BadParameter(str(exc), param_hint=str(path)) from exc
 

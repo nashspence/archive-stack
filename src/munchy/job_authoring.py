@@ -128,11 +128,15 @@ def normalize_munchy_config(
 def load_munchy_job_config(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
+    return normalize_munchy_config(load_munchy_job_definition(path))
+
+
+def load_munchy_job_definition(path: Path) -> dict[str, Any]:
     raw = load_yaml_config(path)
     validate_json_schema(raw, MUNCHY_CONFIG_SCHEMA, label=str(path))
     expanded = apply_device_profile_to_munchy_config(raw, base_path=path)
     validate_json_schema(expanded, MUNCHY_CONFIG_SCHEMA, label=str(path))
-    return normalize_munchy_config(expanded)
+    return expanded
 
 
 def configured_job_defaults(config: Mapping[str, Any]) -> dict[str, Any]:

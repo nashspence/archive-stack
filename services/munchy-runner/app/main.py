@@ -97,7 +97,11 @@ from munchy.source_artifact_bridge import (
     build_preserve_source_artifacts,
     build_strict_source_artifacts,
 )
-from munchy.template_registry import ensure_template_registry_schema
+from munchy.template_registry import (
+    TemplateRegistryError,
+    ensure_template_registry_schema,
+    validate_template_registry,
+)
 from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
@@ -10220,6 +10224,13 @@ def health_live() -> dict[str, str]:
 
 @app.get("/health/ready")
 def health_ready() -> dict[str, Any]:
+    try:
+        template_count = validate_template_registry(STATE_DB_PATH)
+    except TemplateRegistryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="job template registry does not satisfy the current contract",
+        ) from exc
     return {
         "status": "ok",
         "state_dir": str(STATE_DIR),
@@ -10246,6 +10257,7 @@ def health_ready() -> dict[str, Any]:
         "running_job_limit": MAX_RUNNING_JOBS,
         "running_jobs": len(active_jobs),
         "scheduled_jobs": len(scheduled_jobs),
+        "job_templates": template_count,
     }
 
 

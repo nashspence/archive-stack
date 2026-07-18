@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import sqlite3
 import sys
 import threading
 import uuid
@@ -91,6 +92,46 @@ def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> Non
     )
     assert authorized.status_code == 200
     assert authorized.json()["operations"]["list_jobs"] is True
+
+
+def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    with TestClient(runner.app) as client:
+        ready = client.get("/health/ready")
+        assert ready.status_code == 200
+        assert ready.json()["job_templates"] == 0
+
+        definition = {
+            "schema_version": 1,
+            "kind": "munchy.job",
+            "job": {"handoff": {"destination": "unsupported"}},
+        }
+        with sqlite3.connect(runner.STATE_DB_PATH) as conn:
+            conn.execute(
+                """
+                INSERT INTO job_templates(
+                    name, definition, resolved_job, digest, revision, enabled,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "invalid-example",
+                    json.dumps(definition, sort_keys=True),
+                    "{}",
+                    runner.job_template_digest(definition),
+                    1,
+                    1,
+                    "2026-07-18T00:00:00.000001Z",
+                    "2026-07-18T00:00:00.000001Z",
+                ),
+            )
+            conn.commit()
+
+        not_ready = client.get("/health/ready")
+        assert not_ready.status_code == 503
+        assert not_ready.json() == {
+            "detail": "job template registry does not satisfy the current contract"
+        }
 
 
 def job_template_definition(*, archive_store: str = "b2") -> dict[str, object]:
