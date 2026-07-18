@@ -285,6 +285,13 @@ class CollectionUploadProgress:
             self.uploaded_bytes = min(self.uploaded_bytes + delta, max(self.bytes_total, 0))
             self._render_locked(force=False)
 
+    def resumed(self, delta: int) -> None:
+        if delta <= 0:
+            return
+        with self.lock:
+            self.uploaded_bytes = min(self.uploaded_bytes + delta, max(self.bytes_total, 0))
+            self._render_locked(force=False)
+
     def complete_file(self) -> None:
         with self.lock:
             self.files_uploaded = min(self.files_uploaded + 1, max(self.files_total, 0))

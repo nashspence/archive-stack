@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_cli import main as riverhog_main
+from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.ingress_crypto import (
     create_ingress_encryption,
     ingress_encryption_descriptor,
@@ -143,6 +144,61 @@ def test_upload_streams_client_encrypted_bytes_and_reports_plaintext_progress(
     assert len(ciphertext) == descriptor["ciphertext_bytes"]
     assert sum(progress) == len(content)
     assert b"".join(iter_decrypt_age_scrypt([ciphertext], str(descriptor["passphrase"]))) == content
+
+
+def test_resumed_upload_reports_existing_plaintext_without_counting_it_as_new_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = (b"resume encrypted ingress\n" * 10_000) + b"end"
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
+    parts = list(
+        iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=70_000,
+        )
+    )
+    assert len(parts) > 1
+    resume_offset = parts[1].ciphertext_offset
+    resumed: list[int] = []
+    uploaded_ciphertext: list[int] = []
+    uploaded_plaintext: list[int] = []
+
+    class Api:
+        def create_or_resume_collection_file_upload(
+            self, _collection_id: str, _path: str
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/opaque",
+                "offset": resume_offset,
+                "length": descriptor["ciphertext_bytes"],
+                "checksum_algorithm": "sha256",
+                "encryption": descriptor,
+            }
+
+        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
+            uploaded_ciphertext.append(len(bytes(kwargs["content"])))
+            return {
+                "offset": int(kwargs["offset"]) + uploaded_ciphertext[-1],
+                "expires_at": None,
+            }
+
+    riverhog_main._upload_collection_file(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        source,
+        {"path": "clip.bin", "bytes": len(content)},
+        progress=uploaded_plaintext.append,
+        resumed=resumed.append,
+    )
+
+    assert resumed == [parts[1].plaintext_start]
+    assert resumed[0] + sum(uploaded_plaintext) == len(content)
 
 
 def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(

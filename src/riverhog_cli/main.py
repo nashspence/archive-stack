@@ -40,6 +40,7 @@ from riverhog_core.fs_paths import (
     normalize_upload_timestamp,
 )
 from riverhog_core.ingress_client import iter_ingress_upload_parts
+from riverhog_core.ingress_crypto import ingress_plaintext_bytes_for_offset
 from riverhog_core.timestamps import utc_timestamp_now
 
 app = typer.Typer(help="Riverhog collection archive CLI.")
@@ -442,6 +443,7 @@ def _upload_collection_file(
     file_payload: Mapping[str, object],
     *,
     progress: Callable[[int], None] | None = None,
+    resumed: Callable[[int], None] | None = None,
 ) -> None:
     path_value = str(file_payload["path"])
     length_value = file_payload["bytes"]
@@ -461,6 +463,18 @@ def _upload_collection_file(
     if offset > length:
         raise RuntimeError(
             f"upload offset for {path_value} is {offset}, past expected length {length}"
+        )
+    encryption_state = encryption.get("state")
+    if not isinstance(encryption_state, Mapping):
+        raise RuntimeError(f"upload encryption state is missing for {path_value}")
+    if resumed is not None and offset:
+        resumed(
+            ingress_plaintext_bytes_for_offset(
+                state_json=json.dumps(dict(encryption_state)),
+                plaintext_bytes=plaintext_length,
+                ciphertext_bytes=length,
+                ciphertext_offset=offset,
+            )
         )
     log_file = plaintext_length >= _upload_file_log_bytes()
     if offset >= length:
@@ -891,6 +905,7 @@ def _upload_collection_via_session(
             source_path,
             file_payload,
             progress=progress.uploaded,
+            resumed=progress.resumed,
         )
         progress.complete_file()
 
@@ -1557,11 +1572,21 @@ def archive_retire_cmd(
 
 
 def _error_code(exc: BaseException) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code >= 500:
+            return "service_unavailable"
+        return "http_error"
     if isinstance(exc, httpx.TransportError):
         return "transport_error"
     if isinstance(exc, RiverhogError):
         return exc.code
     return "error"
+
+
+def _error_message(exc: BaseException) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"service returned HTTP {exc.response.status_code}"
+    return str(exc) or type(exc).__name__
 
 
 def _json_requested(argv: list[str]) -> bool:
@@ -1570,7 +1595,7 @@ def _json_requested(argv: list[str]) -> bool:
 
 def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
     code = _error_code(exc)
-    message = str(exc) or type(exc).__name__
+    message = _error_message(exc)
     if json_mode:
         typer.echo(
             json.dumps(
@@ -1590,6 +1615,7 @@ def main() -> int:
     try:
         app()
     except (
+        httpx.HTTPStatusError,
         httpx.TransportError,
         RiverhogError,
         FileExistsError,
