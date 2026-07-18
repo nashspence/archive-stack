@@ -105,6 +105,58 @@ def test_operator_and_external_app_clients_use_separate_credentials(monkeypatch)
     assert not hasattr(ApiClient, "plan_retrieval")
 
 
+def test_operator_client_manages_app_keys_without_exposing_them_to_external_client() -> None:
+    client = RecordingClient()
+
+    client.list_apps(q="local", active=True, all_items=True)
+    client.create_app_key("local", expires_in_seconds=3600)
+    client.list_app_keys("local", active=False, all_items=True)
+    client.revoke_app_key("local", "0123456789abcdef")
+
+    assert client.calls == [
+        (
+            "GET",
+            "/v1/apps",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "name",
+                    "order": "asc",
+                    "q": "local",
+                    "active": "true",
+                    "all": True,
+                }
+            },
+        ),
+        (
+            "POST",
+            "/v1/apps/local/keys",
+            {"json": {"expires_in_seconds": 3600}},
+        ),
+        (
+            "GET",
+            "/v1/apps/local/keys",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "created_at",
+                    "order": "desc",
+                    "active": "false",
+                    "all": True,
+                }
+            },
+        ),
+        (
+            "POST",
+            "/v1/apps/local/keys/0123456789abcdef/revoke",
+            {},
+        ),
+    ]
+    assert not hasattr(ExternalAppClient, "create_app_key")
+
+
 def test_archive_upload_transport_defaults_to_http_1_1(monkeypatch) -> None:
     monkeypatch.delenv("RIVERHOG_UPLOAD_HTTP2", raising=False)
     monkeypatch.delenv("RIVERHOG_HTTP2", raising=False)

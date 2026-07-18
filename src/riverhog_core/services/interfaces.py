@@ -115,6 +115,35 @@ class RetrievalService(Protocol):
     def sweep(self) -> int: ...
 
 
+class AppKeyService(Protocol):
+    def authenticate(self, token: str) -> str | None: ...
+    def create(self, *, app: str, expires_in: timedelta | None = None) -> JsonObject: ...
+    def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
+    def list_apps(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> JsonObject: ...
+    def list_keys(
+        self,
+        *,
+        app: str,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> JsonObject: ...
+
+
 class SearchService(Protocol):
     def search(
         self,

@@ -149,20 +149,6 @@ def parse_collection_webhooks(values: Mapping[str, str]) -> dict[str, str]:
     return webhooks
 
 
-def _parse_external_app_tokens(value: str) -> dict[str, str]:
-    import json
-
-    if not value.strip():
-        return {}
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS must be a JSON object") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS must be a JSON object")
-    return {str(app): str(token) for app, token in payload.items()}
-
-
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     return "/".join(parts)
@@ -289,7 +275,6 @@ class RuntimeConfig:
     )
     ingress_secret_key: str = DEV_INGRESS_SECRET_KEY
     retrieval_cache: RetrievalCacheConfig | None = None
-    external_app_tokens: Mapping[str, str] = field(default_factory=dict)
     retrieval_initial_ingestion_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
     retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
@@ -518,13 +503,6 @@ class RuntimeConfig:
                 "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a "
                 "non-development secret"
             )
-        normalized_app_tokens: dict[str, str] = {}
-        for app, token in self.external_app_tokens.items():
-            normalized_app = _normalize_archive_store_name(str(app))
-            if not str(token):
-                raise ValueError("RIVERHOG_EXTERNAL_APP_TOKENS values must be non-empty")
-            normalized_app_tokens[normalized_app] = str(token)
-        object.__setattr__(self, "external_app_tokens", normalized_app_tokens)
         normalized_webhooks: dict[str, str] = {}
         for recipient, url in self.collection_webhook_urls.items():
             normalized_recipient = _normalize_notify_recipient(
@@ -804,9 +782,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_multipart_sweep_interval=archive_multipart_sweep_interval,
         archive_object_concurrency=archive_object_concurrency,
         retrieval_cache=retrieval_cache,
-        external_app_tokens=_parse_external_app_tokens(
-            os.getenv("RIVERHOG_EXTERNAL_APP_TOKENS", "")
-        ),
         retrieval_initial_ingestion_lease=parse_duration(
             os.getenv("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE", "30d")
         ),

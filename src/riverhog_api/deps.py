@@ -10,6 +10,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
@@ -19,6 +20,7 @@ from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadServic
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.interfaces import (
+    AppKeyService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
     ArchiveReportingService,
@@ -38,6 +40,7 @@ from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 
 @dataclass(slots=True)
 class ServiceContainer:
+    app_keys: AppKeyService
     collections: CollectionService
     collection_deletions: CollectionDeletionService
     search: SearchService
@@ -64,6 +67,7 @@ def default_container() -> ServiceContainer:
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     return ServiceContainer(
+        app_keys=SqlAlchemyAppKeyService(config),
         collections=SqlAlchemyCollectionService(config, upload_store),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,

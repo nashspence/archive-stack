@@ -518,6 +518,82 @@ class ApiClient(_HttpApiClient):
             params["collection"] = collection
         return self._json("GET", "/v1/archive", params=params)
 
+    def list_apps(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "name",
+        order: str = "asc",
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if active is not None:
+            params["active"] = str(active).lower()
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/apps", params=params)
+
+    def create_app_key(
+        self,
+        app: str,
+        *,
+        expires_in_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if expires_in_seconds is not None:
+            payload["expires_in_seconds"] = expires_in_seconds
+        return self._json(
+            "POST",
+            f"/v1/apps/{quote(app, safe='')}/keys",
+            json=payload,
+        )
+
+    def list_app_keys(
+        self,
+        app: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "created_at",
+        order: str = "desc",
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if active is not None:
+            params["active"] = str(active).lower()
+        if all_items:
+            params["all"] = True
+        return self._json(
+            "GET",
+            f"/v1/apps/{quote(app, safe='')}/keys",
+            params=params,
+        )
+
+    def revoke_app_key(self, app: str, key_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/revoke",
+        )
+
     def create_or_resume_archive_copy(
         self,
         collection_id: str,

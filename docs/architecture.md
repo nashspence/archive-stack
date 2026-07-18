@@ -71,7 +71,7 @@ local files. Other applications use the same interface and remain isolated from 
   scheduling, and named target submission.
 - Gogurt maps mounted-volume markers to configured operator actions.
 - Downstream private configuration owns real identity, destinations, recipients, remotes,
-  application tokens, and deployment topology.
+  application keys, and deployment topology.
 
 ## Core terms
 

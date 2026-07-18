@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from riverhog_api.auth import api_auth_dependencies
 from riverhog_api.deps import ServiceContainer, default_container, get_container
+from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.internal import router as internal_router
@@ -371,6 +372,7 @@ def create_app(
     app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(archive_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(apps_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(jeb_router, prefix="/v1", dependencies=auth_deps)
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)

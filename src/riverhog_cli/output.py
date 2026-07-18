@@ -73,6 +73,56 @@ def format_collections(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_apps(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "apps")]
+    for application in _items(payload, "apps"):
+        lines.append(
+            f"- {application.get('name', 'unknown')}  "
+            f"keys={application.get('active_keys', 0)}/{application.get('keys', 0)}  "
+            f"last_used={application.get('last_used_at') or 'never'}"
+        )
+    return "\n".join(lines)
+
+
+def format_app_keys(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"app: {payload.get('app', 'unknown')}",
+        _page_line(payload, "keys"),
+    ]
+    for key in _items(payload, "keys"):
+        lines.append(
+            f"- {key.get('id', 'unknown')}  status={key.get('status', 'unknown')}  "
+            f"created={key.get('created_at', 'unknown')}  "
+            f"expires={key.get('expires_at') or 'never'}  "
+            f"last_used={key.get('last_used_at') or 'never'}"
+        )
+    return "\n".join(lines)
+
+
+def format_app_key_created(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            "app key created",
+            f"app: {payload.get('app', 'unknown')}",
+            f"key: {payload.get('id', 'unknown')}",
+            f"expires: {payload.get('expires_at') or 'never'}",
+            f"token: {payload.get('token', '')}",
+            "Save this token now; Riverhog will not show it again.",
+        ]
+    )
+
+
+def format_app_key_revoked(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            "app key revoked",
+            f"app: {payload.get('app', 'unknown')}",
+            f"key: {payload.get('id', 'unknown')}",
+            f"revoked: {payload.get('revoked_at', 'unknown')}",
+        ]
+    )
+
+
 def format_collection_summary(
     payload: Mapping[str, object],
     archive_report: Mapping[str, object] | None = None,

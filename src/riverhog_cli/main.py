@@ -18,6 +18,10 @@ from riverhog_cli.client import ApiClient
 from riverhog_cli.local import local_app
 from riverhog_cli.output import (
     emit,
+    format_app_key_created,
+    format_app_key_revoked,
+    format_app_keys,
+    format_apps,
     format_archive_copy_job,
     format_archive_copy_retirement_plan,
     format_archive_copy_retirement_result,
@@ -41,14 +45,19 @@ from riverhog_core.fs_paths import (
 )
 from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.ingress_crypto import ingress_plaintext_bytes_for_offset
+from riverhog_core.runtime_config import parse_duration
 from riverhog_core.timestamps import utc_timestamp_now
 from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
+application_app = typer.Typer(help="External application access.")
+app_key_app = typer.Typer(help="External application key management.")
+application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
+app.add_typer(application_app, name="app")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -96,6 +105,141 @@ def _close_client() -> None:
 @app.callback()
 def _root(ctx: typer.Context) -> None:
     ctx.call_on_close(_close_client)
+
+
+_APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
+_APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
+
+
+def _list_order(sort: str, order: str, *, fields: set[str]) -> str:
+    if sort not in fields:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(fields))}",
+            param_hint="--sort",
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+    return normalized_order
+
+
+@application_app.command("list")
+def app_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over app names"),
+    ] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by usable key availability"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching app")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one app name per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List external applications with key summaries."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_APP_SORT_FIELDS)
+    payload = client().list_apps(
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        active=active,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "apps", id_key="name"), json_mode=False)
+        return
+    emit(payload if json_mode else format_apps(payload), json_mode=json_mode)
+
+
+@app_key_app.command("create")
+def app_key_create_cmd(
+    app_name: Annotated[str, typer.Argument(help="External application name")],
+    expires_in: Annotated[
+        str | None,
+        typer.Option("--expires-in", help="Optional key lifetime such as 30d"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Create a key and show its token once."""
+
+    expires_in_seconds: int | None = None
+    if expires_in is not None:
+        try:
+            expires_in_seconds = int(parse_duration(expires_in).total_seconds())
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--expires-in") from exc
+        if expires_in_seconds < 1:
+            raise typer.BadParameter(
+                "expiry must be at least one second",
+                param_hint="--expires-in",
+            )
+    payload = client().create_app_key(
+        app_name,
+        expires_in_seconds=expires_in_seconds,
+    )
+    emit(payload if json_mode else format_app_key_created(payload), json_mode=json_mode)
+
+
+@app_key_app.command("list")
+def app_key_list_cmd(
+    app_name: Annotated[str, typer.Argument(help="External application name")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over key ids"),
+    ] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by key usability"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching key")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one key id per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List keys without exposing their tokens."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_APP_KEY_SORT_FIELDS)
+    payload = client().list_app_keys(
+        app_name,
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        active=active,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "keys"), json_mode=False)
+        return
+    emit(payload if json_mode else format_app_keys(payload), json_mode=json_mode)
+
+
+@app_key_app.command("revoke")
+def app_key_revoke_cmd(
+    app_name: Annotated[str, typer.Argument(help="External application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Immediately revoke one external application key."""
+
+    payload = client().revoke_app_key(app_name, key_id)
+    emit(payload if json_mode else format_app_key_revoked(payload), json_mode=json_mode)
 
 
 def _response_upload_files(payload: dict[str, Any]) -> list[CollectionUploadFilePayload]:

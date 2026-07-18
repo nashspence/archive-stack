@@ -222,6 +222,23 @@ class CatalogEventRecord(Base):
     __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
 
 
+class AppKeyRecord(Base):
+    __tablename__ = "app_keys"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    app: Mapped[str] = mapped_column(String)
+    token_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String)
+    expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_used_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_app_keys_app", "app", "id"),
+        Index("ux_app_keys_token_sha256", "token_sha256", unique=True),
+    )
+
+
 class RetrievalJobRecord(Base):
     __tablename__ = "retrieval_jobs"
 

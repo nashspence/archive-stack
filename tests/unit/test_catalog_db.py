@@ -9,6 +9,7 @@ from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
+    "app_keys",
     "archive_copy_jobs",
     "archive_copy_retirements",
     "archive_usage_snapshots",
@@ -48,6 +49,15 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "app",
         "state",
         "plan_etag",
+    }
+    assert {column["name"] for column in inspector.get_columns("app_keys")} == {
+        "id",
+        "app",
+        "token_sha256",
+        "created_at",
+        "expires_at",
+        "revoked_at",
+        "last_used_at",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_job_files")} == {
         "job_id",
