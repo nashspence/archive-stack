@@ -172,6 +172,7 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         "PREFIX",
         "BACKEND",
         "CLASS",
+        "PATH",
     }
 
     example_names = {
@@ -286,6 +287,9 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORE_DEEP_PREFIX",
         "RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND",
         "RIVERHOG_ARCHIVE_STORE_DEEP_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
         "RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL",
         "RIVERHOG_ARCHIVE_STORE_B2_BUCKET",
         "RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID",
@@ -356,6 +360,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "archive-throughput",
             ("ARCHIVE_SOURCE=/tmp/probe.bin", "args=--concurrency 2"),
             "python scripts/archive_upload_throughput.py /tmp/probe.bin --concurrency 2",
+        ),
+        (
+            "archive-download-smoke",
+            ("ARCHIVE_STORE=deep",),
+            "python scripts/archive_download_smoke.py --store deep",
         ),
     ],
 )

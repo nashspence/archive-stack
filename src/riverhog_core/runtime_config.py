@@ -191,6 +191,9 @@ class ArchiveStoreConfig:
     prefix: str
     backend: str
     storage_class: str
+    cloudfront_base_url: str | None = None
+    cloudfront_public_key_id: str | None = None
+    cloudfront_private_key_path: Path | None = None
 
 
 def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
@@ -305,6 +308,39 @@ class RuntimeConfig:
                 raise ValueError(
                     f"archive store {name} has blank required fields: " + ", ".join(missing_fields)
                 )
+            cloudfront_fields = {
+                "base URL": store.cloudfront_base_url,
+                "public key id": store.cloudfront_public_key_id,
+                "private key path": store.cloudfront_private_key_path,
+            }
+            configured_cloudfront_fields = [
+                field_name for field_name, value in cloudfront_fields.items() if value is not None
+            ]
+            if configured_cloudfront_fields and len(configured_cloudfront_fields) != len(
+                cloudfront_fields
+            ):
+                raise ValueError(
+                    f"archive store {name} CloudFront download configuration must set "
+                    "base URL, public key id, and private key path together"
+                )
+            if store.cloudfront_base_url is not None:
+                if store.backend.casefold() != "aws":
+                    raise ValueError(
+                        f"archive store {name} CloudFront downloads require the aws backend"
+                    )
+                cloudfront_url = urlsplit(store.cloudfront_base_url)
+                if (
+                    cloudfront_url.scheme != "https"
+                    or not cloudfront_url.hostname
+                    or cloudfront_url.username is not None
+                    or cloudfront_url.password is not None
+                    or cloudfront_url.query
+                    or cloudfront_url.fragment
+                ):
+                    raise ValueError(
+                        f"archive store {name} CloudFront base URL must be an HTTPS URL "
+                        "without credentials, query, or fragment"
+                    )
             normalized_archive_stores[name] = store
         if archive_write_store not in normalized_archive_stores:
             raise ValueError(f"archive write store is not configured: {archive_write_store}")
@@ -449,6 +485,15 @@ def _parse_archive_stores(
     stores: dict[str, ArchiveStoreConfig] = {}
     for name in names:
         prefix = f"RIVERHOG_ARCHIVE_STORE_{_archive_store_env_suffix(name)}_"
+        cloudfront_base_url = (
+            values.get(f"{prefix}CLOUDFRONT_BASE_URL", "").strip().rstrip("/") or None
+        )
+        cloudfront_public_key_id = (
+            values.get(f"{prefix}CLOUDFRONT_PUBLIC_KEY_ID", "").strip() or None
+        )
+        cloudfront_private_key_path_raw = values.get(
+            f"{prefix}CLOUDFRONT_PRIVATE_KEY_PATH", ""
+        ).strip()
         stores[name] = ArchiveStoreConfig(
             name=name,
             endpoint_url=values.get(f"{prefix}ENDPOINT_URL", hot_store_endpoint_url).rstrip("/"),
@@ -463,6 +508,13 @@ def _parse_archive_stores(
             backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
             storage_class=values.get(f"{prefix}STORAGE_CLASS", "DEEP_ARCHIVE").strip()
             or "DEEP_ARCHIVE",
+            cloudfront_base_url=cloudfront_base_url,
+            cloudfront_public_key_id=cloudfront_public_key_id,
+            cloudfront_private_key_path=(
+                Path(cloudfront_private_key_path_raw)
+                if cloudfront_private_key_path_raw
+                else None
+            ),
         )
     if write_store not in stores:
         raise ValueError(

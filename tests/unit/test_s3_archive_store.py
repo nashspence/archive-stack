@@ -9,7 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.archive_objects import (
@@ -310,6 +313,9 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     store_fields = {
         "archive_backend": "backend",
         "archive_storage_class": "storage_class",
+        "cloudfront_base_url": "cloudfront_base_url",
+        "cloudfront_public_key_id": "cloudfront_public_key_id",
+        "cloudfront_private_key_path": "cloudfront_private_key_path",
     }
     store_overrides = {
         store_fields[name]: overrides.pop(name) for name in tuple(overrides) if name in store_fields
@@ -416,6 +422,18 @@ def _identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdent
     )
 
 
+def _cloudfront_private_key(path: Path) -> Path:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    return path
+
+
 def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path) -> None:
     client = _FakeS3Client()
     store = _store(monkeypatch, tmp_path, client)
@@ -441,6 +459,122 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
         assert len(plaintext) == current.plaintext_bytes
         assert hashlib.sha256(plaintext).hexdigest() == current.sha256
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
+
+
+def test_archive_download_uses_s3_when_cloudfront_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    archive = _archive()
+    expected = b"".join(archive.data_objects[0].iter_plaintext())
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+
+    restored = b"".join(
+        store.iter_archive_object(
+            collection_id=COLLECTION_ID,
+            object=_identity(receipt).data_objects[0],
+        )
+    )
+
+    assert restored == expected
+
+
+def test_archive_download_uses_one_signed_cloudfront_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    s3_client = _FakeS3Client()
+    requested_urls: list[httpx.URL] = []
+
+    def handle_download(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(request.url)
+        assert request.headers["Accept-Encoding"] == "identity"
+        object_path = request.url.path.removeprefix("/")
+        content = cast(bytes, s3_client.objects[object_path]["Body"])
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(content))},
+            content=content,
+        )
+
+    download_client = httpx.Client(transport=httpx.MockTransport(handle_download))
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.httpx.Client",
+        lambda **_kwargs: download_client,
+    )
+    store = _store(
+        monkeypatch,
+        tmp_path,
+        s3_client,
+        archive_backend="aws",
+        archive_storage_class="STANDARD",
+        cloudfront_base_url="https://archive.example.test",
+        cloudfront_public_key_id="example-key-id",
+        cloudfront_private_key_path=_cloudfront_private_key(tmp_path / "cloudfront.pem"),
+    )
+    archive = _archive()
+    expected = b"".join(archive.data_objects[0].iter_plaintext())
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    data_object = _identity(receipt).data_objects[0]
+
+    first = b"".join(store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object))
+    second = b"".join(store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object))
+
+    assert first == second == expected
+    assert len(requested_urls) == 2
+    for url in requested_urls:
+        assert url.host == "archive.example.test"
+        assert url.path == f"/{data_object.object_path}"
+        assert set(url.params) == {"Expires", "Signature", "Key-Pair-Id"}
+        assert url.params["Key-Pair-Id"] == "example-key-id"
+
+
+def test_configured_cloudfront_download_failure_does_not_fall_back_to_s3(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    s3_client = _FakeS3Client()
+    download_client = httpx.Client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(503))
+    )
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.httpx.Client",
+        lambda **_kwargs: download_client,
+    )
+    store = _store(
+        monkeypatch,
+        tmp_path,
+        s3_client,
+        archive_backend="aws",
+        archive_storage_class="STANDARD",
+        cloudfront_base_url="https://archive.example.test",
+        cloudfront_public_key_id="example-key-id",
+        cloudfront_private_key_path=_cloudfront_private_key(tmp_path / "cloudfront.pem"),
+    )
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=_archive(),
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    data_object = _identity(receipt).data_objects[0]
+    monkeypatch.setattr(
+        s3_client,
+        "get_object",
+        lambda **_kwargs: pytest.fail("configured CloudFront downloads must not use S3 GET"),
+    )
+
+    with pytest.raises(RuntimeError, match="CloudFront archive download failed with HTTP 503"):
+        b"".join(store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object))
 
 
 @pytest.mark.parametrize(

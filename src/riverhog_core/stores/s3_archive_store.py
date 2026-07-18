@@ -8,11 +8,16 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
+from urllib.parse import quote
 
+import httpx
 import yaml
+from botocore.signers import CloudFrontSigner
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from riverhog_age import (
     AEAD_TAG_SIZE,
@@ -61,6 +66,7 @@ _MAX_MULTIPART_PART_SIZE = 5 * 1024 * 1024 * 1024
 _MAX_MULTIPART_PARTS = 10_000
 _MAX_SINGLE_PUT_OBJECT_SIZE = 5 * 1024 * 1024 * 1024
 _OPAQUE_ARCHIVE_ID_BYTES = 16
+_CLOUDFRONT_URL_TTL = timedelta(minutes=15)
 _LOG = logging.getLogger(__name__)
 
 
@@ -267,6 +273,30 @@ class S3ArchiveStore:
         self._bucket = store.bucket
         self._client = create_archive_s3_client(config, store)
         self._multipart_timing_observer = multipart_timing_observer
+        self._cloudfront_signer: CloudFrontSigner | None = None
+        self._cloudfront_client: httpx.Client | None = None
+        if store.cloudfront_base_url is not None:
+            private_key_path = store.cloudfront_private_key_path
+            public_key_id = store.cloudfront_public_key_id
+            if private_key_path is None or public_key_id is None:
+                raise ValueError("CloudFront download configuration is incomplete")
+            private_key = serialization.load_pem_private_key(
+                private_key_path.read_bytes(),
+                password=None,
+            )
+            if not isinstance(private_key, rsa.RSAPrivateKey):
+                raise ValueError("CloudFront private key must be an RSA private key")
+
+            def rsa_signer(message: bytes) -> bytes:
+                # CloudFront canned-policy signatures require RSA PKCS#1 v1.5 with SHA-1.
+                return private_key.sign(message, padding.PKCS1v15(), hashes.SHA1())
+
+            self._cloudfront_signer = CloudFrontSigner(public_key_id, rsa_signer)
+            self._cloudfront_client = httpx.Client(
+                http2=True,
+                follow_redirects=False,
+                timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
+            )
 
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
@@ -1585,18 +1615,52 @@ class S3ArchiveStore:
         )
         if status.state != "ready":
             raise RuntimeError(f"Archive object is not restored yet: {object_path}")
-        response = self._client.get_object(Bucket=self._bucket, Key=object_path)
-        body = response["Body"]
+        if self._cloudfront_client is None or self._cloudfront_signer is None:
+            response = self._client.get_object(Bucket=self._bucket, Key=object_path)
+            body = response["Body"]
+            try:
+                chunks = body.iter_chunks(chunk_size=1024 * 1024)
+                yield from iter_decrypt_age_scrypt(
+                    chunks,
+                    self._config.archive_passphrase,
+                )
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+            return
+
+        base_url = self._store.cloudfront_base_url
+        if base_url is None:
+            raise RuntimeError("CloudFront download configuration is incomplete")
+        object_url = f"{base_url}/{quote(object_path, safe='/')}"
+        signed_url = self._cloudfront_signer.generate_presigned_url(
+            object_url,
+            date_less_than=datetime.now(UTC) + _CLOUDFRONT_URL_TTL,
+        )
         try:
-            chunks = body.iter_chunks(chunk_size=1024 * 1024)
-            yield from iter_decrypt_age_scrypt(
-                chunks,
-                self._config.archive_passphrase,
-            )
-        finally:
-            close = getattr(body, "close", None)
-            if callable(close):
-                close()
+            with self._cloudfront_client.stream(
+                "GET",
+                signed_url,
+                headers={"Accept-Encoding": "identity"},
+            ) as response:
+                if not response.is_success:
+                    raise RuntimeError(
+                        "CloudFront archive download failed with HTTP "
+                        f"{response.status_code}: {object_path}"
+                    )
+                content_length = response.headers.get("content-length")
+                if content_length is not None and int(content_length) != object.stored_bytes:
+                    raise RuntimeError(
+                        "CloudFront archive download length does not match verified metadata: "
+                        f"{object_path}"
+                    )
+                yield from iter_decrypt_age_scrypt(
+                    response.iter_bytes(chunk_size=1024 * 1024),
+                    self._config.archive_passphrase,
+                )
+        except httpx.HTTPError:
+            raise RuntimeError(f"CloudFront archive download failed: {object_path}") from None
 
     def cleanup_archive_objects_read(
         self,

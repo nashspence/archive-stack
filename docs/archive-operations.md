@@ -14,6 +14,13 @@ After account, credential, provider, or storage-class changes, run an authentica
 report and fetch known files from the affected store. A report or object listing alone does
 not establish recoverability.
 
+An AWS archive store may route encrypted object downloads through a private CloudFront
+distribution while retaining S3 as the authority for writes, metadata, restore state, and
+deletion. Set that store's `CLOUDFRONT_BASE_URL`, `CLOUDFRONT_PUBLIC_KEY_ID`, and
+`CLOUDFRONT_PRIVATE_KEY_PATH` settings together to enable it; leave all three unset for
+direct S3 downloads. Partial configuration is invalid, and a configured CloudFront failure
+does not silently fall back to S3.
+
 Riverhog maintains plaintext `README.md` and `AGENTS.md` guidance at each archive root.
 Opaque names do not mean objects are unused; encrypted collection objects may be the sole
 durable copies.

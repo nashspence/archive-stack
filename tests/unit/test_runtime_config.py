@@ -141,6 +141,91 @@ def test_load_runtime_config_builds_named_archive_stores(
     assert config.archive_store("b2").prefix == ""
 
 
+def test_load_runtime_config_enables_cloudfront_downloads_per_aws_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "https://archive.example.test/",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "example-key-id",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "/run/secrets/cloudfront.pem",
+    )
+
+    store = load_runtime_config().archive_store("deep")
+
+    assert store.cloudfront_base_url == "https://archive.example.test"
+    assert store.cloudfront_public_key_id == "example-key-id"
+    assert store.cloudfront_private_key_path == Path("/run/secrets/cloudfront.pem")
+
+
+def test_cloudfront_download_configuration_is_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "https://archive.example.test",
+    )
+
+    with pytest.raises(ValueError, match="must set base URL, public key id, and private key path"):
+        load_runtime_config()
+
+
+def test_cloudfront_downloads_require_an_aws_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "https://archive.example.test",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "example-key-id",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "/run/secrets/cloudfront.pem",
+    )
+
+    with pytest.raises(ValueError, match="require the aws backend"):
+        load_runtime_config()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "http://archive.example.test",
+        "https://user@archive.example.test",
+        "https://archive.example.test?token=secret",
+        "https://archive.example.test#fragment",
+    ),
+)
+def test_cloudfront_base_url_requires_a_private_https_origin_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL", base_url)
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "example-key-id",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "/run/secrets/cloudfront.pem",
+    )
+
+    with pytest.raises(ValueError, match="must be an HTTPS URL"):
+        load_runtime_config()
+
+
 def test_remote_archive_store_requires_non_development_passphrase(tmp_path: Path) -> None:
     remote = ArchiveStoreConfig(
         name="b2",
