@@ -74,6 +74,21 @@ def map_archive_usage_report(summary: ArchiveUsageReport) -> dict[str, object]:
         "totals": map_archive_usage_totals(summary.totals),
         "collections": [map_archive_usage_collection(item) for item in summary.collections],
         "history": [map_archive_usage_snapshot(item) for item in summary.history],
+        "download_allowances": [
+            {
+                "store": item.store,
+                "state": item.state,
+                "month_started_at": item.month_started_at,
+                "resets_at": item.resets_at,
+                "allowance_bytes": item.allowance_bytes,
+                "safety_buffer_bytes": item.safety_buffer_bytes,
+                "effective_limit_bytes": item.effective_limit_bytes,
+                "accounted_bytes": item.accounted_bytes,
+                "reserved_bytes": item.reserved_bytes,
+                "remaining_bytes": item.remaining_bytes,
+            }
+            for item in summary.download_allowances
+        ],
     }
 
 

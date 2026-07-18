@@ -100,10 +100,21 @@ def test_archive_report_uses_remote_storage_measurement() -> None:
                 "uploaded_collections": 2,
                 "measured_storage_bytes": 1200,
             },
+            "download_allowances": [
+                {
+                    "store": "deep",
+                    "accounted_bytes": 25_000_000_000,
+                    "reserved_bytes": 5_000_000_000,
+                    "effective_limit_bytes": 950_000_000_000,
+                    "resets_at": "2026-08-01T00:00:00.000000Z",
+                }
+            ],
         }
     )
 
     assert "remote storage: 1.2 KB" in rendered
+    assert "download deep: 25.0 GB used + 5.0 GB reserved / 950.0 GB" in rendered
+    assert "resets 2026-08-01T00:00:00.000000Z" in rendered
 
 
 def test_jeb_output_remains_concise() -> None:

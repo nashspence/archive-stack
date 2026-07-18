@@ -39,3 +39,7 @@ class NotYetImplemented(RiverhogError):
 
 class ServiceUnavailable(RiverhogError):
     code = "service_unavailable"
+
+
+class DownloadAllowanceExceeded(RiverhogError):
+    code = "download_allowance_exceeded"

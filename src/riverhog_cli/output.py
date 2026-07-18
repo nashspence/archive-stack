@@ -269,6 +269,14 @@ def format_archive_report(payload: Mapping[str, object]) -> str:
         f"collections: {totals.get('uploaded_collections', 0)}/{totals.get('collections', 0)}",
         f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}",
     ]
+    for allowance in _items(payload, "download_allowances"):
+        lines.append(
+            f"download {allowance.get('store', 'unknown')}: "
+            f"{_bytes(allowance.get('accounted_bytes'))} used + "
+            f"{_bytes(allowance.get('reserved_bytes'))} reserved / "
+            f"{_bytes(allowance.get('effective_limit_bytes'))}; "
+            f"resets {allowance.get('resets_at', 'unknown')}"
+        )
     return "\n".join(lines)
 
 

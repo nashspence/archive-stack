@@ -185,6 +185,35 @@ class ArchiveUsageSnapshotRecord(Base):
     measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
 
 
+class ArchiveDownloadUsageRecord(Base):
+    __tablename__ = "archive_download_usage"
+
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    month_started_at: Mapped[str] = mapped_column(String)
+    accounted_bytes: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[str] = mapped_column(String)
+
+
+class ArchiveDownloadReservationRecord(Base):
+    __tablename__ = "archive_download_reservations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    store: Mapped[str] = mapped_column(String)
+    month_started_at: Mapped[str] = mapped_column(String)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[str] = mapped_column(String)
+    expires_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["store"],
+            ["archive_download_usage.store"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_archive_download_reservations_expiry", "store", "expires_at"),
+    )
+
+
 class ArchiveCopyJobRecord(Base):
     __tablename__ = "archive_copy_jobs"
 

@@ -21,6 +21,14 @@ deletion. Set that store's `CLOUDFRONT_BASE_URL`, `CLOUDFRONT_PUBLIC_KEY_ID`, an
 direct S3 downloads. Partial configuration is invalid, and a configured CloudFront failure
 does not silently fall back to S3.
 
+An archive store may enforce a UTC-calendar-month download allowance. Riverhog reserves
+each encrypted object before opening the remote read and accounts for the ciphertext bytes
+it receives, including partial reads and retries. Set that store's
+`MONTHLY_DOWNLOAD_ALLOWANCE_BYTES` and optional `DOWNLOAD_SAFETY_BUFFER_BYTES`; the
+buffer must be smaller than the allowance, and a nonzero buffer without an allowance is
+invalid. The archive report shows current usage, reservations, remaining bytes, and reset
+time.
+
 Riverhog maintains plaintext `README.md` and `AGENTS.md` guidance at each archive root.
 Opaque names do not mean objects are unused; encrypted collection objects may be the sole
 durable copies.

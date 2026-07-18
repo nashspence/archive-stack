@@ -50,6 +50,7 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
+from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.stores.s3_support import create_archive_s3_client, delete_exact_object
@@ -268,6 +269,7 @@ class S3ArchiveStore:
         store: ArchiveStoreConfig,
         *,
         retrieval_cache: RetrievalCache | None = None,
+        download_allowance: DownloadAllowance | None = None,
         multipart_timing_observer: Callable[[ArchiveMultipartTiming], None] | None = None,
     ) -> None:
         self._config = config
@@ -275,7 +277,10 @@ class S3ArchiveStore:
         self._bucket = store.bucket
         self._client = create_archive_s3_client(config, store)
         self._retrieval_cache = retrieval_cache
+        self._download_allowance = download_allowance
         self._multipart_timing_observer = multipart_timing_observer
+        if store.monthly_download_allowance_bytes is not None and download_allowance is None:
+            raise ValueError("configured archive download allowance requires its service")
         self._cloudfront_signer: CloudFrontSigner | None = None
         self._cloudfront_client: httpx.Client | None = None
         if store.cloudfront_base_url is not None:
@@ -1655,7 +1660,7 @@ class S3ArchiveStore:
         collection_id: str,
         object: ArchiveObjectIdentity,
     ) -> Iterator[bytes]:
-        yield from iter_decrypt_age_scrypt(
+        return iter_decrypt_age_scrypt(
             self.iter_stored_archive_object(
                 collection_id=collection_id,
                 object=object,
@@ -1684,26 +1689,43 @@ class S3ArchiveStore:
         if status.state != "ready":
             raise RuntimeError(f"Archive object is not readable yet: {object_path}")
         if self._cloudfront_client is None or self._cloudfront_signer is None:
-            response = self._client.get_object(Bucket=self._bucket, Key=object_path)
-            body = response["Body"]
-            try:
-                yield from body.iter_chunks(chunk_size=1024 * 1024)
-            finally:
-                close = getattr(body, "close", None)
-                if callable(close):
-                    close()
-            return
+            content = self._iter_s3_stored_object(object_path)
+        else:
+            content = self._iter_cloudfront_stored_object(object)
+        if self._download_allowance is None:
+            return content
+        return self._download_allowance.track(
+            store=self._store.name,
+            expected_bytes=object.stored_bytes,
+            content=content,
+        )
 
+    def _iter_s3_stored_object(self, object_path: str) -> Iterator[bytes]:
+        response = self._client.get_object(Bucket=self._bucket, Key=object_path)
+        body = response["Body"]
+        try:
+            yield from body.iter_chunks(chunk_size=1024 * 1024)
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+
+    def _iter_cloudfront_stored_object(
+        self,
+        object: ArchiveObjectIdentity,
+    ) -> Iterator[bytes]:
+        client = self._cloudfront_client
+        signer = self._cloudfront_signer
         base_url = self._store.cloudfront_base_url
-        if base_url is None:
+        if client is None or signer is None or base_url is None:
             raise RuntimeError("CloudFront download configuration is incomplete")
-        object_url = f"{base_url}/{quote(object_path, safe='/')}"
-        signed_url = self._cloudfront_signer.generate_presigned_url(
+        object_url = f"{base_url}/{quote(object.object_path, safe='/')}"
+        signed_url = signer.generate_presigned_url(
             object_url,
             date_less_than=datetime.now(UTC) + _CLOUDFRONT_URL_TTL,
         )
         try:
-            with self._cloudfront_client.stream(
+            with client.stream(
                 "GET",
                 signed_url,
                 headers={"Accept-Encoding": "identity"},
@@ -1711,17 +1733,19 @@ class S3ArchiveStore:
                 if not response.is_success:
                     raise RuntimeError(
                         "CloudFront archive download failed with HTTP "
-                        f"{response.status_code}: {object_path}"
+                        f"{response.status_code}: {object.object_path}"
                     )
                 content_length = response.headers.get("content-length")
                 if content_length is not None and int(content_length) != object.stored_bytes:
                     raise RuntimeError(
                         "CloudFront archive download length does not match verified metadata: "
-                        f"{object_path}"
+                        f"{object.object_path}"
                     )
                 yield from response.iter_bytes(chunk_size=1024 * 1024)
         except httpx.HTTPError:
-            raise RuntimeError(f"CloudFront archive download failed: {object_path}") from None
+            raise RuntimeError(
+                f"CloudFront archive download failed: {object.object_path}"
+            ) from None
 
     def cleanup_archive_objects_read(
         self,

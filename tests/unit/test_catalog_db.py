@@ -12,6 +12,8 @@ CURRENT_TABLES = {
     "app_keys",
     "archive_copy_jobs",
     "archive_copy_retirements",
+    "archive_download_reservations",
+    "archive_download_usage",
     "archive_usage_snapshots",
     "catalog_events",
     "collection_archive_copies",
@@ -43,6 +45,22 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "captured_at",
         "uploaded_collections",
         "measured_storage_bytes",
+    }
+    assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
+        "store",
+        "month_started_at",
+        "accounted_bytes",
+        "updated_at",
+    }
+    assert {
+        column["name"] for column in inspector.get_columns("archive_download_reservations")
+    } == {
+        "id",
+        "store",
+        "month_started_at",
+        "reserved_bytes",
+        "created_at",
+        "expires_at",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_jobs")} >= {
         "id",

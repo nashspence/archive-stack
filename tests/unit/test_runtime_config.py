@@ -164,6 +164,52 @@ def test_load_runtime_config_enables_cloudfront_downloads_per_aws_store(
     assert store.cloudfront_private_key_path == Path("/run/secrets/cloudfront.pem")
 
 
+def test_load_runtime_config_enables_a_monthly_download_allowance_per_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+        "1TB",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "50GB",
+    )
+
+    store = load_runtime_config().archive_store("deep")
+
+    assert store.monthly_download_allowance_bytes == 1_000_000_000_000
+    assert store.download_safety_buffer_bytes == 50_000_000_000
+
+
+def test_download_safety_buffer_requires_an_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "50GB",
+    )
+
+    with pytest.raises(ValueError, match="safety buffer requires a monthly download allowance"):
+        load_runtime_config()
+
+
+def test_download_safety_buffer_must_leave_a_positive_effective_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+        "50GB",
+    )
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "50GB",
+    )
+
+    with pytest.raises(ValueError, match="safety buffer must be smaller"):
+        load_runtime_config()
+
+
 def test_cloudfront_download_configuration_is_atomic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

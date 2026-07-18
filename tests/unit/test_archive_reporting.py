@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -15,6 +16,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
+from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -101,6 +103,44 @@ def test_archive_report_reuses_unchanged_snapshot(tmp_path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         assert session.query(ArchiveUsageSnapshotRecord).count() == 1
+
+
+def test_archive_report_includes_store_download_allowances(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    config = _config(path)
+    config = replace(
+        config,
+        archive_stores={
+            "deep": replace(
+                config.archive_store("deep"),
+                monthly_download_allowance_bytes=1_000,
+                download_safety_buffer_bytes=100,
+            )
+        },
+    )
+    initialize_db(config.database_url)
+    allowance = SqlAlchemyDownloadAllowance(config)
+    assert b"".join(
+        allowance.track(
+            store="deep",
+            expected_bytes=125,
+            content=iter((b"x" * 125,)),
+        )
+    )
+
+    report = SqlAlchemyArchiveReportingService(
+        config,
+        download_allowance=allowance,
+    ).get_report()
+
+    assert len(report.download_allowances) == 1
+    status = report.download_allowances[0]
+    assert status.store == "deep"
+    assert status.allowance_bytes == 1_000
+    assert status.safety_buffer_bytes == 100
+    assert status.effective_limit_bytes == 900
+    assert status.accounted_bytes == 125
+    assert status.remaining_bytes == 775
 
 
 def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Path) -> None:

@@ -25,9 +25,23 @@ class ArchiveUsageSnapshotOut(RiverhogModel):
     measured_storage_bytes: int
 
 
+class ArchiveDownloadAllowanceOut(RiverhogModel):
+    store: str
+    state: Literal["open", "closed"]
+    month_started_at: str
+    resets_at: str
+    allowance_bytes: int
+    safety_buffer_bytes: int
+    effective_limit_bytes: int
+    accounted_bytes: int
+    reserved_bytes: int
+    remaining_bytes: int
+
+
 class ArchiveUsageReportOut(RiverhogModel):
     scope: Literal["all", "collection"]
     measured_at: str
     totals: ArchiveUsageTotalsOut
     collections: list[ArchiveUsageCollectionOut]
     history: list[ArchiveUsageSnapshotOut]
+    download_allowances: list[ArchiveDownloadAllowanceOut]

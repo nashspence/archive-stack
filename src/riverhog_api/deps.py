@@ -19,6 +19,7 @@ from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingS
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.interfaces import (
     AppKeyService,
     ArchiveCopyRetirementService,
@@ -57,9 +58,15 @@ def default_container() -> ServiceContainer:
     initialize_db(config.database_url)
     ensure_bucket_exists(config)
     retrieval_cache = S3RetrievalCache(config) if config.retrieval_cache is not None else None
+    download_allowance = SqlAlchemyDownloadAllowance(config)
     archive_stores = ArchiveStoreRegistry(
         {
-            name: S3ArchiveStore(config, store, retrieval_cache=retrieval_cache)
+            name: S3ArchiveStore(
+                config,
+                store,
+                retrieval_cache=retrieval_cache,
+                download_allowance=download_allowance,
+            )
             for name, store in config.archive_stores.items()
         }
     )
@@ -91,7 +98,10 @@ def default_container() -> ServiceContainer:
             config,
             archive_stores,
         ),
-        archive_reporting=SqlAlchemyArchiveReportingService(config),
+        archive_reporting=SqlAlchemyArchiveReportingService(
+            config,
+            download_allowance=download_allowance,
+        ),
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,

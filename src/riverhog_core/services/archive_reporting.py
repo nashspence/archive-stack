@@ -25,17 +25,25 @@ from riverhog_core.domain.models import (
     CollectionManifestStatus,
 )
 from riverhog_core.domain.types import CollectionId
+from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import (
     ArchiveCopyAggregate,
     archive_copy_aggregates,
 )
+from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 
 class SqlAlchemyArchiveReportingService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        download_allowance: DownloadAllowance | None = None,
+    ) -> None:
         self._session_factory = make_session_factory(config.database_url)
+        self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(config)
 
     def get_report(self, *, collection: str | None = None) -> ArchiveUsageReport:
         measured_at = format_utc_timestamp(utc_now())
@@ -67,6 +75,7 @@ class SqlAlchemyArchiveReportingService:
             totals=totals,
             collections=collection_reports,
             history=history,
+            download_allowances=self._download_allowance.get_statuses(),
         )
 
 

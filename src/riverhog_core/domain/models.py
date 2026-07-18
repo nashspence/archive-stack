@@ -53,12 +53,27 @@ class ArchiveUsageSnapshot:
 
 
 @dataclass(frozen=True)
+class ArchiveDownloadAllowance:
+    store: str
+    state: str
+    month_started_at: str
+    resets_at: str
+    allowance_bytes: int
+    safety_buffer_bytes: int
+    effective_limit_bytes: int
+    accounted_bytes: int
+    reserved_bytes: int
+    remaining_bytes: int
+
+
+@dataclass(frozen=True)
 class ArchiveUsageReport:
     scope: str
     measured_at: str
     totals: ArchiveUsageTotals
     collections: tuple[ArchiveUsageCollection, ...]
     history: tuple[ArchiveUsageSnapshot, ...] = ()
+    download_allowances: tuple[ArchiveDownloadAllowance, ...] = ()
 
 
 @dataclass(frozen=True)

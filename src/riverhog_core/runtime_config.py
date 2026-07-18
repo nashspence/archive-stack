@@ -194,6 +194,8 @@ class ArchiveStoreConfig:
     cloudfront_base_url: str | None = None
     cloudfront_public_key_id: str | None = None
     cloudfront_private_key_path: Path | None = None
+    monthly_download_allowance_bytes: int | None = None
+    download_safety_buffer_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +340,21 @@ class RuntimeConfig:
             if store.read_mode not in {"immediate", "restore_required"}:
                 raise ValueError(
                     f"archive store {name} read mode must be immediate or restore_required"
+                )
+            if store.monthly_download_allowance_bytes is not None:
+                if store.monthly_download_allowance_bytes <= 0:
+                    raise ValueError(
+                        f"archive store {name} monthly download allowance must be positive"
+                    )
+                if store.download_safety_buffer_bytes >= store.monthly_download_allowance_bytes:
+                    raise ValueError(
+                        f"archive store {name} download safety buffer must be smaller than "
+                        "its monthly download allowance"
+                    )
+            elif store.download_safety_buffer_bytes != 0:
+                raise ValueError(
+                    f"archive store {name} download safety buffer requires a monthly "
+                    "download allowance"
                 )
             cloudfront_fields = {
                 "base URL": store.cloudfront_base_url,
@@ -562,6 +579,12 @@ def _parse_archive_stores(
     stores: dict[str, ArchiveStoreConfig] = {}
     for name in names:
         prefix = f"RIVERHOG_ARCHIVE_STORE_{_archive_store_env_suffix(name)}_"
+        monthly_download_allowance_raw = values.get(
+            f"{prefix}MONTHLY_DOWNLOAD_ALLOWANCE_BYTES", ""
+        ).strip()
+        download_safety_buffer_raw = values.get(
+            f"{prefix}DOWNLOAD_SAFETY_BUFFER_BYTES", ""
+        ).strip()
         cloudfront_base_url = (
             values.get(f"{prefix}CLOUDFRONT_BASE_URL", "").strip().rstrip("/") or None
         )
@@ -592,6 +615,23 @@ def _parse_archive_stores(
             cloudfront_public_key_id=cloudfront_public_key_id,
             cloudfront_private_key_path=(
                 Path(cloudfront_private_key_path_raw) if cloudfront_private_key_path_raw else None
+            ),
+            monthly_download_allowance_bytes=(
+                _parse_bytes(
+                    monthly_download_allowance_raw,
+                    name=f"{prefix}MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+                    minimum=1,
+                )
+                if monthly_download_allowance_raw
+                else None
+            ),
+            download_safety_buffer_bytes=(
+                _parse_bytes(
+                    download_safety_buffer_raw,
+                    name=f"{prefix}DOWNLOAD_SAFETY_BUFFER_BYTES",
+                )
+                if download_safety_buffer_raw
+                else 0
             ),
         )
     if write_store not in stores:

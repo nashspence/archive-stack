@@ -22,6 +22,8 @@ from riverhog_core.archive_objects import (
     CollectionArchiveSourceFile,
     build_collection_archive,
 )
+from riverhog_core.catalog_db import initialize_db
+from riverhog_core.domain.errors import DownloadAllowanceExceeded
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -33,6 +35,7 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
+from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.stores.s3_archive_store import (
     ArchiveMultipartTiming,
     S3ArchiveStore,
@@ -406,6 +409,8 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         "cloudfront_base_url": "cloudfront_base_url",
         "cloudfront_public_key_id": "cloudfront_public_key_id",
         "cloudfront_private_key_path": "cloudfront_private_key_path",
+        "monthly_download_allowance_bytes": "monthly_download_allowance_bytes",
+        "download_safety_buffer_bytes": "download_safety_buffer_bytes",
     }
     store_overrides = {
         store_fields[name]: overrides.pop(name) for name in tuple(overrides) if name in store_fields
@@ -627,6 +632,52 @@ def test_archive_download_uses_s3_when_cloudfront_is_unconfigured(
     assert restored == expected
 
 
+def test_s3_download_uses_the_same_store_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    initial = _store(monkeypatch, tmp_path, client)
+    archive = _archive()
+    receipt = initial.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    data_object = _identity(receipt).data_objects[0]
+    config = _config(
+        tmp_path,
+        monthly_download_allowance_bytes=data_object.stored_bytes,
+    )
+    initialize_db(config.database_url)
+    allowance = SqlAlchemyDownloadAllowance(config)
+    store = S3ArchiveStore(
+        config,
+        config.archive_store("deep"),
+        download_allowance=allowance,
+    )
+
+    assert b"".join(
+        store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object)
+    ) == b"".join(archive.data_objects[0].iter_plaintext())
+    assert allowance.get_statuses()[0].accounted_bytes == data_object.stored_bytes
+
+
+def test_configured_store_allowance_requires_its_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.create_archive_s3_client",
+        lambda config, store: client,
+    )
+    config = _config(tmp_path, monthly_download_allowance_bytes=1_000)
+
+    with pytest.raises(ValueError, match="requires its service"):
+        S3ArchiveStore(config, config.archive_store("deep"))
+
+
 def test_archive_download_uses_one_signed_cloudfront_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -679,6 +730,77 @@ def test_archive_download_uses_one_signed_cloudfront_client(
         assert url.path == f"/{data_object.object_path}"
         assert set(url.params) == {"Expires", "Signature", "Key-Pair-Id"}
         assert url.params["Key-Pair-Id"] == "example-key-id"
+
+
+def test_cloudfront_download_is_accounted_before_another_object_is_opened(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    s3_client = _FakeS3Client()
+    requested_urls: list[httpx.URL] = []
+
+    def handle_download(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(request.url)
+        object_path = request.url.path.removeprefix("/")
+        content = cast(bytes, s3_client.objects[object_path]["Body"])
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(content))},
+            content=content,
+        )
+
+    download_client = httpx.Client(transport=httpx.MockTransport(handle_download))
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_store.httpx.Client",
+        lambda **_kwargs: download_client,
+    )
+    private_key = _cloudfront_private_key(tmp_path / "cloudfront.pem")
+    initial = _store(
+        monkeypatch,
+        tmp_path,
+        s3_client,
+        archive_backend="aws",
+        archive_storage_class="STANDARD",
+        cloudfront_base_url="https://archive.example.test",
+        cloudfront_public_key_id="example-key-id",
+        cloudfront_private_key_path=private_key,
+    )
+    archive = _archive()
+    receipt = initial.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    data_object = _identity(receipt).data_objects[0]
+    config = _config(
+        tmp_path,
+        archive_backend="aws",
+        archive_storage_class="STANDARD",
+        cloudfront_base_url="https://archive.example.test",
+        cloudfront_public_key_id="example-key-id",
+        cloudfront_private_key_path=private_key,
+        monthly_download_allowance_bytes=data_object.stored_bytes,
+    )
+    initialize_db(config.database_url)
+    allowance = SqlAlchemyDownloadAllowance(config)
+    store = S3ArchiveStore(
+        config,
+        config.archive_store("deep"),
+        download_allowance=allowance,
+    )
+
+    assert b"".join(
+        store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object)
+    ) == b"".join(archive.data_objects[0].iter_plaintext())
+    status = allowance.get_statuses()[0]
+    assert status.accounted_bytes == data_object.stored_bytes
+    assert status.remaining_bytes == 0
+
+    with pytest.raises(DownloadAllowanceExceeded):
+        b"".join(
+            store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object)
+        )
+    assert len(requested_urls) == 1
 
 
 def test_configured_cloudfront_download_failure_does_not_fall_back_to_s3(
