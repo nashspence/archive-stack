@@ -103,3 +103,13 @@ def test_operator_and_external_app_clients_use_separate_credentials(monkeypatch)
     assert ApiClient().token == "operator-token"
     assert ExternalAppClient().token == "app-token"
     assert not hasattr(ApiClient, "plan_retrieval")
+
+
+def test_archive_upload_transport_defaults_to_http_1_1(monkeypatch) -> None:
+    monkeypatch.delenv("RIVERHOG_UPLOAD_HTTP2", raising=False)
+    monkeypatch.delenv("RIVERHOG_HTTP2", raising=False)
+
+    client = ApiClient(base_url="https://example.invalid")
+
+    assert client.http2 is True
+    assert client.upload_http2 is False

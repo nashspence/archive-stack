@@ -23,7 +23,6 @@ from munchy.review_sweep import (
 )
 from munchy.routing import routing_plan as build_routing_plan
 from munchy.runner_client import (
-    DEFAULT_UPLOAD_CHUNK_MIB,
     DEFAULT_UPLOAD_WORKERS,
     RunnerInputFile,
     SubmissionUploadRequest,
@@ -35,6 +34,7 @@ from riverhog_core.config_yaml import (
     validate_json_schema,
 )
 from riverhog_core.timestamps import utc_now
+from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 DEFAULT_TASKS = ["archive_video", "qcut_video", "audio_review"]
 DEFAULT_AUDIO_TASKS = ["archive_audio"]
@@ -440,7 +440,7 @@ def build_submission_upload_request(
     destination_prefix: str | None = None,
     handoff_on_failure: str = "preserve_for_resume",
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
-    upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB,
+    upload_chunk_mib: int = DEFAULT_TUS_UPLOAD_CHUNK_MIB,
     hash_cache: Path | None = None,
     use_hash_cache: bool = True,
 ) -> SubmissionUploadRequest:

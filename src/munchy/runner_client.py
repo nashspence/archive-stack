@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 from tus_transport import TusHttpError, TusTransport
 
 DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
@@ -27,7 +28,6 @@ RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
 ADMIN_TOKEN_ENV = "MUNCHY_ADMIN_TOKEN"
 PROGRESS_ENV = "MUNCHY_PROGRESS"
 KEEP_AWAKE_ENV = "MUNCHY_KEEP_AWAKE"
-DEFAULT_UPLOAD_CHUNK_MIB = 64
 DEFAULT_UPLOAD_WORKERS = 12
 UPLOAD_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RETRY_MAX_DELAY_SECONDS = 60.0
@@ -77,7 +77,7 @@ class SubmissionUploadRequest:
     run_id: str | None = None
     handoff_on_failure: str = "preserve_for_resume"
     upload_workers: int = DEFAULT_UPLOAD_WORKERS
-    upload_chunk_mib: int = DEFAULT_UPLOAD_CHUNK_MIB
+    upload_chunk_mib: int = DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
     @property
     def upload_chunk_bytes(self) -> int:

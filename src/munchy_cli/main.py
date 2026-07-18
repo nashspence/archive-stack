@@ -33,7 +33,6 @@ from munchy.routing import (
 )
 from munchy.runner_client import (
     ATTENTION_STYLE,
-    DEFAULT_UPLOAD_CHUNK_MIB,
     DEFAULT_UPLOAD_WORKERS,
     ENTITY_ID_STYLE,
     FIELD_STYLE,
@@ -51,6 +50,7 @@ from munchy.runner_client import (
 from riverhog_core.config_yaml import (
     ConfigError,
 )
+from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 RichConsole: Any
 RichGroup: Any
@@ -1002,7 +1002,7 @@ def submit(
     upload_chunk_mib: Annotated[
         int,
         typer.Option("--upload-chunk-mib", min=1, max=1024, help="Upload chunk size in MiB"),
-    ] = DEFAULT_UPLOAD_CHUNK_MIB,
+    ] = DEFAULT_TUS_UPLOAD_CHUNK_MIB,
     hash_cache: Annotated[
         Path | None,
         typer.Option("--hash-cache", help=f"Hash cache path; defaults to {HASH_CACHE_ENV}"),

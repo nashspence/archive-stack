@@ -246,3 +246,11 @@ def test_upload_wait_mode_defaults_to_finalized(monkeypatch: pytest.MonkeyPatch)
 
     assert riverhog_main._default_upload_wait_mode() == "finalized"
     assert riverhog_main._normalize_upload_wait_mode("staged") == "staged"
+
+
+def test_upload_chunk_size_defaults_to_shared_tus_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIVERHOG_UPLOAD_CHUNK_BYTES", raising=False)
+
+    assert riverhog_main._upload_chunk_bytes() == 64 * 1024 * 1024

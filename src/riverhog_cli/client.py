@@ -310,7 +310,7 @@ class ApiClient(_HttpApiClient):
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
         self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
-        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", self.http2)
+        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", False)
         self._upload_client: TusHttpClient | None = None
 
     def close(self) -> None:

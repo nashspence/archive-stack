@@ -12,8 +12,10 @@ from urllib.parse import urljoin
 
 import httpx
 
+from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
+
 TUS_VERSION = "1.0.0"
-DEFAULT_CHUNK_MIB = (8, 32)
+DEFAULT_CHUNK_MIB = (DEFAULT_TUS_UPLOAD_CHUNK_MIB, 128)
 USER_ENV = "TUS_BENCHMARK_USER"
 PASSWORD_ENV = "TUS_BENCHMARK_PASSWORD"
 
@@ -148,7 +150,7 @@ def _parser() -> argparse.ArgumentParser:
         "--chunk-mib",
         action="append",
         type=_positive_int,
-        help="PATCH size; repeat for a matrix (default: 8 and 32)",
+        help="PATCH size; repeat for a matrix (default: 64 and 128)",
     )
     parser.add_argument(
         "--http-version",

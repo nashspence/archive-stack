@@ -42,6 +42,7 @@ from riverhog_core.fs_paths import (
 from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.ingress_crypto import ingress_plaintext_bytes_for_offset
 from riverhog_core.timestamps import utc_timestamp_now
+from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
@@ -51,7 +52,7 @@ app.add_typer(archive_app, name="archive")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = DEFAULT_TUS_UPLOAD_CHUNK_MIB * 1024 * 1024
 UPLOAD_FILE_CONCURRENCY = 1
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0

@@ -10,6 +10,7 @@ from riverhog_core.domain.errors import Conflict, ServiceUnavailable
 from tus_transport import TusHttpError, TusTransport
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+DEFAULT_TUS_UPLOAD_CHUNK_MIB = 64
 
 
 @dataclass(frozen=True, slots=True)
