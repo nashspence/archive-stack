@@ -93,17 +93,6 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         return _hook_error("missing or invalid upload_id metadata")
 
     if hook_type == "pre-create":
-        principal = authenticate_authorization_header(
-            request.headers.get("authorization"),
-            default_container(),
-        )
-        if principal is None:
-            return _hook_error("invalid application token", status_code=401)
-        if not principal.allows(COLLECTIONS_UPLOAD):
-            return _hook_error(
-                f"application permission required: {COLLECTIONS_UPLOAD}",
-                status_code=403,
-            )
         return _json_response({"ChangeFileInfo": {"ID": upload_id}})
 
     try:

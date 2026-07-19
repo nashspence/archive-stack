@@ -77,20 +77,13 @@ def _container_with_permissions(*permissions: str) -> SimpleNamespace:
     return SimpleNamespace(app_keys=Keys())
 
 
-def test_precreate_hook_assigns_the_authenticated_opaque_upload_id(monkeypatch) -> None:
+def test_precreate_hook_assigns_the_hook_authenticated_opaque_upload_id(monkeypatch) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
     upload_id = ".riverhog/uploads/by-target/" + "a" * 64
-    monkeypatch.setattr(
-        "riverhog_api.routers.internal.default_container",
-        lambda: _container_with_permissions(COLLECTIONS_UPLOAD),
-    )
 
     status, payload = _hook_response(
         _hook_payload("pre-create", upload_id),
-        headers={
-            "X-Riverhog-Tusd-Hook-Secret": "hook-secret",
-            "Authorization": "Bearer application-token",
-        },
+        headers={"X-Riverhog-Tusd-Hook-Secret": "hook-secret"},
     )
 
     assert status == 200
