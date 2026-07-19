@@ -7,16 +7,16 @@ from typing import Any
 
 import httpx
 import pytest
-from typer.testing import CliRunner
-
 from riverhog_age import iter_decrypt_age_scrypt
+from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_cli import main as riverhog_main
-from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.ingress_crypto import (
     create_ingress_encryption,
     ingress_encryption_descriptor,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from typer.testing import CliRunner
+
 from tests.unit.db_helpers import sqlite_url
 
 RUNNER = CliRunner()

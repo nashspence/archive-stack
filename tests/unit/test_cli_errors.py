@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from riverhog_cli import main as riverhog_main
-from riverhog_core.domain.errors import NotFound
+from riverhog_protocol.errors import NotFound
 
 
 def test_main_prints_transport_errors_without_traceback(

@@ -13,7 +13,6 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.archive_objects import (
     STORED_OBJECT_LIMIT,
@@ -23,7 +22,6 @@ from riverhog_core.archive_objects import (
     build_collection_archive,
 )
 from riverhog_core.catalog_db import initialize_db
-from riverhog_core.domain.errors import DownloadAllowanceExceeded
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -41,6 +39,8 @@ from riverhog_core.stores.s3_archive_store import (
     S3ArchiveStore,
     _read_object_range,
 )
+from riverhog_protocol.errors import DownloadAllowanceExceeded
+
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
@@ -797,9 +797,7 @@ def test_cloudfront_download_is_accounted_before_another_object_is_opened(
     assert status.remaining_bytes == 0
 
     with pytest.raises(DownloadAllowanceExceeded):
-        b"".join(
-            store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object)
-        )
+        b"".join(store.iter_archive_object(collection_id=COLLECTION_ID, object=data_object))
     assert len(requested_urls) == 1
 
 

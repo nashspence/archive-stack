@@ -6,7 +6,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from riverhog_age import encrypt_age_scrypt
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -17,13 +16,14 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
-from riverhog_core.domain.errors import NotFound
 from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig
 from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_protocol.errors import NotFound
+
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -113,9 +113,7 @@ class PartiallyReadyArchiveStore(PreparedArchiveStore):
     ):
         from riverhog_core.ports.archive_store import ArchiveReadStatus
 
-        return ArchiveReadStatus(
-            state="ready" if collection_id == COLLECTION_ID else "requested"
-        )
+        return ArchiveReadStatus(state="ready" if collection_id == COLLECTION_ID else "requested")
 
 
 def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Path) -> None:
@@ -239,9 +237,7 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
             SECOND_COLLECTION_ID,
             ((file.path, file.bytes, file.sha256) for file in second_archive.files),
         )
-        session.add(
-            CollectionRecord(id=SECOND_COLLECTION_ID, manifest_etag=manifest_etag)
-        )
+        session.add(CollectionRecord(id=SECOND_COLLECTION_ID, manifest_etag=manifest_etag))
         for file in second_archive.files:
             session.add(
                 CollectionFileRecord(

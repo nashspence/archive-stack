@@ -1,102 +1,45 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\\;\s]+)(?:\s*;.*)?(?:\s*\\)?$")
 
 
-@dataclass(frozen=True, slots=True)
-class LockedPackage:
-    name: str
-    version: str
-    hashes: tuple[str, ...]
-
-
-def _normalize_package_name(name: str) -> str:
+def normalize_name(name: str) -> str:
     return name.replace("_", "-").lower()
 
 
-def _parse_lockfile(path: Path) -> dict[str, LockedPackage]:
-    packages: dict[str, LockedPackage] = {}
-    current_name: str | None = None
-    current_version: str | None = None
-    current_hashes: list[str] = []
-
-    def flush_current() -> None:
-        nonlocal current_name, current_version, current_hashes
-        if current_name is None or current_version is None:
-            return
-        packages[current_name] = LockedPackage(
-            name=current_name,
-            version=current_version,
-            hashes=tuple(current_hashes),
-        )
-        current_name = None
-        current_version = None
-        current_hashes = []
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        package_match = PACKAGE_RE.match(line)
-        if package_match:
-            flush_current()
-            current_name = _normalize_package_name(package_match.group(1))
-            current_version = package_match.group(2)
-            continue
-        if line.startswith("--hash=sha256:"):
-            current_hashes.append(line.removesuffix(" \\"))
-
-    flush_current()
-    return packages
-
-
-def test_service_lockfile_does_not_drift_from_runtime_for_shared_packages() -> None:
-    runtime = _parse_lockfile(REPO_ROOT / "requirements-runtime.txt")
-    service = _parse_lockfile(REPO_ROOT / "requirements-service.txt")
-
-    required_service_packages = {
-        "boto3",
-        "fastapi",
-        "h2",
-        "httpx",
-        "pydantic",
-        "rich",
-        "typer",
-        "uvicorn",
+def test_every_workspace_distribution_is_present_once_in_the_uv_lock() -> None:
+    workspace_projects = {
+        normalize_name(tomllib.loads(path.read_text(encoding="utf-8"))["project"]["name"])
+        for owner in ("apps", "packages", "tools")
+        for path in (REPO_ROOT / owner).glob("*/pyproject.toml")
     }
-    missing_from_service = sorted(required_service_packages - set(service))
-    assert not missing_from_service, (
-        "Service lock packages are missing expected runtime packages: "
-        f"{', '.join(missing_from_service)}. Regenerate requirements-service.txt."
-    )
+    locked = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked_names = [normalize_name(package["name"]) for package in locked["package"]]
 
-    drift = [
-        f"{name}: runtime={runtime[name].version}, service={service[name].version}"
-        for name in sorted(set(runtime) & set(service))
-        if runtime[name].version != service[name].version
-    ]
-    assert not drift, (
-        "Shared runtime/service lock packages have version drift: "
-        f"{'; '.join(drift)}. Regenerate uv.lock, then export requirements-runtime.txt "
-        "and requirements-service.txt from it."
-    )
-
-    for package in ("httptools", "uvloop", "watchfiles", "websockets"):
-        assert package in service
+    assert workspace_projects
+    for name in workspace_projects:
+        assert locked_names.count(name) == 1
 
 
-def test_runtime_and_service_lockfiles_use_hashes_for_every_package() -> None:
-    for lockfile in (
-        "requirements-runtime.txt",
-        "requirements-service.txt",
-    ):
-        packages = _parse_lockfile(REPO_ROOT / lockfile)
-        missing_hashes = [package.name for package in packages.values() if not package.hashes]
-        assert not missing_hashes, (
-            f"{lockfile} has packages without --hash=sha256 entries: {', '.join(missing_hashes)}"
-        )
+def test_workspace_packages_resolve_internal_dependencies_through_uv_sources() -> None:
+    workspace_projects = {
+        normalize_name(tomllib.loads(path.read_text(encoding="utf-8"))["project"]["name"])
+        for owner in ("apps", "packages", "tools")
+        for path in (REPO_ROOT / owner).glob("*/pyproject.toml")
+    }
+
+    for owner in ("apps", "packages", "tools"):
+        for path in (REPO_ROOT / owner).glob("*/pyproject.toml"):
+            pyproject = tomllib.loads(path.read_text(encoding="utf-8"))
+            dependencies = {
+                normalize_name(dependency.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0])
+                for dependency in pyproject["project"].get("dependencies", [])
+            }
+            internal = dependencies & workspace_projects
+            raw_sources = pyproject.get("tool", {}).get("uv", {}).get("sources", {})
+            sources = {normalize_name(name): source for name, source in raw_sources.items()}
+            assert internal <= sources.keys()
+            assert all(sources[name] == {"workspace": True} for name in internal)

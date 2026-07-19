@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from riverhog_core.stores.s3_support import (
     _delete_object_versions,
     _ensure_bucket_exists,
@@ -144,9 +143,7 @@ def test_delete_prefix_removes_current_objects_versions_and_markers() -> None:
             return [
                 {
                     "Versions": [{"Key": "prefix/object", "VersionId": "v1"}],
-                    "DeleteMarkers": [
-                        {"Key": "prefix/object", "VersionId": "marker"}
-                    ],
+                    "DeleteMarkers": [{"Key": "prefix/object", "VersionId": "marker"}],
                 }
             ]
 

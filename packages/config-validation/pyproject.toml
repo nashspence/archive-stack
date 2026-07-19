@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "config-validation"
+version = "0.1.0"
+description = "Strict YAML and JSON Schema configuration validation."
+requires-python = ">=3.12"
+dependencies = [
+  "jsonschema>=4.25,<5.0",
+  "PyYAML>=6.0,<7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/config_validation"]
+

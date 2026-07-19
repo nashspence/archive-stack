@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
+from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_core.archive_objects import iter_verified_file_chunks
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -19,7 +20,6 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
-from riverhog_core.ingress_client import iter_ingress_upload_parts
 from riverhog_core.ingress_crypto import (
     create_ingress_encryption,
     ingress_encryption_descriptor,
@@ -30,8 +30,9 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collections import _collection_upload_target_path
-from riverhog_core.timestamps import parse_utc_timestamp, utc_now
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
+from time_formats import parse_utc_timestamp, utc_now
+
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,

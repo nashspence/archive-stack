@@ -4,14 +4,13 @@ from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import httpx
-from starlette.requests import Request
-
 from riverhog_api.routers.resourcesync import (
     collection_portable_manifest,
     resourcesync_change_list,
     resourcesync_resource_list,
 )
-from riverhog_cli.client import ApiClient
+from riverhog_api_client.client import ApiClient
+from starlette.requests import Request
 
 COLLECTION_ID = "2026/20260102T030405Z__catalog"
 ETAG = "a" * 64

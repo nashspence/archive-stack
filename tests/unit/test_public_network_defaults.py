@@ -19,7 +19,7 @@ def _defaults(value: str) -> str:
 def _public_compose_files() -> tuple[Path, ...]:
     return tuple(
         path
-        for path in sorted((ROOT / "compose.yml", *(ROOT / "services").rglob("*")))
+        for path in sorted((ROOT / "apps").rglob("*"))
         if path.is_file() and path.name in COMPOSE_NAMES
     )
 
@@ -39,7 +39,7 @@ def test_public_compose_published_ports_default_to_loopback() -> None:
 
 def test_public_munchy_host_network_services_default_to_loopback() -> None:
     compose = yaml.safe_load(
-        (ROOT / "services/munchy-runner/docker-compose.yaml").read_text(encoding="utf-8")
+        (ROOT / "apps/munchy/runner/docker-compose.yaml").read_text(encoding="utf-8")
     )
     assert {
         name
@@ -57,8 +57,6 @@ def test_public_munchy_host_network_services_default_to_loopback() -> None:
     gateway = compose["services"]["munchy-runner-lan-gateway"]
     assert _defaults(gateway["environment"]["MUNCHY_GATEWAY_BIND_ADDR"]) == "127.0.0.1"
 
-    nginx = (ROOT / "services/munchy-runner/config/nginx-lan-gateway.conf").read_text(
-        encoding="utf-8"
-    )
+    nginx = (ROOT / "apps/munchy/runner/config/nginx-lan-gateway.conf").read_text(encoding="utf-8")
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8092;" in nginx
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8093;" in nginx

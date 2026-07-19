@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
-from riverhog_core.domain.errors import InvalidPath
 from riverhog_core.domain.file_paths import parse_logical_path
+from riverhog_protocol.errors import InvalidPath
 
 
 @pytest.mark.parametrize(

@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-
-from riverhog_cli.client import ApiClient
+from riverhog_api_client.client import ApiClient
 
 
 class RecordingClient(ApiClient):

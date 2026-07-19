@@ -3,15 +3,32 @@ SHELL := bash
 
 MISE_BIN ?= mise
 FILES ?= .
-TESTS ?= tests/unit
+TESTS ?= apps packages tests/unit tools
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py
 TUS_URL ?=
-UV_RUN = "$(MISE_BIN)" x -- uv run --locked --no-default-groups --group dev --extra db
+UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
+MYPY_SOURCES = \
+	apps/jeb/src \
+	apps/mango-fish/src \
+	apps/munchy/src \
+	apps/riverhog/src \
+	packages/application-access/src \
+	packages/cli-support/src \
+	packages/config-validation/src \
+	packages/lifecycle-events/src \
+	packages/munchy-api-client/src \
+	packages/munchy-config/src \
+	packages/riverhog-age/src \
+	packages/riverhog-api-client/src \
+	packages/riverhog-protocol/src \
+	packages/time-formats/src \
+	packages/tus-transport/src \
+	tools/gogurt/src
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec build build-app build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist build build-riverhog build-jeb build-mango-fish build-munchy-runner build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -38,9 +55,14 @@ help:
 		'  make archive-throughput  Measure, verify, and delete an archive upload probe.' \
 		'  make archive-download-smoke  Verify signed CloudFront download and probe cleanup.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
-		'  make build-app         Build the app image.' \
+		'  make dist              Build every Python distribution independently.' \
+		'  make build-riverhog    Build the Riverhog image.' \
+		'  make build-jeb         Build the Jeb image.' \
+		'  make build-mango-fish  Build the Mango Fish image.' \
+		'  make build-munchy-runner Build the Munchy runner image.' \
+		'  make build-munchy-av1-nvenc Build the Munchy AV1 NVENC image.' \
 		'  make build-test        Build the test image.' \
-		'  make build             Build both app and test images.' \
+		'  make build             Build every application and test image.' \
 		'  make bootstrap-garage  Start Garage and apply the checked-in bucket/key bootstrap.' \
 		'  make down              Tear the compose-managed test stack down.' \
 		'  make test              Run lint, then unit.' \
@@ -71,9 +93,7 @@ format:
 fix: ruff-fix format
 
 mypy:
-	$(call UV_CMD,python -m mypy src $(MYPY_FLAGS) $(args))
-	$(call UV_CMD,python -m mypy services/munchy-av1-nvenc/app/main.py $(MYPY_FLAGS) $(args),MYPYPATH="$(CURDIR)/src")
-	$(call UV_CMD,python -m mypy services/munchy-runner/app/main.py $(MYPY_FLAGS) $(args),MYPYPATH="$(CURDIR)/src")
+	$(call UV_CMD,python -m mypy $(MYPY_SOURCES) $(MYPY_FLAGS) $(args))
 
 lint: ruff mypy
 
@@ -103,13 +123,32 @@ archive-download-smoke:
 stop-spec:
 	@./scripts/stop_spec.sh
 
-build-app:
-	@./scripts/build_app.sh
+dist:
+	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
+		printf '%s\n' 'Riverhog Makefile targets require mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
+		exit 127; \
+	fi
+	@"$(MISE_BIN)" x -- uv build --all-packages
+
+build-riverhog:
+	@./scripts/build_riverhog.sh
+
+build-jeb:
+	@docker compose --file apps/jeb/compose.yaml build jeb
+
+build-mango-fish:
+	@docker build --file apps/mango-fish/Dockerfile --tag mango-fish:dev .
+
+build-munchy-runner:
+	@docker compose --file apps/munchy/runner/docker-compose.yaml build munchy-runner
+
+build-munchy-av1-nvenc:
+	@docker compose --file apps/munchy/targets/av1-nvenc/compose.yaml build api
 
 build-test:
 	@./scripts/build_test.sh
 
-build: build-app build-test
+build: build-riverhog build-jeb build-mango-fish build-munchy-runner build-munchy-av1-nvenc build-test
 
 bootstrap-garage:
 	@./scripts/bootstrap_garage.sh

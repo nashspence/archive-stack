@@ -7,11 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
-
 from riverhog_core.catalog_db import Base, create_catalog_engine, initialize_db
-from riverhog_core.domain.errors import DownloadAllowanceExceeded
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+from riverhog_protocol.errors import DownloadAllowanceExceeded
 
 pytestmark = pytest.mark.integration
 

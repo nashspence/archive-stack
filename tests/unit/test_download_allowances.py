@@ -6,11 +6,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from riverhog_core.catalog_db import initialize_db
-from riverhog_core.domain.errors import DownloadAllowanceExceeded
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+from riverhog_protocol.errors import DownloadAllowanceExceeded
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -95,13 +95,16 @@ def test_download_allowance_counts_partial_reads_and_retries(
                 content=interrupted(),
             )
         )
-    assert b"".join(
-        service.track(
-            store="deep",
-            expected_bytes=5,
-            content=iter((b"retry",)),
+    assert (
+        b"".join(
+            service.track(
+                store="deep",
+                expected_bytes=5,
+                content=iter((b"retry",)),
+            )
         )
-    ) == b"retry"
+        == b"retry"
+    )
 
     status = service.get_statuses()[0]
     assert status.accounted_bytes == len(b"partialretry")
@@ -145,9 +148,7 @@ def test_download_allowance_rejects_an_object_that_would_cross_the_limit(
 ) -> None:
     clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
     service = _service(tmp_path / "catalog.sqlite3", clock=clock)
-    assert b"".join(
-        service.track(store="deep", expected_bytes=80, content=iter((b"x" * 80,)))
-    )
+    assert b"".join(service.track(store="deep", expected_bytes=80, content=iter((b"x" * 80,))))
 
     with pytest.raises(
         DownloadAllowanceExceeded,
@@ -179,9 +180,7 @@ def test_download_allowance_resets_by_utc_month_and_protects_crossing_reads(
 ) -> None:
     clock = _Clock(datetime(2026, 7, 31, 23, 59, tzinfo=UTC))
     service = _service(tmp_path / "catalog.sqlite3", clock=clock)
-    assert b"".join(
-        service.track(store="deep", expected_bytes=20, content=iter((b"x" * 20,)))
-    )
+    assert b"".join(service.track(store="deep", expected_bytes=20, content=iter((b"x" * 20,))))
     crossing = service.track(
         store="deep",
         expected_bytes=30,

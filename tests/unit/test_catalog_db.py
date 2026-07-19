@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from sqlalchemy import inspect, text
 
-from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
@@ -93,9 +93,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "path",
         "file_order",
     }
-    collection_columns = {
-        column["name"]: column for column in inspector.get_columns("collections")
-    }
+    collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
     assert collection_columns["manifest_etag"]["nullable"] is False
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-api-client"
+version = "0.1.0"
+description = "Typed Riverhog HTTP, retrieval, and encrypted-ingress client."
+requires-python = ">=3.12"
+dependencies = [
+  "h2>=4,<5",
+  "httpx>=0.27,<1.0",
+  "lifecycle-events",
+  "riverhog-age",
+  "riverhog-protocol",
+  "tus-transport",
+]
+
+[tool.uv.sources]
+lifecycle-events = { workspace = true }
+riverhog-age = { workspace = true }
+riverhog-protocol = { workspace = true }
+tus-transport = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_api_client"]
+

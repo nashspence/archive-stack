@@ -1,82 +1,21 @@
-[build-system]
-requires = ["hatchling>=1.25.0"]
-build-backend = "hatchling.build"
-
-[project]
-name = "riverhog-mvp-skeleton"
-version = "0.1.0"
-description = "MVP skeleton for the riverhog archival API and CLIs"
-readme = "README.md"
-requires-python = ">=3.12"
-license = { text = "Proprietary" }
-authors = [{ name = "OpenAI" }]
-dependencies = [
-  "argon2-cffi>=23,<26",
-  "fastapi>=0.111,<1.0",
-  "pydantic>=2.7,<3.0",
-  "httpx>=0.27,<1.0",
-  "h2>=4,<5",
-  "rich>=15.0,<16.0",
-  "typer>=0.12,<1.0",
-  "uvicorn>=0.30,<1.0",
-  "PyYAML>=6.0,<7.0",
-  "jsonschema>=4.25,<5.0",
-  "boto3>=1.35,<2.0",
-  "opentimestamps-client>=0.7,<1.0",
-  "cryptography>=41,<47",
+[tool.uv.workspace]
+members = [
+  "apps/*",
+  "packages/*",
+  "tools/*",
 ]
-
-
-[project.optional-dependencies]
-db = ["psycopg[binary]>=3.2,<4.0", "sqlalchemy>=2.0,<3.0"]
-
-service = ["uvicorn[standard]>=0.30,<1.0"]
 
 [dependency-groups]
 dev = [
+  "boto3-stubs[s3]>=1.35,<2.0",
+  "mypy>=1.10,<2.0",
+  "psycopg[binary]>=3.2,<4.0",
   "pytest>=8.2,<9.0",
   "pytest-cov>=5.0,<6.0",
   "ruff>=0.5,<1.0",
-  "mypy>=1.10,<2.0",
-  "psycopg[binary]>=3.2,<4.0",
-  "sqlalchemy>=2.0,<3.0",
-  "boto3-stubs[s3]>=1.35,<2.0",
-  "types-PyYAML>=6.0,<7.0",
   "types-jsonschema>=4.25,<5.0",
+  "types-PyYAML>=6.0,<7.0",
 ]
-
-[project.scripts]
-riverhog-api = "riverhog_api.app:main"
-riverhog = "riverhog_cli.main:main"
-munchy = "munchy_cli.main:main"
-jeb = "jeb.cli:main"
-jeb-service = "jeb.service_cli:main"
-gogurt = "gogurt.cli:main"
-lifecycle-event-relay = "lifecycle_events.cli:main"
-
-[tool.hatch.build.targets.wheel]
-packages = [
-  "src/application_access",
-  "src/cli_support",
-  "src/lifecycle_events",
-  "src/munchy",
-  "src/munchy_cli",
-  "src/gogurt",
-  "src/jeb",
-  "src/riverhog_age",
-  "src/riverhog_api",
-  "src/riverhog_cli",
-  "src/riverhog_core",
-  "src/tus_transport",
-]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/application_access/py.typed" = "application_access/py.typed"
-"macos/gogurt/io.github.nashspence.gogurt.plist" = "gogurt/macos/io.github.nashspence.gogurt.plist"
-"macos/gogurt/gogurt.swift" = "gogurt/macos/gogurt.swift"
-"src/gogurt/py.typed" = "gogurt/py.typed"
-"src/lifecycle_events/py.typed" = "lifecycle_events/py.typed"
-"src/riverhog_core/py.typed" = "riverhog_core/py.typed"
 
 [tool.ruff]
 line-length = 100
@@ -87,7 +26,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
-testpaths = ["tests"]
+testpaths = ["apps", "packages", "tests", "tools"]
 markers = [
   "integration: non-contract regression coverage",
 ]

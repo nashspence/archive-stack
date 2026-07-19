@@ -6,10 +6,13 @@ Read [README.md](README.md) for the product entrypoint.
 
 Riverhog owns generic collection custody, named archive stores and copies, collection
 search, ResourceSync catalog publication, and logical-file retrieval. The default client's
-`local` subtree is the reference application and owns its local materialization.
-Munchy owns generic media ingest, Jeb owns generic watched-drop collection, and Gogurt owns
-mounted-volume actions. Keep public code generic; real identity and deployment topology
-belong downstream.
+`local` subtree is the reference application and owns its local materialization. Munchy
+owns generic media ingest, Jeb owns generic watched-drop collection, and Mango Fish owns
+generic CloudEvents-to-webhook delivery. Gogurt is mounted-volume operator tooling, not a
+Riverhog application. Applications may depend on focused packages, but never import one
+another's implementation modules; runtime integration crosses HTTP and CloudEvents
+contracts. Keep public code generic; real identity and deployment topology belong
+downstream.
 
 ## Safety
 

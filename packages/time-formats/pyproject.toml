@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "time-formats"
+version = "0.1.0"
+description = "UTC timestamp and operator duration formats."
+requires-python = ">=3.12"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/time_formats"]
+

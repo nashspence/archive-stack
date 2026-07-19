@@ -7,6 +7,38 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[manifest]
+members = [
+    "application-access",
+    "cli-support",
+    "config-validation",
+    "gogurt",
+    "jeb",
+    "lifecycle-events",
+    "mango-fish",
+    "munchy",
+    "munchy-api-client",
+    "munchy-config",
+    "riverhog",
+    "riverhog-age",
+    "riverhog-api-client",
+    "riverhog-protocol",
+    "time-formats",
+    "tus-transport",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.35,<2.0" },
+    { name = "mypy", specifier = ">=1.10,<2.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
+    { name = "pytest", specifier = ">=8.2,<9.0" },
+    { name = "pytest-cov", specifier = ">=5.0,<6.0" },
+    { name = "ruff", specifier = ">=0.5,<1.0" },
+    { name = "types-jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "types-pyyaml", specifier = ">=6.0,<7.0" },
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -46,6 +78,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/d7/d8/05696357e0311f5b5
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3b/00/2344469e2084fb287c2e0b57b72910309874c3245463acd6cf5e3db69324/appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128", size = 9566, upload-time = "2020-05-11T07:59:49.499Z" },
 ]
+
+[[package]]
+name = "application-access"
+version = "0.1.0"
+source = { editable = "packages/application-access" }
 
 [[package]]
 name = "argon2-cffi"
@@ -224,6 +261,11 @@ wheels = [
 ]
 
 [[package]]
+name = "cli-support"
+version = "0.1.0"
+source = { editable = "packages/cli-support" }
+
+[[package]]
 name = "click"
 version = "8.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -242,6 +284,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "config-validation"
+version = "0.1.0"
+source = { editable = "packages/config-validation" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
 ]
 
 [[package]]
@@ -404,6 +461,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/33/f6/354ae6491228b5eb40e10d89c4d13c651fe1cf7556e35ebdded50cff57ce/gitpython-3.1.50.tar.gz", hash = "sha256:80da2d12504d52e1f998772dc5baf6e553f8d2fcfe1fcc226c9d9a2ee3372dcc", size = 219798, upload-time = "2026-05-06T04:01:26.571Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/7a/1c6e3562dfd8950adbb11ffbc65d21e7c89d01a6e4f137fa981056de25c5/gitpython-3.1.50-py3-none-any.whl", hash = "sha256:d352abe2908d07355014abdd21ddf798c2a961469239afec4962e9da884858f9", size = 212507, upload-time = "2026-05-06T04:01:23.799Z" },
+]
+
+[[package]]
+name = "gogurt"
+version = "0.1.0"
+source = { editable = "tools/gogurt" }
+dependencies = [
+    { name = "cli-support" },
+    { name = "config-validation" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cli-support", editable = "packages/cli-support" },
+    { name = "config-validation", editable = "packages/config-validation" },
+    { name = "typer", specifier = ">=0.12,<1.0" },
 ]
 
 [[package]]
@@ -584,6 +658,35 @@ wheels = [
 ]
 
 [[package]]
+name = "jeb"
+version = "0.1.0"
+source = { editable = "apps/jeb" }
+dependencies = [
+    { name = "argon2-cffi" },
+    { name = "cli-support" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "lifecycle-events" },
+    { name = "munchy-api-client" },
+    { name = "pydantic" },
+    { name = "time-formats" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "argon2-cffi", specifier = ">=23,<26" },
+    { name = "cli-support", editable = "packages/cli-support" },
+    { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "munchy-api-client", editable = "packages/munchy-api-client" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "time-formats", editable = "packages/time-formats" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
 name = "jmespath"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -680,6 +783,40 @@ wheels = [
 ]
 
 [[package]]
+name = "lifecycle-events"
+version = "0.1.0"
+source = { editable = "packages/lifecycle-events" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+]
+
+[[package]]
+name = "mango-fish"
+version = "0.1.0"
+source = { editable = "apps/mango-fish" }
+dependencies = [
+    { name = "httpx" },
+    { name = "lifecycle-events" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -699,6 +836,85 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
 ]
+
+[[package]]
+name = "munchy"
+version = "0.1.0"
+source = { editable = "apps/munchy" }
+dependencies = [
+    { name = "application-access" },
+    { name = "argon2-cffi" },
+    { name = "cli-support" },
+    { name = "config-validation" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "lifecycle-events" },
+    { name = "munchy-api-client" },
+    { name = "munchy-config" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "riverhog-api-client" },
+    { name = "time-formats" },
+    { name = "tus-transport" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "application-access", editable = "packages/application-access" },
+    { name = "argon2-cffi", specifier = ">=23,<26" },
+    { name = "cli-support", editable = "packages/cli-support" },
+    { name = "config-validation", editable = "packages/config-validation" },
+    { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "munchy-api-client", editable = "packages/munchy-api-client" },
+    { name = "munchy-config", editable = "packages/munchy-config" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "rich", specifier = ">=15.0,<16.0" },
+    { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
+    { name = "time-formats", editable = "packages/time-formats" },
+    { name = "tus-transport", editable = "packages/tus-transport" },
+    { name = "typer", specifier = ">=0.12,<1.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "munchy-api-client"
+version = "0.1.0"
+source = { editable = "packages/munchy-api-client" }
+dependencies = [
+    { name = "h2" },
+    { name = "httpx" },
+    { name = "lifecycle-events" },
+    { name = "time-formats" },
+    { name = "tus-transport" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "h2", specifier = ">=4,<5" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "time-formats", editable = "packages/time-formats" },
+    { name = "tus-transport", editable = "packages/tus-transport" },
+]
+
+[[package]]
+name = "munchy-config"
+version = "0.1.0"
+source = { editable = "packages/munchy-config" }
+dependencies = [
+    { name = "config-validation" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "config-validation", editable = "packages/config-validation" }]
 
 [[package]]
 name = "mypy"
@@ -1154,80 +1370,92 @@ wheels = [
 ]
 
 [[package]]
-name = "riverhog-mvp-skeleton"
+name = "riverhog"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "apps/riverhog" }
 dependencies = [
+    { name = "application-access" },
     { name = "argon2-cffi" },
     { name = "boto3" },
+    { name = "cli-support" },
     { name = "cryptography" },
     { name = "fastapi" },
-    { name = "h2" },
-    { name = "httpx" },
-    { name = "jsonschema" },
+    { name = "lifecycle-events" },
     { name = "opentimestamps-client" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
-    { name = "pyyaml" },
     { name = "rich" },
+    { name = "riverhog-age" },
+    { name = "riverhog-api-client" },
+    { name = "riverhog-protocol" },
+    { name = "sqlalchemy" },
+    { name = "time-formats" },
+    { name = "tus-transport" },
     { name = "typer" },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-db = [
-    { name = "psycopg", extra = ["binary"] },
-    { name = "sqlalchemy" },
-]
-service = [
     { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "boto3-stubs", extra = ["s3"] },
-    { name = "mypy" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "sqlalchemy" },
-    { name = "types-jsonschema" },
-    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "application-access", editable = "packages/application-access" },
     { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "boto3", specifier = ">=1.35,<2.0" },
+    { name = "cli-support", editable = "packages/cli-support" },
     { name = "cryptography", specifier = ">=41,<47" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "opentimestamps-client", specifier = ">=0.7,<1.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "rich", specifier = ">=15.0,<16.0" },
+    { name = "riverhog-age", editable = "packages/riverhog-age" },
+    { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
+    { name = "time-formats", editable = "packages/time-formats" },
+    { name = "tus-transport", editable = "packages/tus-transport" },
+    { name = "typer", specifier = ">=0.12,<1.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "riverhog-age"
+version = "0.1.0"
+source = { editable = "packages/riverhog-age" }
+dependencies = [
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cryptography", specifier = ">=41,<47" }]
+
+[[package]]
+name = "riverhog-api-client"
+version = "0.1.0"
+source = { editable = "packages/riverhog-api-client" }
+dependencies = [
+    { name = "h2" },
+    { name = "httpx" },
+    { name = "lifecycle-events" },
+    { name = "riverhog-age" },
+    { name = "riverhog-protocol" },
+    { name = "tus-transport" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "h2", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "jsonschema", specifier = ">=4.25,<5.0" },
-    { name = "opentimestamps-client", specifier = ">=0.7,<1.0" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'db'", specifier = ">=3.2,<4.0" },
-    { name = "pydantic", specifier = ">=2.7,<3.0" },
-    { name = "pyyaml", specifier = ">=6.0,<7.0" },
-    { name = "rich", specifier = ">=15.0,<16.0" },
-    { name = "sqlalchemy", marker = "extra == 'db'", specifier = ">=2.0,<3.0" },
-    { name = "typer", specifier = ">=0.12,<1.0" },
-    { name = "uvicorn", specifier = ">=0.30,<1.0" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'service'", specifier = ">=0.30,<1.0" },
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "riverhog-age", editable = "packages/riverhog-age" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "tus-transport", editable = "packages/tus-transport" },
 ]
-provides-extras = ["db", "service"]
 
-[package.metadata.requires-dev]
-dev = [
-    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.35,<2.0" },
-    { name = "mypy", specifier = ">=1.10,<2.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
-    { name = "pytest", specifier = ">=8.2,<9.0" },
-    { name = "pytest-cov", specifier = ">=5.0,<6.0" },
-    { name = "ruff", specifier = ">=0.5,<1.0" },
-    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
-    { name = "types-jsonschema", specifier = ">=4.25,<5.0" },
-    { name = "types-pyyaml", specifier = ">=6.0,<7.0" },
-]
+[[package]]
+name = "riverhog-protocol"
+version = "0.1.0"
+source = { editable = "packages/riverhog-protocol" }
 
 [[package]]
 name = "rpds-py"
@@ -1455,6 +1683,26 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz", hash = "sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0", size = 2703240, upload-time = "2026-06-12T09:23:11.602Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl", hash = "sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6", size = 73632, upload-time = "2026-06-12T09:23:10.017Z" },
+]
+
+[[package]]
+name = "time-formats"
+version = "0.1.0"
+source = { editable = "packages/time-formats" }
+
+[[package]]
+name = "tus-transport"
+version = "0.1.0"
+source = { editable = "packages/tus-transport" }
+dependencies = [
+    { name = "h2" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "h2", specifier = ">=4,<5" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
 ]
 
 [[package]]

@@ -19,9 +19,11 @@ Use `make help` for development and validation commands. Use each installed comm
 `--help` output for its current interface. A running API publishes its current OpenAPI
 document at `/openapi.json`.
 
-The checked Compose stack runs from safe development defaults. The intentionally empty
-[Compose override example](.env.compose.example) is the starting point for local overrides;
-[example configurations](config/examples/) contain fake identities only.
+The [Riverhog Compose stack](apps/riverhog/compose.yaml) runs from safe development
+defaults. The intentionally empty [Compose override example](.env.compose.example) is the
+starting point for local overrides. Owner-scoped examples contain fake identities only:
+[Munchy](apps/munchy/config/examples/), [Jeb](apps/jeb/config/),
+[Mango Fish](apps/mango-fish/config/), and [Gogurt](tools/gogurt/config/examples/).
 
 ## Context
 

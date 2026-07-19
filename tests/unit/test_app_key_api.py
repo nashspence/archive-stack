@@ -7,15 +7,15 @@ import anyio
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import get_container
 from riverhog_api.routers.apps import router as apps_router
 from riverhog_core.app_permissions import CATALOG_READ, COLLECTIONS_UPLOAD, KEYS_MANAGE
 from riverhog_core.catalog_db import initialize_db
-from riverhog_core.domain.errors import Forbidden
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
+from riverhog_protocol.errors import Forbidden
+
 from tests.unit.db_helpers import sqlite_url
 
 

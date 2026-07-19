@@ -7,8 +7,6 @@ from collections.abc import Iterator, Sequence
 from typing import cast
 
 import pytest
-from sqlalchemy import select
-
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     Base,
@@ -26,12 +24,14 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     RetrievalJobRecord,
 )
-from riverhog_core.domain.errors import Conflict
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_protocol.errors import Conflict
+from sqlalchemy import select
+
 from tests.fixtures.crypto import FixtureProofVerifier
 
 pytestmark = pytest.mark.integration

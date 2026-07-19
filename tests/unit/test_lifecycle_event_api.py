@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import anyio
 import httpx
 from fastapi import FastAPI
-
 from riverhog_api.deps import get_container
 from riverhog_api.routers.events import router as events_router
 from riverhog_core.app_permissions import (
@@ -18,6 +17,7 @@ from riverhog_core.catalog_db import initialize_db
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -59,9 +59,7 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
                 headers={"Authorization": f"Bearer {alpha_token}"},
             )
             assert alpha.status_code == 200
-            assert [event["subject"] for event in alpha.json()["events"]] == [
-                "alpha-collection"
-            ]
+            assert [event["subject"] for event in alpha.json()["events"]] == ["alpha-collection"]
 
             operator = await client.get(
                 "/v1/events",

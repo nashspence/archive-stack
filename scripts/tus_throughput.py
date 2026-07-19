@@ -11,8 +11,7 @@ from dataclasses import asdict, dataclass
 from urllib.parse import urljoin
 
 import httpx
-
-from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
+from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 TUS_VERSION = "1.0.0"
 DEFAULT_CHUNK_MIB = (DEFAULT_TUS_UPLOAD_CHUNK_MIB, 128)

@@ -6,9 +6,8 @@ import inspect
 from pathlib import Path
 from typing import Any
 
-from typer.testing import CliRunner
-
 from riverhog_cli import local as local_materialization
+from typer.testing import CliRunner
 
 COLLECTION_ID = "2026/20260102T030405Z__local"
 CONTENT = b"locally materialized archive file\n"
@@ -36,7 +35,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
     }
 
     assert imports == {
-        ("riverhog_cli.client", "ApiClient"),
+        ("riverhog_api_client.client", "ApiClient"),
         ("riverhog_core.fs_paths", "normalize_collection_id"),
         ("riverhog_core.fs_paths", "normalize_relpath"),
     }

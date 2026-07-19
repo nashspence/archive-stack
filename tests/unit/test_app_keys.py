@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-
 from riverhog_api.auth import require_application, require_permission
 from riverhog_core.app_permissions import (
     CATALOG_READ,
@@ -19,9 +18,10 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import AppKeyRecord
-from riverhog_core.domain.errors import BadRequest, Forbidden
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
+from riverhog_protocol.errors import BadRequest, Forbidden
+
 from tests.unit.db_helpers import sqlite_url
 
 BOOTSTRAP = ApplicationPrincipal(
@@ -73,9 +73,9 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
     with session_scope(factory) as session:
         record = session.get(AppKeyRecord, str(created["id"]))
         assert record is not None
-        assert record.token_sha256 == hashlib.sha256(
-            str(created["token"]).encode("utf-8")
-        ).hexdigest()
+        assert (
+            record.token_sha256 == hashlib.sha256(str(created["token"]).encode("utf-8")).hexdigest()
+        )
         assert record.permissions_json == '["catalog:read","retrieval:manage"]'
         assert not hasattr(record, "token")
 

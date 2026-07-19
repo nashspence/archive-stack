@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "munchy-api-client"
+version = "0.1.0"
+description = "Munchy submission, upload, routing, preflight, and provenance client."
+requires-python = ">=3.12"
+dependencies = [
+  "h2>=4,<5",
+  "httpx>=0.27,<1.0",
+  "lifecycle-events",
+  "time-formats",
+  "tus-transport",
+]
+
+[tool.uv.sources]
+lifecycle-events = { workspace = true }
+time-formats = { workspace = true }
+tus-transport = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/munchy_api_client"]
+
