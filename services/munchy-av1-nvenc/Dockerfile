@@ -68,7 +68,6 @@ WORKDIR /app
 COPY requirements-service.txt /tmp/requirements-service.txt
 RUN python3 -m pip install --break-system-packages --require-hashes -r /tmp/requirements-service.txt
 
-COPY contracts /riverhog/contracts
 COPY config /riverhog/config
 COPY src /riverhog/src
 

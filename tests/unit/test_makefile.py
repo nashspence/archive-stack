@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -530,10 +531,35 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert "COPY services/munchy-av1-nvenc/app ./services/munchy-av1-nvenc/app" in test_dockerfile
     assert "COPY services/munchy-runner/app ./services/munchy-runner/app" in test_dockerfile
     assert "COPY tests ./tests" in test_dockerfile
-    assert "COPY contracts ./contracts" in test_dockerfile
     assert "COPY config ./config" in app_dockerfile
     assert "COPY config ./config" in test_dockerfile
     assert "docs/" in dockerignore
+
+
+def test_dockerfile_copy_sources_are_git_owned() -> None:
+    dockerfiles = [
+        REPO_ROOT / "Dockerfile.app",
+        REPO_ROOT / "Dockerfile.test",
+        *sorted((REPO_ROOT / "services").glob("*/Dockerfile")),
+    ]
+
+    for dockerfile in dockerfiles:
+        for raw_line in dockerfile.read_text(encoding="utf-8").splitlines():
+            if not raw_line.lstrip().startswith("COPY "):
+                continue
+            tokens = shlex.split(raw_line)
+            if tokens[1].startswith("--from="):
+                continue
+            sources = tokens[1:-1]
+            for source in sources:
+                tracked = subprocess.run(
+                    ["git", "ls-files", "--", source],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.splitlines()
+                assert tracked, f"{dockerfile.relative_to(REPO_ROOT)} copies untracked {source}"
 
 
 def test_unit_lane_owns_service_unit_tests() -> None:

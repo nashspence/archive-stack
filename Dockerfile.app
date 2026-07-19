@@ -31,7 +31,6 @@ WORKDIR /app
 COPY requirements-runtime.txt ./
 RUN pip install --no-cache-dir --require-hashes -r requirements-runtime.txt
 
-COPY contracts ./contracts
 COPY config ./config
 COPY src ./src
 
