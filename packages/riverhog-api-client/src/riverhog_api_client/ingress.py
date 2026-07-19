@@ -48,12 +48,20 @@ def iter_ingress_upload_parts(
         chunks_per_part=chunks_per_part,
         enforce_s3_limits=False,
     )
-    plan_index = {plan.ciphertext_start: index for index, plan in enumerate(plans)}
     if ciphertext_offset == ciphertext_bytes:
         return
-    start_index = plan_index.get(ciphertext_offset)
+    if ciphertext_offset < 0 or ciphertext_offset > ciphertext_bytes:
+        raise ValueError("ingress upload offset is outside ciphertext bounds")
+    start_index = next(
+        (
+            index
+            for index, plan in enumerate(plans)
+            if plan.ciphertext_start <= ciphertext_offset < plan.ciphertext_end
+        ),
+        None,
+    )
     if start_index is None:
-        raise ValueError("ingress upload offset is not on an encryption boundary")
+        raise ValueError("ingress upload offset is not covered by the encryption plan")
 
     with source_path.open("rb") as source:
         for plan in plans[start_index:]:
@@ -62,13 +70,37 @@ def iter_ingress_upload_parts(
                 source.seek(start)
                 return source.read(end - start)
 
+            encrypted = session.encrypt_part(
+                plan,
+                provider,
+                plaintext_size=plaintext_bytes,
+            )
+            part_offset = plan.ciphertext_start
+            plaintext_start = plan.plaintext_start
+            plaintext_len = plan.plaintext_len
+            if plan is plans[start_index] and ciphertext_offset > plan.ciphertext_start:
+                skipped_ciphertext = ciphertext_offset - plan.ciphertext_start
+                payload_skip = skipped_ciphertext
+                if plan.includes_age_prefix:
+                    prefix_bytes = len(session.age_prefix)
+                    if skipped_ciphertext < prefix_bytes:
+                        raise ValueError(
+                            "ingress upload offset is inside the age encryption prefix"
+                        )
+                    payload_skip -= prefix_bytes
+                skipped_chunks, remainder = divmod(payload_skip, CHUNK_SIZE + AEAD_TAG_SIZE)
+                if remainder:
+                    raise ValueError(
+                        "ingress upload offset is not aligned to an age chunk boundary"
+                    )
+                skipped_plaintext = min(skipped_chunks * CHUNK_SIZE, plaintext_len)
+                encrypted = encrypted[skipped_ciphertext:]
+                part_offset = ciphertext_offset
+                plaintext_start += skipped_plaintext
+                plaintext_len -= skipped_plaintext
             yield IngressUploadPart(
-                ciphertext_offset=plan.ciphertext_start,
-                ciphertext=session.encrypt_part(
-                    plan,
-                    provider,
-                    plaintext_size=plaintext_bytes,
-                ),
-                plaintext_start=plan.plaintext_start,
-                plaintext_bytes=plan.plaintext_len,
+                ciphertext_offset=part_offset,
+                ciphertext=encrypted,
+                plaintext_start=plaintext_start,
+                plaintext_bytes=plaintext_len,
             )

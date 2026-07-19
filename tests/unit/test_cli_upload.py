@@ -201,6 +201,47 @@ def test_resumed_upload_reports_existing_plaintext_without_counting_it_as_new_pr
     assert resumed[0] + sum(uploaded_plaintext) == len(content)
 
 
+def test_ingress_resume_survives_a_transport_chunk_size_change(tmp_path: Path) -> None:
+    content = (b"chunk-size-independent encrypted resume\n" * 20_000) + b"end"
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+
+    original_parts = list(
+        iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=70_000,
+        )
+    )
+    assert len(original_parts) > 2
+    resume_offset = original_parts[2].ciphertext_offset
+
+    larger_parts = list(
+        iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=250_000,
+        )
+    )
+    assert resume_offset not in {part.ciphertext_offset for part in larger_parts}
+
+    resumed_parts = list(
+        iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=resume_offset,
+            target_part_bytes=250_000,
+        )
+    )
+
+    ciphertext = b"".join(part.ciphertext for part in larger_parts)
+    assert resumed_parts[0].ciphertext_offset == resume_offset
+    assert b"".join(part.ciphertext for part in resumed_parts) == ciphertext[resume_offset:]
+
+
 def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
