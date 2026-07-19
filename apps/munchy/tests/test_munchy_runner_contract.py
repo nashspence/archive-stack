@@ -3559,6 +3559,39 @@ def test_eager_gpu_transient_failure_does_not_emit_event(
     assert event_calls == []
 
 
+def test_terminal_encoding_failure_with_retained_input_reports_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {"job_id": "job-1", "state": "running", "phase": "encoding"}
+    runner.save_job(job)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "gpu_target_request",
+        lambda *args, **kwargs: {"state": "failed", "error": "encoder refused"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "emit_job_issue",
+        lambda *args, **kwargs: events.append(dict(kwargs)),
+    )
+
+    with pytest.raises(runner.EncodingFailed, match="encoder refused"):
+        runner.wait_gpu_job("gpu-1", gpu_payload={}, job=job)
+
+    assert events == [
+        {
+            "component": "encoding",
+            "error": "gpu job failed: encoder refused",
+            "severity": "error",
+        }
+    ]
+
+
 def test_load_input_upload_does_not_refresh_state_timestamp(
     tmp_path: Path,
     monkeypatch,

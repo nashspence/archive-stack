@@ -574,6 +574,20 @@ def test_jeb_attempt_issue_is_appended_to_lifecycle_log(tmp_path: Path) -> None:
     assert page.events[0].data["error"] == "target failed"
 
 
+def test_jeb_failed_attempt_reports_retained_source_as_error(tmp_path: Path) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path)
+    collector = collector_from_env(env_for(tmp_path, sources="camera"))
+    attempt_id = collector.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+
+    collector.mark_unrecoverable(attempt_id, "target failed", component="target")
+
+    event = collector.event_log.page(after=None, limit=100).events[0]
+    assert event.data["severity"] == "error"
+    assert source_path.is_file()
+
+
 def test_jeb_target_preflight_events_and_status_use_source_context(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources="camera,phone"))
     clean_statuses = {

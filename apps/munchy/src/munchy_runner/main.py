@@ -6408,7 +6408,7 @@ def wait_gpu_job(
                 time.sleep(5)
                 continue
             error = f"gpu job failed: {status.get('error')}"
-            emit_job_issue(job, component="encoding", error=error, severity="critical")
+            emit_job_issue(job, component="encoding", error=error, severity="error")
             raise EncodingFailed(error)
         if time.monotonic() >= next_repost:
             try:
@@ -7433,7 +7433,7 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
     except JobCanceled:
         raise
     except HashMismatch as exc:
-        emit_job_issue(job, component="riverhog_upload", error=exc, severity="critical")
+        emit_job_issue(job, component="riverhog_upload", error=exc, severity="error")
         log.error("riverhog eager upload failed integrity check: %s", exc)
     except RuntimeError as exc:
         log.warning("riverhog eager upload failed; will retry later: %s", exc)
@@ -9717,7 +9717,7 @@ def start_eager_audio_batch(
                 error=error,
             )
         save_job(job)
-        emit_job_issue(job, component="encoding", error=error, severity="critical")
+        emit_job_issue(job, component="encoding", error=error, severity="error")
         raise EncodingFailed(error) from exc
 
     batch["state"] = "succeeded"
@@ -9777,7 +9777,7 @@ def poll_eager_gpu_batch(
             submit_eager_gpu_job(job, batch, force=True)
             return upload
         error = f"gpu eager batch failed: {status.get('error')}"
-        emit_job_issue(job, component="encoding", error=error, severity="critical")
+        emit_job_issue(job, component="encoding", error=error, severity="error")
         raise EncodingFailed(error)
     save_job(job)
     return upload
@@ -10227,7 +10227,7 @@ def run_job(job_id: str) -> None:
             compact_terminal_job_state(job)
             save_job(job)
         elif isinstance(exc, RoutingFailed):
-            emit_job_issue(job, component="routing", error=exc, severity="critical")
+            emit_job_issue(job, component="routing", error=exc, severity="error")
         else:
             emit_job_issue(job, component="job", error=exc, severity="error")
     finally:

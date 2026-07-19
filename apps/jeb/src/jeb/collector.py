@@ -2870,7 +2870,7 @@ class Collector:
             context=attempt_payload,
             error=message,
             component=component,
-            severity="critical",
+            severity="error",
         ):
             return False
         self.set_attempt_fields(
