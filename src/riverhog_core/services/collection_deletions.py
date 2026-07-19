@@ -220,9 +220,9 @@ class SqlAlchemyCollectionDeletionService:
                     type="collection.deleted",
                     collection_id=collection_id,
                     details={
-                        "files": int(plan["file_count"]),
-                        "bytes": int(plan["bytes"]),
-                        "remote_storage_bytes": int(plan["remote_storage_bytes"]),
+                        "files": cast(int, plan["file_count"]),
+                        "bytes": cast(int, plan["bytes"]),
+                        "remote_storage_bytes": cast(int, plan["remote_storage_bytes"]),
                     },
                     terminal=True,
                     session=session,

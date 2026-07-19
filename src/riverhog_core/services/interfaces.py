@@ -131,16 +131,6 @@ class AppKeyService(Protocol):
         grantor: ApplicationPrincipal,
         expires_in: timedelta | None = None,
     ) -> JsonObject: ...
-
-
-class LifecycleEventService(Protocol):
-    def page(
-        self,
-        *,
-        owner_app: str | None,
-        after: str | None,
-        limit: int,
-    ) -> EventPage: ...
     def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
     def list_apps(
         self,
@@ -165,6 +155,16 @@ class LifecycleEventService(Protocol):
         active: bool | None = None,
         all_items: bool = False,
     ) -> JsonObject: ...
+
+
+class LifecycleEventService(Protocol):
+    def page(
+        self,
+        *,
+        owner_app: str | None,
+        after: str | None,
+        limit: int,
+    ) -> EventPage: ...
 
 
 class SearchService(Protocol):

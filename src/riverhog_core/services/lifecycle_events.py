@@ -164,7 +164,7 @@ class SqlAlchemyLifecycleEventService:
         else:
             return None
         expires_at = terminal_context_expiry(self._config) if terminal else None
-        if terminal and context_json is not None:
+        if expires_at is not None and context_json is not None:
             self.expire_context(
                 owner_app=owner_app,
                 subject=collection_id,
@@ -197,7 +197,7 @@ class SqlAlchemyLifecycleEventService:
         session: Session,
     ) -> CloudEvent:
         expires_at = terminal_context_expiry(self._config) if terminal else None
-        if terminal and job.event_context_json is not None:
+        if expires_at is not None and job.event_context_json is not None:
             self.expire_context(
                 owner_app=job.app,
                 subject=job.id,
