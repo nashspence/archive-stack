@@ -71,13 +71,25 @@ def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Resp
 
 @router.post("/internal/tusd/hooks")
 async def handle_tusd_hook(request: Request) -> JSONResponse:
-    if not _authorized_tusd_hook(request):
-        return _json_response({"RejectUpload": True}, status_code=403)
-
     payload = await request.json()
     hook_type = payload.get("Type")
     if hook_type not in {"pre-create", "post-finish"}:
         return _json_response({})
+
+    container = None
+    if hook_type == "pre-create":
+        authorized = _authorized_tusd_hook(request)
+    else:
+        container = default_container()
+        principal = authenticate_authorization_header(
+            request.headers.get("authorization"),
+            container,
+        )
+        authorized = _authorized_tusd_hook(request) or bool(
+            principal is not None and principal.allows(COLLECTIONS_UPLOAD)
+        )
+    if not authorized:
+        return _json_response({"RejectUpload": True}, status_code=403)
 
     event = payload.get("Event", {})
     upload = event.get("Upload", {}) if isinstance(event, dict) else {}
@@ -96,8 +108,9 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         return _json_response({"ChangeFileInfo": {"ID": upload_id}})
 
     try:
+        assert container is not None
         await run_in_threadpool(
-            default_container().collections.sync_finished_upload_id,
+            container.collections.sync_finished_upload_id,
             upload_id,
         )
     except BadRequest as exc:

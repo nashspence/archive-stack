@@ -6,6 +6,7 @@ from asyncio import run
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import pytest
 from starlette.requests import Request
 
 from riverhog_api.routers.internal import authorize_tusd_data_plane, handle_tusd_hook
@@ -90,7 +91,16 @@ def test_precreate_hook_assigns_the_hook_authenticated_opaque_upload_id(monkeypa
     assert payload == {"ChangeFileInfo": {"ID": upload_id}}
 
 
-def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Riverhog-Tusd-Hook-Secret": "hook-secret"},
+        {"Authorization": "Bearer application-token"},
+    ],
+)
+def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(
+    monkeypatch, headers: dict[str, str]
+) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
     upload_id = ".riverhog/uploads/by-target/" + "b" * 64
     calls: list[str] = []
@@ -99,10 +109,9 @@ def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(monkeypatch) -> No
         def sync_finished_upload_id(self, value: str) -> None:
             calls.append(value)
 
-    monkeypatch.setattr(
-        "riverhog_api.routers.internal.default_container",
-        lambda: SimpleNamespace(collections=Collections()),
-    )
+    container = _container_with_permissions(COLLECTIONS_UPLOAD)
+    container.collections = Collections()
+    monkeypatch.setattr("riverhog_api.routers.internal.default_container", lambda: container)
 
     async def directly(function, *args):
         return function(*args)
@@ -111,7 +120,7 @@ def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(monkeypatch) -> No
 
     status, payload = _hook_response(
         _hook_payload("post-finish", upload_id),
-        headers={"X-Riverhog-Tusd-Hook-Secret": "hook-secret"},
+        headers=headers,
     )
 
     assert status == 200
