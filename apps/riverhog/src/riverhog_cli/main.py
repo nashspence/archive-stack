@@ -647,6 +647,9 @@ def _upload_collection_file(
         target_part_bytes=_upload_chunk_bytes(),
     ):
         chunk = part.ciphertext
+        retry_delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
+        last_retry_log_at = 0.0
+        retry_attempt = 0
         while offset == part.ciphertext_offset:
             try:
                 upload_result = api.append_upload_chunk(
@@ -663,10 +666,6 @@ def _upload_collection_file(
             ) as exc:
                 if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
                     raise
-                _log_upload(
-                    f"Upload interrupted for {path_value} at {_format_bytes(offset)}; "
-                    f"{_upload_error_description(exc)}; checking server offset"
-                )
                 session = _create_or_resume_collection_file_upload(
                     api,
                     collection_id,
@@ -679,7 +678,24 @@ def _upload_collection_file(
                             f"server rejected upload chunk for {path_value} at "
                             f"{_format_bytes(offset)} without advancing the offset"
                         ) from exc
-                    _log_upload(f"Server offset unchanged for {path_value}; retrying chunk")
+                    retry_attempt += 1
+                    now = time.monotonic()
+                    if (
+                        retry_attempt == 1
+                        or now - last_retry_log_at
+                        >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS
+                    ):
+                        _log_upload(
+                            f"Upload interrupted for {path_value} at "
+                            f"{_format_bytes(offset)}; {_upload_error_description(exc)}; "
+                            f"server offset unchanged; retrying in {retry_delay:.1f}s"
+                        )
+                        last_retry_log_at = now
+                    time.sleep(retry_delay)
+                    retry_delay = min(
+                        retry_delay * 2,
+                        UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
+                    )
                     continue
                 if recovered_offset < offset:
                     raise RuntimeError(

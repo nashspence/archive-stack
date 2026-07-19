@@ -251,6 +251,8 @@ def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
     source.write_bytes(content)
     descriptor = _descriptor(tmp_path, content=content)
     attempts: list[bytes] = []
+    retry_delays: list[float] = []
+    monkeypatch.setattr(riverhog_main.time, "sleep", retry_delays.append)
 
     class Api:
         def create_or_resume_collection_file_upload(
@@ -280,6 +282,7 @@ def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
 
     assert len(attempts) == 2
     assert attempts[0] == attempts[1]
+    assert retry_delays == [riverhog_main.UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS]
 
 
 def test_upload_wait_mode_defaults_to_finalized(monkeypatch: pytest.MonkeyPatch) -> None:
