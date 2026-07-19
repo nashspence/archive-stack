@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 
 import httpx
 
+from lifecycle_events import EventPage
 from riverhog_core.domain.errors import (
     BadRequest,
     Conflict,
@@ -226,6 +227,19 @@ class ApiClient(_HttpApiClient):
             self._upload_client.close()
             self._upload_client = None
 
+    def list_lifecycle_events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> EventPage:
+        payload = self._json(
+            "GET",
+            "/v1/events",
+            params={"after": after or "0", "limit": limit},
+        )
+        return EventPage.model_validate(payload)
+
     def _upload_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
         if self.token:
@@ -306,10 +320,13 @@ class ApiClient(_HttpApiClient):
         *,
         plan_etag: str,
         lease_seconds: int | None = None,
+        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"files": _file_selections_payload(files)}
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
         return self._json(
             "POST",
             "/v1/retrieval-jobs",
@@ -350,7 +367,7 @@ class ApiClient(_HttpApiClient):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: Mapping[str, Any] | None = None,
+        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "slug": slug,
@@ -362,8 +379,8 @@ class ApiClient(_HttpApiClient):
             payload["upload_timestamp"] = upload_timestamp
         if archive_store is not None:
             payload["archive_store"] = archive_store
-        if notify is not None:
-            payload["notify"] = dict(notify)
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
         return self._json("POST", "/v1/collection-uploads", json=payload)
 
     def create_or_resume_collection_upload_session(
@@ -373,7 +390,7 @@ class ApiClient(_HttpApiClient):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: Mapping[str, Any] | None = None,
+        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"slug": slug}
         if ingest_source is not None:
@@ -382,8 +399,8 @@ class ApiClient(_HttpApiClient):
             payload["upload_timestamp"] = upload_timestamp
         if archive_store is not None:
             payload["archive_store"] = archive_store
-        if notify is not None:
-            payload["notify"] = dict(notify)
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
 
     def register_collection_upload_session_file(

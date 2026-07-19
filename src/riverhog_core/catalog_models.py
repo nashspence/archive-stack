@@ -12,7 +12,8 @@ class CollectionRecord(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     manifest_etag: Mapped[str] = mapped_column(String(64))
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
-    notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
+    created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     files: Mapped[list[CollectionFileRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
@@ -251,6 +252,22 @@ class CatalogEventRecord(Base):
     __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
 
 
+class LifecycleEventRecord(Base):
+    __tablename__ = "lifecycle_events"
+
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True)
+    owner_app: Mapped[str] = mapped_column(String)
+    event_json: Mapped[str] = mapped_column(Text)
+    context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_lifecycle_events_owner_sequence", "owner_app", "sequence"),
+        Index("ix_lifecycle_events_context_expiry", "context_expires_at"),
+    )
+
+
 class AppKeyRecord(Base):
     __tablename__ = "app_keys"
 
@@ -274,6 +291,8 @@ class RetrievalJobRecord(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     app: Mapped[str] = mapped_column(String)
+    initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String)
     plan_etag: Mapped[str] = mapped_column(String(64))
     constraints_json: Mapped[str] = mapped_column(Text)
@@ -398,8 +417,10 @@ class CollectionUploadRecord(Base):
 
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
+    initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
-    notify_json: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_store: Mapped[str] = mapped_column(String, nullable=False)
     opened_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_activity_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -410,7 +431,6 @@ class CollectionUploadRecord(Base):
     archive_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_last_failure_notification_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_receipt_json: Mapped[str | None] = mapped_column(String, nullable=True)
     collection_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)

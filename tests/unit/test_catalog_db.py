@@ -25,6 +25,7 @@ CURRENT_TABLES = {
     "collection_upload_files",
     "collection_uploads",
     "collections",
+    "lifecycle_events",
     "retrieval_cache_leases",
     "retrieval_cache_objects",
     "retrieval_job_files",
@@ -77,6 +78,14 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "expires_at",
         "revoked_at",
         "last_used_at",
+    }
+    assert {column["name"] for column in inspector.get_columns("lifecycle_events")} == {
+        "sequence",
+        "event_id",
+        "owner_app",
+        "event_json",
+        "context_json",
+        "context_expires_at",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_job_files")} == {
         "job_id",

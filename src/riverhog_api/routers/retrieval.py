@@ -49,11 +49,13 @@ def create_retrieval_job(
     plan_etag = (if_match or "").strip().strip('"')
     payload = container.retrieval.create(
         app=principal.app,
+        key_id=principal.key_id,
         files=_files(request),
         plan_etag=plan_etag,
         lease=(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
+        event_context=request.event_context,
     )
     return RetrievalJobOut.model_validate(payload)
 

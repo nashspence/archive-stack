@@ -7,6 +7,7 @@ import yaml
 
 from gogurt.core import load_gogurt_actions
 from jeb.collector import config_from_env
+from lifecycle_events.relay import load_relay_config
 from munchy.job_authoring import (
     build_review_sweep_plan,
     load_munchy_job_config,
@@ -20,6 +21,7 @@ EXAMPLE_FILES = {
     Path("gogurt/gogurt-routes.yaml"),
     Path("gogurt/scripts/fake-archive-device"),
     Path("jeb/jeb.env"),
+    Path("lifecycle-event-relay.yaml"),
     Path("munchy/av1-nvenc-profile.yaml"),
     Path("munchy/job.yaml"),
     Path("munchy/review-sweep-job.yaml"),
@@ -35,7 +37,10 @@ def _parse_env_example(path: Path) -> dict[str, str]:
     return dict(line.split("=", 1) for line in lines)
 
 
-def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) -> None:
+def test_every_checked_example_runs_through_its_real_consumer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     checked_files = {
         path.relative_to(EXAMPLE_ROOT) for path in EXAMPLE_ROOT.rglob("*") if path.is_file()
     }
@@ -61,6 +66,16 @@ def test_every_checked_example_runs_through_its_real_consumer(tmp_path: Path) ->
     assert compose["services"]["jeb-ftp"]["environment"]["JEB_FTP_PUBLIC_HOST"] == (
         "${JEB_FTP_PUBLIC_HOST:-127.0.0.1}"
     )
+
+    for name in (
+        "RIVERHOG_EVENT_TOKEN",
+        "MUNCHY_EVENT_TOKEN",
+        "JEB_EVENT_TOKEN",
+        "LIFECYCLE_EVENT_WEBHOOK_URL",
+    ):
+        monkeypatch.setenv(name, "fake-example-value")
+    relay = load_relay_config(EXAMPLE_ROOT / "lifecycle-event-relay.yaml")
+    assert [source.name for source in relay.sources] == ["riverhog", "munchy", "jeb"]
 
     profile = load_encode_profile(EXAMPLE_ROOT / "munchy/av1-nvenc-profile.yaml")
     assert profile.name == "example-camera"

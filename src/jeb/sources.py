@@ -52,7 +52,6 @@ class SourceConfig:
     collection_slug: str
     target: str
     template: str
-    notify: Mapping[str, Any]
     threshold_bytes: int
     cleanup: Cleanup
     cadence: Cadence
@@ -70,7 +69,6 @@ class SourceConfig:
             "collection_slug": self.collection_slug,
             "target": self.target,
             "template": self.template,
-            "notify": dict(self.notify),
             "threshold_bytes": self.threshold_bytes,
             "cleanup": self.cleanup,
             "cadence": self.cadence,
@@ -119,7 +117,6 @@ class SourceRegistry:
                     collection_slug TEXT NOT NULL,
                     target TEXT NOT NULL,
                     template TEXT NOT NULL,
-                    notify_json TEXT NOT NULL,
                     threshold_bytes INTEGER NOT NULL,
                     cleanup TEXT NOT NULL,
                     cadence TEXT NOT NULL,
@@ -145,7 +142,6 @@ class SourceRegistry:
         include_extensions: Sequence[str] = tuple(sorted(DEFAULT_INCLUDE_EXTENSIONS)),
         collection_slug: str | None = None,
         target: str = "munchy",
-        notify: Mapping[str, Any] | None = None,
         threshold_bytes: int = 0,
         cleanup: Cleanup = "after_target_success",
         cadence: Cadence = "weekly",
@@ -166,7 +162,6 @@ class SourceRegistry:
         )
         normalized_extensions = _extensions(include_extensions)
         normalized_template = _template(template)
-        normalized_notify = _json_object(notify or {}, "notify")
         secret = credential or secrets.token_urlsafe(24)
         if not secret or "\n" in secret or "\r" in secret:
             raise SourceRegistryError("credential must be non-empty and single-line")
@@ -178,9 +173,9 @@ class SourceRegistry:
                     INSERT INTO sources(
                         id, enabled, adapters_json, password_hash, upload_signing_key,
                         stable_seconds, include_extensions_json, collection_slug, target, template,
-                        notify_json, threshold_bytes, cleanup, cadence, weekday, hour, minute,
+                        threshold_bytes, cleanup, cadence, weekday, hour, minute,
                         created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_id,
@@ -193,7 +188,6 @@ class SourceRegistry:
                         collection_slug or normalized_id,
                         target.strip() or "munchy",
                         normalized_template,
-                        _json(normalized_notify),
                         threshold_bytes,
                         cleanup,
                         cadence,
@@ -372,7 +366,6 @@ class SourceRegistry:
             "include_extensions",
             "collection_slug",
             "target",
-            "notify",
             "threshold_bytes",
             "cleanup",
             "cadence",
@@ -404,7 +397,6 @@ class SourceRegistry:
             hour=hour,
             minute=minute,
         )
-        notify = _json_object(values["notify"], "notify")
         template = _template(str(values["template"]))
         now = format_utc_timestamp(utc_now())
         with self.connect() as connection:
@@ -412,8 +404,7 @@ class SourceRegistry:
                 """
                 UPDATE sources
                 SET adapters_json = ?, stable_seconds = ?, include_extensions_json = ?,
-                    collection_slug = ?, target = ?, template = ?, notify_json = ?,
-                    threshold_bytes = ?,
+                    collection_slug = ?, target = ?, template = ?, threshold_bytes = ?,
                     cleanup = ?, cadence = ?, weekday = ?, hour = ?, minute = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -425,7 +416,6 @@ class SourceRegistry:
                     str(values["collection_slug"]).strip() or current.id,
                     str(values["target"]).strip() or current.target,
                     template,
-                    _json(notify),
                     threshold_bytes,
                     cleanup,
                     cadence,
@@ -557,7 +547,6 @@ class SourceRegistry:
             collection_slug=str(row["collection_slug"]),
             target=str(row["target"]),
             template=str(row["template"]),
-            notify=json.loads(row["notify_json"]),
             threshold_bytes=int(row["threshold_bytes"]),
             cleanup=cast(Cleanup, str(row["cleanup"])),
             cadence=cast(Cadence, str(row["cadence"])),

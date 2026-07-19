@@ -4,10 +4,6 @@ job:
   handoff:
     destination: riverhog
     options: {}
-  notify:
-    enabled: false
-    recipients:
-      - operator
   routing:
     routes:
       - id: example-camera-video

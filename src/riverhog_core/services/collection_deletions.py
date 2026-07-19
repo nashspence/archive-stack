@@ -38,6 +38,7 @@ from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
 )
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _PLAN_TTL = timedelta(minutes=15)
@@ -57,6 +58,7 @@ class SqlAlchemyCollectionDeletionService:
         self._upload_store = upload_store
         self._retrieval_cache = retrieval_cache
         self._session_factory = make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
     def plan(self, collection_id: str) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
@@ -214,6 +216,17 @@ class SqlAlchemyCollectionDeletionService:
                 session.delete(upload)
             collection = session.get(CollectionRecord, collection_id)
             if collection is not None:
+                self._lifecycle_events.emit_collection(
+                    type="collection.deleted",
+                    collection_id=collection_id,
+                    details={
+                        "files": int(plan["file_count"]),
+                        "bytes": int(plan["bytes"]),
+                        "remote_storage_bytes": int(plan["remote_storage_bytes"]),
+                    },
+                    terminal=True,
+                    session=session,
+                )
                 session.delete(collection)
             session.add(
                 CatalogEventRecord(

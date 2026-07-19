@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import sqlite3
 import sys
 import threading
@@ -34,6 +35,8 @@ def secure_link_token(*, expires: str, path: str, secret: str) -> str:
 
 
 def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
+    if "MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED" not in os.environ:
+        monkeypatch.setenv("MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED", "0")
     monkeypatch.setenv("MUNCHY_RUNNER_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("MUNCHY_RUNNER_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("MUNCHY_RUNNER_TUSD_DIR", str(tmp_path / "tusd"))
@@ -49,6 +52,21 @@ def load_runner(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _request_with_principal(
+    runner: ModuleType,
+    *,
+    app: str,
+    key_id: str,
+):  # type: ignore[no-untyped-def]
+    request = runner.Request({"type": "http", "state": {}})
+    request.state.principal = runner.MunchyPrincipal(
+        app=app,
+        key_id=key_id,
+        permissions=frozenset({"*"}),
+    )
+    return request
 
 
 def test_health_access_log_filter_drops_only_health_paths() -> None:
@@ -77,8 +95,13 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
 
 
 def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_API_TOKEN", "runner-token")
+    monkeypatch.setenv("MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED", "1")
     runner = load_runner(tmp_path, monkeypatch)
+    runner.init_state_store()
+    runner_token = runner.application_keys().create(
+        app="desktop-client",
+        permissions=["submissions:manage"],
+    )["token"]
 
     client = TestClient(runner.app)
 
@@ -88,7 +111,7 @@ def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> Non
     assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
     authorized = client.get(
         "/v1/capabilities",
-        headers={"Authorization": "Bearer runner-token"},
+        headers={"Authorization": f"Bearer {runner_token}"},
     )
     assert authorized.status_code == 200
     assert authorized.json()["operations"]["list_jobs"] is True
@@ -151,15 +174,20 @@ def job_template_definition(*, archive_store: str = "b2") -> dict[str, object]:
 
 
 def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_API_TOKEN", "submission-token")
+    monkeypatch.setenv("MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED", "1")
     monkeypatch.setenv("MUNCHY_RUNNER_ADMIN_TOKEN", "admin-token")
     runner = load_runner(tmp_path, monkeypatch)
+    runner.init_state_store()
+    submission_token = runner.application_keys().create(
+        app="desktop-client",
+        permissions=["submissions:manage"],
+    )["token"]
 
     with TestClient(runner.app) as client:
         assert (
             client.get(
                 "/v1/admin/job-templates",
-                headers={"Authorization": "Bearer submission-token"},
+                headers={"Authorization": f"Bearer {submission_token}"},
             ).status_code
             == 401
         )
@@ -177,6 +205,78 @@ def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch
             ).status_code
             == 200
         )
+
+
+def test_munchy_event_stream_is_scoped_to_authenticated_application(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_ADMIN_TOKEN", "admin-token")
+    runner = load_runner(tmp_path, monkeypatch)
+
+    with TestClient(runner.app) as client:
+        desktop_created = client.post(
+            "/v1/admin/apps/desktop-client/keys",
+            headers={"Authorization": "Bearer admin-token"},
+            json={"permissions": ["events:read"]},
+        )
+        jeb_created = client.post(
+            "/v1/admin/apps/jeb/keys",
+            headers={"Authorization": "Bearer admin-token"},
+            json={"permissions": ["events:read"]},
+        )
+        operator_created = client.post(
+            "/v1/admin/apps/operator/keys",
+            headers={"Authorization": "Bearer admin-token"},
+            json={"permissions": ["events:read_all"]},
+        )
+        assert desktop_created.status_code == 201
+        assert jeb_created.status_code == 201
+        assert operator_created.status_code == 201
+
+        runner.lifecycle_event_log().append(
+            runner.cloud_event(
+                source="urn:munchy",
+                type="io.riverhog.munchy.job.received",
+                subject="desktop-job",
+                data={},
+            ),
+            owner="desktop-client",
+        )
+        runner.lifecycle_event_log().append(
+            runner.cloud_event(
+                source="urn:munchy",
+                type="io.riverhog.munchy.job.received",
+                subject="jeb-job",
+                data={},
+            ),
+            owner="jeb",
+        )
+
+        desktop = client.get(
+            "/v1/events",
+            headers={
+                "Authorization": f"Bearer {desktop_created.json()['token']}"
+            },
+        )
+        jeb = client.get(
+            "/v1/events",
+            headers={"Authorization": f"Bearer {jeb_created.json()['token']}"},
+        )
+        operator = client.get(
+            "/v1/events",
+            headers={
+                "Authorization": f"Bearer {operator_created.json()['token']}"
+            },
+        )
+
+    assert [event["subject"] for event in desktop.json()["events"]] == ["desktop-job"]
+    assert [event["subject"] for event in jeb.json()["events"]] == ["jeb-job"]
+    assert [event["subject"] for event in operator.json()["events"]] == [
+        "desktop-job",
+        "jeb-job",
+    ]
 
 
 def test_job_template_crud_is_revision_guarded_and_database_listed(
@@ -520,13 +620,12 @@ def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatc
     assert capabilities["groups"]["input_path_shape"] == "<group>/<file>"
     assert capabilities["groups"]["structured_routing"] is True
     assert capabilities["storage"]["eager_archive_only_encoding"] is True
-    assert "MUNCHY_RUNNER_NOTIFY_WEBHOOKS" in capabilities["notify"]["webhook_config"]
     assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
     assert capabilities["storage"]["max_running_jobs"] == 1
-    assert capabilities["notify"]["default_enabled"] is False
-    assert capabilities["notify"]["default_recipients"] == []
-    assert capabilities["notify"]["client_preflight_failed"] is True
-    assert capabilities["operations"]["notify_preflight_failed"] is True
+    assert capabilities["events"]["format"] == "CloudEvents 1.0"
+    assert capabilities["events"]["cursor_log"] is True
+    assert capabilities["events"]["operation_context_max_bytes"] == 4096
+    assert capabilities["operations"]["record_preflight_failure"] is True
 
 
 def test_handoff_failure_policy_is_runtime_job_option(
@@ -3149,95 +3248,153 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
     assert job_b["queue"]["running_job_limit"] == 1
 
 
-def test_notification_defaults_come_from_runner_environment(
+def test_submission_accepts_bounded_lifecycle_event_context(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
     runner = load_runner(tmp_path, monkeypatch)
 
     req = runner.CreateJobRequest(
         collection_slug="collection",
         handoff={"destination": "riverhog"},
+        event_context={"workflow": "desktop-archive", "run": 3},
     )
-    capabilities = runner.capabilities()
 
-    assert req.notify.enabled is True
-    assert req.notify.recipients == ["operator"]
-    assert capabilities["notify"]["default_enabled"] is True
-    assert capabilities["notify"]["default_recipients"] == ["operator"]
+    assert req.event_context == {"workflow": "desktop-archive", "run": 3}
 
 
-def test_riverhog_collection_notify_omits_runner_event_filters(
+def test_job_lifecycle_event_is_a_structured_cloudevent(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "initiated_by_app": "desktop-client",
+        "initiated_by_key_id": "desktop-key",
+        "state": "queued",
+        "phase": "queued",
+        "workflow_mode": "collection_archive",
+        "event_context": {"workflow": "desktop-archive"},
+    }
+    runner.save_job(job)
 
-    notify = runner.riverhog_collection_notify_config(
-        {
-            "notify": {
-                "enabled": True,
-                "recipients": ["operator", "collaborator"],
-                "events": ["job.succeeded", "job.issue"],
-            }
-        }
+    result = runner.emit_job_event(job, "job.received", "received")
+    page = runner.lifecycle_event_log().page(
+        after=None,
+        limit=100,
+        owner="desktop-client",
     )
 
-    assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
-
-
-def test_notification_payload_identifies_munchy_with_canonical_emoji(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    runner = load_runner(tmp_path, monkeypatch)
-
-    payload = runner.notify_payload(
-        {
-            "job_id": "job-1",
-            "collection_slug": "collection",
-            "collection_timestamp": "20260605T120000Z",
-            "phase": "queued",
-            "state": "queued",
-        },
-        event="job.received",
-        message="Job received.",
-        severity="info",
-        recipient="operator",
-        extra=None,
-    )
-
-    assert payload["source"] == "munchy"
-    assert payload["actor"] == "munchy"
-    assert payload["event"] == "job.received"
-    assert payload["delivered_at"].endswith("Z")
-    assert payload["operator_urgency"] == "passive"
-    assert payload["operator_action"] == "none"
-    assert payload["notification"] == {
-        "title": "🤤 collection",
-        "body": "Munchy received this job and queued the work.",
+    assert result["status"] == "emitted"
+    assert len(page.events) == 1
+    event = page.events[0]
+    assert event.specversion == "1.0"
+    assert event.source == "urn:munchy"
+    assert event.type == "io.riverhog.munchy.job.received"
+    assert event.subject == "job-1"
+    assert event.data["context"] == {"workflow": "desktop-archive"}
+    assert event.data["initiator"] == {
+        "app": "desktop-client",
+        "key_id": "desktop-key",
     }
 
 
-def test_client_preflight_failed_notification_uses_runner_defaults(
+def test_munchy_translates_owned_riverhog_events_idempotently(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
     runner = load_runner(tmp_path, monkeypatch)
-    calls: list[dict[str, object]] = []
+    runner.ensure_dirs()
+    runner.init_state_store()
+    collection_id = "2026/20260605T120000Z__collection"
+    runner.save_job(
+        {
+            "job_id": "job-1",
+            "initiated_by_app": "jeb",
+            "initiated_by_key_id": "jeb-key",
+            "state": "running",
+            "phase": "handoff",
+            "workflow_mode": "collection_archive",
+            "collection_slug": "collection",
+            "collection_timestamp": "20260605T120000Z",
+            "handoff": {"destination": "riverhog", "options": {}},
+            "handoff_adapter_state": {"collection_id": collection_id},
+        }
+    )
+    upstream = runner.cloud_event(
+        source="urn:riverhog",
+        type="io.riverhog.riverhog.collection.finalized",
+        subject=collection_id,
+        data={"collection_id": collection_id, "archive_store": "b2"},
+    )
 
-    def fake_send_notify_deliveries(job, **kwargs):  # type: ignore[no-untyped-def]
-        calls.append({"job": job, **kwargs})
-        return [{"recipient": "operator", "status": 200}]
+    assert runner.translate_riverhog_event(upstream)
+    assert runner.translate_riverhog_event(upstream)
 
-    monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
+    page = runner.lifecycle_event_log().page(after=None, limit=100, owner="jeb")
+    assert len(page.events) == 1
+    assert runner.lifecycle_event_log().page(
+        after=None,
+        limit=100,
+        owner="desktop-client",
+    ).events == []
+    event = page.events[0]
+    assert event.type == "io.riverhog.munchy.job.archive.finalized"
+    assert event.subject == "job-1"
+    assert event.data["collection_id"] == collection_id
+    assert event.data["initiator"] == {"app": "jeb", "key_id": "jeb-key"}
+    assert event.data["cause"] == {
+        "id": upstream.id,
+        "source": upstream.source,
+        "type": upstream.type,
+        "subject": collection_id,
+    }
 
-    result = runner.notify_preflight_failed(
-        runner.ClientPreflightFailedNotificationRequest(
+
+def test_job_issue_event_carries_operational_facts_without_presentation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+    job = {
+        "job_id": "job-1",
+        "collection_slug": "collection",
+        "collection_timestamp": "20260605T120000Z",
+        "phase": "queued",
+        "state": "queued",
+    }
+    runner.save_job(job)
+
+    result = runner.emit_job_issue(
+        job,
+        component="routing",
+        error="route could not be resolved",
+        severity="critical",
+    )
+    event = runner.lifecycle_event_log().page(after=None, limit=100).events[0]
+
+    assert result["status"] == "emitted"
+    assert event.type == "io.riverhog.munchy.job.issue"
+    assert event.data["component"] == "routing"
+    assert event.data["error"] == "route could not be resolved"
+    assert event.data["severity"] == "critical"
+
+
+def test_client_preflight_failure_is_recorded_as_a_terminal_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
+
+    result = runner.record_preflight_failure(
+        runner.ClientPreflightFailureRequest(
             message="Local media preflight failed for camera.",
             device_id="camera",
             workflow_mode="collection_archive",
@@ -3255,47 +3412,35 @@ def test_client_preflight_failed_notification_uses_runner_defaults(
                     "issues": [{"code": "mp4_atom_extends_past_eof", "message": "bad atom"}],
                 }
             ],
-        )
+            event_context={"workflow": "desktop-archive"},
+        ),
+        _request_with_principal(runner, app="desktop-client", key_id="key-1"),
     )
+    event = runner.lifecycle_event_log().page(after=None, limit=100).events[0]
 
-    assert result["status"] == "attempted"
-    assert calls[0]["event"] == "job.issue"
-    assert calls[0]["severity"] == "critical"
-    assert calls[0]["recipients"] == ["operator"]
-    assert calls[0]["job"]["phase"] == "preflight_failed"
-    assert calls[0]["extra"]["component"] == "preflight"
-    assert calls[0]["extra"]["error"] == "bad atom (bad.mp4)"
-    assert calls[0]["extra"]["failed_file_count"] == 1
+    assert result["status"] == "recorded"
+    assert event.type == "io.riverhog.munchy.submission.preflight_failed"
+    assert event.subject == "job-1"
+    assert event.data["component"] == "preflight"
+    assert event.data["error"] == "bad atom (bad.mp4)"
+    assert event.data["failed_file_count"] == 1
+    assert event.data["context"] == {"workflow": "desktop-archive"}
 
 
-def test_upload_waiting_reminder_is_time_sensitive_and_paced(
+def test_upload_stalled_event_is_time_sensitive_and_paced(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_ENABLED", "1")
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS", "operator")
-    monkeypatch.setenv("MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL", "1")
+    monkeypatch.setenv("MUNCHY_RUNNER_EVENT_REPEAT_INTERVAL", "1")
     runner = load_runner(tmp_path, monkeypatch)
     runner.ensure_dirs()
     runner.init_state_store()
-    calls: list[dict[str, object]] = []
-
-    def fake_send_notify_deliveries(job, **kwargs):  # type: ignore[no-untyped-def]
-        calls.append({"job": job, **kwargs})
-        return [{"recipient": "operator", "status": 200}]
-
-    monkeypatch.setattr(runner, "send_notify_deliveries", fake_send_notify_deliveries)
     job = {
         "job_id": "job-1",
         "collection_slug": "camera-collection-archive",
         "collection_timestamp": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
-        "notify": {
-            "enabled": True,
-            "recipients": ["operator"],
-            "events": runner.DEFAULT_NOTIFY_EVENTS,
-        },
     }
     runner.save_job(job)
     upload = {
@@ -3313,20 +3458,21 @@ def test_upload_waiting_reminder_is_time_sensitive_and_paced(
         "uploaded_bytes": 1,
     }
 
-    first = runner.notify_upload_waiting_reminder(job, upload, progress)
-    second = runner.notify_upload_waiting_reminder(job, upload, progress)
+    first = runner.emit_upload_stalled(job, upload, progress)
+    second = runner.emit_upload_stalled(job, upload, progress)
+    event = runner.lifecycle_event_log().page(after=None, limit=100).events[0]
 
-    assert first["status"] == "attempted"
+    assert first["status"] == "emitted"
     assert second["status"] == "suppressed"
     assert second["reason"] == "reminder_repeat_limit"
-    assert calls[0]["event"] == "job.upload_waiting.reminder"
-    assert calls[0]["severity"] == "warning"
-    assert calls[0]["extra"]["reminder_count"] == 1
-    assert calls[0]["extra"]["reminder_interval_seconds"] == 1
-    assert calls[0]["extra"]["upload_progress"]["files_uploaded"] == 1
+    assert event.type == "io.riverhog.munchy.job.upload_stalled"
+    assert event.data["severity"] == "warning"
+    assert event.data["repeat_count"] == 1
+    assert event.data["repeat_interval_seconds"] == 1
+    assert event.data["upload_progress"]["files_uploaded"] == 1
 
 
-def test_retry_handoff_transient_failure_does_not_notify(
+def test_retry_handoff_transient_failure_does_not_emit_event(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -3334,11 +3480,11 @@ def test_retry_handoff_transient_failure_does_not_notify(
     runner.ensure_dirs()
     runner.init_state_store()
     monkeypatch.setattr(runner, "retry_sleep", lambda *args, **kwargs: None)
-    notify_calls: list[dict[str, object]] = []
+    event_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         runner,
-        "notify_job_issue",
-        lambda *args, **kwargs: notify_calls.append(dict(kwargs)),
+        "emit_job_issue",
+        lambda *args, **kwargs: event_calls.append(dict(kwargs)),
     )
     job = {
         "job_id": "job-1",
@@ -3368,20 +3514,20 @@ def test_retry_handoff_transient_failure_does_not_notify(
     assert result["ok"] is True
     assert result["attempt"] == 2
     assert isinstance(result["succeeded_at"], str)
-    assert notify_calls == []
+    assert event_calls == []
 
 
-def test_eager_gpu_transient_failure_does_not_notify(
+def test_eager_gpu_transient_failure_does_not_emit_event(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
-    notify_calls: list[dict[str, object]] = []
+    event_calls: list[dict[str, object]] = []
     submit_calls: list[str] = []
     monkeypatch.setattr(
         runner,
-        "notify_job_issue",
-        lambda *args, **kwargs: notify_calls.append(dict(kwargs)),
+        "emit_job_issue",
+        lambda *args, **kwargs: event_calls.append(dict(kwargs)),
     )
 
     def fail_gpu_request(method: str, path: str, payload=None):  # type: ignore[no-untyped-def]
@@ -3405,7 +3551,7 @@ def test_eager_gpu_transient_failure_does_not_notify(
 
     assert result is upload
     assert submit_calls == ["gpu-1"]
-    assert notify_calls == []
+    assert event_calls == []
 
 
 def test_load_input_upload_does_not_refresh_state_timestamp(
@@ -3548,6 +3694,8 @@ def test_review_rclone_upload_excludes_platform_cruft(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RUNNER_EXTERNAL_HANDOFF_ENABLED", "1")
     runner = load_runner(tmp_path, monkeypatch)
+    runner.ensure_dirs()
+    runner.init_state_store()
     monkeypatch.setattr(
         runner,
         "retry_handoff_until_success",
@@ -5163,8 +5311,8 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(runner, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0})
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
     runner.run_job("job-1")
@@ -5250,8 +5398,8 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(runner, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0})
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
     runner.run_job("job-1")
@@ -5330,8 +5478,8 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
         "safe_to_delete",
         lambda self, job: True,
     )
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
 
     runner.run_job("job-1")
 
@@ -5372,11 +5520,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "collection_slug": "camera-archive",
         "collection_timestamp": "20260101T000000Z",
         "handoff": {"destination": "riverhog", "options": {}},
-        "notify": {
-            "enabled": True,
-            "recipients": ["operator", "collaborator"],
-            "events": ["job.succeeded", "job.issue"],
-        },
+        "event_context": {"workflow": "desktop-archive"},
     }
     runner.save_job(job)
 
@@ -5402,12 +5546,12 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             ingest_source: str | None = None,
             upload_timestamp: str | None = None,
             archive_store: str | None = None,
-            notify: dict[str, object] | None = None,
+            event_context: dict[str, object] | None = None,
         ) -> dict[str, object]:
             assert slug == "camera-archive"
             assert ingest_source == str(archive_dir)
             assert upload_timestamp == "20260101T000000Z"
-            assert notify == {"enabled": True, "recipients": ["operator", "collaborator"]}
+            assert event_context == {"workflow": "desktop-archive"}
             return self.payload(state="open")
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
@@ -5525,8 +5669,8 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
     fake = FakeRiverhogApi()
     monkeypatch.setattr(runner, "ApiClient", lambda: fake)
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
 
     result = runner.upload_to_riverhog(job, archive_dir)
 
@@ -6747,7 +6891,7 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
             AssertionError("default policy should preserve the uploaded session")
         ),
     )
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: None)
 
     runner.run_job("job-1")
@@ -6816,7 +6960,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
         "cancel_riverhog_upload_session",
         lambda _job, *, reason: canceled.append(reason),
     )
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "schedule_pending_jobs", lambda *args, **kwargs: None)
 
     runner.run_job("job-1")
@@ -7003,8 +7147,8 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             runner.EncodingFailed("gpu job failed: bad encode")
         ),
     )
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
 
     runner.run_job("job-1")
 
@@ -7087,8 +7231,8 @@ def test_run_job_reuses_stored_shared_review_plan(
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(runner, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0})
-    monkeypatch.setattr(runner, "notify_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
 
     runner.run_job("job-2")
 
@@ -7206,7 +7350,7 @@ def test_run_job_runs_review_sweep_as_one_job(
             (
                 template_context["route_id"],
                 template_context["profile_id"],
-                bool(kwargs.get("emit_notification", True)),
+                bool(kwargs.get("emit_event", True)),
             )
         )
         return {"status": "uploaded", "source": str(source_dir)}
@@ -7215,10 +7359,10 @@ def test_run_job_runs_review_sweep_as_one_job(
     monkeypatch.setattr(runner, "run_external_handoff", fake_run_external_handoff)
     monkeypatch.setattr(
         runner,
-        "notify_job_event",
+        "emit_job_event",
         lambda job, event, message, **kwargs: events.append(event),
     )
-    monkeypatch.setattr(runner, "notify_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "emit_job_issue", lambda *args, **kwargs: None)
 
     runner.run_job("job-1")
 
@@ -7243,14 +7387,14 @@ def test_run_job_runs_review_sweep_as_one_job(
     assert runner.read_state("input-upload", "upload-1") is None
 
 
-def test_preflight_issue_notification_error_keeps_truncated_filename_at_end(
+def test_preflight_issue_event_error_keeps_truncated_filename_at_end(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     runner = load_runner(tmp_path, monkeypatch)
     filename = "example-camera-" + ("very-long-" * 12) + "clip.mp4"
 
-    error = runner.preflight_issue_notification_error(
+    error = runner.preflight_issue_event_error(
         path=f"camera-video/2026/06/06/{filename}",
         issue_message=(
             "ffprobe failed because the MP4 atom table points past the end of the "

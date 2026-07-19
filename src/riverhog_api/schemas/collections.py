@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
@@ -14,42 +14,13 @@ class CollectionUploadFileIn(RiverhogModel):
     sha256: str
 
 
-class CollectionNotifyConfig(RiverhogModel):
-    enabled: bool = True
-    recipients: list[str] = Field(default_factory=list)
-
-    @field_validator("recipients")
-    @classmethod
-    def normalize_recipients(cls, value: list[str]) -> list[str]:
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-        recipients: list[str] = []
-        for item in value:
-            recipient = str(item).strip()
-            if not recipient:
-                raise ValueError("notify recipients must not be blank")
-            if any(ch not in allowed for ch in recipient):
-                raise ValueError(
-                    "notify recipients may contain only letters, digits, dots, underscores, "
-                    "and dashes"
-                )
-            if recipient not in recipients:
-                recipients.append(recipient)
-        return recipients
-
-    @model_validator(mode="after")
-    def require_recipients_when_enabled(self) -> CollectionNotifyConfig:
-        if self.enabled and not self.recipients:
-            raise ValueError("notify.recipients is required when notifications are enabled")
-        return self
-
-
 class CreateOrResumeCollectionUploadRequest(RiverhogModel):
     slug: str
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
     upload_timestamp: str | None = None
     archive_store: str | None = None
-    notify: CollectionNotifyConfig | None = None
+    event_context: dict[str, Any] | None = None
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -57,7 +28,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     ingest_source: str | None = None
     upload_timestamp: str | None = None
     archive_store: str | None = None
-    notify: CollectionNotifyConfig | None = None
+    event_context: dict[str, Any] | None = None
 
 
 class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
@@ -164,7 +135,6 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_total_bytes: int | None = None
     archive_uploaded_parts: int | None = None
     archive_total_parts: int | None = None
-    notify: CollectionNotifyConfig | None = None
     files: list[CollectionUploadFileOut]
     collection: CollectionSummaryOut | None
 

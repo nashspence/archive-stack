@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 import httpx
 
+from lifecycle_events import EventPage
+
 QueryValue = str | int | float | bool | None
 
 
@@ -101,6 +103,20 @@ class JebApiClient:
             "GET",
             "/v1/status",
             params={"include_backlog": str(include_backlog).lower()},
+        )
+
+    def list_lifecycle_events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> EventPage:
+        return EventPage.model_validate(
+            self._json(
+                "GET",
+                "/v1/events",
+                params={"after": after or "0", "limit": limit},
+            )
         )
 
     def list_attempts(

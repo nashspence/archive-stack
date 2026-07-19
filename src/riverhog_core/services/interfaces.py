@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from lifecycle_events import EventPage
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.domain.models import ArchiveUsageReport, CollectionListPage, CollectionSummary
 
@@ -19,7 +20,8 @@ class CollectionService(Protocol):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: dict[str, object] | None = None,
+        initiator: ApplicationPrincipal | None = None,
+        event_context: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def create_or_resume_upload_session(
         self,
@@ -28,7 +30,8 @@ class CollectionService(Protocol):
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: dict[str, object] | None = None,
+        initiator: ApplicationPrincipal | None = None,
+        event_context: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def register_upload_session_file(
         self,
@@ -89,9 +92,11 @@ class RetrievalService(Protocol):
         self,
         *,
         app: str,
+        key_id: str | None = None,
         files: Sequence[tuple[str, str]],
         plan_etag: str,
         lease: timedelta | None = None,
+        event_context: dict[str, object] | None = None,
     ) -> JsonObject: ...
     def get(self, *, app: str, job_id: str) -> JsonObject: ...
     def acknowledge(self, *, app: str, job_id: str) -> JsonObject: ...
@@ -126,6 +131,16 @@ class AppKeyService(Protocol):
         grantor: ApplicationPrincipal,
         expires_in: timedelta | None = None,
     ) -> JsonObject: ...
+
+
+class LifecycleEventService(Protocol):
+    def page(
+        self,
+        *,
+        owner_app: str | None,
+        after: str | None,
+        limit: int,
+    ) -> EventPage: ...
     def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
     def list_apps(
         self,

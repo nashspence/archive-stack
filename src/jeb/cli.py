@@ -162,13 +162,6 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     }
     if args.include_extension:
         payload["include_extensions"] = args.include_extension
-    if args.notify_recipient:
-        payload["notify"] = {
-            "enabled": True,
-            "recipients": args.notify_recipient,
-        }
-    elif args.notify_disabled:
-        payload["notify"] = {"enabled": False}
     credential = source_credential(args)
     if credential is not None:
         payload["credential"] = credential
@@ -381,17 +374,6 @@ def build_parser() -> argparse.ArgumentParser:
     source_add.add_argument("--include-extension", action="append")
     source_add.add_argument("--collection-slug")
     source_add.add_argument("--target", default="munchy")
-    source_notify = source_add.add_mutually_exclusive_group()
-    source_notify.add_argument(
-        "--notify-recipient",
-        action="append",
-        help="Enable notifications to this recipient; repeat for more than one.",
-    )
-    source_notify.add_argument(
-        "--notify-disabled",
-        action="store_true",
-        help="Store notifications as explicitly disabled.",
-    )
     source_add.add_argument("--threshold-bytes", type=int, default=0)
     source_add.add_argument(
         "--cleanup",

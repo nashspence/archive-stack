@@ -39,6 +39,10 @@ from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
+from riverhog_core.services.lifecycle_events import (
+    SqlAlchemyLifecycleEventService,
+    event_context_json,
+)
 from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 _DATA_KINDS = {"pack", "file", "segment"}
@@ -58,6 +62,7 @@ class SqlAlchemyRetrievalService:
         self._cache = retrieval_cache
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._session_factory = make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
     def collection_manifest(self, collection_id: str) -> tuple[dict[str, object], str]:
         with session_scope(self._session_factory) as session:
@@ -142,9 +147,11 @@ class SqlAlchemyRetrievalService:
         self,
         *,
         app: str,
+        key_id: str | None = None,
         files: Sequence[tuple[str, str]],
         plan_etag: str,
         lease: timedelta | None = None,
+        event_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
         plan = self.plan(normalized, lease=lease)
@@ -173,6 +180,8 @@ class SqlAlchemyRetrievalService:
             record = RetrievalJobRecord(
                 id=job_id,
                 app=app,
+                initiated_by_key_id=key_id,
+                event_context_json=event_context_json(event_context),
                 state=state,
                 plan_etag=str(plan["etag"]),
                 constraints_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
@@ -212,6 +221,23 @@ class SqlAlchemyRetrievalService:
                         object_id=str(current["object_id"]),
                         expires_at=expires_at,
                     )
+            self._lifecycle_events.emit_retrieval(
+                type="retrieval.requested",
+                job=record,
+                details={
+                    "files": len(planned_files),
+                    "objects": len(planned_objects),
+                    "restore_required": requested,
+                },
+                session=session,
+            )
+            if not requested:
+                self._lifecycle_events.emit_retrieval(
+                    type="retrieval.ready",
+                    job=record,
+                    details={"expires_at": expires_at},
+                    session=session,
+                )
         if requested:
             self._request_job_objects(job_id)
         return self.get(app=app, job_id=job_id)
@@ -235,6 +261,12 @@ class SqlAlchemyRetrievalService:
                         RetrievalCacheLeaseRecord.owner == _job_owner(job_id)
                     )
                 )
+                self._lifecycle_events.emit_retrieval(
+                    type="retrieval.completed",
+                    job=record,
+                    terminal=True,
+                    session=session,
+                )
             return _job_payload(record)
 
     def cancel(self, *, app: str, job_id: str) -> dict[str, object]:
@@ -251,6 +283,12 @@ class SqlAlchemyRetrievalService:
                     delete(RetrievalCacheLeaseRecord).where(
                         RetrievalCacheLeaseRecord.owner == _job_owner(job_id)
                     )
+                )
+                self._lifecycle_events.emit_retrieval(
+                    type="retrieval.canceled",
+                    job=record,
+                    terminal=True,
+                    session=session,
                 )
             return _job_payload(record)
 
@@ -405,6 +443,12 @@ class SqlAlchemyRetrievalService:
                 )
             ):
                 job.state = "expired"
+                self._lifecycle_events.emit_retrieval(
+                    type="retrieval.expired",
+                    job=job,
+                    terminal=True,
+                    session=session,
+                )
                 session.execute(
                     delete(RetrievalCacheLeaseRecord).where(
                         RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
@@ -658,6 +702,12 @@ class SqlAlchemyRetrievalService:
                     job.expires_at = expires_at
                     job.next_poll_at = None
                     job.failure = None
+                    self._lifecycle_events.emit_retrieval(
+                        type="retrieval.ready",
+                        job=job,
+                        details={"expires_at": expires_at},
+                        session=session,
+                    )
             else:
                 with session_scope(self._session_factory) as session:
                     job = session.get(RetrievalJobRecord, job_id)
@@ -669,10 +719,19 @@ class SqlAlchemyRetrievalService:
             with session_scope(self._session_factory) as session:
                 job = session.get(RetrievalJobRecord, job_id)
                 if job is not None and job.state == "requested":
-                    job.failure = str(exc) or exc.__class__.__name__
+                    failure = str(exc) or exc.__class__.__name__
+                    changed = job.failure != failure
+                    job.failure = failure
                     job.next_poll_at = format_utc_timestamp(
                         utc_now() + self._config.retrieval_sweep_interval
                     )
+                    if changed:
+                        self._lifecycle_events.emit_retrieval(
+                            type="retrieval.issue",
+                            job=job,
+                            details={"error": failure},
+                            session=session,
+                        )
 
     def _missing_groups(
         self,
@@ -730,14 +789,19 @@ class SqlAlchemyRetrievalService:
             raise NotFound(f"retrieval job not found: {job_id}")
         return record
 
-    @staticmethod
-    def _expire_job_if_due(session: Session, job: RetrievalJobRecord) -> None:
+    def _expire_job_if_due(self, session: Session, job: RetrievalJobRecord) -> None:
         if (
             job.state == "ready"
             and job.expires_at is not None
             and parse_utc_timestamp(job.expires_at) <= utc_now()
         ):
             job.state = "expired"
+            self._lifecycle_events.emit_retrieval(
+                type="retrieval.expired",
+                job=job,
+                terminal=True,
+                session=session,
+            )
             session.execute(
                 delete(RetrievalCacheLeaseRecord).where(
                     RetrievalCacheLeaseRecord.owner == _job_owner(job.id)

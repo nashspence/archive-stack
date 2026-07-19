@@ -64,6 +64,19 @@ reference application: it owns a local directory and SQLite catalog, follows
 ResourceSync changes, obtains retrieval jobs, verifies downloads, and atomically publishes
 local files. Other applications use the same interface and remain isolated from its state.
 
+Each service publishes its operational lifecycle as a durable CloudEvents 1.0 cursor log.
+Riverhog and Munchy scope normal event readers to their authenticated application. Munchy
+records the initiating application on each submission and owns both native and translated
+job events to that application. It consumes its Riverhog stream, correlates collection
+identities through the Munchy database, and emits the corresponding job event with the
+Riverhog event as its cause. Jeb consumes only its application-owned Munchy stream,
+correlates target job identities through the Jeb database, and emits attempt events. A
+relay for a direct Munchy client therefore cannot see Jeb-owned Munchy events. An optional
+bounded JSON context follows one operation for downstream routing but is not application
+identity or state; it expires after terminal work. A generic relay may forward the exact
+structured events to a webhook, while the receiver owns filtering, wording, urgency, and
+presentation.
+
 ## Component boundaries
 
 - Riverhog owns custody, search, portable catalog publication, retrieval preparation, and

@@ -33,6 +33,28 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from lifecycle_events import (
+    CloudEvent,
+    SQLiteEventCursorStore,
+    SQLiteLifecycleEventLog,
+    caused_event,
+    cloud_event,
+    normalize_event_context,
+)
+from lifecycle_events.repeats import (
+    event_repeat_due,
+    event_repeat_zone,
+    next_event_repeat_at,
+    normalize_event_repeat_time,
+    parse_event_repeat_interval_seconds,
+)
+from munchy.application_keys import (
+    EVENTS_READ,
+    EVENTS_READ_ALL,
+    SUBMISSIONS_MANAGE,
+    MunchyPrincipal,
+    SQLiteApplicationKeyStore,
+)
 from munchy.filesystem_metadata import (
     SOURCE_FILESYSTEM_METADATA_FILENAME,
     load_filesystem_metadata_map,
@@ -106,20 +128,13 @@ from munchy.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from riverhog_cli.client import ApiClient
 from riverhog_core.domain.errors import Conflict, HashMismatch, NotFound, ServiceUnavailable
 from riverhog_core.ingress_client import iter_ingress_upload_parts
-from riverhog_core.operator_reminders import (
-    next_operator_reminder_at,
-    normalize_reminder_time,
-    operator_reminder_due,
-    parse_reminder_interval_seconds,
-    reminder_zone,
-)
+from riverhog_core.runtime_config import parse_duration
 from riverhog_core.timestamps import (
     format_utc_timestamp,
     parse_utc_timestamp,
     utc_now,
     utc_timestamp_now,
 )
-from riverhog_core.webhooks import build_munchy_job_payload
 
 LOGGING = {
     "version": 1,
@@ -177,8 +192,10 @@ TUSD_PUBLIC_BASE_URL = os.getenv(
     "MUNCHY_RUNNER_TUSD_PUBLIC_BASE_URL", TUSD_INTERNAL_BASE_URL
 ).rstrip("/")
 TUSD_HOOK_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_HOOK_SECRET", "").strip()
-API_TOKEN = os.getenv("MUNCHY_RUNNER_API_TOKEN", "").strip()
 ADMIN_TOKEN = os.getenv("MUNCHY_RUNNER_ADMIN_TOKEN", "").strip()
+APPLICATION_AUTH_REQUIRED = os.getenv(
+    "MUNCHY_RUNNER_APPLICATION_AUTH_REQUIRED", "1"
+).strip().casefold() in {"1", "true", "yes", "on"}
 TUSD_PUBLIC_SIGNING_SECRET = os.getenv("MUNCHY_RUNNER_TUSD_PUBLIC_SIGNING_SECRET", "").strip()
 GPU_RUNTIME_DIR = Path(
     os.getenv("MUNCHY_RUNNER_GPU_RUNTIME_DIR", "/gpu-runtime/munchy-av1-nvenc")
@@ -253,20 +270,23 @@ EXTERNAL_HANDOFF_ENABLED = os.getenv("MUNCHY_RUNNER_EXTERNAL_HANDOFF_ENABLED", "
 COMMAND_HANDOFF_COMMAND = os.getenv("MUNCHY_RUNNER_COMMAND_HANDOFF_COMMAND", "").strip()
 RCLONE_HANDOFF_COMMAND = os.getenv("MUNCHY_RUNNER_RCLONE_HANDOFF_COMMAND", "rclone")
 DEFAULT_HANDOFF_EXCLUDES = DEFAULT_PLATFORM_CRUFT_EXCLUDES
-NOTIFY_ENABLED = env_flag("MUNCHY_RUNNER_NOTIFY_ENABLED")
-NOTIFY_REMINDER_INTERVAL_SECONDS = parse_reminder_interval_seconds(
-    os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL")
+EVENT_REPEAT_INTERVAL_SECONDS = parse_event_repeat_interval_seconds(
+    os.getenv("MUNCHY_RUNNER_EVENT_REPEAT_INTERVAL")
 )
-NOTIFY_REMINDER_TIME = normalize_reminder_time(os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_TIME"))
-NOTIFY_REMINDER_TIMEZONE = (
-    os.getenv("MUNCHY_RUNNER_NOTIFY_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
+EVENT_REPEAT_TIME = normalize_event_repeat_time(
+    os.getenv("MUNCHY_RUNNER_EVENT_REPEAT_TIME")
 )
-reminder_zone(NOTIFY_REMINDER_TIMEZONE)
-NOTIFY_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_RUNNER_NOTIFY_TIMEOUT_SECONDS", "5"))
-DEFAULT_NOTIFY_RECIPIENTS = env_list("MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS")
-DEFAULT_NOTIFY_ENABLED = env_flag(
-    "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
-    "1" if NOTIFY_ENABLED and DEFAULT_NOTIFY_RECIPIENTS else "0",
+EVENT_REPEAT_TIMEZONE = (
+    os.getenv("MUNCHY_RUNNER_EVENT_REPEAT_TIMEZONE", "UTC").strip() or "UTC"
+)
+event_repeat_zone(EVENT_REPEAT_TIMEZONE)
+EVENT_SOURCE = os.getenv("MUNCHY_RUNNER_EVENT_SOURCE", "urn:munchy").strip()
+EVENT_CONTEXT_RETENTION = parse_duration(
+    os.getenv("MUNCHY_RUNNER_EVENT_CONTEXT_RETENTION", "30d")
+)
+UPSTREAM_EVENT_POLL_SECONDS = max(
+    1.0,
+    float(os.getenv("MUNCHY_RUNNER_UPSTREAM_EVENT_POLL_SECONDS", "5")),
 )
 ROUTING_MANIFEST_FILENAME = ".munchy-routing-manifest.json"
 HANDOFF_RETRY_INITIAL_SECONDS = float(
@@ -313,26 +333,15 @@ DEFAULT_REVIEW_CLIP_MAX_SECONDS = 9
 GPU_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "audio_review"})
 AUDIO_ARCHIVE_MAX_PARALLEL = max(1, int(os.getenv("MUNCHY_RUNNER_AUDIO_ARCHIVE_WORKERS", "2")))
 ARCHIVE_AUDIO_BITRATE = os.getenv("MUNCHY_RUNNER_AUDIO_BITRATE", "128k")
-NotifyEvent = Literal[
+LifecycleEventType = Literal[
     "job.received",
     "review.handoff",
     "collection_archive.handoff",
     "archive.handoff",
     "job.issue",
-    "job.upload_waiting.reminder",
+    "job.upload_stalled",
     "job.succeeded",
 ]
-DEFAULT_NOTIFY_EVENTS: list[NotifyEvent] = [
-    "job.received",
-    "review.handoff",
-    "collection_archive.handoff",
-    "archive.handoff",
-    "job.issue",
-    "job.upload_waiting.reminder",
-    "job.succeeded",
-]
-
-
 def default_tasks() -> list[TaskName]:
     return list(DEFAULT_TASKS)
 
@@ -367,6 +376,8 @@ cleanup_stop = threading.Event()
 cleanup_thread: threading.Thread | None = None
 handoff_stop = threading.Event()
 handoff_thread: threading.Thread | None = None
+upstream_event_stop = threading.Event()
+upstream_event_thread: threading.Thread | None = None
 
 
 def validate_group_name(value: str) -> str:
@@ -431,7 +442,7 @@ class JobCanceled(RuntimeError):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global cleanup_thread, handoff_thread
+    global cleanup_thread, handoff_thread, upstream_event_thread
     ensure_dirs()
     init_state_store()
     if RESUME_ON_START:
@@ -448,9 +459,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             daemon=True,
         )
         handoff_thread.start()
+    if RIVERHOG_HANDOFF_ENABLED:
+        upstream_event_stop.clear()
+        upstream_event_thread = threading.Thread(
+            target=riverhog_event_loop,
+            name="riverhog-event-loop",
+            daemon=True,
+        )
+        upstream_event_thread.start()
     try:
         yield
     finally:
+        upstream_event_stop.set()
+        if upstream_event_thread is not None:
+            upstream_event_thread.join(timeout=5)
         handoff_stop.set()
         if handoff_thread is not None:
             handoff_thread.join(timeout=5)
@@ -474,20 +496,23 @@ input_file_upload_setup_locks: dict[tuple[str, str], threading.Lock] = {}
 input_file_upload_setup_locks_guard = threading.Lock()
 
 
-def authorized_api_bearer(request: Request) -> bool:
-    if not API_TOKEN:
-        return True
+def request_bearer_token(request: Request) -> str:
     raw = request.headers.get("authorization", "")
     scheme, _, token = raw.partition(" ")
-    return scheme.casefold() == "bearer" and secrets.compare_digest(token, API_TOKEN)
+    return token if scheme.casefold() == "bearer" else ""
 
 
 def authorized_admin_bearer(request: Request) -> bool:
     if not ADMIN_TOKEN:
-        return not API_TOKEN
-    raw = request.headers.get("authorization", "")
-    scheme, _, token = raw.partition(" ")
-    return scheme.casefold() == "bearer" and secrets.compare_digest(token, ADMIN_TOKEN)
+        return not APPLICATION_AUTH_REQUIRED
+    return secrets.compare_digest(request_bearer_token(request), ADMIN_TOKEN)
+
+
+def request_principal(request: Request) -> MunchyPrincipal:
+    principal = getattr(request.state, "principal", None)
+    if not isinstance(principal, MunchyPrincipal):
+        raise HTTPException(status_code=401, detail="invalid application token")
+    return principal
 
 
 @app.middleware("http")
@@ -499,12 +524,30 @@ async def require_api_auth(request: Request, call_next):  # type: ignore[no-unty
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
-    elif request.url.path.startswith("/v1/") and not authorized_api_bearer(request):
-        return JSONResponse(
-            {"detail": "invalid api token"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
+    elif request.url.path.startswith("/v1/"):
+        if APPLICATION_AUTH_REQUIRED:
+            principal = application_keys().authenticate(request_bearer_token(request))
+            if principal is None:
+                return JSONResponse(
+                    {"detail": "invalid application token"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        else:
+            principal = MunchyPrincipal(
+                app="local",
+                key_id="local",
+                permissions=frozenset({"*"}),
+            )
+        required_permission = (
+            EVENTS_READ if request.url.path == "/v1/events" else SUBMISSIONS_MANAGE
         )
+        if not principal.allows(required_permission):
+            return JSONResponse(
+                {"detail": f"application permission required: {required_permission}"},
+                status_code=403,
+            )
+        request.state.principal = principal
     return await call_next(request)
 
 
@@ -732,45 +775,6 @@ class ReviewConfig(BaseModel):
         return self
 
 
-class NotifyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = DEFAULT_NOTIFY_ENABLED
-    recipients: list[str] = Field(default_factory=lambda: list(DEFAULT_NOTIFY_RECIPIENTS))
-    events: list[NotifyEvent] = Field(default_factory=lambda: list(DEFAULT_NOTIFY_EVENTS))
-
-    @field_validator("recipients")
-    @classmethod
-    def normalize_recipients(cls, value: list[str]) -> list[str]:
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-        recipients: list[str] = []
-        for item in value:
-            recipient = str(item).strip()
-            if not recipient:
-                raise ValueError("notify recipients must not be blank")
-            if any(ch not in allowed for ch in recipient):
-                raise ValueError(
-                    "notify recipients may contain only letters, digits, dots, "
-                    "underscores, and dashes"
-                )
-            if recipient not in recipients:
-                recipients.append(recipient)
-        return recipients
-
-    @field_validator("events")
-    @classmethod
-    def normalize_events(cls, value: list[NotifyEvent]) -> list[NotifyEvent]:
-        if not value:
-            return list(DEFAULT_NOTIFY_EVENTS)
-        return list(dict.fromkeys(value))
-
-    @model_validator(mode="after")
-    def require_recipients_when_enabled(self) -> NotifyConfig:
-        if self.enabled and not self.recipients:
-            raise ValueError("notify.recipients is required when notifications are enabled")
-        return self
-
-
 class ClientPreflightIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -786,7 +790,7 @@ class ClientPreflightFailedFile(BaseModel):
     issues: list[ClientPreflightIssue] = Field(default_factory=list)
 
 
-class ClientPreflightFailedNotificationRequest(BaseModel):
+class ClientPreflightFailureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(default="client", min_length=1, max_length=120)
@@ -805,7 +809,7 @@ class ClientPreflightFailedNotificationRequest(BaseModel):
     failed_file_count: int = Field(ge=1)
     failed_files: list[ClientPreflightFailedFile] = Field(default_factory=list)
     elapsed_seconds: float | None = Field(default=None, ge=0)
-    notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    event_context: dict[str, Any] | None = None
 
     @field_validator("group")
     @classmethod
@@ -1245,7 +1249,7 @@ class CreateJobRequest(BaseModel):
     routing: RoutingConfig | None = None
     handoff: HandoffConfig
     review: ReviewConfig | None = None
-    notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    event_context: dict[str, Any] | None = None
 
     @field_validator("tasks")
     @classmethod
@@ -1365,6 +1369,7 @@ class SubmissionSpec(BaseModel):
     collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     handoff_on_failure: HandoffFailureAction = "preserve_for_resume"
+    event_context: dict[str, Any] | None = None
 
     @field_validator("template")
     @classmethod
@@ -1400,6 +1405,11 @@ class CreateSubmissionRequest(SubmissionSpec):
     submission_id: str | None = Field(default=None, min_length=1, max_length=160)
 
 
+class CreateApplicationKeyRequest(BaseModel):
+    permissions: list[str] = Field(min_length=1)
+    expires_in_seconds: int | None = Field(default=None, ge=1)
+
+
 def safe_parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -1418,7 +1428,14 @@ def state_db() -> sqlite3.Connection:
     return conn
 
 
+def application_keys() -> SQLiteApplicationKeyStore:
+    return SQLiteApplicationKeyStore(state_db)
+
+
 def init_state_store() -> None:
+    application_keys().initialize()
+    lifecycle_event_log().initialize()
+    lifecycle_event_cursors().initialize()
     with closing(state_db()) as conn:
         conn.execute(
             """
@@ -1782,6 +1799,7 @@ def resolved_submission(
     handoff["on_failure"] = req.handoff_on_failure
     raw_job["handoff"] = handoff
     raw_job.update({"job_id": submission_id, "input_upload_id": submission_id})
+    raw_job["event_context"] = req.event_context
     for key, value in (
         ("collection_slug", req.collection_slug),
         ("collection_timestamp", req.collection_timestamp),
@@ -1830,11 +1848,15 @@ def submission_response(job: dict[str, Any]) -> dict[str, Any]:
 
 def create_submission_state(
     req: CreateSubmissionRequest,
+    *,
+    initiator: MunchyPrincipal,
 ) -> tuple[dict[str, Any], bool]:
     submission_id = req.submission_id or uuid.uuid4().hex
     digest = submission_request_digest(req)
     existing = read_state("job", submission_id)
     if existing is not None:
+        if existing.get("initiated_by_app") != initiator.app:
+            raise HTTPException(status_code=404, detail=f"unknown submission: {submission_id}")
         if existing.get("submission_request_digest") != digest:
             raise HTTPException(
                 status_code=409,
@@ -1866,7 +1888,11 @@ def create_submission_state(
             "digest": template["digest"],
         }
         save_input_upload_raw(upload)
-        job = create_job_state_from_request(job_request)
+        job = create_job_state_from_request(
+            job_request,
+            initiated_by_app=initiator.app,
+            initiated_by_key_id=initiator.key_id,
+        )
         job["submission_id"] = submission_id
         job["submission_inputs"] = dict(req.inputs)
         job["submission_request_digest"] = digest
@@ -2359,9 +2385,9 @@ def require_free_space(path: Path, required_bytes: int, *, label: str) -> None:
         raise insufficient_storage(label=label, required_bytes=required_bytes, free=free)
 
 
-def notify_storage_waiting(job: dict[str, Any], exc: InsufficientStorage) -> dict[str, Any] | None:
+def emit_storage_waiting(job: dict[str, Any], exc: InsufficientStorage) -> dict[str, Any] | None:
     fingerprint = hashlib.sha256(f"storage:{exc.label}:{exc.required_bytes}".encode()).hexdigest()
-    return notify_job_event(
+    return emit_job_event(
         job,
         "job.issue",
         f"Waiting for storage: {exc.label}",
@@ -2404,7 +2430,7 @@ def wait_for_free_space(
                 "retry_after_seconds": STORAGE_WAIT_SECONDS,
             }
             save_job(job)
-            notify_storage_waiting(job, exc)
+            emit_storage_waiting(job, exc)
             log.warning("job %s waiting for storage: %s", job_id, exc)
             retry_sleep(STORAGE_WAIT_SECONDS, job_id=job_id)
 
@@ -5847,113 +5873,151 @@ def run_command(
     return result
 
 
-def notify_webhook_url(recipient: str) -> str | None:
-    raw = os.getenv("MUNCHY_RUNNER_NOTIFY_WEBHOOKS", "").strip()
-    if raw:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            log.warning("MUNCHY_RUNNER_NOTIFY_WEBHOOKS is not valid JSON")
-            payload = {}
-        if isinstance(payload, dict):
-            value = payload.get(recipient)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    env_suffix = "".join(ch.upper() if ch.isalnum() else "_" for ch in recipient)
-    value = os.getenv(f"MUNCHY_RUNNER_NOTIFY_WEBHOOK_{env_suffix}", "").strip()
-    return value or None
+def lifecycle_event_log() -> SQLiteLifecycleEventLog:
+    return SQLiteLifecycleEventLog(state_db)
 
 
-def notify_payload(
-    job: dict[str, Any],
-    *,
-    event: NotifyEvent,
-    message: str,
-    severity: str,
-    recipient: str,
-    extra: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return dict(
-        build_munchy_job_payload(
-            event=event,
-            job=job,
-            message=message,
-            severity=severity,
-            delivered_at=utc_now(),
-            recipient=recipient,
-            details=extra,
+def lifecycle_event_cursors() -> SQLiteEventCursorStore:
+    return SQLiteEventCursorStore(state_db)
+
+
+RIVERHOG_CAUSAL_EVENT_TYPES = {
+    "io.riverhog.riverhog.collection.upload_staged": "job.archive.upload_staged",
+    "io.riverhog.riverhog.collection.archive_retry_scheduled": "job.archive.retry_scheduled",
+    "io.riverhog.riverhog.collection.archive_failed": "job.archive.failed",
+    "io.riverhog.riverhog.collection.finalized": "job.archive.finalized",
+    "io.riverhog.riverhog.collection.deleted": "job.archive.deleted",
+}
+
+
+def job_for_riverhog_collection(collection_id: str) -> dict[str, Any] | None:
+    with closing(state_db()) as conn:
+        rows = conn.execute(
+            """
+            SELECT payload
+            FROM states
+            WHERE kind = 'job'
+              AND (
+                    json_extract(payload, '$.handoff_adapter_state.collection_id') = ?
+                 OR json_extract(payload, '$.handoff_receipt.external_id') = ?
+                 OR json_extract(payload, '$.handoff_progress.external_id') = ?
+                 OR (
+                        substr(json_extract(payload, '$.collection_timestamp'), 1, 4)
+                        || '/'
+                        || json_extract(payload, '$.collection_timestamp')
+                        || '__'
+                        || json_extract(payload, '$.collection_slug')
+                    ) = ?
+              )
+            ORDER BY updated_at DESC
+            LIMIT 2
+            """,
+            (collection_id, collection_id, collection_id, collection_id),
+        ).fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise RuntimeError(f"multiple Munchy jobs claim Riverhog collection {collection_id}")
+    payload = json.loads(str(rows[0]["payload"]))
+    return payload if isinstance(payload, dict) else None
+
+
+def translate_riverhog_event(event: CloudEvent) -> bool:
+    mapped_type = RIVERHOG_CAUSAL_EVENT_TYPES.get(event.type)
+    if mapped_type is None:
+        return False
+    collection_id = str(event.data.get("collection_id") or event.subject or "")
+    if not collection_id:
+        raise RuntimeError(f"Riverhog event {event.id} has no collection identity")
+    job = job_for_riverhog_collection(collection_id)
+    if job is None:
+        log.warning(
+            "Riverhog event %s for collection %s has no owning Munchy job",
+            event.id,
+            collection_id,
         )
+        return False
+    job_id = str(job.get("job_id") or "")
+    owner = str(job.get("initiated_by_app") or "munchy")
+    details = {
+        key: value
+        for key, value in event.data.items()
+        if key not in {"actor", "context", "initiator"}
+    }
+    details.update(
+        {
+            "actor": {"app": "munchy"},
+            "initiator": {
+                "app": owner,
+                "key_id": job.get("initiated_by_key_id"),
+            },
+            "collection_id": collection_id,
+            "job_id": job_id,
+            "state": str(job.get("state") or "unknown"),
+            "phase": str(job.get("phase") or "unknown"),
+            "workflow_mode": str(job.get("workflow_mode") or ""),
+        }
     )
+    translated = caused_event(
+        cause=event,
+        source=EVENT_SOURCE,
+        type=f"io.riverhog.munchy.{mapped_type}",
+        subject=job_id or None,
+        data=details,
+    )
+    context = normalize_event_context(job.get("event_context"))
+    expiry = event_context_expiry() if str(job.get("state") or "") in TERMINAL_JOB_STATES else None
+    lifecycle_event_log().append_once(
+        translated,
+        owner=owner,
+        context=context,
+        context_expires_at=expiry,
+    )
+    return True
 
 
-def notify_recipients(config: dict[str, Any]) -> list[str]:
-    return [str(item) for item in config.get("recipients") or [] if str(item).strip()]
+def consume_riverhog_events_once(api: ApiClient) -> int:
+    cursors = lifecycle_event_cursors()
+    cursor = cursors.cursor("riverhog")
+    page = api.list_lifecycle_events(after=cursor, limit=100)
+    translated = sum(1 for event in page.events if translate_riverhog_event(event))
+    if page.next_cursor != cursor:
+        cursors.advance("riverhog", page.next_cursor)
+    return translated
 
 
-def send_notify_deliveries(
+def riverhog_event_loop() -> None:
+    with ApiClient() as api:
+        while not upstream_event_stop.is_set():
+            try:
+                translated = consume_riverhog_events_once(api)
+                if translated:
+                    continue
+            except Exception:
+                log.exception("Riverhog lifecycle event consumption failed")
+            upstream_event_stop.wait(UPSTREAM_EVENT_POLL_SECONDS)
+
+
+def event_context_expiry() -> str:
+    return format_utc_timestamp(utc_now() + EVENT_CONTEXT_RETENTION)
+
+
+def emit_job_event(
     job: dict[str, Any],
-    *,
-    event: NotifyEvent,
-    message: str,
-    severity: str,
-    recipients: list[str],
-    extra: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    deliveries: list[dict[str, Any]] = []
-    for recipient in recipients:
-        url = notify_webhook_url(recipient)
-        if not url:
-            deliveries.append({"recipient": recipient, "status": "missing_webhook"})
-            log.warning("notification recipient %s has no configured webhook", recipient)
-            continue
-        payload = notify_payload(
-            job,
-            event=event,
-            message=message,
-            severity=severity,
-            recipient=recipient,
-            extra=extra,
-        )
-        try:
-            with httpx.Client(timeout=NOTIFY_TIMEOUT_SECONDS) as client:
-                response = client.post(url, json=payload)
-            deliveries.append({"recipient": recipient, "status": response.status_code})
-            if response.status_code >= 400:
-                log.warning(
-                    "notification webhook for %s returned HTTP %s", recipient, response.status_code
-                )
-        except Exception as exc:
-            deliveries.append({"recipient": recipient, "status": "error", "error": str(exc)})
-            log.warning("notification webhook for %s failed: %s", recipient, exc)
-    return deliveries
-
-
-def notify_job_event(
-    job: dict[str, Any],
-    event: NotifyEvent,
-    message: str,
+    event: LifecycleEventType,
+    _summary: str,
     *,
     severity: str = "info",
     extra: dict[str, Any] | None = None,
     dedupe_key: str | None = None,
     fingerprint: str | None = None,
 ) -> dict[str, Any] | None:
-    config = dict_or_empty(job.get("notify"))
-    if not NOTIFY_ENABLED or not config.get("enabled"):
-        return None
-    events = config.get("events") or DEFAULT_NOTIFY_EVENTS
-    if event not in events:
-        return None
-    recipients = notify_recipients(config)
-    if not recipients:
-        return None
-
     key = dedupe_key or event
-    notifications = job.setdefault("notifications", {})
-    event_state = notifications.setdefault(key, {})
+    emissions = job.setdefault("event_emissions", {})
+    event_state = emissions.setdefault(key, {})
     now = utc_now()
     now_text = format_utc_timestamp(now)
-    send_extra = dict(extra or {})
+    details = dict(extra or {})
 
     if event == "job.issue":
         last_fingerprint = str(event_state.get("fingerprint") or "")
@@ -5962,62 +6026,85 @@ def notify_job_event(
             fingerprint
             and fingerprint == last_fingerprint
             and last_attempt is not None
-            and not operator_reminder_due(
-                last_sent_at=last_attempt,
+            and not event_repeat_due(
+                last_emitted_at=last_attempt,
                 current=now,
-                interval=NOTIFY_REMINDER_INTERVAL_SECONDS,
-                reminder_time=NOTIFY_REMINDER_TIME,
-                reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+                interval=EVENT_REPEAT_INTERVAL_SECONDS,
+                repeat_time=EVENT_REPEAT_TIME,
+                repeat_timezone=EVENT_REPEAT_TIMEZONE,
             )
         ):
             return {"status": "suppressed", "reason": "issue_repeat_limit"}
         event_state["fingerprint"] = fingerprint or ""
         event_state["last_attempt_at"] = now_text
-    elif event == "job.upload_waiting.reminder":
-        interval = max(0, NOTIFY_REMINDER_INTERVAL_SECONDS)
+    elif event == "job.upload_stalled":
+        interval = max(0, EVENT_REPEAT_INTERVAL_SECONDS)
         if interval <= 0:
             return {"status": "suppressed", "reason": "reminders_disabled"}
         last_attempt = safe_parse_timestamp(event_state.get("last_attempt_at"))
-        if last_attempt is not None and not operator_reminder_due(
-            last_sent_at=last_attempt,
+        if last_attempt is not None and not event_repeat_due(
+            last_emitted_at=last_attempt,
             current=now,
             interval=interval,
-            reminder_time=NOTIFY_REMINDER_TIME,
-            reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+            repeat_time=EVENT_REPEAT_TIME,
+            repeat_timezone=EVENT_REPEAT_TIMEZONE,
         ):
             return {"status": "suppressed", "reason": "reminder_repeat_limit"}
         event_state["last_attempt_at"] = now_text
         reminder_count = int(event_state.get("reminder_count") or 0) + 1
         event_state["reminder_count"] = reminder_count
-        send_extra.setdefault("reminder_count", reminder_count)
-        send_extra.setdefault("reminder_interval_seconds", interval)
-    elif event_state.get("sent_at"):
-        return {"status": "suppressed", "reason": "already_sent"}
+        details.setdefault("repeat_count", reminder_count)
+        details.setdefault("repeat_interval_seconds", interval)
+    elif event_state.get("emitted_at"):
+        return {"status": "suppressed", "reason": "already_emitted"}
     else:
         event_state["last_attempt_at"] = now_text
 
-    deliveries = send_notify_deliveries(
-        job,
-        event=event,
-        message=message,
-        severity=severity,
-        recipients=recipients,
-        extra=send_extra,
+    job_id = str(job.get("job_id") or "")
+    owner = str(job.get("initiated_by_app") or "munchy")
+    data: dict[str, Any] = {
+        "job_id": job_id,
+        "state": str(job.get("state") or "unknown"),
+        "phase": str(job.get("phase") or "unknown"),
+        "workflow_mode": str(job.get("workflow_mode") or ""),
+        "collection_slug": str(job.get("collection_slug") or ""),
+        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "severity": severity,
+        "actor": {"app": "munchy"},
+        "initiator": {
+            "app": owner,
+            "key_id": job.get("initiated_by_key_id"),
+        },
+    }
+    data.update(details)
+    context = normalize_event_context(job.get("event_context"))
+    terminal = str(job.get("state") or "") in TERMINAL_JOB_STATES
+    expiry = event_context_expiry() if terminal and context is not None else None
+    event_record = cloud_event(
+        source=EVENT_SOURCE,
+        type=f"io.riverhog.munchy.{event}",
+        subject=job_id or None,
+        data=data,
     )
-
-    event_state["deliveries"] = deliveries
-    if any(
-        isinstance(item.get("status"), int) and int(item["status"]) < 400 for item in deliveries
-    ):
-        if event in {"job.issue", "job.upload_waiting.reminder"}:
-            event_state["last_sent_at"] = now_text
-        else:
-            event_state["sent_at"] = now_text
+    event_log = lifecycle_event_log()
+    event_log.initialize()
+    if terminal and job_id:
+        event_log.expire_context(owner=owner, subject=job_id, expires_at=expiry or now_text)
+    cursor = event_log.append(
+        event_record,
+        owner=owner,
+        context=context,
+        context_expires_at=expiry,
+    )
+    event_state["cursor"] = cursor
+    event_state["emitted_at"] = now_text
+    if event in {"job.issue", "job.upload_stalled"}:
+        event_state["last_sent_at"] = now_text
     save_job(job)
-    return {"status": "attempted", "deliveries": deliveries}
+    return {"status": "emitted", "cursor": cursor, "event_id": event_record.id}
 
 
-def notify_job_issue(
+def emit_job_issue(
     job: dict[str, Any],
     *,
     component: str,
@@ -6036,7 +6123,7 @@ def notify_job_issue(
         extra["attempt"] = attempt
     if next_retry_at:
         extra["next_retry_at"] = next_retry_at
-    return notify_job_event(
+    return emit_job_event(
         job,
         "job.issue",
         f"{component} needs attention: {error_text[-240:]}",
@@ -6047,12 +6134,12 @@ def notify_job_issue(
     )
 
 
-def notify_upload_waiting_reminder(
+def emit_upload_stalled(
     job: dict[str, Any],
     upload: dict[str, Any],
     progress: dict[str, Any],
 ) -> dict[str, Any] | None:
-    interval = max(0, NOTIFY_REMINDER_INTERVAL_SECONDS)
+    interval = max(0, EVENT_REPEAT_INTERVAL_SECONDS)
     if interval <= 0:
         return None
     if int(progress.get("files_uploaded") or 0) >= int(progress.get("files_total") or 0):
@@ -6063,11 +6150,11 @@ def notify_upload_waiting_reminder(
     stalled_seconds = max(0.0, (now - last_activity).total_seconds())
     if stalled_seconds < interval:
         return None
-    next_due = next_operator_reminder_at(
+    next_due = next_event_repeat_at(
         last_activity,
         interval=interval,
-        reminder_time=NOTIFY_REMINDER_TIME,
-        reminder_timezone=NOTIFY_REMINDER_TIMEZONE,
+        repeat_time=EVENT_REPEAT_TIME,
+        repeat_timezone=EVENT_REPEAT_TIMEZONE,
     )
     if next_due is not None and now < next_due:
         return None
@@ -6084,9 +6171,9 @@ def notify_upload_waiting_reminder(
     encode_progress = encode_progress_for_job(job)
     if encode_progress is not None:
         extra["encode_progress"] = encode_progress
-    return notify_job_event(
+    return emit_job_event(
         job,
-        "job.upload_waiting.reminder",
+        "job.upload_stalled",
         message,
         severity="warning",
         extra=extra,
@@ -6326,7 +6413,7 @@ def wait_gpu_job(
                 time.sleep(5)
                 continue
             error = f"gpu job failed: {status.get('error')}"
-            notify_job_issue(job, component="encoding", error=error, severity="critical")
+            emit_job_issue(job, component="encoding", error=error, severity="critical")
             raise EncodingFailed(error)
         if time.monotonic() >= next_repost:
             try:
@@ -6524,16 +6611,6 @@ def touch_riverhog_session_state(job: dict[str, Any]) -> None:
         riverhog_session_state(job)["updated_at"] = utc_timestamp_now()
 
 
-def riverhog_collection_notify_config(job: dict[str, Any]) -> dict[str, Any] | None:
-    notify = dict_or_empty(job.get("notify"))
-    if not notify:
-        return None
-    return {
-        "enabled": bool(notify.get("enabled", DEFAULT_NOTIFY_ENABLED)),
-        "recipients": notify_recipients(notify),
-    }
-
-
 def ensure_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
@@ -6562,7 +6639,7 @@ def ensure_riverhog_session(
                 str | None,
                 riverhog_handoff_options(job).get("archive_store"),
             ),
-            notify=riverhog_collection_notify_config(job),
+            event_context=normalize_event_context(job.get("event_context")),
         )
         update_remote_state_from_payload(job, payload)
         state = riverhog_session_state(job)
@@ -7361,7 +7438,7 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
     except JobCanceled:
         raise
     except HashMismatch as exc:
-        notify_job_issue(job, component="riverhog_upload", error=exc, severity="critical")
+        emit_job_issue(job, component="riverhog_upload", error=exc, severity="critical")
         log.error("riverhog eager upload failed integrity check: %s", exc)
     except RuntimeError as exc:
         log.warning("riverhog eager upload failed; will retry later: %s", exc)
@@ -7516,7 +7593,7 @@ def wait_for_riverhog_finalized(
 def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any] | None:
     if not riverhog_config_enabled(job):
         return None
-    notify_job_event(
+    emit_job_event(
         job,
         "archive.handoff",
         "Archive collection is complete; handing off to Riverhog.",
@@ -7767,9 +7844,9 @@ def run_external_handoff(
     result_key: str = "handoff_receipt",
     phase: str = "handoff",
     component: str = "handoff",
-    event: NotifyEvent = "review.handoff",
+    event: LifecycleEventType = "review.handoff",
     allow_empty: bool = True,
-    emit_notification: bool = True,
+    emit_event: bool = True,
     template_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     if config is None:
@@ -7789,8 +7866,8 @@ def run_external_handoff(
             "source": str(source_dir),
         }
     method = str(config.get("method") or "command")
-    if emit_notification:
-        notify_job_event(
+    if emit_event:
+        emit_job_event(
             job,
             event,
             f"{source_label.title()} artifacts are complete; handing off for upload.",
@@ -8027,7 +8104,7 @@ class ExternalHandoffAdapter:
             upload_config["destination"] = options.get("location")
         configured["state"] = "transferring"
         save_job(job)
-        event: NotifyEvent = (
+        event: LifecycleEventType = (
             "review.handoff"
             if str(job.get("workflow_mode") or "") == "review"
             else "collection_archive.handoff"
@@ -8042,7 +8119,7 @@ class ExternalHandoffAdapter:
             component="handoff",
             event=event,
             allow_empty=str(job.get("workflow_mode") or "") == "review",
-            emit_notification=context is None,
+            emit_event=context is None,
             template_context=context,
         )
         configured = handoff_config(job)
@@ -8414,7 +8491,7 @@ def run_review_sweep_job(
                 save_job(job)
 
                 if not notified_handoff:
-                    notify_job_event(
+                    emit_job_event(
                         job,
                         "review.handoff",
                         "Review sweep artifacts are complete; handing off for upload.",
@@ -9645,7 +9722,7 @@ def start_eager_audio_batch(
                 error=error,
             )
         save_job(job)
-        notify_job_issue(job, component="encoding", error=error, severity="critical")
+        emit_job_issue(job, component="encoding", error=error, severity="critical")
         raise EncodingFailed(error) from exc
 
     batch["state"] = "succeeded"
@@ -9705,7 +9782,7 @@ def poll_eager_gpu_batch(
             submit_eager_gpu_job(job, batch, force=True)
             return upload
         error = f"gpu eager batch failed: {status.get('error')}"
-        notify_job_issue(job, component="encoding", error=error, severity="critical")
+        emit_job_issue(job, component="encoding", error=error, severity="critical")
         raise EncodingFailed(error)
     save_job(job)
     return upload
@@ -9823,7 +9900,7 @@ def run_eager_archive_groups(
                 f"waiting_for_eager_files:{progress['files_uploaded']}/{progress['files_total']}"
             )
             save_job(job)
-            notify_upload_waiting_reminder(job, upload, progress)
+            emit_upload_stalled(job, upload, progress)
             retry_sleep(EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
     finally:
         if token:
@@ -9917,7 +9994,7 @@ def run_job(job_id: str) -> None:
                 cleanup_terminal_job(job)
             compact_terminal_job_state(job)
             save_job(job)
-            notify_job_event(job, "job.succeeded", "Munchy job completed successfully.")
+            emit_job_event(job, "job.succeeded", "Munchy job completed successfully.")
             return
 
         gpu_work: list[tuple[str, dict[str, Any], list[TaskName]]] = []
@@ -10118,7 +10195,7 @@ def run_job(job_id: str) -> None:
             cleanup_terminal_job(job)
         compact_terminal_job_state(job)
         save_job(job)
-        notify_job_event(job, "job.succeeded", "Munchy job completed successfully.")
+        emit_job_event(job, "job.succeeded", "Munchy job completed successfully.")
     except JobCanceled as exc:
         log.info("job %s canceled: %s", job_id, exc)
         try:
@@ -10155,9 +10232,9 @@ def run_job(job_id: str) -> None:
             compact_terminal_job_state(job)
             save_job(job)
         elif isinstance(exc, RoutingFailed):
-            notify_job_issue(job, component="routing", error=exc, severity="critical")
+            emit_job_issue(job, component="routing", error=exc, severity="critical")
         else:
-            notify_job_issue(job, component="job", error=exc, severity="error")
+            emit_job_issue(job, component="job", error=exc, severity="error")
     finally:
         with state_lock:
             active_jobs.discard(job_id)
@@ -10252,7 +10329,7 @@ def health_ready() -> dict[str, Any]:
                 ),
             },
         },
-        "notify_enabled": NOTIFY_ENABLED,
+        "event_source": EVENT_SOURCE,
         "scheduler_paused": scheduling_paused(),
         "running_job_limit": MAX_RUNNING_JOBS,
         "running_jobs": len(active_jobs),
@@ -10346,24 +10423,13 @@ def capabilities() -> dict[str, Any]:
                 "handoff.riverhog": GPU_SCRATCH_MULTIPLIER,
             },
         },
-        "notify": {
-            "enabled": NOTIFY_ENABLED,
-            "default_enabled": DEFAULT_NOTIFY_ENABLED,
-            "default_recipients": list(DEFAULT_NOTIFY_RECIPIENTS),
-            "events": DEFAULT_NOTIFY_EVENTS,
-            "reminder_time": NOTIFY_REMINDER_TIME,
-            "reminder_timezone": NOTIFY_REMINDER_TIMEZONE,
-            "operator_reminder_interval_seconds": NOTIFY_REMINDER_INTERVAL_SECONDS,
-            "client_preflight_failed": True,
-            "webhook_config": [
-                "MUNCHY_RUNNER_NOTIFY_WEBHOOKS",
-                "MUNCHY_RUNNER_NOTIFY_WEBHOOK_<RECIPIENT>",
-                "MUNCHY_RUNNER_NOTIFY_DEFAULT_RECIPIENTS",
-                "MUNCHY_RUNNER_NOTIFY_DEFAULT_ENABLED",
-                "MUNCHY_RUNNER_NOTIFY_REMINDER_TIME",
-                "MUNCHY_RUNNER_NOTIFY_REMINDER_TIMEZONE",
-                "MUNCHY_RUNNER_NOTIFY_REMINDER_INTERVAL",
-            ],
+        "events": {
+            "format": "CloudEvents 1.0",
+            "cursor_log": True,
+            "operation_context_max_bytes": 4096,
+            "operation_context_retention_seconds": int(
+                EVENT_CONTEXT_RETENTION.total_seconds()
+            ),
         },
         "operations": {
             "submit": True,
@@ -10372,7 +10438,7 @@ def capabilities() -> dict[str, Any]:
             "cancel_job": True,
             "list_jobs": True,
             "compact_job_status": True,
-            "notify_preflight_failed": True,
+            "record_preflight_failure": True,
             "pause_scheduler": True,
             "resume_scheduler": True,
         },
@@ -10397,7 +10463,7 @@ def _head_truncate(value: str, limit: int) -> str:
     return f"{normalized[: limit - 3].rstrip()}..."
 
 
-def preflight_issue_notification_error(
+def preflight_issue_event_error(
     *,
     path: str,
     issue_message: str,
@@ -10410,30 +10476,38 @@ def preflight_issue_notification_error(
     return f"{_head_truncate(issue_message, issue_limit)}{suffix}"
 
 
-@app.post("/v1/notifications/preflight-failed", status_code=202)
-def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> dict[str, Any]:
-    config = req.notify.model_dump()
-    if not NOTIFY_ENABLED or not config.get("enabled"):
-        return {"status": "suppressed", "reason": "notifications_disabled"}
-    recipients = notify_recipients(config)
-    if not recipients:
-        return {"status": "suppressed", "reason": "no_recipients"}
-    job = {
-        "job_id": req.job_id or "",
-        "run_id": req.run_id or req.collection_timestamp or "",
-        "collection_slug": req.collection_slug or "",
-        "collection_timestamp": req.collection_timestamp or "",
-        "phase": "preflight_failed",
-        "state": "failed",
-    }
+@app.get("/v1/events")
+def list_lifecycle_events(
+    request: Request,
+    after: str | None = None,
+    limit: int = Query(default=100, ge=1, le=100),
+) -> dict[str, Any]:
+    try:
+        principal = request_principal(request)
+        page = lifecycle_event_log().page(
+            after=after,
+            limit=limit,
+            owner=None if principal.allows(EVENTS_READ_ALL) else principal.app,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return page.model_dump(mode="json")
+
+
+@app.post("/v1/preflight-failures", status_code=202)
+def record_preflight_failure(
+    req: ClientPreflightFailureRequest,
+    request: Request,
+) -> dict[str, Any]:
+    principal = request_principal(request)
     first_issue = ""
     if req.failed_files and req.failed_files[0].issues:
         first = req.failed_files[0]
-        first_issue = preflight_issue_notification_error(
+        first_issue = preflight_issue_event_error(
             path=first.path,
             issue_message=first.issues[0].message,
         )
-    extra: dict[str, Any] = {
+    data: dict[str, Any] = {
         "component": "preflight",
         "error": first_issue or req.message,
         "client_source": req.source,
@@ -10454,18 +10528,25 @@ def notify_preflight_failed(req: ClientPreflightFailedNotificationRequest) -> di
             }
             for item in req.failed_files[:20]
         ],
+        "actor": {"app": "munchy"},
+        "initiator": {"app": principal.app, "key_id": principal.key_id},
     }
     if req.elapsed_seconds is not None:
-        extra["elapsed_seconds"] = req.elapsed_seconds
-    deliveries = send_notify_deliveries(
-        job,
-        event="job.issue",
-        message=req.message,
-        severity="critical",
-        recipients=recipients,
-        extra=extra,
+        data["elapsed_seconds"] = req.elapsed_seconds
+    subject = req.job_id or req.run_id or req.collection_timestamp
+    event = cloud_event(
+        source=EVENT_SOURCE,
+        type="io.riverhog.munchy.submission.preflight_failed",
+        subject=subject,
+        data=data,
     )
-    return {"status": "attempted", "deliveries": deliveries}
+    cursor = lifecycle_event_log().append(
+        event,
+        owner=principal.app,
+        context=normalize_event_context(req.event_context),
+        context_expires_at=event_context_expiry() if req.event_context is not None else None,
+    )
+    return {"status": "recorded", "cursor": cursor, "event_id": event.id}
 
 
 @app.post("/v1/admin/job-templates/validate")
@@ -10478,6 +10559,85 @@ def validate_job_template(req: JobTemplateCreateRequest) -> dict[str, Any]:
         "definition": definition,
         "resolved_job": resolved_job,
     }
+
+
+@app.get("/v1/admin/apps")
+def list_applications(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: str = "name",
+    order: str = "asc",
+    q: str | None = None,
+    active: bool | None = None,
+    all_items: bool = Query(False, alias="all"),
+) -> dict[str, object]:
+    try:
+        return application_keys().list_apps(
+            page=page,
+            per_page=per_page,
+            q=q,
+            sort=sort,
+            order=order,
+            active=active,
+            all_items=all_items,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/admin/apps/{app_name}/keys", status_code=201)
+def create_application_key(
+    app_name: str,
+    req: CreateApplicationKeyRequest,
+) -> dict[str, object]:
+    try:
+        return application_keys().create(
+            app=app_name,
+            permissions=req.permissions,
+            expires_in=(
+                timedelta(seconds=req.expires_in_seconds)
+                if req.expires_in_seconds is not None
+                else None
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/admin/apps/{app_name}/keys")
+def list_application_keys(
+    app_name: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: str = "created_at",
+    order: str = "desc",
+    q: str | None = None,
+    active: bool | None = None,
+    all_items: bool = Query(False, alias="all"),
+) -> dict[str, object]:
+    try:
+        return application_keys().list_keys(
+            app=app_name,
+            page=page,
+            per_page=per_page,
+            q=q,
+            sort=sort,
+            order=order,
+            active=active,
+            all_items=all_items,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/admin/apps/{app_name}/keys/{key_id}/revoke")
+def revoke_application_key(app_name: str, key_id: str) -> dict[str, object]:
+    try:
+        return application_keys().revoke(app=app_name, key_id=key_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=exc.args[0]) from exc
 
 
 @app.get("/v1/admin/job-templates")
@@ -10579,11 +10739,13 @@ def preflight_submission(req: SubmissionSpec) -> dict[str, Any]:
 def create_submission(
     req: CreateSubmissionRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
 ) -> dict[str, Any]:
+    principal = request_principal(request)
     with state_lock:
-        job, created = create_submission_state(req)
+        job, created = create_submission_state(req, initiator=principal)
     if created:
-        notify_job_event(job, "job.received", "Munchy submission received.")
+        emit_job_event(job, "job.received", "Munchy submission received.")
     schedule_pending_jobs(background_tasks)
     return submission_response(job)
 
@@ -10805,7 +10967,12 @@ def _create_or_resume_input_file_upload(
     )
 
 
-def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
+def create_job_state_from_request(
+    req: CreateJobRequest,
+    *,
+    initiated_by_app: str = "munchy",
+    initiated_by_key_id: str | None = None,
+) -> dict[str, Any]:
     if req.input_upload_id is None:
         raise HTTPException(status_code=400, detail="input_upload_id is required")
     input_upload = load_input_upload(req.input_upload_id)
@@ -10826,6 +10993,8 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         "state": "queued",
         "phase": "queued",
         "created_at": utc_timestamp_now(),
+        "initiated_by_app": initiated_by_app,
+        "initiated_by_key_id": initiated_by_key_id,
         "input_upload_id": req.input_upload_id,
         "run_id": req.run_id or req.collection_timestamp or "",
         "collection_slug": req.collection_slug or "",
@@ -10857,7 +11026,7 @@ def create_job_state_from_request(req: CreateJobRequest) -> dict[str, Any]:
         or 0,
         "handoff": handoff,
         "review": req.review.model_dump(exclude_none=True) if req.review is not None else None,
-        "notify": req.notify.model_dump(),
+        "event_context": normalize_event_context(req.event_context),
     }
     return save_job(job)
 

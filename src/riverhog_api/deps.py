@@ -28,9 +28,11 @@ from riverhog_core.services.interfaces import (
     ArchiveUploadService,
     CollectionDeletionService,
     CollectionService,
+    LifecycleEventService,
     RetrievalService,
     SearchService,
 )
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
@@ -50,6 +52,7 @@ class ServiceContainer:
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_reporting: ArchiveReportingService
     retrieval: RetrievalService
+    lifecycle_events: LifecycleEventService
 
 
 @lru_cache(maxsize=1)
@@ -108,6 +111,7 @@ def default_container() -> ServiceContainer:
             retrieval_cache,
             proof_verifier=proof_verifier,
         ),
+        lifecycle_events=SqlAlchemyLifecycleEventService(config),
     )
 
 

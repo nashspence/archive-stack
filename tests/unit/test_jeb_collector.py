@@ -12,8 +12,6 @@ import jeb.collector as collector_module
 from jeb.collector import (
     Collector,
     EligibleFile,
-    NotifySettings,
-    WebhookNotifier,
     config_from_env,
     munchy_submission_request,
     parse_duration,
@@ -39,7 +37,6 @@ def collector_from_env(
     env: dict[str, str],
     *,
     target_runners=None,
-    notifier=None,
     options: dict[str, dict[str, object]] | None = None,
     templates: dict[str, str] | None = None,
 ) -> Collector:
@@ -48,7 +45,6 @@ def collector_from_env(
     collector = Collector(
         config_from_env(runtime_env),
         target_runners=target_runners,
-        notifier=notifier,
     )
     collector.init_db()
     for source_id in source_ids:
@@ -87,36 +83,12 @@ class CompleteRunner:
         collector.set_attempt_state(attempt_id, "target_complete")
 
 
-@dataclass
-class RecordingNotifier:
-    calls: list[dict[str, object]]
-
-    def issue(
-        self,
-        *,
-        context,
-        message,
-        component,
-        severity,
-        notify=None,
-    ) -> bool:
-        self.calls.append(
-            {
-                "context": dict(context),
-                "message": message,
-                "component": component,
-                "severity": severity,
-                "notify": dict(notify or {}),
-            }
-        )
-        return True
-
-
 @pytest.fixture(autouse=True)
 def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
+        def __init__(self, url: str, *, token: str = "") -> None:
             self.url = url
+            self.token = token
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request
@@ -167,13 +139,11 @@ def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -
         "camera",
         {
             "cadence": "manual",
-            "notify": {"enabled": True, "recipients": ["operator"]},
             "template": "camera-review",
         },
     )
 
     assert updated.cadence == "manual"
-    assert updated.notify == {"enabled": True, "recipients": ["operator"]}
     assert updated.template == "camera-review"
 
 
@@ -331,20 +301,17 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     assert collector.list_attempts(terminal="all", source="camera")["total"] == 1
 
 
-def test_env_config_loads_named_notify_webhook_map(tmp_path: Path) -> None:
+def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
     config = config_from_env(
         {
             **env_for(tmp_path, sources="camera"),
-            "JEB_NOTIFY_ENABLED": "true",
-            "JEB_NOTIFY_RECIPIENTS": "operator,collaborator",
-            "RIVERHOG_COLLECTION_WEBHOOKS": '{"operator":"http://operator.test","collaborator":"http://collaborator.test"}',
+            "JEB_EVENT_SOURCE": "urn:test:jeb",
+            "JEB_UPSTREAM_EVENT_POLL_SECONDS": "7",
         }
     )
 
-    assert config.notify.webhook_urls == {
-        "operator": "http://operator.test",
-        "collaborator": "http://collaborator.test",
-    }
+    assert config.events.source == "urn:test:jeb"
+    assert config.events.upstream_poll_seconds == 7
 
 
 def test_source_registry_requires_safe_source_slugs(tmp_path: Path) -> None:
@@ -488,8 +455,9 @@ def test_archive_plan_target_preflight_does_not_record_failure(
     collector = collector_from_env(env_for(tmp_path, sources="camera"))
 
     class RejectingMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
+        def __init__(self, url: str, *, token: str = "") -> None:
             self.url = url
+            self.token = token
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request
@@ -561,41 +529,37 @@ def test_munchy_submission_uses_template_and_generic_target_identity(tmp_path: P
     assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
     assert request.template == "camera-review"
     assert request.collection_slug == "camera"
+    assert request.event_context == {
+        "initiator": {"app": "jeb", "attempt_id": batch_id}
+    }
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]
     assert request.files[0].sha256
 
 
-def test_jeb_attempt_alerts_use_source_notify_recipients(tmp_path: Path) -> None:
+def test_jeb_attempt_issue_is_appended_to_lifecycle_log(tmp_path: Path) -> None:
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
-    notifier = RecordingNotifier(calls=[])
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera"),
-        notifier=notifier,
-        options={
-            "camera": {"notify": {"enabled": True, "recipients": ["operator", "collaborator"]}}
-        },
-    )
+    collector = collector_from_env(env_for(tmp_path, sources="camera"))
     batch_id = collector.archive_now(source_id="camera", process=False)
     assert batch_id is not None
-    collector.set_attempt_state(batch_id, "failed", "target failed")
+    attempt = collector.load_attempt(batch_id)
 
-    collector.notify_failed_attempt(batch_id)
-
-    assert notifier.calls[0]["notify"] == {
-        "enabled": True,
-        "recipients": ["operator", "collaborator"],
-    }
-
-
-def test_jeb_target_preflight_alerts_and_status_use_source_context(tmp_path: Path) -> None:
-    notifier = RecordingNotifier(calls=[])
-    collector = collector_from_env(
-        env_for(tmp_path, sources="camera,phone"),
-        notifier=notifier,
-        options={
-            "camera": {"notify": {"enabled": True, "recipients": ["operator", "collaborator"]}}
-        },
+    assert collector.emit_issue(
+        context=dict(attempt),
+        error="target failed",
+        component="target",
+        severity="critical",
     )
+
+    page = collector.event_log.page(after=None, limit=100)
+    assert len(page.events) == 1
+    assert page.events[0].type == "io.riverhog.jeb.attempt.issue"
+    assert page.events[0].subject == batch_id
+    assert page.events[0].data["source_id"] == "camera"
+    assert page.events[0].data["error"] == "target failed"
+
+
+def test_jeb_target_preflight_events_and_status_use_source_context(tmp_path: Path) -> None:
+    collector = collector_from_env(env_for(tmp_path, sources="camera,phone"))
     clean_statuses = {
         item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
     }
@@ -618,13 +582,12 @@ def test_jeb_target_preflight_alerts_and_status_use_source_context(tmp_path: Pat
         fingerprint_payload={"source_id": "camera", "error": "unknown template"},
         message="unknown template",
     )
-    collector.notify_target_preflight_failures(source_id="camera")
+    collector.emit_target_preflight_failures(source_id="camera")
 
-    assert notifier.calls[0]["component"] == "target_preflight"
-    assert notifier.calls[0]["notify"] == {
-        "enabled": True,
-        "recipients": ["operator", "collaborator"],
-    }
+    event = collector.event_log.page(after=None, limit=100).events[0]
+    assert event.type == "io.riverhog.jeb.source.preflight_failed"
+    assert event.subject == "camera"
+    assert event.data["component"] == "target_preflight"
     failed_statuses = {
         item["id"]: item for item in collector.status_summary(include_backlog=False)["sources"]
     }
@@ -632,83 +595,32 @@ def test_jeb_target_preflight_alerts_and_status_use_source_context(tmp_path: Pat
     assert failed_statuses["phone"]["target_preflight_failed"] is False
 
 
-def test_jeb_webhook_notifier_routes_named_recipients_to_webhook_map(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def fake_post_webhook(*, config, payload):
-        calls.append((config.url, payload.get("recipient")))
-
-    monkeypatch.setattr(collector_module, "post_webhook", fake_post_webhook)
-    notifier = WebhookNotifier(
-        NotifySettings(
-            enabled=True,
-            webhook_urls={
-                "operator": "http://operator.test",
-                "collaborator": "http://collaborator.test",
-            },
-        )
+def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None:
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
+    collector = collector_from_env(env_for(tmp_path, sources="camera"))
+    attempt_id = collector.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+    attempt = collector.load_attempt(attempt_id)
+    job_id = str(attempt["target_submission_id"])
+    upstream = collector_module.cloud_event(
+        source="urn:munchy",
+        type="io.riverhog.munchy.job.archive.finalized",
+        subject=job_id,
+        data={"job_id": job_id, "collection_id": "2026/example"},
     )
 
-    ok = notifier.issue(
-        context={
-            "id": "batch-1",
-            "batch_id": "batch-1",
-            "source_id": "camera",
-            "target_name": "munchy",
-            "target_type": "munchy",
-            "collection_slug": "camera",
-            "collection_timestamp": "2026-07-10T00:00:00Z",
-            "state": "failed",
-        },
-        message="target failed",
-        component="target",
-        severity="critical",
-        notify={"enabled": True, "recipients": ["operator", "collaborator"]},
-    )
+    assert collector.translate_munchy_event(upstream)
+    assert collector.translate_munchy_event(upstream)
 
-    assert ok
-    assert calls == [
-        ("http://operator.test", "operator"),
-        ("http://collaborator.test", "collaborator"),
-    ]
-
-
-def test_jeb_webhook_notifier_does_not_fallback_for_missing_named_recipient(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-
-    def fake_post_webhook(*, config, payload):
-        _ = payload
-        calls.append(config.url)
-
-    monkeypatch.setattr(collector_module, "post_webhook", fake_post_webhook)
-    notifier = WebhookNotifier(
-        NotifySettings(
-            enabled=True,
-            url="http://operator.test",
-            webhook_urls={"operator": "http://operator.test"},
-        )
-    )
-
-    ok = notifier.issue(
-        context={
-            "id": "batch-1",
-            "batch_id": "batch-1",
-            "source_id": "camera",
-            "target_name": "munchy",
-            "target_type": "munchy",
-            "collection_slug": "camera",
-            "collection_timestamp": "2026-07-10T00:00:00Z",
-            "state": "failed",
-        },
-        message="target failed",
-        component="target",
-        severity="critical",
-        notify={"enabled": True, "recipients": ["collaborator"]},
-    )
-
-    assert not ok
-    assert calls == []
+    page = collector.event_log.page(after=None, limit=100)
+    assert len(page.events) == 1
+    event = page.events[0]
+    assert event.type == "io.riverhog.jeb.attempt.target.archive.finalized"
+    assert event.subject == attempt_id
+    assert event.data["target_submission_id"] == job_id
+    assert event.data["cause"] == {
+        "id": upstream.id,
+        "source": upstream.source,
+        "type": upstream.type,
+        "subject": job_id,
+    }

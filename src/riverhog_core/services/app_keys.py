@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
-import re
 import secrets
 from collections.abc import Sequence
 from datetime import timedelta
@@ -11,6 +9,13 @@ from datetime import timedelta
 from sqlalchemy import and_, asc, case, desc, func, or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
+from application_access import (
+    create_key_credentials,
+    token_sha256,
+)
+from application_access import (
+    normalize_app_name as normalize_application_name,
+)
 from riverhog_core.app_permissions import ApplicationPrincipal, normalize_permissions
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import AppKeyRecord
@@ -18,20 +23,15 @@ from riverhog_core.domain.errors import BadRequest, Forbidden, NotFound
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
-_APP_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 
 
 def normalize_app_name(value: str) -> str:
-    name = value.strip().casefold()
-    if not name or _APP_PATTERN.fullmatch(name) is None:
-        raise BadRequest("app name must use lowercase letters, digits, and single dashes")
-    return name
-
-
-def _token_sha256(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    try:
+        return normalize_application_name(value)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _like_pattern(value: str) -> str:
@@ -93,7 +93,7 @@ class SqlAlchemyAppKeyService:
     def authenticate(self, token: str) -> ApplicationPrincipal | None:
         if not token:
             return None
-        digest = _token_sha256(token)
+        digest = token_sha256(token)
         now = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             record = session.scalar(
@@ -129,11 +129,9 @@ class SqlAlchemyAppKeyService:
         expires_at = (
             format_utc_timestamp(created + expires_in) if expires_in is not None else None
         )
-        token = f"rh_app_{secrets.token_urlsafe(32)}"
-        digest = _token_sha256(token)
         with session_scope(self._session_factory) as session:
             while True:
-                key_id = secrets.token_hex(8)
+                key_id, token, digest = create_key_credentials("rh_app_")
                 if session.get(AppKeyRecord, key_id) is None:
                     break
             record = AppKeyRecord(

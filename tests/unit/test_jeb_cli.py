@@ -39,8 +39,9 @@ def enroll(env: dict[str, str]) -> dict[str, str]:
 @pytest.fixture(autouse=True)
 def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeMunchyRunnerClient:
-        def __init__(self, url: str) -> None:
+        def __init__(self, url: str, *, token: str = "") -> None:
             self.url = url
+            self.token = token
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request

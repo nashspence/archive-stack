@@ -5,15 +5,9 @@ import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
-
-from riverhog_core.operator_reminders import (
-    next_operator_reminder_at,
-    normalize_reminder_time,
-    reminder_zone,
-)
 
 _DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
@@ -98,55 +92,6 @@ def _parse_choice(value: str, *, name: str, allowed: set[str]) -> str:
         expected = ", ".join(sorted(allowed))
         raise ValueError(f"invalid {name} {value!r}: expected one of {expected}")
     return normalized
-
-
-_RECIPIENT_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-
-
-def _normalize_notify_recipient(value: str, *, name: str) -> str:
-    recipient = value.strip()
-    if not recipient:
-        raise ValueError(f"{name} must not contain blank recipients")
-    if any(ch not in _RECIPIENT_NAME_CHARS for ch in recipient):
-        raise ValueError(
-            f"{name} recipients may contain only letters, digits, dots, underscores, and dashes"
-        )
-    return recipient
-
-
-def _parse_recipient_list(value: str, *, name: str) -> tuple[str, ...]:
-    recipients: list[str] = []
-    for raw in value.split(","):
-        if not raw.strip():
-            continue
-        recipient = _normalize_notify_recipient(raw, name=name)
-        if recipient not in recipients:
-            recipients.append(recipient)
-    return tuple(recipients)
-
-
-def parse_collection_webhooks(values: Mapping[str, str]) -> dict[str, str]:
-    import json
-
-    webhooks: dict[str, str] = {}
-    raw = values.get("RIVERHOG_COLLECTION_WEBHOOKS", "").strip()
-    if raw:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError("RIVERHOG_COLLECTION_WEBHOOKS must be a JSON object") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("RIVERHOG_COLLECTION_WEBHOOKS must be a JSON object")
-        for raw_recipient, raw_url in payload.items():
-            recipient = _normalize_notify_recipient(
-                str(raw_recipient),
-                name="RIVERHOG_COLLECTION_WEBHOOKS",
-            )
-            if not isinstance(raw_url, str) or not raw_url.strip():
-                raise ValueError("RIVERHOG_COLLECTION_WEBHOOKS values must be non-empty URLs")
-            webhooks[recipient] = raw_url.strip()
-
-    return webhooks
 
 
 def _normalize_prefix(value: str) -> str:
@@ -286,24 +231,20 @@ class RuntimeConfig:
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
     archive_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
-    operator_webhook_url: str | None = None
-    collection_webhook_urls: Mapping[str, str] = field(default_factory=dict)
-    collection_webhook_default_recipients: tuple[str, ...] = ()
-    webhook_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
-    operator_webhook_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=1))
-    operator_webhook_reminder_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=24)
-    )
-    operator_webhook_reminder_time: str | None = None
-    operator_webhook_reminder_timezone: str = "UTC"
     retrieval_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = ("ots", "--no-bitcoin")
     public_base_url: str | None = None
+    event_source: str = "urn:riverhog"
+    event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
 
     def __post_init__(self) -> None:
+        if not self.event_source.strip():
+            raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
+        if self.event_context_retention.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_EVENT_CONTEXT_RETENTION must be > 0")
         if not self.database_url:
             object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
         log_level = self.log_level.strip().upper()
@@ -520,39 +461,6 @@ class RuntimeConfig:
                 "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a "
                 "non-development secret"
             )
-        normalized_webhooks: dict[str, str] = {}
-        for recipient, url in self.collection_webhook_urls.items():
-            normalized_recipient = _normalize_notify_recipient(
-                str(recipient),
-                name="RIVERHOG_COLLECTION_WEBHOOKS",
-            )
-            if not str(url).strip():
-                raise ValueError("RIVERHOG_COLLECTION_WEBHOOKS values must be non-empty URLs")
-            normalized_webhooks[normalized_recipient] = str(url).strip()
-        object.__setattr__(self, "collection_webhook_urls", normalized_webhooks)
-        object.__setattr__(
-            self,
-            "collection_webhook_default_recipients",
-            _parse_recipient_list(
-                ",".join(self.collection_webhook_default_recipients),
-                name="collection_webhook_default_recipients",
-            ),
-        )
-        object.__setattr__(
-            self,
-            "operator_webhook_reminder_time",
-            normalize_reminder_time(self.operator_webhook_reminder_time),
-        )
-        reminder_zone(self.operator_webhook_reminder_timezone)
-
-    def operator_webhook_next_reminder_at(self, current: datetime) -> datetime | None:
-        return next_operator_reminder_at(
-            current,
-            interval=self.operator_webhook_reminder_interval,
-            reminder_time=self.operator_webhook_reminder_time,
-            reminder_timezone=self.operator_webhook_reminder_timezone,
-        )
-
     def archive_store(self, name: str) -> ArchiveStoreConfig:
         normalized = _normalize_archive_store_name(name)
         try:
@@ -709,25 +617,6 @@ def load_runtime_config() -> RuntimeConfig:
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
     )
-    operator_webhook_url = os.getenv("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip() or None
-    collection_webhook_urls = parse_collection_webhooks(os.environ)
-    collection_webhook_default_recipients = _parse_recipient_list(
-        os.getenv("RIVERHOG_COLLECTION_WEBHOOK_DEFAULT_RECIPIENTS", ""),
-        name="RIVERHOG_COLLECTION_WEBHOOK_DEFAULT_RECIPIENTS",
-    )
-    webhook_timeout = parse_duration(os.getenv("RIVERHOG_WEBHOOK_TIMEOUT", "5s"))
-    operator_webhook_retry_delay = parse_duration(
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_RETRY_DELAY", "60s")
-    )
-    operator_webhook_reminder_interval = parse_duration(
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h")
-    )
-    operator_webhook_reminder_time = (
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME", "").strip() or None
-    )
-    operator_webhook_reminder_timezone = (
-        os.getenv("RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC").strip() or "UTC"
-    )
     retrieval_sweep_interval = parse_duration(os.getenv("RIVERHOG_RETRIEVAL_SWEEP_INTERVAL", "30s"))
     retrieval_estimated_latency = parse_duration(
         os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
@@ -794,6 +683,10 @@ def load_runtime_config() -> RuntimeConfig:
             "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
         )
     return RuntimeConfig(
+        event_source=os.getenv("RIVERHOG_EVENT_SOURCE", "urn:riverhog").strip(),
+        event_context_retention=parse_duration(
+            os.getenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "30d")
+        ),
         s3_max_pool_connections=s3_max_pool_connections,
         ingress_store=ingress_store,
         ingress_secret_key=os.getenv("RIVERHOG_INGRESS_SECRET_KEY", DEV_INGRESS_SECRET_KEY).strip(),
@@ -835,14 +728,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_scrypt_work_factor=archive_scrypt_work_factor,
         archive_upload_retry_delay=archive_retry_delay,
         archive_upload_sweep_interval=archive_upload_sweep_interval,
-        operator_webhook_url=operator_webhook_url,
-        collection_webhook_urls=collection_webhook_urls,
-        collection_webhook_default_recipients=collection_webhook_default_recipients,
-        webhook_timeout=webhook_timeout,
-        operator_webhook_retry_delay=operator_webhook_retry_delay,
-        operator_webhook_reminder_interval=operator_webhook_reminder_interval,
-        operator_webhook_reminder_time=operator_webhook_reminder_time,
-        operator_webhook_reminder_timezone=operator_webhook_reminder_timezone,
         retrieval_sweep_interval=retrieval_sweep_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,
         retrieval_tier=retrieval_tier,

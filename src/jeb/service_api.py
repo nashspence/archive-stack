@@ -373,6 +373,14 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 if not _authorize_management_api(self, expected_token=state.api_token):
                     return
+                if split.path == "/v1/events":
+                    state.collector.init_db()
+                    page = state.collector.event_log.page(
+                        after=_first(params, "after"),
+                        limit=_positive_int(params, "limit", 100),
+                    )
+                    _response(self, HTTPStatus.OK, page.model_dump(mode="json"))
+                    return
                 if split.path == "/v1/config/check":
                     state.collector.init_db()
                     sources = state.collector.source_registry.list()
@@ -534,7 +542,6 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             else None
                         ),
                         target=str(payload.get("target") or "munchy"),
-                        notify=(_mapping(payload, "notify") if "notify" in payload else None),
                         threshold_bytes=int(payload.get("threshold_bytes", 0)),
                         cleanup=cast(
                             Literal["never", "after_target_success"],

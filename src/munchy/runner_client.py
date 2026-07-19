@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from lifecycle_events import EventPage
 from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 from tus_transport import TusHttpError, TusTransport
 
@@ -76,6 +77,7 @@ class SubmissionUploadRequest:
     collection_timestamp: str | None = None
     run_id: str | None = None
     handoff_on_failure: str = "preserve_for_resume"
+    event_context: dict[str, Any] = field(default_factory=dict)
     upload_workers: int = DEFAULT_UPLOAD_WORKERS
     upload_chunk_mib: int = DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
@@ -127,6 +129,8 @@ def submission_payload(
     ):
         if value is not None:
             payload[key] = value
+    if request.event_context:
+        payload["event_context"] = request.event_context
     return payload
 
 
@@ -1366,6 +1370,15 @@ class MunchyRunnerClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    def list_lifecycle_events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> EventPage:
+        query = urllib.parse.urlencode({"after": after or "0", "limit": limit})
+        return EventPage.model_validate(self.json("GET", f"/v1/events?{query}"))
+
     def request(
         self,
         method: str,
@@ -1420,17 +1433,17 @@ class MunchyRunnerClient:
             raise RuntimeError(f"{method} {path} did not return a JSON object")
         return parsed
 
-    def notify_preflight_failed(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def record_preflight_failure(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return self.json(
                 "POST",
-                "/v1/notifications/preflight-failed",
+                "/v1/preflight-failures",
                 payload=payload,
                 expect={202},
             )
         except Exception as exc:
             print(
-                f"warning: failed to notify runner about preflight failure: {exc}",
+                f"warning: failed to record runner preflight failure: {exc}",
                 file=sys.stderr,
             )
             return None
@@ -1998,6 +2011,85 @@ class MunchyRunnerClient:
 class MunchyAdminClient(MunchyRunnerClient):
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
         super().__init__(base_url, token=admin_token_setting(token))
+
+    def list_apps(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "name",
+        order: str = "asc",
+        query: str | None = None,
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "page": str(page),
+            "per_page": str(per_page),
+            "sort": sort,
+            "order": order,
+        }
+        if all_items:
+            params["all"] = "true"
+        if query:
+            params["q"] = query
+        if active is not None:
+            params["active"] = "true" if active else "false"
+        return self.json("GET", "/v1/admin/apps?" + urllib.parse.urlencode(params))
+
+    def create_app_key(
+        self,
+        app: str,
+        *,
+        permissions: list[str],
+        expires_in_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"permissions": permissions}
+        if expires_in_seconds is not None:
+            payload["expires_in_seconds"] = expires_in_seconds
+        return self.json(
+            "POST",
+            f"/v1/admin/apps/{urllib.parse.quote(app)}/keys",
+            payload=payload,
+            expect={201},
+        )
+
+    def list_app_keys(
+        self,
+        app: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "created_at",
+        order: str = "desc",
+        query: str | None = None,
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "page": str(page),
+            "per_page": str(per_page),
+            "sort": sort,
+            "order": order,
+        }
+        if all_items:
+            params["all"] = "true"
+        if query:
+            params["q"] = query
+        if active is not None:
+            params["active"] = "true" if active else "false"
+        return self.json(
+            "GET",
+            f"/v1/admin/apps/{urllib.parse.quote(app)}/keys?"
+            + urllib.parse.urlencode(params),
+        )
+
+    def revoke_app_key(self, app: str, key_id: str) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            f"/v1/admin/apps/{urllib.parse.quote(app)}/keys/"
+            f"{urllib.parse.quote(key_id)}/revoke",
+        )
 
     def list_job_templates(
         self,

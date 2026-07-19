@@ -14,14 +14,16 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 import httpx
 import typer
 
-from cli_support.output import emit, format_list_ids
-from riverhog_cli.client import ApiClient
-from riverhog_cli.local import local_app
-from riverhog_cli.output import (
+from cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
     format_app_keys,
     format_apps,
+)
+from cli_support.output import emit, format_list_ids
+from riverhog_cli.client import ApiClient
+from riverhog_cli.local import local_app
+from riverhog_cli.output import (
     format_archive_copy_job,
     format_archive_copy_retirement_plan,
     format_archive_copy_retirement_result,
@@ -400,7 +402,7 @@ def _log_upload(message: str) -> None:
         typer.echo(message, err=True)
 
 
-def _notify_upload_status(status: Callable[[str], None] | None, message: str) -> None:
+def _report_upload_status(status: Callable[[str], None] | None, message: str) -> None:
     if status is None:
         _log_upload(message)
         return
@@ -853,7 +855,7 @@ def _wait_for_finalized_collection(
     last_status_log_at = 0.0
     last_payload: dict[str, object] | None = None
 
-    _notify_upload_status(
+    _report_upload_status(
         status,
         "All files uploaded; waiting for archive verification",
     )
@@ -882,7 +884,7 @@ def _wait_for_finalized_collection(
 
         if transient_error is not None:
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-                _notify_upload_status(
+                _report_upload_status(
                     status,
                     "Waiting for collection finalization: "
                     f"{_upload_error_description(transient_error)} while polling; retrying",
@@ -894,7 +896,7 @@ def _wait_for_finalized_collection(
                 return last_payload, "failed"
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
                 archive_status = _archive_wait_status(last_payload)
-                _notify_upload_status(
+                _report_upload_status(
                     status,
                     "Waiting for collection finalization: "
                     f"state={state}, "
@@ -906,7 +908,7 @@ def _wait_for_finalized_collection(
                 )
                 last_status_log_at = now
         elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-            _notify_upload_status(
+            _report_upload_status(
                 status,
                 "Waiting for collection finalization: upload session not visible yet",
             )

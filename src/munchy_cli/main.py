@@ -9,6 +9,12 @@ from typing import Annotated, Any, NoReturn
 import typer
 from pydantic import ValidationError
 
+from cli_support.application_keys import (
+    format_app_key_created,
+    format_app_key_revoked,
+    format_app_keys,
+    format_apps,
+)
 from cli_support.output import format_list_ids, json_text
 from munchy.job_authoring import (
     HANDOFF_DESTINATIONS,
@@ -48,9 +54,8 @@ from munchy.runner_client import (
     keep_system_awake,
     runner_url_setting,
 )
-from riverhog_core.config_yaml import (
-    ConfigError,
-)
+from riverhog_core.config_yaml import ConfigError
+from riverhog_core.runtime_config import parse_duration
 from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 RichConsole: Any
@@ -71,10 +76,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped env
 
 
 app = typer.Typer(help="Munchy media ingest CLI.")
+application_app = typer.Typer(help="Application access.")
+app_key_app = typer.Typer(help="Application key management.")
 profile_app = typer.Typer(help="Encode profile operations.")
 template_app = typer.Typer(help="Server-owned job-template administration.")
 job_app = typer.Typer(help="Runner job operations.")
 routing_app = typer.Typer(help="Routing authoring tools.")
+application_app.add_typer(app_key_app, name="key")
+app.add_typer(application_app, name="app")
 app.add_typer(profile_app, name="profile")
 app.add_typer(template_app, name="template")
 app.add_typer(job_app, name="job")
@@ -655,6 +664,138 @@ def _admin_client(runner_url: str | None) -> MunchyAdminClient:
 
 def _runner_client(runner_url: str | None) -> MunchyRunnerClient:
     return _track_client(MunchyRunnerClient(runner_url_setting(runner_url)))
+
+
+_APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
+_APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
+
+
+def _list_order(sort: str, order: str, *, fields: set[str]) -> str:
+    if sort not in fields:
+        raise typer.BadParameter(
+            f"sort must be one of {', '.join(sorted(fields))}",
+            param_hint="--sort",
+        )
+    normalized_order = order.casefold()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("order must be asc or desc", param_hint="--order")
+    return normalized_order
+
+
+@application_app.command("list")
+def list_applications(
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[str | None, typer.Option("--query", "-q")] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by usable key availability"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all")] = False,
+    ids: Annotated[bool, typer.Option("--ids")] = False,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """List applications with key summaries."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    payload = _admin_client(runner_url).list_apps(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=_list_order(sort, order, fields=_APP_SORT_FIELDS),
+        query=query,
+        active=active,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "apps", id_key="name"), json_mode=False)
+        return
+    emit(payload if json_mode else format_apps(payload), json_mode=json_mode)
+
+
+@app_key_app.command("create")
+def create_application_key(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    permission: Annotated[
+        list[str],
+        typer.Option("--permission", help="Permission to grant; repeat for more than one"),
+    ],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    expires_in: Annotated[str | None, typer.Option("--expires-in")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Create a key and show its token once."""
+
+    expires_in_seconds: int | None = None
+    if expires_in is not None:
+        try:
+            expires_in_seconds = int(parse_duration(expires_in).total_seconds())
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--expires-in") from exc
+        if expires_in_seconds < 1:
+            raise typer.BadParameter(
+                "expiry must be at least one second", param_hint="--expires-in"
+            )
+    payload = _admin_client(runner_url).create_app_key(
+        app_name,
+        permissions=permission,
+        expires_in_seconds=expires_in_seconds,
+    )
+    emit(payload if json_mode else format_app_key_created(payload), json_mode=json_mode)
+
+
+@app_key_app.command("list")
+def list_application_keys(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[str | None, typer.Option("--query", "-q")] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by key usability"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all")] = False,
+    ids: Annotated[bool, typer.Option("--ids")] = False,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """List keys without exposing their tokens."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    payload = _admin_client(runner_url).list_app_keys(
+        app_name,
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=_list_order(sort, order, fields=_APP_KEY_SORT_FIELDS),
+        query=query,
+        active=active,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "keys"), json_mode=False)
+        return
+    emit(payload if json_mode else format_app_keys(payload), json_mode=json_mode)
+
+
+@app_key_app.command("revoke")
+def revoke_application_key(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    runner_url: Annotated[str | None, typer.Option("--runner-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Immediately revoke one application key."""
+
+    payload = _admin_client(runner_url).revoke_app_key(app_name, key_id)
+    emit(payload if json_mode else format_app_key_revoked(payload), json_mode=json_mode)
 
 
 @template_app.command("list")

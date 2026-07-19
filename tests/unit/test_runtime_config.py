@@ -61,26 +61,22 @@ def test_load_runtime_config_parses_archive_multipart_safeguards(
     assert config.archive_multipart_sweep_interval == timedelta(hours=2)
 
 
-def test_load_runtime_config_parses_collection_webhooks(
+def test_load_runtime_config_parses_lifecycle_event_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(
-        "RIVERHOG_COLLECTION_WEBHOOKS",
-        '{"operator":"https://operator.example.test/hook"}',
-    )
-    monkeypatch.setenv("RIVERHOG_COLLECTION_WEBHOOK_DEFAULT_RECIPIENTS", "operator")
+    monkeypatch.setenv("RIVERHOG_EVENT_SOURCE", "urn:test:riverhog")
+    monkeypatch.setenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "14d")
 
     config = load_runtime_config()
 
-    assert config.collection_webhook_urls == {"operator": "https://operator.example.test/hook"}
-    assert config.collection_webhook_default_recipients == ("operator",)
+    assert config.event_source == "urn:test:riverhog"
+    assert config.event_context_retention == timedelta(days=14)
 
 
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
     config = load_runtime_config()
     assert config.database_url == DEFAULT_DATABASE_URL
-    assert config.operator_webhook_reminder_interval == timedelta(hours=24)
 
 
 def test_load_runtime_config_parses_upload_lifecycle_settings(

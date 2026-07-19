@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol, cast
@@ -29,6 +29,18 @@ from jeb.ingress import (
 )
 from jeb.listing import MAX_LIST_PAGE_SIZE
 from jeb.sources import Cadence, SourceConfig, SourceRegistry, SourceRegistryError
+from lifecycle_events import (
+    CloudEvent,
+    SQLiteEventCursorStore,
+    SQLiteLifecycleEventLog,
+    caused_event,
+    cloud_event,
+)
+from lifecycle_events.repeats import (
+    event_repeat_due,
+    event_repeat_zone,
+    normalize_event_repeat_time,
+)
 from munchy.filesystem_metadata import collect_filesystem_metadata
 from munchy.preflight import (
     MP4_LIKE_EXTENSIONS,
@@ -48,18 +60,7 @@ from munchy.runner_client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
 from riverhog_core.domain.errors import Conflict, ServiceUnavailable
-from riverhog_core.operator_reminders import (
-    normalize_reminder_time,
-    operator_reminder_due,
-    reminder_zone,
-)
-from riverhog_core.runtime_config import parse_collection_webhooks
 from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
-from riverhog_core.webhooks import (
-    WebhookConfig,
-    build_jeb_event_payload,
-    post_webhook,
-)
 
 LOG = logging.getLogger("jeb")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -88,7 +89,7 @@ ATTEMPT_LIST_SORT_FIELDS = frozenset(
 TRANSIENT_RETRY_INITIAL_SECONDS = 1.0
 TRANSIENT_RETRY_MAX_SECONDS = 300.0
 PREFLIGHT_MEDIA_EXTENSIONS = frozenset(MP4_LIKE_EXTENSIONS | {".mkv", ".webm"})
-TARGET_PREFLIGHT_NOTIFICATION_BODY_LIMIT = 180
+TARGET_PREFLIGHT_ERROR_LIMIT = 180
 
 
 def format_progress_bytes(value: int) -> str:
@@ -102,7 +103,7 @@ def format_progress_bytes(value: int) -> str:
     return f"{amount:.2f} TiB"
 
 
-def target_preflight_notification_message(*, source_id: str, error: BaseException) -> str:
+def target_preflight_error(*, source_id: str, error: BaseException) -> str:
     status = getattr(error, "status", None)
     reason = f"HTTP {status}" if status is not None else error.__class__.__name__
     base = f"Target rejected the submission preflight ({reason}); no upload started."
@@ -110,7 +111,7 @@ def target_preflight_notification_message(*, source_id: str, error: BaseExceptio
         f"{base} Next: repair the target or template, then run "
         f"`jeb archive-now --source {source_id}`."
     )
-    if len(message) <= TARGET_PREFLIGHT_NOTIFICATION_BODY_LIMIT:
+    if len(message) <= TARGET_PREFLIGHT_ERROR_LIMIT:
         return message
     return (
         "Target rejected the submission preflight. Next: repair the target or template, "
@@ -251,22 +252,19 @@ class CollectorSettings:
 
 
 @dataclass(frozen=True)
-class NotifySettings:
-    enabled: bool = False
-    url: str = ""
-    base_url: str = ""
-    webhook_urls: Mapping[str, str] = field(default_factory=dict)
-    recipients: tuple[str, ...] = ()
-    timeout_seconds: float = 10.0
-    reminder_interval_seconds: int = 86_400
-    reminder_time: str | None = None
-    reminder_timezone: str = "UTC"
+class LifecycleEventSettings:
+    source: str = "urn:jeb"
+    upstream_poll_seconds: float = 5.0
+    repeat_interval_seconds: int = 86_400
+    repeat_time: str | None = None
+    repeat_timezone: str = "UTC"
 
 
 @dataclass(frozen=True)
 class TargetConfig:
     name: str
     url: str = ""
+    token: str = ""
     upload_workers: int = 4
     upload_chunk_bytes: int = 64 * 1024 * 1024
     wait_for_safe_delete: bool = True
@@ -276,7 +274,7 @@ class TargetConfig:
 class JebConfig:
     collector: CollectorSettings
     ingress: JebIngressConfig
-    notify: NotifySettings
+    events: LifecycleEventSettings
     targets: Mapping[str, TargetConfig]
 
 
@@ -288,87 +286,6 @@ class EligibleFile:
     bytes: int
     mtime: float
     mtime_ns: int
-
-
-class Notifier(Protocol):
-    def issue(
-        self,
-        *,
-        context: Mapping[str, Any],
-        message: str,
-        component: str,
-        severity: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool: ...
-
-
-class NullNotifier:
-    def issue(
-        self,
-        *,
-        context: Mapping[str, Any],
-        message: str,
-        component: str,
-        severity: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool:
-        _ = notify
-        return True
-
-
-class WebhookNotifier:
-    def __init__(self, settings: NotifySettings) -> None:
-        self.settings = settings
-
-    def issue(
-        self,
-        *,
-        context: Mapping[str, Any],
-        message: str,
-        component: str,
-        severity: str,
-        notify: Mapping[str, Any] | None = None,
-    ) -> bool:
-        if notify is None:
-            if not self.settings.enabled:
-                return True
-            recipients: Sequence[str | None] = self.settings.recipients or (None,)
-        else:
-            if not bool(notify.get("enabled", True)):
-                return True
-            recipients = tuple(str(item) for item in sequence(notify.get("recipients"))) or (None,)
-        delivered_at = utc_now()
-        ok = True
-        for recipient in recipients:
-            url = (
-                self.settings.url
-                if recipient is None
-                else self.settings.webhook_urls.get(recipient)
-            )
-            if not url:
-                LOG.warning("Jeb notification recipient %s has no configured webhook", recipient)
-                ok = False
-                continue
-            config = WebhookConfig(
-                url=url,
-                base_url=self.settings.base_url,
-                timeout_seconds=self.settings.timeout_seconds,
-            )
-            payload = build_jeb_event_payload(
-                event="jeb.issue",
-                context=context,
-                message=message,
-                severity=severity,
-                delivered_at=delivered_at,
-                recipient=recipient,
-                details={"component": component, "error": message},
-            )
-            try:
-                post_webhook(config=config, payload=payload)
-            except Exception:
-                LOG.exception("failed to deliver Jeb issue for %s", context.get("id", "unknown"))
-                ok = False
-        return ok
 
 
 class TargetRunner(Protocol):
@@ -383,14 +300,12 @@ class Collector:
         config: JebConfig,
         *,
         target_runners: Mapping[str, TargetRunner] | None = None,
-        notifier: Notifier | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.config = config
         self.sleep = sleep
-        self.notifier = notifier or (
-            WebhookNotifier(config.notify) if config.notify.enabled else NullNotifier()
-        )
+        self.event_log = SQLiteLifecycleEventLog(self.connect)
+        self.event_cursors = SQLiteEventCursorStore(self.connect)
         self.target_runners: dict[str, TargetRunner] = {
             "munchy": MunchyTargetRunner(),
         }
@@ -413,12 +328,48 @@ class Collector:
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
+    def emit_issue(
+        self,
+        *,
+        context: Mapping[str, Any],
+        error: str,
+        component: str,
+        severity: str,
+    ) -> bool:
+        attempt_id = str(context.get("id") or "")
+        source_id = str(context.get("source_id") or "")
+        event_kind = (
+            "source.preflight_failed" if component == "target_preflight" else "attempt.issue"
+        )
+        subject = attempt_id or source_id or None
+        data = {
+            "component": component,
+            "error": error,
+            "severity": severity,
+            "source_id": source_id,
+            "attempt_id": attempt_id if attempt_id and attempt_id != source_id else "",
+            "state": str(context.get("state") or "failed"),
+            "target": str(context.get("target_name") or context.get("target") or ""),
+            "collection_slug": str(context.get("collection_slug") or ""),
+            "collection_timestamp": str(context.get("collection_timestamp") or ""),
+        }
+        event = cloud_event(
+            source=self.config.events.source,
+            type=f"io.riverhog.jeb.{event_kind}",
+            subject=subject,
+            data=data,
+        )
+        self.event_log.append(event, owner="jeb")
+        return True
+
     def init_db(self) -> None:
         self.config.collector.batch_dir.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             self.create_batch_schema(conn)
             self.ensure_target_preflight_schema(conn)
         self.source_registry.initialize()
+        self.event_log.initialize()
+        self.event_cursors.initialize()
         with self.connect() as conn:
             conn.execute(
                 """
@@ -466,8 +417,8 @@ class Collector:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_error TEXT,
-                notified_error_fingerprint TEXT,
-                notified_error_at TEXT,
+                emitted_error_fingerprint TEXT,
+                emitted_error_at TEXT,
                 UNIQUE(batch_id, attempt_number),
                 FOREIGN KEY(batch_id) REFERENCES batches(id)
             )
@@ -621,8 +572,8 @@ class Collector:
                 last_seen_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 resolved_at TEXT,
-                notified_error_fingerprint TEXT,
-                notified_error_at TEXT
+                emitted_error_fingerprint TEXT,
+                emitted_error_at TEXT
             )
             """
         )
@@ -633,6 +584,11 @@ class Collector:
 
     def run_forever(self) -> None:
         self.init_db()
+        threading.Thread(
+            target=self.consume_munchy_events_forever,
+            name="munchy-event-loop",
+            daemon=True,
+        ).start()
         while True:
             self.run_once()
             self.sleep(self.config.collector.interval_seconds)
@@ -664,7 +620,87 @@ class Collector:
             for source in self.source_registry.list():
                 if source.enabled and source.id not in active_sources:
                     self.discover_source(source)
-            self.notify_target_preflight_failures()
+            self.emit_target_preflight_failures()
+
+    def consume_munchy_events_forever(self) -> None:
+        target = self.target_by_name("munchy")
+        with MunchyRunnerClient(target.url, token=target.token) as client:
+            while True:
+                try:
+                    translated = self.consume_munchy_events_once(client)
+                    if translated:
+                        continue
+                except Exception:
+                    LOG.exception("Munchy lifecycle event consumption failed")
+                self.sleep(self.config.events.upstream_poll_seconds)
+
+    def consume_munchy_events_once(self, client: MunchyRunnerClient) -> int:
+        cursor = self.event_cursors.cursor("munchy")
+        page = client.list_lifecycle_events(after=cursor, limit=100)
+        translated = sum(1 for event in page.events if self.translate_munchy_event(event))
+        if page.next_cursor != cursor:
+            self.event_cursors.advance("munchy", page.next_cursor)
+        return translated
+
+    def translate_munchy_event(self, event: CloudEvent) -> bool:
+        prefix = "io.riverhog.munchy."
+        if not event.type.startswith(prefix):
+            return False
+        job_id = str(event.data.get("job_id") or event.subject or "")
+        if not job_id:
+            return False
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    a.id AS attempt_id,
+                    a.state,
+                    b.source_id,
+                    b.target_name,
+                    b.collection_slug,
+                    b.collection_timestamp
+                FROM batch_attempts a
+                JOIN batches b ON b.id = a.batch_id
+                WHERE a.target_submission_id = ?
+                ORDER BY a.created_at DESC
+                LIMIT 2
+                """,
+                (job_id,),
+            ).fetchall()
+        if not rows:
+            return False
+        if len(rows) > 1:
+            raise RuntimeError(f"multiple Jeb attempts claim Munchy job {job_id}")
+        row = rows[0]
+        suffix = event.type.removeprefix(prefix)
+        if suffix.startswith("job."):
+            suffix = suffix.removeprefix("job.")
+        details = {
+            key: value
+            for key, value in event.data.items()
+            if key not in {"actor", "cause", "context"}
+        }
+        details.update(
+            {
+                "actor": {"app": "jeb"},
+                "attempt_id": str(row["attempt_id"]),
+                "source_id": str(row["source_id"]),
+                "state": str(row["state"]),
+                "target": str(row["target_name"]),
+                "collection_slug": str(row["collection_slug"]),
+                "collection_timestamp": str(row["collection_timestamp"]),
+                "target_submission_id": job_id,
+            }
+        )
+        translated = caused_event(
+            cause=event,
+            source=self.config.events.source,
+            type=f"io.riverhog.jeb.attempt.target.{suffix}",
+            subject=str(row["attempt_id"]),
+            data=details,
+        )
+        self.event_log.append_once(translated, owner="jeb")
+        return True
 
     def active_attempts(self) -> list[sqlite3.Row]:
         terminal = tuple(sorted(TERMINAL_STATES))
@@ -687,8 +723,8 @@ class Collector:
                     a.created_at,
                     a.updated_at,
                     a.last_error,
-                    a.notified_error_fingerprint,
-                    a.notified_error_at
+                    a.emitted_error_fingerprint,
+                    a.emitted_error_at
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE a.state NOT IN ({placeholders})
@@ -792,7 +828,7 @@ class Collector:
                 a.created_at,
                 a.updated_at,
                 a.last_error,
-                a.notified_error_at,
+                a.emitted_error_at,
                 b.file_count,
                 b.total_bytes
             FROM batch_attempts a
@@ -912,7 +948,7 @@ class Collector:
             ),
             "recent_failures": self.list_attempts(
                 terminal="all",
-                states=("failed", "failed_notified", "cleanup_failed"),
+                states=("failed", "cleanup_failed"),
                 sort="updated_at",
                 order="desc",
                 page=1,
@@ -985,7 +1021,7 @@ class Collector:
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
             "last_error": row["last_error"],
-            "notified_error_at": row["notified_error_at"],
+            "emitted_error_at": row["emitted_error_at"],
             "file_count": int(row["file_count"]),
             "total_bytes": int(row["total_bytes"]),
             "staged_file_count": int(row["staged_file_count"]),
@@ -1023,7 +1059,6 @@ class Collector:
         include_extensions: Sequence[str] = (),
         collection_slug: str | None = None,
         target: str = "munchy",
-        notify: Mapping[str, Any] | None = None,
         threshold_bytes: int = 0,
         cleanup: Literal["never", "after_target_success"] = "after_target_success",
         cadence: Literal["weekly", "monthly", "seasonal", "manual"] = "weekly",
@@ -1041,7 +1076,6 @@ class Collector:
             "stable_seconds": stable_seconds,
             "collection_slug": collection_slug,
             "target": target,
-            "notify": notify,
             "threshold_bytes": threshold_bytes,
             "cleanup": cleanup,
             "cadence": cadence,
@@ -1363,8 +1397,8 @@ class Collector:
                     a.created_at,
                     a.updated_at,
                     a.last_error,
-                    a.notified_error_fingerprint,
-                    a.notified_error_at
+                    a.emitted_error_fingerprint,
+                    a.emitted_error_at
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE a.id = ?
@@ -1418,8 +1452,8 @@ class Collector:
             "state",
             "target_submission_id",
             "last_error",
-            "notified_error_fingerprint",
-            "notified_error_at",
+            "emitted_error_fingerprint",
+            "emitted_error_at",
         }
         unknown = sorted(set(fields) - allowed)
         if unknown:
@@ -1692,7 +1726,7 @@ class Collector:
             collection_slug=source.collection_slug,
             collection_timestamp=current_time().strftime("%Y%m%dT%H%M%S.%fZ"),
         )
-        client = MunchyRunnerClient(target.url)
+        client = MunchyRunnerClient(target.url, token=target.token)
         try:
             try:
                 result = client.preflight_submission(request)
@@ -1716,7 +1750,7 @@ class Collector:
                         files=files,
                         error=exc,
                     )
-                    self.notify_target_preflight_failures(source_id=source.id)
+                    self.emit_target_preflight_failures(source_id=source.id)
                 return None, {
                     "ok": False,
                     "status": "rejected",
@@ -1743,7 +1777,7 @@ class Collector:
                     files=files,
                     error=error,
                 )
-                self.notify_target_preflight_failures(source_id=source.id)
+                self.emit_target_preflight_failures(source_id=source.id)
             return None, summary
         finally:
             client.close()
@@ -1775,7 +1809,7 @@ class Collector:
             files=files,
             failure_payload=failure_payload,
             fingerprint_payload=fingerprint_payload,
-            message=target_preflight_notification_message(source_id=source.id, error=error),
+            message=target_preflight_error(source_id=source.id, error=error),
         )
 
     def store_target_preflight_failure(
@@ -1793,7 +1827,7 @@ class Collector:
         with self.connect() as conn:
             existing = conn.execute(
                 """
-                SELECT first_seen_at, notified_error_fingerprint, notified_error_at
+                SELECT first_seen_at, emitted_error_fingerprint, emitted_error_at
                 FROM target_preflight_failures
                 WHERE source_id = ?
                 """,
@@ -1807,7 +1841,7 @@ class Collector:
                     input_paths_json, failure_json, fingerprint, message,
                     file_count, total_bytes, first_seen_at,
                     last_seen_at, updated_at, resolved_at,
-                    notified_error_fingerprint, notified_error_at
+                    emitted_error_fingerprint, emitted_error_at
                 )
                 VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
@@ -1838,14 +1872,14 @@ class Collector:
                     now_text,
                     now_text,
                     (
-                        str(existing["notified_error_fingerprint"])
+                        str(existing["emitted_error_fingerprint"])
                         if existing is not None
-                        and existing["notified_error_fingerprint"] is not None
+                        and existing["emitted_error_fingerprint"] is not None
                         else None
                     ),
                     (
-                        str(existing["notified_error_at"])
-                        if existing is not None and existing["notified_error_at"] is not None
+                        str(existing["emitted_error_at"])
+                        if existing is not None and existing["emitted_error_at"] is not None
                         else None
                     ),
                 ),
@@ -1940,17 +1974,17 @@ class Collector:
                 values,
             ).fetchall()
 
-    def notify_target_preflight_failures(self, source_id: str | None = None) -> None:
+    def emit_target_preflight_failures(self, source_id: str | None = None) -> None:
         self.resolve_inactive_target_preflight_failures()
         for row in self.target_preflight_failures(source_id=source_id, state="failed"):
-            self.notify_target_preflight_failure(row)
+            self.emit_target_preflight_failure(row)
 
-    def notify_target_preflight_failure(self, row: sqlite3.Row) -> bool:
+    def emit_target_preflight_failure(self, row: sqlite3.Row) -> bool:
         row_payload = dict(row)
         fingerprint = str(row_payload["fingerprint"])
         if row_payload.get(
-            "notified_error_fingerprint"
-        ) == fingerprint and not self.notification_reminder_due(row_payload):
+            "emitted_error_fingerprint"
+        ) == fingerprint and not self.event_repeat_due(row_payload):
             return True
         source_id = str(row_payload["source_id"])
         context = {
@@ -1961,12 +1995,11 @@ class Collector:
             "collection_timestamp": current_time().strftime("%Y%m%dT%H%M%S.%fZ"),
             "state": "failed",
         }
-        if not self.notifier.issue(
+        if not self.emit_issue(
             context=context,
-            message=str(row_payload["message"]),
+            error=str(row_payload["message"]),
             component="target_preflight",
             severity="warning",
-            notify=self.source_by_id(source_id).notify,
         ):
             return False
         now_text = event_timestamp()
@@ -1974,7 +2007,7 @@ class Collector:
             conn.execute(
                 """
                 UPDATE target_preflight_failures
-                SET notified_error_fingerprint = ?, notified_error_at = ?, updated_at = ?
+                SET emitted_error_fingerprint = ?, emitted_error_at = ?, updated_at = ?
                 WHERE source_id = ?
                 """,
                 (fingerprint, now_text, now_text, source_id),
@@ -2145,7 +2178,7 @@ class Collector:
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE b.source_id = ?
-                  AND a.state IN ('failed', 'failed_notified')
+                  AND a.state = 'failed'
                 ORDER BY a.created_at DESC, a.id DESC
                 LIMIT 1
                 """,
@@ -2415,8 +2448,8 @@ class Collector:
         try:
             attempt = self.load_attempt(attempt_id)
             state = str(attempt["state"])
-            if state in {"failed", "failed_notified"}:
-                self.notify_failed_attempt(attempt_id)
+            if state == "failed":
+                self.emit_failed_attempt(attempt_id)
                 return
             if state in {"cleanup_pending", "cleanup_failed"}:
                 self.cleanup_attempt(attempt_id)
@@ -2785,25 +2818,24 @@ class Collector:
         except Exception as exc:
             message = f"failed to delete completed attempt files: {exc}"
             self.set_attempt_state(attempt_id, "cleanup_failed", message)
-            self.notify_cleanup_failed(attempt_id, message)
+            self.emit_cleanup_failed(attempt_id, message)
             return
         self.set_attempt_state(attempt_id, "cleanup_done")
 
     def mark_unrecoverable(self, attempt_id: str, message: str, *, component: str) -> None:
         self.set_attempt_state(attempt_id, "failed", message)
-        self.notify_failed_attempt(attempt_id, component=component)
+        self.emit_failed_attempt(attempt_id, component=component)
 
-    def notify_failed_attempt(self, attempt_id: str, *, component: str = "target") -> None:
+    def emit_failed_attempt(self, attempt_id: str, *, component: str = "target") -> None:
         attempt = self.load_attempt(attempt_id)
         message = str(attempt["last_error"] or "Jeb attempt failed")
-        if self.notify_attempt_issue(attempt, message=message, component=component):
-            self.set_attempt_fields(attempt_id, state="failed_notified")
+        self.emit_attempt_issue(attempt, message=message, component=component)
 
-    def notify_cleanup_failed(self, attempt_id: str, message: str) -> None:
+    def emit_cleanup_failed(self, attempt_id: str, message: str) -> None:
         attempt = self.load_attempt(attempt_id)
-        self.notify_attempt_issue(attempt, message=message, component="cleanup")
+        self.emit_attempt_issue(attempt, message=message, component="cleanup")
 
-    def notify_attempt_issue(
+    def emit_attempt_issue(
         self,
         attempt: Mapping[str, Any] | sqlite3.Row,
         *,
@@ -2815,38 +2847,37 @@ class Collector:
             f"{attempt_payload['id']}:{component}:{message}".encode()
         ).hexdigest()[:24]
         if attempt_payload.get(
-            "notified_error_fingerprint"
-        ) == fingerprint and not self.notification_reminder_due(attempt_payload):
+            "emitted_error_fingerprint"
+        ) == fingerprint and not self.event_repeat_due(attempt_payload):
             return True
-        if not self.notifier.issue(
+        if not self.emit_issue(
             context=attempt_payload,
-            message=message,
+            error=message,
             component=component,
             severity="critical",
-            notify=self.source_by_id(str(attempt_payload["source_id"])).notify,
         ):
             return False
         self.set_attempt_fields(
             str(attempt_payload["id"]),
-            notified_error_fingerprint=fingerprint,
-            notified_error_at=event_timestamp(),
+            emitted_error_fingerprint=fingerprint,
+            emitted_error_at=event_timestamp(),
         )
         return True
 
-    def notification_reminder_due(self, batch: Mapping[str, Any]) -> bool:
-        last_sent = batch.get("notified_error_at")
+    def event_repeat_due(self, batch: Mapping[str, Any]) -> bool:
+        last_sent = batch.get("emitted_error_at")
         if not last_sent:
             return True
         try:
             sent_at = parse_utc_timestamp(str(last_sent))
         except ValueError:
             return True
-        return operator_reminder_due(
-            last_sent_at=sent_at,
+        return event_repeat_due(
+            last_emitted_at=sent_at,
             current=current_time(),
-            interval=self.config.notify.reminder_interval_seconds,
-            reminder_time=self.config.notify.reminder_time,
-            reminder_timezone=self.config.notify.reminder_timezone,
+            interval=self.config.events.repeat_interval_seconds,
+            repeat_time=self.config.events.repeat_time,
+            repeat_timezone=self.config.events.repeat_timezone,
         )
 
 
@@ -2865,7 +2896,7 @@ class MunchyTargetRunner:
         if attempt["state"] == "target_complete":
             return
         target = collector.target_by_name(str(attempt["target_name"]))
-        client = MunchyRunnerClient(target.url)
+        client = MunchyRunnerClient(target.url, token=target.token)
         try:
             request = munchy_submission_request(collector, attempt_id, target)
 
@@ -2911,7 +2942,7 @@ class MunchyTargetRunner:
                 f"active target delivery has no cancellation identity: {attempt_id}"
             )
         target = collector.target_by_name(str(attempt["target_name"]))
-        client = MunchyRunnerClient(target.url)
+        client = MunchyRunnerClient(target.url, token=target.token)
         try:
             client.cancel_submission(submission_id)
         finally:
@@ -2942,6 +2973,12 @@ def munchy_submission_request(
         files=files,
         collection_slug=str(attempt["collection_slug"]),
         collection_timestamp=str(attempt["collection_timestamp"]),
+        event_context={
+            "initiator": {
+                "app": "jeb",
+                "attempt_id": attempt_id,
+            }
+        },
         upload_workers=target.upload_workers,
         upload_chunk_mib=max(1, target.upload_chunk_bytes // (1024 * 1024)),
     )
@@ -3252,33 +3289,26 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         or "ffmpeg",
     )
 
-    notify_url = values.get("RIVERHOG_OPERATOR_WEBHOOK_URL", "").strip()
-    reminder_time = normalize_reminder_time(
-        env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIME")
+    repeat_time = normalize_event_repeat_time(
+        env_value_from(values, "JEB_EVENT_REPEAT_TIME")
     )
-    reminder_timezone = (
-        env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_TIMEZONE", "UTC") or "UTC"
+    repeat_timezone = (
+        env_value_from(values, "JEB_EVENT_REPEAT_TIMEZONE", "UTC") or "UTC"
     )
-    reminder_zone(reminder_timezone)
-    notify = NotifySettings(
-        enabled=env_bool(values, "JEB_NOTIFY_ENABLED", False),
-        url=notify_url or "",
-        base_url=env_value_from(values, "JEB_NOTIFY_BASE_URL", "") or "",
-        webhook_urls=parse_collection_webhooks(values),
-        recipients=env_csv(values, "JEB_NOTIFY_RECIPIENTS"),
-        timeout_seconds=float(parse_duration(env_value_from(values, "JEB_NOTIFY_TIMEOUT"), 10)),
-        reminder_interval_seconds=parse_duration(
-            env_value_from(values, "RIVERHOG_OPERATOR_WEBHOOK_REMINDER_INTERVAL", "24h"),
+    event_repeat_zone(repeat_timezone)
+    events = LifecycleEventSettings(
+        source=env_value_from(values, "JEB_EVENT_SOURCE", "urn:jeb") or "urn:jeb",
+        upstream_poll_seconds=max(
+            1.0,
+            float(env_value_from(values, "JEB_UPSTREAM_EVENT_POLL_SECONDS", "5") or "5"),
+        ),
+        repeat_interval_seconds=parse_duration(
+            env_value_from(values, "JEB_EVENT_REPEAT_INTERVAL", "24h"),
             86_400,
         ),
-        reminder_time=reminder_time,
-        reminder_timezone=reminder_timezone,
+        repeat_time=repeat_time,
+        repeat_timezone=repeat_timezone,
     )
-    if notify.enabled and not (notify.url or notify.webhook_urls):
-        raise ValueError(
-            "RIVERHOG_OPERATOR_WEBHOOK_URL or RIVERHOG_COLLECTION_WEBHOOKS is required "
-            "when JEB_NOTIFY_ENABLED=true"
-        )
 
     target = TargetConfig(
         name="munchy",
@@ -3286,6 +3316,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
             env_value_from(values, "JEB_MUNCHY_URL", "http://munchy-runner:8080")
             or "http://munchy-runner:8080"
         ).rstrip("/"),
+        token=env_value_from(values, "JEB_MUNCHY_TOKEN", "") or "",
         upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
         upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64)) * 1024 * 1024,
         wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),
@@ -3293,7 +3324,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     return JebConfig(
         collector=collector,
         ingress=ingress,
-        notify=notify,
+        events=events,
         targets={"munchy": target},
     )
 

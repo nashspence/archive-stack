@@ -17,6 +17,7 @@ from riverhog_api.deps import ServiceContainer, default_container, get_container
 from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
+from riverhog_api.routers.events import router as events_router
 from riverhog_api.routers.internal import router as internal_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
@@ -369,6 +370,7 @@ def create_app(
 
     app.include_router(internal_router)
     app.include_router(collections_router, prefix="/v1")
+    app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")

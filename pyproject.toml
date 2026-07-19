@@ -52,10 +52,13 @@ munchy = "munchy_cli.main:main"
 jeb = "jeb.cli:main"
 jeb-service = "jeb.service_cli:main"
 gogurt = "gogurt.cli:main"
+lifecycle-event-relay = "lifecycle_events.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
+  "src/application_access",
   "src/cli_support",
+  "src/lifecycle_events",
   "src/munchy",
   "src/munchy_cli",
   "src/gogurt",
@@ -68,10 +71,11 @@ packages = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"contracts/webhooks/operator-notifications.v1.json" = "riverhog_core/contracts/webhooks/operator-notifications.v1.json"
+"src/application_access/py.typed" = "application_access/py.typed"
 "macos/gogurt/io.github.nashspence.gogurt.plist" = "gogurt/macos/io.github.nashspence.gogurt.plist"
 "macos/gogurt/gogurt.swift" = "gogurt/macos/gogurt.swift"
 "src/gogurt/py.typed" = "gogurt/py.typed"
+"src/lifecycle_events/py.typed" = "lifecycle_events/py.typed"
 "src/riverhog_core/py.typed" = "riverhog_core/py.typed"
 
 [tool.ruff]

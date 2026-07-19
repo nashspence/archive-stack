@@ -189,7 +189,6 @@ DEVICE_PROFILE_SECTION_SCHEMA: dict[str, Any] = {
         "metadata_projection": {
             "oneOf": [{"type": "boolean", "const": False}, {"type": "object"}],
         },
-        "notify": {"type": "object"},
         "profiles": {"type": "object", "additionalProperties": {"type": "object"}},
         "groups": {"type": "object", "additionalProperties": GROUP_SCHEMA},
         "routing": ROUTING_SCHEMA,
@@ -306,7 +305,6 @@ JOB_SCHEMA: dict[str, Any] = {
         "tasks": STRING_LIST,
         "handoff": HANDOFF_SCHEMA,
         "review": {"type": "object"},
-        "notify": {"type": "object"},
         "routing": ROUTING_SCHEMA,
     },
     "required": ["handoff"],

@@ -280,6 +280,35 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
     assert result.stdout == "archive\nreview\n"
 
 
+def test_munchy_application_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://runner"
+
+        def list_apps(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["all_items"] is True
+            assert kwargs["active"] is True
+            return {"apps": [{"name": "desktop-client"}, {"name": "jeb"}]}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "app",
+            "list",
+            "--runner-url",
+            "http://runner",
+            "--active",
+            "--all",
+            "--ids",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "desktop-client\njeb\n"
+
+
 def test_munchy_closes_the_runner_client(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     closed: list[bool] = []
 

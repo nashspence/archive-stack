@@ -53,7 +53,7 @@ def list_collections(
 def create_or_resume_collection_upload(
     request: CreateOrResumeCollectionUploadRequest,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionOut:
     payload = container.collections.create_or_resume_upload(
         upload_slug=request.slug,
@@ -61,7 +61,8 @@ def create_or_resume_collection_upload(
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
-        notify=request.notify.model_dump() if request.notify is not None else None,
+        initiator=principal,
+        event_context=request.event_context,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 
@@ -70,14 +71,15 @@ def create_or_resume_collection_upload(
 def create_or_resume_collection_upload_session(
     request: CreateOrResumeCollectionUploadSessionRequest,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionOut:
     payload = container.collections.create_or_resume_upload_session(
         upload_slug=request.slug,
         ingest_source=request.ingest_source,
         upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
-        notify=request.notify.model_dump() if request.notify is not None else None,
+        initiator=principal,
+        event_context=request.event_context,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 

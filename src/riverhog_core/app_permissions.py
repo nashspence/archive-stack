@@ -13,6 +13,8 @@ COLLECTIONS_DELETE = "collections:delete"
 ARCHIVES_READ = "archives:read"
 ARCHIVES_MANAGE = "archives:manage"
 KEYS_MANAGE = "keys:manage"
+EVENTS_READ = "events:read"
+EVENTS_READ_ALL = "events:read_all"
 
 APPLICATION_PERMISSIONS = frozenset(
     {
@@ -23,6 +25,8 @@ APPLICATION_PERMISSIONS = frozenset(
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
         KEYS_MANAGE,
+        EVENTS_READ,
+        EVENTS_READ_ALL,
     }
 )
 
@@ -47,7 +51,11 @@ class ApplicationPrincipal:
     unrestricted_delegation: bool = False
 
     def allows(self, permission: str) -> bool:
-        return ALL_PERMISSIONS in self.permissions or permission in self.permissions
+        return (
+            ALL_PERMISSIONS in self.permissions
+            or permission in self.permissions
+            or (permission == EVENTS_READ and EVENTS_READ_ALL in self.permissions)
+        )
 
     def can_grant(self, permissions: Iterable[str]) -> bool:
         requested = frozenset(normalize_permissions(permissions))
@@ -65,6 +73,8 @@ __all__ = [
     "CATALOG_READ",
     "COLLECTIONS_DELETE",
     "COLLECTIONS_UPLOAD",
+    "EVENTS_READ",
+    "EVENTS_READ_ALL",
     "KEYS_MANAGE",
     "RETRIEVAL_MANAGE",
     "normalize_permissions",

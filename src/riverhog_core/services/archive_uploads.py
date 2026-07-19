@@ -31,7 +31,6 @@ from riverhog_core.catalog_models import (
     RetrievalCacheObjectRecord,
 )
 from riverhog_core.ingress_crypto import iter_ingress_plaintext
-from riverhog_core.operator_reminders import operator_reminder_due
 from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
@@ -52,12 +51,8 @@ from riverhog_core.services.collections import (
     _collection_upload_stats,
     _collection_upload_target_path,
 )
-from riverhog_core.services.notification_routing import (
-    decode_collection_notify_json,
-    post_collection_webhooks,
-)
-from riverhog_core.timestamps import format_utc_timestamp, parse_utc_timestamp, utc_now
-from riverhog_core.webhooks import post_webhook
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
 _LOG = logging.getLogger(__name__)
 
@@ -86,6 +81,7 @@ class SqlAlchemyArchiveUploadService:
         self._upload_store = upload_store
         self._proof_stamper = proof_stamper or CommandProofStamper(config.ots_stamp_command)
         self._session_factory = make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
         if limit < 1 or self._upload_store is None:
@@ -424,23 +420,21 @@ class SqlAlchemyArchiveUploadService:
                 receipt=receipt,
                 archive=archive,
                 upload_files=upload_files,
+                event_details={
+                    **archive_details,
+                    "archive_storage_prefix": archive_storage_prefix,
+                    "archive_objects": len(receipt.objects),
+                    "archive_total_bytes": sum(
+                        current.stored_bytes for current in receipt.objects
+                    ),
+                    "archive_store": archive_store_name,
+                },
             )
             self._delete_collection_upload_targets(
                 collection_id=collection_id,
                 upload_files=upload_files,
             )
             self._publish_archive_catalog()
-            self._post_collection_webhooks(
-                event="collections.finalized",
-                collection_id=collection_id,
-                details={
-                    **archive_details,
-                    "archive_storage_prefix": archive_storage_prefix,
-                    "archive_objects": len(receipt.objects),
-                    "archive_total_bytes": sum(current.stored_bytes for current in receipt.objects),
-                    "archive_store": archive_store_name,
-                },
-            )
         except Exception as exc:
             error = _error_text(exc)
             if _archive_failure_is_retryable(exc):
@@ -500,6 +494,7 @@ class SqlAlchemyArchiveUploadService:
         receipt: CollectionArchiveUploadReceipt,
         archive: CollectionArchive,
         upload_files: list[CollectionUploadFileEntry],
+        event_details: dict[str, object],
     ) -> None:
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, collection_id)
@@ -518,14 +513,13 @@ class SqlAlchemyArchiveUploadService:
                     id=collection_id,
                     manifest_etag=manifest_etag,
                     ingest_source=upload.ingest_source,
-                    notify_json=upload.notify_json,
+                    created_by_app=upload.initiated_by_app,
+                    created_by_key_id=upload.initiated_by_key_id,
                 )
                 session.add(collection)
                 session.flush()
             elif collection.manifest_etag != manifest_etag:
                 raise RuntimeError("immutable portable collection manifest changed")
-            elif not collection.notify_json and upload.notify_json:
-                collection.notify_json = upload.notify_json
             existing_paths = {file_record.path for file_record in collection.files}
             for entry in upload_files:
                 if entry.path in existing_paths:
@@ -563,6 +557,13 @@ class SqlAlchemyArchiveUploadService:
                     occurred_at=format_utc_timestamp(utc_now()),
                     manifest_etag=manifest_etag,
                 )
+            )
+            self._lifecycle_events.emit_collection(
+                type="collection.finalized",
+                collection_id=collection_id,
+                details=event_details,
+                terminal=True,
+                session=session,
             )
             session.delete(upload)
             record_archive_usage_snapshot(session, config=self._config)
@@ -677,33 +678,6 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _post_collection_webhooks(
-        self,
-        *,
-        event: str,
-        collection_id: str,
-        details: dict[str, object] | None = None,
-    ) -> None:
-        post_collection_webhooks(
-            config=self._config,
-            event=event,
-            collection_id=collection_id,
-            details=details,
-            notify=self._collection_notify_config(collection_id),
-            post=post_webhook,
-            log=_LOG,
-        )
-
-    def _collection_notify_config(self, collection_id: str) -> dict[str, object] | None:
-        with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, collection_id)
-            if upload is not None:
-                raw = upload.notify_json
-            else:
-                collection = session.get(CollectionRecord, collection_id)
-                raw = collection.notify_json if collection is not None else None
-        return decode_collection_notify_json(raw, log=_LOG)
-
     def _record_collection_failure(
         self,
         *,
@@ -713,7 +687,7 @@ class SqlAlchemyArchiveUploadService:
     ) -> None:
         current = utc_now()
         current_text = format_utc_timestamp(current)
-        notify_operator = False
+        emit_event = False
         attempt_count = 0
         next_retry_at = (
             format_utc_timestamp(current + self._config.archive_upload_retry_delay)
@@ -734,20 +708,14 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase = "retry_wait" if retryable else "failed"
             upload.archive_phase_updated_at = current_text
             upload.state = "archiving" if retryable else "failed"
-            if retryable and _operator_failure_notification_due(
-                upload.archive_last_failure_notification_at,
-                current=current,
-                config=self._config,
-            ):
-                upload.archive_last_failure_notification_at = current_text
-                notify_operator = True
-            if not retryable and (
+            if retryable:
+                emit_event = True
+            elif (
                 previous_state != "failed"
                 or previous_phase != "failed"
                 or previous_failure != error
             ):
-                upload.archive_last_failure_notification_at = current_text
-                notify_operator = True
+                emit_event = True
 
         if retryable:
             _LOG.warning(
@@ -765,23 +733,23 @@ class SqlAlchemyArchiveUploadService:
                 error,
             )
 
-        if retryable and notify_operator:
-            self._notify_collection_archive_retrying(
+        if retryable and emit_event:
+            self._emit_collection_archive_retry_scheduled(
                 collection_id=collection_id,
                 attempt_count=attempt_count,
                 error=error,
                 failed_at=current_text,
                 next_retry_at=next_retry_at or "",
             )
-        if not retryable and notify_operator:
-            self._notify_collection_archive_failed(
+        if not retryable and emit_event:
+            self._emit_collection_archive_failed(
                 collection_id=collection_id,
                 attempt_count=attempt_count,
                 error=error,
                 failed_at=current_text,
             )
 
-    def _notify_collection_archive_retrying(
+    def _emit_collection_archive_retry_scheduled(
         self,
         *,
         collection_id: str,
@@ -790,8 +758,8 @@ class SqlAlchemyArchiveUploadService:
         failed_at: str,
         next_retry_at: str,
     ) -> None:
-        self._post_collection_webhooks(
-            event="collections.archive_retrying",
+        self._lifecycle_events.emit_collection(
+            type="collection.archive_retry_scheduled",
             collection_id=collection_id,
             details={
                 "attempts": attempt_count,
@@ -802,7 +770,7 @@ class SqlAlchemyArchiveUploadService:
             },
         )
 
-    def _notify_collection_archive_failed(
+    def _emit_collection_archive_failed(
         self,
         *,
         collection_id: str,
@@ -810,8 +778,8 @@ class SqlAlchemyArchiveUploadService:
         error: str,
         failed_at: str,
     ) -> None:
-        self._post_collection_webhooks(
-            event="collections.archive_failed",
+        self._lifecycle_events.emit_collection(
+            type="collection.archive_failed",
             collection_id=collection_id,
             details={
                 "attempts": attempt_count,
@@ -1171,24 +1139,3 @@ def _archive_failure_is_retryable(exc: Exception) -> bool:
     if isinstance(exc, ValueError):
         return False
     return True
-
-
-def _operator_failure_notification_due(
-    last_notified_at: str | None,
-    *,
-    current: datetime,
-    config: RuntimeConfig,
-) -> bool:
-    if last_notified_at is None:
-        return True
-    try:
-        previous = parse_utc_timestamp(last_notified_at)
-    except ValueError:
-        return True
-    return operator_reminder_due(
-        last_sent_at=previous,
-        current=current,
-        interval=config.operator_webhook_reminder_interval,
-        reminder_time=config.operator_webhook_reminder_time,
-        reminder_timezone=config.operator_webhook_reminder_timezone,
-    )

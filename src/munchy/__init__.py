@@ -2,7 +2,6 @@
 
 __all__ = [
     "MUNCHY_PROFILE_TARGET",
-    "MUNCHY_WEBHOOK_EMOJI",
     "EncodeProfile",
     "MunchyRunnerClient",
     "SubmissionUploadRequest",
@@ -10,10 +9,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    if name == "MUNCHY_WEBHOOK_EMOJI":
-        from munchy.notifications import MUNCHY_WEBHOOK_EMOJI
-
-        return MUNCHY_WEBHOOK_EMOJI
     if name in {"MUNCHY_PROFILE_TARGET", "EncodeProfile"}:
         from munchy.profiles import MUNCHY_PROFILE_TARGET, EncodeProfile
 

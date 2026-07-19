@@ -16,7 +16,6 @@ _JOB_SECTION_KEYS = {
     "destination_prefix",
     "output_mode",
     "tasks",
-    "notify",
 }
 
 

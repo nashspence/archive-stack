@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -49,12 +50,9 @@ from riverhog_core.services.archive_records import (
     ArchiveCopyAggregate,
     archive_copy_aggregates,
 )
-from riverhog_core.services.notification_routing import (
-    collection_notify_json as _collection_notify_json,
-)
-from riverhog_core.services.notification_routing import (
-    decode_collection_notify_json,
-    post_collection_webhooks,
+from riverhog_core.services.lifecycle_events import (
+    SqlAlchemyLifecycleEventService,
+    event_context_json,
 )
 from riverhog_core.services.resumable_uploads import (
     UploadLifecycleState,
@@ -66,7 +64,6 @@ from riverhog_core.services.resumable_uploads import (
 )
 from riverhog_core.timestamps import parse_utc_timestamp, utc_now, utc_timestamp_now
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
-from riverhog_core.webhooks import post_webhook
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
@@ -105,6 +102,7 @@ class SqlAlchemyCollectionService:
         self._upload_file_ttl = config.upload_file_ttl
         self._upload_session_idle_ttl = config.upload_session_idle_ttl
         self._session_factory = make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
     def create_or_resume_upload(
         self,
@@ -114,11 +112,14 @@ class SqlAlchemyCollectionService:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: Mapping[str, object] | None = None,
+        initiator: ApplicationPrincipal | None = None,
+        event_context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
         normalized_archive_store = self._normalize_archive_store(archive_store)
-        normalized_notify_json = _collection_notify_json(notify)
+        initiator_app = initiator.app if initiator is not None else "riverhog"
+        initiator_key_id = initiator.key_id if initiator is not None else None
+        normalized_event_context_json = event_context_json(event_context)
         normalized_upload_timestamp = (
             _normalize_upload_timestamp_or_raise(upload_timestamp)
             if upload_timestamp is not None
@@ -169,7 +170,9 @@ class SqlAlchemyCollectionService:
                 upload = CollectionUploadRecord(
                     collection_id=normalized_collection_id,
                     ingest_source=ingest_source,
-                    notify_json=normalized_notify_json,
+                    initiated_by_app=initiator_app,
+                    initiated_by_key_id=initiator_key_id,
+                    event_context_json=normalized_event_context_json,
                     archive_store=normalized_archive_store,
                     state="uploading",
                     opened_at=utc_timestamp_now(),
@@ -188,9 +191,9 @@ class SqlAlchemyCollectionService:
                         )
                     )
             else:
+                _ensure_upload_initiator_matches(upload, initiator_app)
+                _ensure_event_context_matches(upload, normalized_event_context_json)
                 upload.ingest_source = ingest_source
-                if normalized_notify_json is not None:
-                    upload.notify_json = normalized_notify_json
                 _touch_collection_upload(upload)
                 normalized_collection_id = upload.collection_id
 
@@ -223,11 +226,14 @@ class SqlAlchemyCollectionService:
         ingest_source: str | None = None,
         upload_timestamp: str | None = None,
         archive_store: str | None = None,
-        notify: Mapping[str, object] | None = None,
+        initiator: ApplicationPrincipal | None = None,
+        event_context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
         normalized_archive_store = self._normalize_archive_store(archive_store)
-        normalized_notify_json = _collection_notify_json(notify)
+        initiator_app = initiator.app if initiator is not None else "riverhog"
+        initiator_key_id = initiator.key_id if initiator is not None else None
+        normalized_event_context_json = event_context_json(event_context)
         normalized_upload_timestamp = (
             _normalize_upload_timestamp_or_raise(upload_timestamp)
             if upload_timestamp is not None
@@ -253,6 +259,8 @@ class SqlAlchemyCollectionService:
                 upload = _find_open_upload_session(session, upload_slug=normalized_slug)
 
             if upload is not None:
+                _ensure_upload_initiator_matches(upload, initiator_app)
+                _ensure_event_context_matches(upload, normalized_event_context_json)
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
                 upload = _sync_and_expire_collection_upload(
                     session,
@@ -266,8 +274,6 @@ class SqlAlchemyCollectionService:
             if upload is not None:
                 if upload.state == "open":
                     upload.ingest_source = ingest_source
-                    if normalized_notify_json is not None:
-                        upload.notify_json = normalized_notify_json
                     _touch_collection_upload(upload)
                     return _collection_upload_payload(
                         session=session,
@@ -295,7 +301,9 @@ class SqlAlchemyCollectionService:
             upload = CollectionUploadRecord(
                 collection_id=normalized_collection_id,
                 ingest_source=ingest_source,
-                notify_json=normalized_notify_json,
+                initiated_by_app=initiator_app,
+                initiated_by_key_id=initiator_key_id,
+                event_context_json=normalized_event_context_json,
                 archive_store=normalized_archive_store,
                 state="open",
                 opened_at=now,
@@ -367,8 +375,7 @@ class SqlAlchemyCollectionService:
             }
 
     def sync_finished_upload_id(self, upload_id: str) -> dict[str, object] | None:
-        staged_webhook_details: dict[str, object] | None = None
-        staged_notify: dict[str, object] | None = None
+        staged_event_details: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
             file_record = session.scalar(
@@ -412,16 +419,13 @@ class SqlAlchemyCollectionService:
                 was_archiving = upload.state == "archiving"
                 _ensure_collection_upload_archiving(upload)
                 if not was_archiving:
-                    staged_webhook_details = _collection_upload_webhook_details(session, upload)
-                    staged_notify = _decode_collection_notify_json(upload.notify_json)
+                    staged_event_details = _collection_upload_event_details(session, upload)
             payload = _collection_upload_file_registration_payload(upload, file_record)
-        if staged_webhook_details is not None:
-            _post_collection_webhooks(
-                self._config,
-                event="collections.upload_staged",
+        if staged_event_details is not None:
+            self._lifecycle_events.emit_collection(
+                type="collection.upload_staged",
                 collection_id=normalized_collection_id,
-                details=staged_webhook_details,
-                notify=staged_notify,
+                details=staged_event_details,
             )
         return payload
 
@@ -477,8 +481,7 @@ class SqlAlchemyCollectionService:
 
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
-        staged_webhook_details: dict[str, object] | None = None
-        staged_notify: dict[str, object] | None = None
+        staged_event_details: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_collection_id)
@@ -523,21 +526,18 @@ class SqlAlchemyCollectionService:
             now = utc_timestamp_now()
             upload.closed_at = now
             upload.last_activity_at = now
-            staged_webhook_details = _collection_upload_webhook_details(session, upload)
-            staged_notify = _decode_collection_notify_json(upload.notify_json)
+            staged_event_details = _collection_upload_event_details(session, upload)
             payload = _collection_upload_payload(
                 session=session,
                 upload=upload,
                 state=None,
                 collection=None,
             )
-        if staged_webhook_details is not None:
-            _post_collection_webhooks(
-                self._config,
-                event="collections.upload_staged",
+        if staged_event_details is not None:
+            self._lifecycle_events.emit_collection(
+                type="collection.upload_staged",
                 collection_id=normalized_collection_id,
-                details=staged_webhook_details,
-                notify=staged_notify,
+                details=staged_event_details,
             )
         return payload
 
@@ -681,8 +681,7 @@ class SqlAlchemyCollectionService:
     ) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         normalized_path = _normalize_relpath_or_raise(path)
-        staged_webhook_details: dict[str, object] | None = None
-        staged_notify: dict[str, object] | None = None
+        staged_event_details: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
@@ -749,21 +748,18 @@ class SqlAlchemyCollectionService:
                 was_archiving = upload.state == "archiving"
                 _ensure_collection_upload_archiving(upload)
                 if not was_archiving:
-                    staged_webhook_details = _collection_upload_webhook_details(session, upload)
-                    staged_notify = _decode_collection_notify_json(upload.notify_json)
+                    staged_event_details = _collection_upload_event_details(session, upload)
 
             response: dict[str, object] = {
                 "offset": file_record.ingress_uploaded_bytes,
                 "length": file_record.ingress_bytes,
                 "expires_at": file_record.upload_expires_at,
             }
-        if staged_webhook_details is not None:
-            _post_collection_webhooks(
-                self._config,
-                event="collections.upload_staged",
+        if staged_event_details is not None:
+            self._lifecycle_events.emit_collection(
+                type="collection.upload_staged",
                 collection_id=normalized_collection_id,
-                details=staged_webhook_details,
-                notify=staged_notify,
+                details=staged_event_details,
             )
         return response
 
@@ -1028,10 +1024,6 @@ def _normalize_upload_files(files: Sequence[dict[str, object]]) -> list[_UploadM
     return sorted(normalized, key=lambda current: str(current["path"]))
 
 
-def _decode_collection_notify_json(raw: str | None) -> dict[str, object] | None:
-    return decode_collection_notify_json(raw, log=_LOG)
-
-
 def _manifest_entry_payload(
     file_record: _UploadManifestEntry | CollectionUploadFileRecord,
 ) -> _UploadManifestEntry:
@@ -1092,6 +1084,20 @@ def _find_matching_collection(
     )
 
 
+def _ensure_upload_initiator_matches(upload: CollectionUploadRecord, app: str) -> None:
+    if upload.initiated_by_app != app:
+        raise Conflict(
+            "collection upload is owned by a different application: "
+            f"{upload.collection_id}"
+        )
+
+
+def _ensure_event_context_matches(
+    upload: CollectionUploadRecord,
+    requested_context_json: str | None,
+) -> None:
+    if requested_context_json is not None and requested_context_json != upload.event_context_json:
+        raise Conflict("event_context is immutable for an existing collection upload")
 def _find_matching_upload(
     session: Session,
     *,
@@ -1476,7 +1482,7 @@ def _collection_upload_session_state(
     return "archiving"
 
 
-def _collection_upload_webhook_details(
+def _collection_upload_event_details(
     session: Session,
     upload: CollectionUploadRecord,
 ) -> dict[str, object]:
@@ -1533,25 +1539,6 @@ def _collection_upload_stats(
     }
 
 
-def _post_collection_webhooks(
-    config: RuntimeConfig,
-    *,
-    event: str,
-    collection_id: str,
-    details: dict[str, object] | None = None,
-    notify: Mapping[str, object] | None = None,
-) -> None:
-    post_collection_webhooks(
-        config=config,
-        event=event,
-        collection_id=collection_id,
-        details=details,
-        notify=notify,
-        post=post_webhook,
-        log=_LOG,
-    )
-
-
 def _ensure_collection_upload_archiving(upload: CollectionUploadRecord) -> None:
     if upload.state not in {"archiving", "failed"}:
         upload.state = "archiving"
@@ -1606,7 +1593,6 @@ def _finalized_collection_upload_payload(
         "archive_total_bytes": archive_stored_bytes,
         "archive_uploaded_parts": None,
         "archive_total_parts": None,
-        "notify": _decode_collection_notify_json(collection.notify_json),
         "files": [
             {
                 "path": file_record.path,
@@ -1660,7 +1646,6 @@ def _collection_upload_payload(
         "archive_total_bytes": int(object_progress[1]),
         "archive_uploaded_parts": int(object_progress[2]),
         "archive_total_parts": int(object_progress[3]),
-        "notify": _decode_collection_notify_json(upload.notify_json),
         "files": [_collection_upload_file_payload(file_record) for file_record in files],
         "collection": _collection_summary_payload(collection) if collection is not None else None,
     }

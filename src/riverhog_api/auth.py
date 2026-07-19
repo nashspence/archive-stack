@@ -15,6 +15,7 @@ from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_DELETE,
     COLLECTIONS_UPLOAD,
+    EVENTS_READ,
     KEYS_MANAGE,
     RETRIEVAL_MANAGE,
     ApplicationPrincipal,
@@ -112,6 +113,10 @@ KeyManager = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(KEYS_MANAGE))),
 ]
+EventsReader = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(EVENTS_READ))),
+]
 
 
 __all__ = [
@@ -121,6 +126,7 @@ __all__ = [
     "CatalogReader",
     "CollectionDeleter",
     "CollectionUploader",
+    "EventsReader",
     "KeyManager",
     "RetrievalManager",
     "authenticate_authorization_header",
