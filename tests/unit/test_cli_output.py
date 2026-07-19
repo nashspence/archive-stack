@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jeb.output import format_archive_plan, format_attempts, format_status
 from riverhog_cli.output import (
     format_archive_report,
     format_collection_summary,
@@ -7,9 +8,6 @@ from riverhog_cli.output import (
     format_collection_upload_plan,
     format_collections,
     format_find,
-    format_jeb_archive_plan,
-    format_jeb_attempts,
-    format_jeb_status,
 )
 
 
@@ -118,7 +116,7 @@ def test_archive_report_uses_remote_storage_measurement() -> None:
 
 
 def test_jeb_output_remains_concise() -> None:
-    attempts = format_jeb_attempts(
+    attempts = format_attempts(
         {
             "page": 1,
             "pages": 1,
@@ -126,8 +124,8 @@ def test_jeb_output_remains_concise() -> None:
             "attempts": [{"attempt_id": "ja-1", "source_id": "camera", "state": "complete"}],
         }
     )
-    status = format_jeb_status({"sources": [{"id": "camera", "enabled": True}]})
-    plan = format_jeb_archive_plan({"source_id": "camera", "file_count": 1})
+    status = format_status({"sources": [{"id": "camera", "enabled": True}]})
+    plan = format_archive_plan({"source_id": "camera", "file_count": 1})
 
     assert "ja-1" in attempts
     assert "camera" in status

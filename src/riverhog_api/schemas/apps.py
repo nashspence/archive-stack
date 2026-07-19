@@ -29,6 +29,7 @@ class AppListOut(RiverhogModel):
 class AppKeyOut(RiverhogModel):
     id: str
     app: str
+    permissions: list[str]
     status: Literal["active", "expired", "revoked"]
     created_at: str
     expires_at: str | None
@@ -54,4 +55,5 @@ class AppKeyListOut(RiverhogModel):
 
 
 class CreateAppKeyRequest(RiverhogModel):
+    permissions: list[str] = Field(min_length=1)
     expires_in_seconds: int | None = Field(default=None, ge=1)

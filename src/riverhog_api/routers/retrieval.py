@@ -7,8 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from riverhog_api.auth import RetrievalManager
 from riverhog_api.deps import ContainerDep
-from riverhog_api.external_auth import ExternalApp
 from riverhog_api.schemas.retrieval import (
     CreateRetrievalJobRequest,
     RetrievalJobOut,
@@ -27,7 +27,7 @@ def _files(request: RetrievalPlanRequest) -> list[tuple[str, str]]:
 @router.post("/retrieval-plans", response_model=RetrievalPlanOut)
 def plan_retrieval(
     request: RetrievalPlanRequest,
-    _app: ExternalApp,
+    _principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalPlanOut:
     payload = container.retrieval.plan(
@@ -42,13 +42,13 @@ def plan_retrieval(
 @router.post("/retrieval-jobs", response_model=RetrievalJobOut)
 def create_retrieval_job(
     request: CreateRetrievalJobRequest,
-    app: ExternalApp,
+    principal: RetrievalManager,
     container: ContainerDep,
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> RetrievalJobOut:
     plan_etag = (if_match or "").strip().strip('"')
     payload = container.retrieval.create(
-        app=app,
+        app=principal.app,
         files=_files(request),
         plan_etag=plan_etag,
         lease=(
@@ -61,28 +61,34 @@ def create_retrieval_job(
 @router.get("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)
 def get_retrieval_job(
     job_id: str,
-    app: ExternalApp,
+    principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalJobOut:
-    return RetrievalJobOut.model_validate(container.retrieval.get(app=app, job_id=job_id))
+    return RetrievalJobOut.model_validate(
+        container.retrieval.get(app=principal.app, job_id=job_id)
+    )
 
 
 @router.delete("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)
 def cancel_retrieval_job(
     job_id: str,
-    app: ExternalApp,
+    principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalJobOut:
-    return RetrievalJobOut.model_validate(container.retrieval.cancel(app=app, job_id=job_id))
+    return RetrievalJobOut.model_validate(
+        container.retrieval.cancel(app=principal.app, job_id=job_id)
+    )
 
 
 @router.post("/retrieval-jobs/{job_id}/ack", response_model=RetrievalJobOut)
 def acknowledge_retrieval_job(
     job_id: str,
-    app: ExternalApp,
+    principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalJobOut:
-    return RetrievalJobOut.model_validate(container.retrieval.acknowledge(app=app, job_id=job_id))
+    return RetrievalJobOut.model_validate(
+        container.retrieval.acknowledge(app=principal.app, job_id=job_id)
+    )
 
 
 @router.head("/retrieval-jobs/{job_id}/content", include_in_schema=False)
@@ -92,7 +98,7 @@ def acknowledge_retrieval_job(
 )
 def get_retrieval_content(
     job_id: str,
-    app: ExternalApp,
+    principal: RetrievalManager,
     container: ContainerDep,
     http_request: Request,
     collection_id: str = Query(),
@@ -101,7 +107,7 @@ def get_retrieval_content(
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
 ) -> Response:
     total_bytes, sha256 = container.retrieval.content_metadata(
-        app=app,
+        app=principal.app,
         job_id=job_id,
         collection_id=collection_id,
         path=path,
@@ -123,7 +129,7 @@ def get_retrieval_content(
     if http_request.method == "HEAD":
         return Response(status_code=status_code, headers=headers)
     chunks, returned_bytes, returned_sha256 = container.retrieval.content(
-        app=app,
+        app=principal.app,
         job_id=job_id,
         collection_id=collection_id,
         path=path,

@@ -9,6 +9,11 @@ from urllib.parse import quote
 from starlette.requests import Request
 
 from riverhog_api.routers.internal import authorize_tusd_data_plane, handle_tusd_hook
+from riverhog_core.app_permissions import (
+    CATALOG_READ,
+    COLLECTIONS_UPLOAD,
+    ApplicationPrincipal,
+)
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
@@ -58,13 +63,34 @@ def _hook_payload(kind: str, upload_id: str) -> dict[str, object]:
     }
 
 
+def _container_with_permissions(*permissions: str) -> SimpleNamespace:
+    principal = ApplicationPrincipal(
+        app="uploader",
+        key_id="key",
+        permissions=frozenset(permissions),
+    )
+
+    class Keys:
+        def authenticate(self, token: str) -> ApplicationPrincipal | None:
+            return principal if token == "application-token" else None
+
+    return SimpleNamespace(app_keys=Keys())
+
+
 def test_precreate_hook_assigns_the_authenticated_opaque_upload_id(monkeypatch) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
     upload_id = ".riverhog/uploads/by-target/" + "a" * 64
+    monkeypatch.setattr(
+        "riverhog_api.routers.internal.default_container",
+        lambda: _container_with_permissions(COLLECTIONS_UPLOAD),
+    )
 
     status, payload = _hook_response(
         _hook_payload("pre-create", upload_id),
-        headers={"X-Riverhog-Tusd-Hook-Secret": "hook-secret"},
+        headers={
+            "X-Riverhog-Tusd-Hook-Secret": "hook-secret",
+            "Authorization": "Bearer application-token",
+        },
     )
 
     assert status == 200
@@ -109,19 +135,25 @@ def test_tusd_metadata_contains_only_the_opaque_upload_id() -> None:
     assert base64.b64decode(encoded).decode("ascii") == tusd_upload_id_for_target_path(target_path)
 
 
-def test_tusd_data_plane_auth_allows_an_authenticated_upload_id(monkeypatch) -> None:
-    monkeypatch.setenv("RIVERHOG_API_TOKEN", "api-token")
+def test_tusd_data_plane_auth_requires_the_upload_permission() -> None:
     upload_id = ".riverhog/uploads/by-target/" + "c" * 64
-
-    response = authorize_tusd_data_plane(
-        _request(
-            method="GET",
-            headers={
-                "Authorization": "Bearer api-token",
-                "X-Original-Method": "PATCH",
-                "X-Original-Uri": f"/files/{quote(upload_id, safe='')}",
-            },
-        )
+    request = _request(
+        method="GET",
+        headers={
+            "Authorization": "Bearer application-token",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": f"/files/{quote(upload_id, safe='')}",
+        },
     )
 
+    response = authorize_tusd_data_plane(
+        request,
+        _container_with_permissions(COLLECTIONS_UPLOAD),
+    )
     assert response.status_code == 204
+
+    forbidden = authorize_tusd_data_plane(
+        request,
+        _container_with_permissions(CATALOG_READ),
+    )
+    assert forbidden.status_code == 403

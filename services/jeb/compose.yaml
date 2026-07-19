@@ -8,10 +8,13 @@ services:
     env_file:
       - ../../config/examples/jeb/jeb.env
     environment:
+      JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
       JEB_HEALTH_HOST: 0.0.0.0
       JEB_HEALTH_PORT: "8081"
-      JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/jeb/files/}
+      JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/files/}
       JEB_TUS_INCOMPLETE_MAX_AGE: ${JEB_TUS_INCOMPLETE_MAX_AGE:-14d}
+    ports:
+      - "${JEB_API_BIND_ADDR:-127.0.0.1}:${JEB_API_PORT:-8081}:8081"
     healthcheck:
       test:
         - CMD
@@ -47,7 +50,7 @@ services:
       - -port
       - "1080"
       - -base-path
-      - /jeb/files/
+      - /files/
       - -behind-proxy
       - -disable-download
       - -upload-dir

@@ -37,11 +37,17 @@ through guarded copy and retirement operations. An archive copy reads and verifi
 source object set, writes and verifies an equivalent destination set, and records the copy
 only after completion.
 
-## External applications and retrieval
+## Applications and retrieval
 
 Riverhog publishes portable collection manifests and current collection changes through a
-narrow ResourceSync profile. External applications keep their own desired state and data;
+narrow ResourceSync profile. Applications keep their own desired state and data;
 Riverhog does not track whether an application has materialized a file.
+
+Every application key carries explicit permissions. Authentication establishes a named
+application principal; permissions, rather than a client class, control catalog, retrieval,
+upload, deletion, archive, and key-management operations. The bootstrap credential can
+only issue application keys. Riverhog's guarded deletion and download policies remain in
+force after authorization.
 
 An application submits exact immutable file references from a retrieval plan. Riverhog
 chooses a complete archive copy and creates an application-owned retrieval job. Immediately
@@ -54,7 +60,7 @@ requires retrieval preparation.
 
 The content endpoint reconstructs one logical file, supports validators and byte ranges,
 and verifies archive and file checksums. The default client's `local` subtree is the
-reference external application: it owns a local directory and SQLite catalog, follows
+reference application: it owns a local directory and SQLite catalog, follows
 ResourceSync changes, obtains retrieval jobs, verifies downloads, and atomically publishes
 local files. Other applications use the same interface and remain isolated from its state.
 
@@ -63,12 +69,12 @@ local files. Other applications use the same interface and remain isolated from 
 - Riverhog owns custody, search, portable catalog publication, retrieval preparation, and
   verified logical-file delivery.
 - The `riverhog local` client owns one local materialization, including its directory,
-  SQLite state, selection, repair, audit, and eviction. It uses only the external-application
-  API and credential.
+  SQLite state, selection, repair, audit, and eviction. It uses the same permission-bearing
+  application API as every other Riverhog client.
 - Munchy owns media discovery, routing, transformation, metadata projection, and assembly
   before handing completed artifacts to a named destination adapter.
 - Jeb owns source enrollment and credentials, transport-neutral landing, watched-drop
-  scheduling, and named target submission.
+  scheduling, named target submission, and its independently authenticated API and CLI.
 - Gogurt maps mounted-volume markers to configured operator actions.
 - Downstream private configuration owns real identity, destinations, recipients, remotes,
   application keys, and deployment topology.

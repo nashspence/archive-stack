@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.domain.models import ArchiveUsageReport, CollectionListPage, CollectionSummary
 
 JsonObject = dict[str, object]
@@ -116,8 +117,15 @@ class RetrievalService(Protocol):
 
 
 class AppKeyService(Protocol):
-    def authenticate(self, token: str) -> str | None: ...
-    def create(self, *, app: str, expires_in: timedelta | None = None) -> JsonObject: ...
+    def authenticate(self, token: str) -> ApplicationPrincipal | None: ...
+    def create(
+        self,
+        *,
+        app: str,
+        permissions: Sequence[str],
+        grantor: ApplicationPrincipal,
+        expires_in: timedelta | None = None,
+    ) -> JsonObject: ...
     def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
     def list_apps(
         self,

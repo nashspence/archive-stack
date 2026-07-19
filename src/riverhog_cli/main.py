@@ -52,8 +52,8 @@ from riverhog_core.tus_upload import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
-application_app = typer.Typer(help="External application access.")
-app_key_app = typer.Typer(help="External application key management.")
+application_app = typer.Typer(help="Application access.")
+app_key_app = typer.Typer(help="Application key management.")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
@@ -141,7 +141,7 @@ def app_list_cmd(
     ids: Annotated[bool, typer.Option("--ids", help="Emit one app name per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List external applications with key summaries."""
+    """List applications with key summaries."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
@@ -163,7 +163,14 @@ def app_list_cmd(
 
 @app_key_app.command("create")
 def app_key_create_cmd(
-    app_name: Annotated[str, typer.Argument(help="External application name")],
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    permission: Annotated[
+        list[str],
+        typer.Option(
+            "--permission",
+            help="Permission to grant; repeat for more than one.",
+        ),
+    ],
     expires_in: Annotated[
         str | None,
         typer.Option("--expires-in", help="Optional key lifetime such as 30d"),
@@ -185,6 +192,7 @@ def app_key_create_cmd(
             )
     payload = client().create_app_key(
         app_name,
+        permissions=permission,
         expires_in_seconds=expires_in_seconds,
     )
     emit(payload if json_mode else format_app_key_created(payload), json_mode=json_mode)
@@ -192,7 +200,7 @@ def app_key_create_cmd(
 
 @app_key_app.command("list")
 def app_key_list_cmd(
-    app_name: Annotated[str, typer.Argument(help="External application name")],
+    app_name: Annotated[str, typer.Argument(help="Application name")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
@@ -236,7 +244,7 @@ def app_key_revoke_cmd(
     key_id: Annotated[str, typer.Argument(help="Key id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Immediately revoke one external application key."""
+    """Immediately revoke one application key."""
 
     payload = client().revoke_app_key(app_name, key_id)
     emit(payload if json_mode else format_app_key_revoked(payload), json_mode=json_mode)

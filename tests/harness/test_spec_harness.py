@@ -108,7 +108,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
     assert COLLECTION_ID.encode() in resources.body
 
 
-def test_external_app_retrieves_one_manifest_selected_file(harness: Harness) -> None:
+def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> None:
     manifest, etag = harness.retrieval.collection_manifest(COLLECTION_ID)
     assert manifest["files"] == [
         {

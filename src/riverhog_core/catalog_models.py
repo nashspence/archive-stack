@@ -257,6 +257,7 @@ class AppKeyRecord(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     app: Mapped[str] = mapped_column(String)
     token_sha256: Mapped[str] = mapped_column(String(64))
+    permissions_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)

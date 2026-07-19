@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 import threading
 import uuid
 from collections.abc import Callable, Mapping
@@ -28,6 +30,7 @@ from jeb.sources import SourceRegistryError
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)
+DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,9 @@ class JebServiceOperations:
 class JebServiceState:
     collector: Collector
     operations: JebServiceOperations = field(default_factory=JebServiceOperations)
+    api_token: str = field(
+        default_factory=lambda: os.getenv("JEB_API_TOKEN") or DEFAULT_JEB_API_TOKEN
+    )
 
 
 def _response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
@@ -268,6 +274,26 @@ def _handle_invalid_state(handler: BaseHTTPRequestHandler, exc: UnrecoverableJeb
     _error(handler, HTTPStatus.CONFLICT, code="invalid_state", message=str(exc))
 
 
+def _authorize_management_api(
+    handler: BaseHTTPRequestHandler,
+    *,
+    expected_token: str,
+) -> bool:
+    scheme, _, supplied = handler.headers.get("Authorization", "").partition(" ")
+    if (
+        scheme.casefold() == "bearer"
+        and supplied
+        and secrets.compare_digest(supplied, expected_token)
+    ):
+        return True
+    _empty_response(
+        handler,
+        HTTPStatus.UNAUTHORIZED,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    return False
+
+
 def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
     return {
         "RejectUpload": True,
@@ -280,7 +306,7 @@ def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
 
 
 def _source_path(path: str, *, action: str | None = None) -> str | None:
-    prefix = "/v1/jeb/sources/"
+    prefix = "/v1/sources/"
     if not path.startswith(prefix):
         return None
     remainder = path.removeprefix(prefix)
@@ -345,7 +371,9 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         },
                     )
                     return
-                if split.path == "/v1/jeb/config/check":
+                if not _authorize_management_api(self, expected_token=state.api_token):
+                    return
+                if split.path == "/v1/config/check":
                     state.collector.init_db()
                     sources = state.collector.source_registry.list()
                     _response(
@@ -358,7 +386,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         },
                     )
                     return
-                if split.path == "/v1/jeb/sources":
+                if split.path == "/v1/sources":
                     state.collector.init_db()
                     _response(
                         self,
@@ -385,7 +413,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         state.collector.source_registry.get(source_id).summary(),
                     )
                     return
-                if split.path == "/v1/jeb/status":
+                if split.path == "/v1/status":
                     state.collector.init_db()
                     payload = state.collector.status_summary(
                         include_backlog=_bool(params, "include_backlog", True)
@@ -393,7 +421,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     payload["active_operation"] = state.operations.active_summary()
                     _response(self, HTTPStatus.OK, payload)
                     return
-                if split.path == "/v1/jeb/attempts":
+                if split.path == "/v1/attempts":
                     sort = _first(params, "sort", "updated_at") or "updated_at"
                     if sort not in ATTEMPT_LIST_SORT_FIELDS:
                         raise ValueError(
@@ -477,7 +505,9 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         )
                     _response(self, HTTPStatus.OK, {})
                     return
-                if split.path == "/v1/jeb/sources":
+                if not _authorize_management_api(self, expected_token=state.api_token):
+                    return
+                if split.path == "/v1/sources":
                     payload = _json_body(self)
                     source_id = str(payload.get("id") or "").strip()
                     if not source_id:
@@ -566,7 +596,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         ),
                     )
                     return
-                if split.path == "/v1/jeb/once":
+                if split.path == "/v1/once":
                     state.collector.init_db()
                     operation_summary = state.operations.start(
                         operation="once",
@@ -578,7 +608,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         {"status": "started", "operation": operation_summary},
                     )
                     return
-                if split.path == "/v1/jeb/archive-now":
+                if split.path == "/v1/archive-now":
                     payload = _json_body(self)
                     source = str(payload.get("source") or "").strip()
                     if not source:
@@ -641,6 +671,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
 
         def do_PATCH(self) -> None:  # noqa: N802
             split = urlsplit(self.path)
+            if not _authorize_management_api(self, expected_token=state.api_token):
+                return
             try:
                 source_id = _source_path(split.path)
                 if source_id is None:
@@ -660,6 +692,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             split = urlsplit(self.path)
+            if not _authorize_management_api(self, expected_token=state.api_token):
+                return
             try:
                 source_id = _source_path(split.path)
                 if source_id is None:

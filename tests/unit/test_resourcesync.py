@@ -11,7 +11,7 @@ from riverhog_api.routers.resourcesync import (
     resourcesync_change_list,
     resourcesync_resource_list,
 )
-from riverhog_cli.client import ExternalAppClient
+from riverhog_cli.client import ApiClient
 
 COLLECTION_ID = "2026/20260102T030405Z__catalog"
 ETAG = "a" * 64
@@ -90,7 +90,7 @@ def test_cli_parses_resourcesync_cursor_and_collection_change() -> None:
         after=2,
     )
 
-    class Client(ExternalAppClient):
+    class Client(ApiClient):
         def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
             assert (method, path, kwargs) == (
                 "GET",

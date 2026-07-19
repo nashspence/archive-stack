@@ -3188,9 +3188,9 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
             env_value_from(
                 values,
                 "JEB_TUSD_BASE_URL",
-                "http://jeb-tusd:1080/jeb/files/",
+                "http://jeb-tusd:1080/files/",
             )
-            or "http://jeb-tusd:1080/jeb/files/"
+            or "http://jeb-tusd:1080/files/"
         ).rstrip("/")
         + "/",
         tus_incomplete_max_age_seconds=tus_incomplete_max_age_seconds,

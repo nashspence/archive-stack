@@ -16,6 +16,12 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
 
     assert service["environment"]["JEB_HEALTH_HOST"] == "0.0.0.0"
     assert service["environment"]["JEB_HEALTH_PORT"] == "8081"
+    assert service["environment"]["JEB_API_TOKEN"] == (
+        "${JEB_API_TOKEN:-jeb-development-api-token}"
+    )
+    assert service["ports"] == [
+        "${JEB_API_BIND_ADDR:-127.0.0.1}:${JEB_API_PORT:-8081}:8081"
+    ]
     runtime = config_from_env(
         {
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
@@ -53,6 +59,7 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
         "jeb-tusd",
     }
     assert services["jeb-tusd"]["command"][-1] == "pre-create,post-finish"
+    assert "/files/" in services["jeb-tusd"]["command"]
     assert services["jeb-tusd"].get("ports", []) == []
     assert services["jeb-tus"]["ports"] == [
         "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_TUS_PORT:-1081}:1081"
@@ -84,6 +91,7 @@ def test_jeb_tus_proxy_streams_bounded_upload_chunks() -> None:
     config = (REPO / "services" / "jeb" / "adapters" / "tus" / "nginx.conf").read_text(
         encoding="utf-8"
     )
+    assert "location ^~ /files/" in config
 
     assert config.count("client_max_body_size 128m;") == 2
     for directive in (

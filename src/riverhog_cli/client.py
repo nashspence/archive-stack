@@ -213,11 +213,49 @@ class _HttpApiClient:
             return downloaded
 
 
-class ExternalAppClient(_HttpApiClient):
-    """Client for the ResourceSync and retrieval surface exposed to external apps."""
-
+class ApiClient(_HttpApiClient):
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        super().__init__(base_url, token, token_env="RIVERHOG_APP_TOKEN")
+        super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
+        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
+        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", False)
+        self._upload_client: TusHttpClient | None = None
+
+    def close(self) -> None:
+        super().close()
+        if self._upload_client is not None:
+            self._upload_client.close()
+            self._upload_client = None
+
+    def _upload_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.host_header:
+            headers["Host"] = self.host_header
+        return headers
+
+    def tus_client(self) -> TusHttpClient:
+        if self._upload_client is None:
+            self._upload_client = TusHttpClient(
+                headers=self._upload_headers(),
+                timeout_seconds=_timeout_seconds(
+                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
+                    _UPLOAD_TIMEOUT_SECONDS,
+                ),
+                verify_tls=self.verify_tls,
+                http2=self.upload_http2,
+                url_rewriter=self._upload_url,
+            )
+        return self._upload_client
+
+    def _upload_url(self, upload_url: str) -> str:
+        if self.upload_base_url is None:
+            return upload_url
+        parsed = urlsplit(upload_url)
+        if not parsed.scheme or not parsed.netloc:
+            return upload_url
+        base = urlsplit(self.upload_base_url)
+        return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, parsed.fragment))
 
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
         response = self._request(
@@ -304,52 +342,6 @@ class ExternalAppClient(_HttpApiClient):
             progress=progress,
         )
         return int(result)
-
-
-class ApiClient(_HttpApiClient):
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
-        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
-        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", False)
-        self._upload_client: TusHttpClient | None = None
-
-    def close(self) -> None:
-        super().close()
-        if self._upload_client is not None:
-            self._upload_client.close()
-            self._upload_client = None
-
-    def _upload_headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if self.host_header:
-            headers["Host"] = self.host_header
-        return headers
-
-    def tus_client(self) -> TusHttpClient:
-        if self._upload_client is None:
-            self._upload_client = TusHttpClient(
-                headers=self._upload_headers(),
-                timeout_seconds=_timeout_seconds(
-                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
-                    _UPLOAD_TIMEOUT_SECONDS,
-                ),
-                verify_tls=self.verify_tls,
-                http2=self.upload_http2,
-                url_rewriter=self._upload_url,
-            )
-        return self._upload_client
-
-    def _upload_url(self, upload_url: str) -> str:
-        if self.upload_base_url is None:
-            return upload_url
-        parsed = urlsplit(upload_url)
-        if not parsed.scheme or not parsed.netloc:
-            return upload_url
-        base = urlsplit(self.upload_base_url)
-        return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, parsed.fragment))
-
     def create_or_resume_collection_upload(
         self,
         slug: str,
@@ -547,9 +539,10 @@ class ApiClient(_HttpApiClient):
         self,
         app: str,
         *,
+        permissions: Sequence[str],
         expires_in_seconds: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = {"permissions": list(permissions)}
         if expires_in_seconds is not None:
             payload["expires_in_seconds"] = expires_in_seconds
         return self._json(
@@ -656,154 +649,6 @@ class ApiClient(_HttpApiClient):
             "offset": next_offset,
             "expires_at": None,
         }
-
-    def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            "/v1/jeb/status",
-            params={"include_backlog": str(include_backlog).lower()},
-        )
-
-    def list_jeb_attempts(
-        self,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "updated_at",
-        order: str = "desc",
-        terminal: str = "active",
-        state: str | None = None,
-        source: str | None = None,
-        collection_slug: str | None = None,
-        target: str | None = None,
-        query: str | None = None,
-        all_items: bool = False,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-            "terminal": terminal,
-        }
-        for key, value in {
-            "state": state,
-            "source": source,
-            "collection_slug": collection_slug,
-            "target": target,
-            "q": query,
-        }.items():
-            if value is not None:
-                params[key] = value
-        if all_items:
-            params["all"] = True
-        return self._json("GET", "/v1/jeb/attempts", params=params)
-
-    def check_jeb_config(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/jeb/config/check")
-
-    def run_jeb_once(self) -> dict[str, Any]:
-        return self._json("POST", "/v1/jeb/once")
-
-    def archive_jeb_now(
-        self,
-        *,
-        source: str,
-        process: bool = True,
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/jeb/archive-now",
-            json={"source": source, "process": process, "dry_run": dry_run},
-        )
-
-    def list_jeb_sources(
-        self,
-        *,
-        page: int = 1,
-        per_page: int = 25,
-        sort: str = "id",
-        order: str = "asc",
-        query: str | None = None,
-        enabled: bool | None = None,
-        adapter: str | None = None,
-        target: str | None = None,
-        all_items: bool = False,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-            "sort": sort,
-            "order": order,
-        }
-        for key, value in {
-            "q": query,
-            "enabled": None if enabled is None else str(enabled).lower(),
-            "adapter": adapter,
-            "target": target,
-        }.items():
-            if value is not None:
-                params[key] = value
-        if all_items:
-            params["all"] = True
-        return self._json("GET", "/v1/jeb/sources", params=params)
-
-    def get_jeb_source(self, source_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/jeb/sources/{quote(source_id, safe='')}")
-
-    def add_jeb_source(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self._json("POST", "/v1/jeb/sources", json=dict(payload))
-
-    def update_jeb_source(
-        self,
-        source_id: str,
-        changes: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        return self._json(
-            "PATCH",
-            f"/v1/jeb/sources/{quote(source_id, safe='')}",
-            json=dict(changes),
-        )
-
-    def set_jeb_source_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
-        action = "enable" if enabled else "disable"
-        return self._json(
-            "POST",
-            f"/v1/jeb/sources/{quote(source_id, safe='')}/{action}",
-        )
-
-    def rotate_jeb_source_credential(
-        self,
-        source_id: str,
-        *,
-        credential: str | None = None,
-    ) -> dict[str, Any]:
-        payload = {} if credential is None else {"credential": credential}
-        return self._json(
-            "POST",
-            f"/v1/jeb/sources/{quote(source_id, safe='')}/credential",
-            json=payload,
-        )
-
-    def plan_jeb_source_removal(
-        self,
-        source_id: str,
-        *,
-        purge: bool,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/jeb/sources/{quote(source_id, safe='')}/removal-plan",
-            json={"purge": purge},
-        )
-
-    def remove_jeb_source(self, source_id: str, *, challenge: str) -> dict[str, Any]:
-        return self._json(
-            "DELETE",
-            f"/v1/jeb/sources/{quote(source_id, safe='')}",
-            json={"challenge": challenge},
-        )
 
     def get_file_content(self, path: str, output: Path | None = None) -> bytes:
         response = self._request("GET", f"/v1/files/{quote(path, safe='/')}/content")

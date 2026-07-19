@@ -36,7 +36,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
     }
 
     assert imports == {
-        ("riverhog_cli.client", "ExternalAppClient"),
+        ("riverhog_cli.client", "ApiClient"),
         ("riverhog_core.fs_paths", "normalize_collection_id"),
         ("riverhog_core.fs_paths", "normalize_relpath"),
     }
@@ -115,7 +115,7 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
-    monkeypatch.setattr(local_materialization, "ExternalAppClient", lambda: api)
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
     added = runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID])
@@ -150,7 +150,7 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     api = FakeApi()
     api.job_state = "requested"
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
-    monkeypatch.setattr(local_materialization, "ExternalAppClient", lambda: api)
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
     assert runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID]).exit_code == 0

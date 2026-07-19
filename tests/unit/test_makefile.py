@@ -12,11 +12,7 @@ import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from riverhog_api.routers.jeb import (
-    DEFAULT_JEB_SERVICE_URL,
-    DEFAULT_JEB_TIMEOUT,
-)
-from riverhog_core.runtime_config import load_runtime_config, parse_duration
+from riverhog_core.runtime_config import load_runtime_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -240,8 +236,9 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         match = re.fullmatch(r"\$\{[A-Z0-9_]+:?-([^}]*)\}", value)
         compose_environment[name] = match.group(1) if match else value
 
-    assert compose_environment["RIVERHOG_JEB_URL"] == DEFAULT_JEB_SERVICE_URL
-    assert parse_duration(compose_environment["RIVERHOG_JEB_TIMEOUT"]) == DEFAULT_JEB_TIMEOUT
+    assert compose_environment["RIVERHOG_BOOTSTRAP_TOKEN"] == (
+        "riverhog-development-bootstrap-token"
+    )
 
     with patch.dict(os.environ, {}, clear=True):
         runtime_defaults = asdict(load_runtime_config())
@@ -312,7 +309,7 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
         "RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
-        "RIVERHOG_API_TOKEN",
+        "RIVERHOG_BOOTSTRAP_TOKEN",
         "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         "RIVERHOG_INGRESS_ENDPOINT_URL",
         "RIVERHOG_INGRESS_BUCKET",

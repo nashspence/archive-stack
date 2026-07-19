@@ -12,16 +12,16 @@ from jeb.collector import (
     config_from_env,
 )
 from jeb.listing import add_list_output_arguments, add_list_query_arguments
-from jeb.service_api import JebServiceState, start_jeb_service_server
-from riverhog_cli.output import (
+from jeb.output import (
     emit,
-    format_jeb_archive_plan,
-    format_jeb_attempts,
-    format_jeb_config_check,
-    format_jeb_operation,
-    format_jeb_status,
+    format_archive_plan,
+    format_attempts,
+    format_config_check,
     format_list_ids,
+    format_operation,
+    format_status,
 )
+from jeb.service_api import JebServiceState, start_jeb_service_server
 
 DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
 DEFAULT_HEALTH_PORT = "8081"
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         collector.init_db()
         sources = collector.source_registry.list()
         emit(
-            format_jeb_config_check(
+            format_config_check(
                 {
                     "status": "ok",
                     "source_count": len(sources),
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "once":
         collector.run_once()
         emit(
-            format_jeb_operation(
+            format_operation(
                 {"status": "completed", "operation": {"operation": "once"}},
                 title="jeb scheduler pass",
             ),
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             except UnrecoverableJebError as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
-            emit(format_jeb_archive_plan(payload), json_mode=False)
+            emit(format_archive_plan(payload), json_mode=False)
             return 0
         try:
             attempt_id = collector.archive_now(
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if attempt_id is None:
             emit(
-                format_jeb_operation(
+                format_operation(
                     {"status": "no_eligible_files", "source": args.source},
                     title="jeb archive",
                 ),
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         attempt = collector.load_attempt(attempt_id)
         emit(
-            format_jeb_operation(
+            format_operation(
                 {
                     "status": "processed" if not args.no_process else "staged",
                     "source": args.source,
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "status":
         collector.init_db()
         payload = collector.status_summary(include_backlog=not args.no_backlog)
-        emit(payload if args.json else format_jeb_status(payload), json_mode=args.json)
+        emit(payload if args.json else format_status(payload), json_mode=args.json)
         return 0
     if command == "attempt":
         collector.init_db()
@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.ids:
             emit(format_list_ids(payload, "attempts", id_key="attempt_id"), json_mode=False)
             return 0
-        emit(payload if args.json else format_jeb_attempts(payload), json_mode=args.json)
+        emit(payload if args.json else format_attempts(payload), json_mode=args.json)
         return 0
     collector.init_db()
     start_jeb_service_server(

@@ -4,6 +4,7 @@ from typing import Literal, cast
 
 from fastapi import APIRouter, Query
 
+from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.search import SearchFileOut, SearchResponse
 
@@ -13,6 +14,7 @@ router = APIRouter(tags=["search"])
 @router.get("/search", response_model=SearchResponse)
 def search(
     container: ContainerDep,
+    _principal: CatalogReader,
     q: str | None = Query(None, min_length=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),

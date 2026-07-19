@@ -11,7 +11,7 @@ bucket permissions, provider contacts, and archive-passphrase custody current. P
 exercise object listing, metadata reads, retrieval requests, and downloads in every store.
 
 After account, credential, provider, or storage-class changes, run an authenticated archive
-report and retrieve known files through the external application interface from the affected
+report and retrieve known files through the application interface from the affected
 store. A report or object listing alone does not establish recoverability.
 
 An AWS archive store may route encrypted object downloads through a private CloudFront
@@ -54,8 +54,8 @@ and short-lived challenge before execution.
 
 Successful deletion removes archive objects in every store, leased retrieval-cache objects,
 recovery-catalog entries, and catalog projections. Provider retention, object versions,
-minimum-storage duration, or billing timing may delay visible cost changes. External
-applications discover deletion through ResourceSync and decide how to handle their own
+minimum-storage duration, or billing timing may delay visible cost changes. Applications
+discover deletion through ResourceSync and decide how to handle their own
 local copies.
 
 Direct provider credentials can bypass Riverhog's ceremony. Protect those credentials and

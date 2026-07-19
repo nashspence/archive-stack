@@ -10,7 +10,7 @@ class FakeJebApi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def get_jeb_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
+    def status(self, *, include_backlog: bool = True) -> dict[str, Any]:
         self.calls.append(("status", {"include_backlog": include_backlog}))
         return {
             "sources": [],
@@ -20,7 +20,7 @@ class FakeJebApi:
             "target_preflight_failures": {"total": 0, "failures": []},
         }
 
-    def list_jeb_attempts(self, **kwargs: Any) -> dict[str, Any]:
+    def list_attempts(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("attempts", kwargs))
         return {
             "page": kwargs["page"],
@@ -34,15 +34,15 @@ class FakeJebApi:
             "attempts": [],
         }
 
-    def check_jeb_config(self) -> dict[str, Any]:
+    def check_config(self) -> dict[str, Any]:
         self.calls.append(("check-config", {}))
         return {"status": "ok", "source_count": 2, "sources": ["a", "b"]}
 
-    def run_jeb_once(self) -> dict[str, Any]:
+    def run_once(self) -> dict[str, Any]:
         self.calls.append(("once", {}))
         return {"status": "started", "operation": {"id": "op-once"}}
 
-    def archive_jeb_now(
+    def archive_now(
         self,
         *,
         source: str,
@@ -77,7 +77,7 @@ class FakeJebApi:
             "operation": None if not process else {"id": "op-archive"},
         }
 
-    def list_jeb_sources(self, **kwargs: Any) -> dict[str, Any]:
+    def list_sources(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("source-list", kwargs))
         return {
             "page": 1,
@@ -94,11 +94,11 @@ class FakeJebApi:
             ],
         }
 
-    def add_jeb_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def add_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("source-add", payload))
         return {"source": payload, "credential": "generated"}
 
-    def plan_jeb_source_removal(self, source_id: str, *, purge: bool) -> dict[str, Any]:
+    def plan_source_removal(self, source_id: str, *, purge: bool) -> dict[str, Any]:
         self.calls.append(("source-removal-plan", {"source": source_id, "purge": purge}))
         return {
             "status": "ready",

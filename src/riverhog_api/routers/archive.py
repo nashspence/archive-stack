@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from riverhog_api.auth import ArchiveManager, ArchiveReader
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_usage_report
 from riverhog_api.schemas.archive import (
@@ -21,6 +22,7 @@ router = APIRouter(tags=["archive"])
 def create_archive_copy(
     request: CreateArchiveCopyRequest,
     container: ContainerDep,
+    _principal: ArchiveManager,
 ) -> ArchiveCopyJobOut:
     return ArchiveCopyJobOut.model_validate(
         container.archive_copies.create_or_resume(
@@ -38,6 +40,7 @@ def create_archive_copy(
 def plan_archive_copy_retirement(
     request: ArchiveCopyRetirementRequest,
     container: ContainerDep,
+    _principal: ArchiveManager,
 ) -> ArchiveCopyRetirementPlanOut:
     return ArchiveCopyRetirementPlanOut.model_validate(
         container.archive_copy_retirements.plan(
@@ -54,6 +57,7 @@ def plan_archive_copy_retirement(
 def retire_archive_copy(
     request: RetireArchiveCopyRequest,
     container: ContainerDep,
+    _principal: ArchiveManager,
 ) -> ArchiveCopyRetirementResultOut:
     return ArchiveCopyRetirementResultOut.model_validate(
         container.archive_copy_retirements.retire(
@@ -67,6 +71,7 @@ def retire_archive_copy(
 @router.get("/archive", response_model=ArchiveUsageReportOut)
 def get_archive_report(
     container: ContainerDep,
+    _principal: ArchiveReader,
     collection: str | None = Query(None),
 ) -> ArchiveUsageReportOut:
     payload = container.archive_reporting.get_report(

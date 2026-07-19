@@ -86,7 +86,7 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     collector = collector_for(
         {
             **jeb_env(tmp_path),
-            "JEB_TUSD_BASE_URL": "http://tusd.test/jeb/files/",
+            "JEB_TUSD_BASE_URL": "http://tusd.test/files/",
             "JEB_TUS_INCOMPLETE_MAX_AGE": "14d",
         }
     )
@@ -124,7 +124,7 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         assert request.method == "DELETE"
-        assert request.url == f"http://tusd.test/jeb/files/{old_id}"
+        assert request.url == f"http://tusd.test/files/{old_id}"
         assert request.headers["Tus-Resumable"] == "1.0.0"
         return httpx.Response(204)
 
@@ -181,7 +181,7 @@ def test_jeb_scheduler_runs_incomplete_tus_cleanup(monkeypatch, tmp_path: Path) 
 def test_jeb_tus_cleanup_defaults_are_bounded(tmp_path: Path) -> None:
     config = config_from_env(jeb_env(tmp_path))
 
-    assert config.ingress.tusd_base_url == "http://jeb-tusd:1080/jeb/files/"
+    assert config.ingress.tusd_base_url == "http://jeb-tusd:1080/files/"
     assert config.ingress.tus_incomplete_max_age_seconds == 14 * 86_400
     with pytest.raises(ValueError, match="must be positive"):
         config_from_env({**jeb_env(tmp_path), "JEB_TUS_INCOMPLETE_MAX_AGE": "0s"})

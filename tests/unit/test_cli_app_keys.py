@@ -48,13 +48,16 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             self,
             app_name: str,
             *,
+            permissions: list[str],
             expires_in_seconds: int | None,
         ) -> dict[str, object]:
             assert app_name == "local"
+            assert permissions == ["catalog:read", "retrieval:manage"]
             assert expires_in_seconds == 2_592_000
             return {
                 "id": "0123456789abcdef",
                 "app": "local",
+                "permissions": ["catalog:read", "retrieval:manage"],
                 "status": "active",
                 "created_at": "2026-07-18T00:00:00.000000Z",
                 "expires_at": "2026-08-17T00:00:00.000000Z",
@@ -67,7 +70,19 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
 
     result = runner.invoke(
         app,
-        ["app", "key", "create", "local", "--expires-in", "30d", "--json"],
+        [
+            "app",
+            "key",
+            "create",
+            "local",
+            "--permission",
+            "catalog:read",
+            "--permission",
+            "retrieval:manage",
+            "--expires-in",
+            "30d",
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0

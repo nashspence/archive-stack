@@ -8,29 +8,28 @@ from typing import Any
 import httpx
 import yaml
 
+from jeb.client import JebApiClient, JebApiError
 from jeb.collector import ATTEMPT_LIST_SORT_FIELDS
 from jeb.listing import add_list_output_arguments, add_list_query_arguments
-from jeb.sources import SOURCE_LIST_SORT_FIELDS
-from riverhog_cli.client import ApiClient
-from riverhog_cli.output import (
+from jeb.output import (
     emit,
-    format_jeb_archive_plan,
-    format_jeb_attempts,
-    format_jeb_config_check,
-    format_jeb_operation,
-    format_jeb_sources,
-    format_jeb_status,
+    format_archive_plan,
+    format_attempts,
+    format_config_check,
     format_list_ids,
+    format_operation,
+    format_sources,
+    format_status,
 )
-from riverhog_core.domain.errors import RiverhogError
+from jeb.sources import SOURCE_LIST_SORT_FIELDS
 
-_API_CLIENT: ApiClient | None = None
+_API_CLIENT: JebApiClient | None = None
 
 
-def client() -> ApiClient:
+def client() -> JebApiClient:
     global _API_CLIENT
     if _API_CLIENT is None:
-        _API_CLIENT = ApiClient()
+        _API_CLIENT = JebApiClient()
     return _API_CLIENT
 
 
@@ -42,13 +41,13 @@ def _close_client() -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    payload = client().get_jeb_status(include_backlog=not args.no_backlog)
-    emit(payload if args.json else format_jeb_status(payload), json_mode=args.json)
+    payload = client().status(include_backlog=not args.no_backlog)
+    emit(payload if args.json else format_status(payload), json_mode=args.json)
     return 0
 
 
 def cmd_attempt_list(args: argparse.Namespace) -> int:
-    payload = client().list_jeb_attempts(
+    payload = client().list_attempts(
         page=args.page,
         per_page=args.per_page,
         sort=args.sort,
@@ -64,27 +63,27 @@ def cmd_attempt_list(args: argparse.Namespace) -> int:
     if args.ids:
         emit(format_list_ids(payload, "attempts", id_key="attempt_id"), json_mode=False)
         return 0
-    emit(payload if args.json else format_jeb_attempts(payload), json_mode=args.json)
+    emit(payload if args.json else format_attempts(payload), json_mode=args.json)
     return 0
 
 
 def cmd_check_config(args: argparse.Namespace) -> int:
-    payload = client().check_jeb_config()
-    emit(payload if args.json else format_jeb_config_check(payload), json_mode=args.json)
+    payload = client().check_config()
+    emit(payload if args.json else format_config_check(payload), json_mode=args.json)
     return 0
 
 
 def cmd_once(args: argparse.Namespace) -> int:
-    payload = client().run_jeb_once()
+    payload = client().run_once()
     if args.json:
         emit(payload, json_mode=True)
         return 0
-    emit(format_jeb_operation(payload, title="jeb scheduler pass"), json_mode=False)
+    emit(format_operation(payload, title="jeb scheduler pass"), json_mode=False)
     return 0
 
 
 def cmd_archive_now(args: argparse.Namespace) -> int:
-    payload = client().archive_jeb_now(
+    payload = client().archive_now(
         source=args.source,
         process=not args.no_process,
         dry_run=args.dry_run,
@@ -93,12 +92,12 @@ def cmd_archive_now(args: argparse.Namespace) -> int:
         emit(payload, json_mode=True)
         return 0
     if args.dry_run:
-        emit(format_jeb_archive_plan(payload), json_mode=False)
+        emit(format_archive_plan(payload), json_mode=False)
         return 0
     if payload.get("status") == "no_eligible_files":
-        emit(format_jeb_operation(payload, title="jeb archive"), json_mode=False)
+        emit(format_operation(payload, title="jeb archive"), json_mode=False)
         return 1
-    emit(format_jeb_operation(payload, title="jeb archive"), json_mode=False)
+    emit(format_operation(payload, title="jeb archive"), json_mode=False)
     return 0
 
 
@@ -122,7 +121,7 @@ def source_credential(args: argparse.Namespace) -> str | None:
 
 
 def cmd_source_list(args: argparse.Namespace) -> int:
-    payload = client().list_jeb_sources(
+    payload = client().list_sources(
         page=args.page,
         per_page=args.per_page,
         sort=args.sort,
@@ -136,12 +135,12 @@ def cmd_source_list(args: argparse.Namespace) -> int:
     if args.ids:
         emit(format_list_ids(payload, "sources"), json_mode=False)
         return 0
-    emit(payload if args.json else format_jeb_sources(payload), json_mode=args.json)
+    emit(payload if args.json else format_sources(payload), json_mode=args.json)
     return 0
 
 
 def cmd_source_show(args: argparse.Namespace) -> int:
-    payload = client().get_jeb_source(args.source)
+    payload = client().get_source(args.source)
     emit(payload, json_mode=True)
     return 0
 
@@ -174,7 +173,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     credential = source_credential(args)
     if credential is not None:
         payload["credential"] = credential
-    result = client().add_jeb_source(payload)
+    result = client().add_source(payload)
     emit(result, json_mode=True)
     return 0
 
@@ -183,19 +182,19 @@ def cmd_source_set(args: argparse.Namespace) -> int:
     changes = load_object(args.changes, label="source changes") if args.changes is not None else {}
     if args.template is not None:
         changes["template"] = args.template
-    payload = client().update_jeb_source(args.source, changes)
+    payload = client().update_source(args.source, changes)
     emit(payload, json_mode=True)
     return 0
 
 
 def cmd_source_enabled(args: argparse.Namespace) -> int:
-    payload = client().set_jeb_source_enabled(args.source, enabled=args.enabled)
+    payload = client().set_source_enabled(args.source, enabled=args.enabled)
     emit(payload, json_mode=True)
     return 0
 
 
 def cmd_source_credential(args: argparse.Namespace) -> int:
-    payload = client().rotate_jeb_source_credential(
+    payload = client().rotate_source_credential(
         args.source,
         credential=source_credential(args),
     )
@@ -228,10 +227,10 @@ def cmd_source_remove(args: argparse.Namespace) -> int:
     if args.dry_run and args.confirm:
         raise ValueError("--dry-run and --confirm cannot be used together")
     if args.confirm:
-        payload = client().remove_jeb_source(args.source, challenge=args.confirm)
+        payload = client().remove_source(args.source, challenge=args.confirm)
         emit(payload, json_mode=args.json)
         return 0
-    plan = client().plan_jeb_source_removal(args.source, purge=args.purge)
+    plan = client().plan_source_removal(args.source, purge=args.purge)
     if args.json:
         emit(plan, json_mode=True)
     else:
@@ -249,7 +248,7 @@ def cmd_source_remove(args: argparse.Namespace) -> int:
     if entered != args.source:
         print("Source removal canceled.", file=sys.stderr)
         return 1
-    result = client().remove_jeb_source(args.source, challenge=challenge)
+    result = client().remove_source(args.source, challenge=challenge)
     emit(result, json_mode=args.json)
     return 0
 
@@ -452,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args) or 0)
-    except (RiverhogError, httpx.TransportError, ValueError) as exc:
+    except (JebApiError, httpx.TransportError, ValueError) as exc:
         print(f"jeb: {_error_message(exc)}", file=sys.stderr)
         return 1
     finally:

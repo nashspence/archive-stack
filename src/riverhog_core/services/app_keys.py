@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import secrets
+from collections.abc import Sequence
 from datetime import timedelta
 
 from sqlalchemy import and_, asc, case, desc, func, or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
+from riverhog_core.app_permissions import ApplicationPrincipal, normalize_permissions
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import AppKeyRecord
-from riverhog_core.domain.errors import BadRequest, NotFound
+from riverhog_core.domain.errors import BadRequest, Forbidden, NotFound
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.timestamps import format_utc_timestamp, utc_now
 
@@ -40,14 +43,6 @@ def _active_expression(now: str) -> ColumnElement[bool]:
     return and_(
         AppKeyRecord.revoked_at.is_(None),
         or_(AppKeyRecord.expires_at.is_(None), AppKeyRecord.expires_at > now),
-    )
-
-
-def _status_expression(now: str) -> ColumnElement[str]:
-    return case(
-        (AppKeyRecord.revoked_at.is_not(None), "revoked"),
-        (AppKeyRecord.expires_at <= now, "expired"),
-        else_="active",
     )
 
 
@@ -95,7 +90,7 @@ class SqlAlchemyAppKeyService:
     def __init__(self, config: RuntimeConfig) -> None:
         self._session_factory = make_session_factory(config.database_url)
 
-    def authenticate(self, token: str) -> str | None:
+    def authenticate(self, token: str) -> ApplicationPrincipal | None:
         if not token:
             return None
         digest = _token_sha256(token)
@@ -109,10 +104,24 @@ class SqlAlchemyAppKeyService:
             if _status(record, now=now) != "active":
                 return None
             record.last_used_at = now
-            return record.app
+            return ApplicationPrincipal(
+                app=record.app,
+                key_id=record.id,
+                permissions=frozenset(_record_permissions(record)),
+            )
 
-    def create(self, *, app: str, expires_in: timedelta | None = None) -> dict[str, object]:
+    def create(
+        self,
+        *,
+        app: str,
+        permissions: Sequence[str],
+        grantor: ApplicationPrincipal,
+        expires_in: timedelta | None = None,
+    ) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
+        normalized_permissions = normalize_permissions(permissions)
+        if not grantor.can_grant(normalized_permissions):
+            raise Forbidden("an application key cannot grant permissions it does not hold")
         if expires_in is not None and expires_in.total_seconds() <= 0:
             raise BadRequest("app key expiry must be positive")
         created = utc_now()
@@ -131,6 +140,7 @@ class SqlAlchemyAppKeyService:
                 id=key_id,
                 app=normalized_app,
                 token_sha256=digest,
+                permissions_json=json.dumps(normalized_permissions, separators=(",", ":")),
                 created_at=created_at,
                 expires_at=expires_at,
                 revoked_at=None,
@@ -253,18 +263,9 @@ class SqlAlchemyAppKeyService:
             filters.append(_active_expression(now) if active else ~_active_expression(now))
         direction = desc if order == "desc" else asc
         sort_column = getattr(AppKeyRecord, sort)
-        statement = (
-            select(
-                AppKeyRecord.id,
-                AppKeyRecord.app,
-                _status_expression(now).label("status"),
-                AppKeyRecord.created_at,
-                AppKeyRecord.expires_at,
-                AppKeyRecord.revoked_at,
-                AppKeyRecord.last_used_at,
-            )
-            .where(*filters)
-            .order_by(direction(sort_column), asc(AppKeyRecord.id))
+        statement = select(AppKeyRecord).where(*filters).order_by(
+            direction(sort_column),
+            asc(AppKeyRecord.id),
         )
         with session_scope(self._session_factory) as session:
             total = int(
@@ -272,7 +273,7 @@ class SqlAlchemyAppKeyService:
             )
             if not all_items:
                 statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = session.execute(statement).mappings().all()
+            records = session.scalars(statement).all()
         return {
             **_page_metadata(
                 page=page,
@@ -285,7 +286,7 @@ class SqlAlchemyAppKeyService:
             "query": query,
             "active": active,
             "app": normalized_app,
-            "keys": [dict(row) for row in rows],
+            "keys": [self._record_payload(record, now=now) for record in records],
         }
 
     @staticmethod
@@ -293,12 +294,26 @@ class SqlAlchemyAppKeyService:
         return {
             "id": record.id,
             "app": record.app,
+            "permissions": list(_record_permissions(record)),
             "status": _status(record, now=now),
             "created_at": record.created_at,
             "expires_at": record.expires_at,
             "revoked_at": record.revoked_at,
             "last_used_at": record.last_used_at,
         }
+
+
+def _record_permissions(record: AppKeyRecord) -> tuple[str, ...]:
+    try:
+        payload = json.loads(record.permissions_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"application key {record.id} has invalid permissions") from exc
+    if not isinstance(payload, list) or any(not isinstance(value, str) for value in payload):
+        raise RuntimeError(f"application key {record.id} has invalid permissions")
+    try:
+        return normalize_permissions(payload)
+    except BadRequest as exc:
+        raise RuntimeError(f"application key {record.id} has invalid permissions") from exc
 
 
 __all__ = ["SqlAlchemyAppKeyService", "normalize_app_name"]

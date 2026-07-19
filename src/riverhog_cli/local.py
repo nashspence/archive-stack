@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 import typer
 
-from riverhog_cli.client import ExternalAppClient
+from riverhog_cli.client import ApiClient
 from riverhog_core.fs_paths import normalize_collection_id, normalize_relpath
 
 local_app = typer.Typer(
@@ -121,7 +121,7 @@ def _matches(path: Path, *, byte_count: int, sha256: str) -> bool:
     return path.is_file() and path.stat().st_size == byte_count and _sha256(path) == sha256
 
 
-def _refresh_catalog(db: sqlite3.Connection, api: ExternalAppClient) -> None:
+def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
     row = db.execute("SELECT value FROM settings WHERE key = 'catalog_cursor'").fetchone()
     after = int(row["value"]) if row is not None else 0
     changes = api.catalog_changes(after=after)
@@ -189,7 +189,7 @@ def _missing_files(
 def _download_job(
     db: sqlite3.Connection,
     target: Path,
-    api: ExternalAppClient,
+    api: ApiClient,
     job: dict[str, Any],
 ) -> int:
     downloaded = 0
@@ -226,7 +226,7 @@ def _download_job(
     return downloaded
 
 
-def _cancel_active_retrievals(db: sqlite3.Connection, api: ExternalAppClient) -> None:
+def _cancel_active_retrievals(db: sqlite3.Connection, api: ApiClient) -> None:
     for row in db.execute("SELECT id FROM retrieval_jobs ORDER BY updated_at"):
         job = api.get_retrieval_job(str(row["id"]))
         if job["state"] in {"requested", "ready", "failed"}:
@@ -236,7 +236,7 @@ def _cancel_active_retrievals(db: sqlite3.Connection, api: ExternalAppClient) ->
 
 def _sync(*, wait: bool, repair: bool) -> None:
     target = _target()
-    with closing(_connect(target)) as db, ExternalAppClient() as api:
+    with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
         active = db.execute(
             "SELECT id FROM retrieval_jobs ORDER BY updated_at DESC LIMIT 1"
@@ -288,7 +288,7 @@ def _sync(*, wait: bool, repair: bool) -> None:
 def add_collection(collection_id: Annotated[str, typer.Argument(help="Collection name")]) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
-    with closing(_connect(target)) as db, ExternalAppClient() as api:
+    with closing(_connect(target)) as db, ApiClient() as api:
         _store_manifest(db, api.get_portable_collection_manifest(normalized))
         db.commit()
     typer.echo(f"desired collection added: {normalized}")
@@ -300,7 +300,7 @@ def remove_collection(
 ) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
-    with closing(_connect(target)) as db, ExternalAppClient() as api:
+    with closing(_connect(target)) as db, ApiClient() as api:
         _cancel_active_retrievals(db, api)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         db.commit()

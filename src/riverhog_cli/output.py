@@ -39,6 +39,12 @@ def _items(payload: Mapping[str, object], key: str) -> list[Mapping[str, object]
     return [item for item in value if isinstance(item, Mapping)]
 
 
+def _strings(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [str(item) for item in value]
+
+
 def _page_line(payload: Mapping[str, object], noun: str) -> str:
     return (
         f"{noun}: {payload.get('total', 0)} "
@@ -92,6 +98,7 @@ def format_app_keys(payload: Mapping[str, object]) -> str:
     for key in _items(payload, "keys"):
         lines.append(
             f"- {key.get('id', 'unknown')}  status={key.get('status', 'unknown')}  "
+            f"permissions={','.join(_strings(key.get('permissions')))}  "
             f"created={key.get('created_at', 'unknown')}  "
             f"expires={key.get('expires_at') or 'never'}  "
             f"last_used={key.get('last_used_at') or 'never'}"
@@ -105,6 +112,8 @@ def format_app_key_created(payload: Mapping[str, object]) -> str:
             "app key created",
             f"app: {payload.get('app', 'unknown')}",
             f"key: {payload.get('id', 'unknown')}",
+            "permissions: "
+            + ",".join(_strings(payload.get("permissions"))),
             f"expires: {payload.get('expires_at') or 'never'}",
             f"token: {payload.get('token', '')}",
             "Save this token now; Riverhog will not show it again.",
@@ -295,34 +304,6 @@ def format_archive_copy_job(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def format_jeb_attempts(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "Jeb attempts")]
-    for attempt in _items(payload, "attempts"):
-        lines.append(
-            f"- {attempt.get('id', attempt.get('attempt_id', 'unknown'))}  "
-            f"source={attempt.get('source_id', attempt.get('source', 'unknown'))}  "
-            f"state={attempt.get('state', 'unknown')}"
-        )
-    return "\n".join(lines)
-
-
-def format_jeb_sources(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "Jeb sources")]
-    for source in _items(payload, "sources"):
-        raw_adapters = source.get("adapters")
-        adapters = (
-            ",".join(str(adapter) for adapter in raw_adapters)
-            if isinstance(raw_adapters, Sequence) and not isinstance(raw_adapters, (str, bytes))
-            else "none"
-        )
-        lines.append(
-            f"- {source.get('id', 'unknown')}  "
-            f"state={'enabled' if source.get('enabled') else 'disabled'}  "
-            f"adapters={adapters}  target={source.get('target', 'unknown')}"
-        )
-    return "\n".join(lines)
-
-
 def format_list_ids(
     payload: Mapping[str, object],
     key: str,
@@ -346,48 +327,3 @@ def format_file_selectors(
         if item.get("collection_id") not in {None, ""}
         and item.get("collection_path") not in {None, ""}
     )
-
-
-def format_jeb_status(payload: Mapping[str, object]) -> str:
-    sources = _items(payload, "sources")
-    batches = payload.get("batches")
-    active_attempts = payload.get("active_attempts")
-    attempt_count = 0
-    if isinstance(active_attempts, Mapping):
-        attempt_count = int(active_attempts.get("total") or 0)
-    lines = [f"Jeb status: sources={len(sources)} active_attempts={attempt_count}"]
-    for source in sources:
-        lines.append(
-            f"- {source.get('id', source.get('source_id', 'unknown'))}  "
-            f"state={'enabled' if source.get('enabled') else 'disabled'}"
-        )
-    if isinstance(batches, Mapping):
-        lines.append(f"batches: total={batches.get('total', 0)} active={batches.get('active', 0)}")
-    incomplete = payload.get("incomplete_tus_uploads")
-    if isinstance(incomplete, Mapping):
-        lines.append(
-            "TUS incomplete: "
-            f"{incomplete.get('total', 0)} ({_bytes(incomplete.get('bytes'))}), "
-            f"stale={incomplete.get('stale', 0)}, "
-            f"oldest={incomplete.get('oldest_age_seconds', 0)}s"
-        )
-    return "\n".join(lines)
-
-
-def format_jeb_archive_plan(payload: Mapping[str, object]) -> str:
-    lines = [
-        f"Jeb archive plan: {payload.get('source', payload.get('source_id', 'unknown'))}",
-        f"eligible files: {payload.get('file_count', 0)}",
-        f"eligible bytes: {payload.get('bytes', 0)}",
-    ]
-    if payload.get("period_start") or payload.get("period_end"):
-        lines.append(f"period: {payload.get('period_start')} — {payload.get('period_end')}")
-    return "\n".join(lines)
-
-
-def format_jeb_config_check(payload: Mapping[str, object]) -> str:
-    return f"Jeb config: {payload.get('status', payload.get('state', 'unknown'))}"
-
-
-def format_jeb_operation(payload: Mapping[str, object], *, title: str) -> str:
-    return f"{title}: {payload.get('status', payload.get('state', 'complete'))}"

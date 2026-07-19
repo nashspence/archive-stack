@@ -1,7 +1,5 @@
 x-riverhog-environment: &riverhog-environment
-  RIVERHOG_API_TOKEN: ${RIVERHOG_API_TOKEN:-}
-  RIVERHOG_JEB_URL: ${RIVERHOG_JEB_URL:-http://riverhog-jeb:8081}
-  RIVERHOG_JEB_TIMEOUT: ${RIVERHOG_JEB_TIMEOUT:-5m}
+  RIVERHOG_BOOTSTRAP_TOKEN: ${RIVERHOG_BOOTSTRAP_TOKEN:-riverhog-development-bootstrap-token}
   RIVERHOG_LOG_LEVEL: ${RIVERHOG_LOG_LEVEL:-INFO}
   RIVERHOG_DATABASE_URL: ${RIVERHOG_DATABASE_URL:-postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog}
   RIVERHOG_PUBLIC_BASE_URL: ${RIVERHOG_PUBLIC_BASE_URL:-http://app:8000}
@@ -121,7 +119,7 @@ services:
       - "-hooks-http"
       - "http://app:8000/internal/tusd/hooks"
       - "-hooks-http-forward-headers"
-      - "X-Riverhog-Tusd-Hook-Secret"
+      - "X-Riverhog-Tusd-Hook-Secret,Authorization"
       - "-hooks-enabled-events"
       - "pre-create,post-finish"
     environment:

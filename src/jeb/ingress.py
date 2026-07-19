@@ -40,7 +40,7 @@ class JebIngressCollisionError(JebIngressError):
 class JebIngressConfig:
     landing_dir: Path
     tus_staging_dir: Path
-    tusd_base_url: str = "http://jeb-tusd:1080/jeb/files/"
+    tusd_base_url: str = "http://jeb-tusd:1080/files/"
     tus_incomplete_max_age_seconds: int = 14 * 86_400
     ftp_projection: Path = Path("/state/ingress/ftp/passwd")
     ftp_uid: int = 1000

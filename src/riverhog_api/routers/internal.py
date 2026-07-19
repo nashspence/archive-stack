@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import secrets
 from urllib.parse import unquote, urlsplit
 
@@ -8,7 +7,9 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from riverhog_api.deps import default_container
+from riverhog_api.auth import authenticate_authorization_header
+from riverhog_api.deps import ContainerDep, default_container
+from riverhog_core.app_permissions import COLLECTIONS_UPLOAD
 from riverhog_core.domain.errors import BadRequest
 from riverhog_core.runtime_config import load_runtime_config
 
@@ -21,12 +22,12 @@ def _json_response(payload: dict[str, object], *, status_code: int = 200) -> JSO
     return JSONResponse(status_code=status_code, content=payload)
 
 
-def _hook_error(message: str) -> JSONResponse:
+def _hook_error(message: str, *, status_code: int = 400) -> JSONResponse:
     return _json_response(
         {
             "RejectUpload": True,
             "HTTPResponse": {
-                "StatusCode": 400,
+                "StatusCode": status_code,
                 "Body": message,
                 "Header": {"Content-Type": "text/plain"},
             },
@@ -38,26 +39,22 @@ def _upload_id_from_metadata(metadata: dict[object, object]) -> str:
     return str(metadata.get("upload_id", ""))
 
 
-def _authorized_bearer(request: Request) -> bool:
-    expected = os.getenv("RIVERHOG_API_TOKEN", "")
-    if not expected:
-        return True
-    raw = request.headers.get("authorization", "")
-    scheme, _, token = raw.partition(" ")
-    return scheme.casefold() == "bearer" and secrets.compare_digest(token, expected)
-
-
 def _authorized_tusd_hook(request: Request) -> bool:
     config = load_runtime_config()
-    if request.headers.get(_HOOK_SECRET_HEADER) == config.tusd_hook_secret:
-        return True
-    return _authorized_bearer(request)
+    supplied = request.headers.get(_HOOK_SECRET_HEADER, "")
+    return bool(supplied) and secrets.compare_digest(supplied, config.tusd_hook_secret)
 
 
 @router.get("/internal/tusd/auth")
-def authorize_tusd_data_plane(request: Request) -> Response:
-    if not _authorized_bearer(request):
+def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Response:
+    principal = authenticate_authorization_header(
+        request.headers.get("authorization"),
+        container,
+    )
+    if principal is None:
         return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    if not principal.allows(COLLECTIONS_UPLOAD):
+        return Response(status_code=403)
 
     method = request.headers.get("x-original-method", "").upper()
     if method not in _TUSD_FILE_METHODS:
@@ -96,6 +93,17 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         return _hook_error("missing or invalid upload_id metadata")
 
     if hook_type == "pre-create":
+        principal = authenticate_authorization_header(
+            request.headers.get("authorization"),
+            default_container(),
+        )
+        if principal is None:
+            return _hook_error("invalid application token", status_code=401)
+        if not principal.allows(COLLECTIONS_UPLOAD):
+            return _hook_error(
+                f"application permission required: {COLLECTIONS_UPLOAD}",
+                status_code=403,
+            )
         return _json_response({"ChangeFileInfo": {"ID": upload_id}})
 
     try:

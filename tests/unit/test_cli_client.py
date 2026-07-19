@@ -4,20 +4,10 @@ from typing import Any
 
 import httpx
 
-from riverhog_cli.client import ApiClient, ExternalAppClient
+from riverhog_cli.client import ApiClient
 
 
 class RecordingClient(ApiClient):
-    def __init__(self) -> None:
-        super().__init__(base_url="http://example.invalid")
-        self.calls: list[tuple[str, str, dict[str, Any]]] = []
-
-    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        self.calls.append((method, path, kwargs))
-        return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, path))
-
-
-class RecordingExternalAppClient(ExternalAppClient):
     def __init__(self) -> None:
         super().__init__(base_url="http://example.invalid")
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
@@ -71,7 +61,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
 
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
-    client = RecordingExternalAppClient()
+    client = RecordingClient()
     files = [("2025/20250102T030405Z__docs", "invoice.pdf")]
 
     client.plan_retrieval(files, lease_seconds=3600)
@@ -96,20 +86,25 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     ]
 
 
-def test_operator_and_external_app_clients_use_separate_credentials(monkeypatch) -> None:
-    monkeypatch.setenv("RIVERHOG_TOKEN", "operator-token")
-    monkeypatch.setenv("RIVERHOG_APP_TOKEN", "app-token")
+def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) -> None:
+    monkeypatch.setenv("RIVERHOG_TOKEN", "application-token")
 
-    assert ApiClient().token == "operator-token"
-    assert ExternalAppClient().token == "app-token"
-    assert not hasattr(ApiClient, "plan_retrieval")
+    client = ApiClient()
+    assert client.token == "application-token"
+    assert callable(client.plan_retrieval)
+    assert callable(client.create_or_resume_collection_upload)
+    assert callable(client.create_app_key)
 
 
-def test_operator_client_manages_app_keys_without_exposing_them_to_external_client() -> None:
+def test_client_manages_application_keys_with_explicit_permissions() -> None:
     client = RecordingClient()
 
     client.list_apps(q="local", active=True, all_items=True)
-    client.create_app_key("local", expires_in_seconds=3600)
+    client.create_app_key(
+        "local",
+        permissions=["catalog:read", "retrieval:manage"],
+        expires_in_seconds=3600,
+    )
     client.list_app_keys("local", active=False, all_items=True)
     client.revoke_app_key("local", "0123456789abcdef")
 
@@ -132,7 +127,12 @@ def test_operator_client_manages_app_keys_without_exposing_them_to_external_clie
         (
             "POST",
             "/v1/apps/local/keys",
-            {"json": {"expires_in_seconds": 3600}},
+            {
+                "json": {
+                    "permissions": ["catalog:read", "retrieval:manage"],
+                    "expires_in_seconds": 3600,
+                }
+            },
         ),
         (
             "GET",
@@ -154,7 +154,6 @@ def test_operator_client_manages_app_keys_without_exposing_them_to_external_clie
             {},
         ),
     ]
-    assert not hasattr(ExternalAppClient, "create_app_key")
 
 
 def test_archive_upload_transport_defaults_to_http_1_1(monkeypatch) -> None:

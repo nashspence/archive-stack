@@ -5,8 +5,8 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Query, Request, Response
 
+from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
-from riverhog_api.external_auth import ExternalApp
 
 router = APIRouter(tags=["catalog"])
 _RS = "http://www.openarchives.org/rs/terms/"
@@ -27,7 +27,7 @@ def _xml(root: Element) -> Response:
 @router.get("/.well-known/resourcesync")
 def well_known_resourcesync(
     request: Request,
-    _app: ExternalApp,
+    _principal: CatalogReader,
 ) -> Response:
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
     url = SubElement(root, "url")
@@ -40,7 +40,7 @@ def well_known_resourcesync(
 @router.get("/resourcesync/capabilitylist.xml")
 def resourcesync_capability_list(
     request: Request,
-    _app: ExternalApp,
+    _principal: CatalogReader,
 ) -> Response:
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
     for path, capability in (
@@ -56,7 +56,7 @@ def resourcesync_capability_list(
 @router.get("/resourcesync/resourcelist.xml")
 def resourcesync_resource_list(
     request: Request,
-    _app: ExternalApp,
+    _principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
@@ -74,7 +74,7 @@ def resourcesync_resource_list(
 @router.get("/resourcesync/changelist.xml")
 def resourcesync_change_list(
     request: Request,
-    _app: ExternalApp,
+    _principal: CatalogReader,
     container: ContainerDep,
     after: int = Query(0, ge=0),
 ) -> Response:
@@ -102,7 +102,7 @@ def resourcesync_change_list(
 @router.get("/v1/catalog/collections/{collection_id:path}/manifest")
 def collection_portable_manifest(
     collection_id: str,
-    _app: ExternalApp,
+    _principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:
     payload, etag = container.retrieval.collection_manifest(collection_id)

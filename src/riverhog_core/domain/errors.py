@@ -13,6 +13,10 @@ class BadRequest(RiverhogError):
     code = "bad_request"
 
 
+class Forbidden(RiverhogError):
+    code = "forbidden"
+
+
 class InvalidPath(RiverhogError):
     code = "invalid_path"
 

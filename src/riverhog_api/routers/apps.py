@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Query
 
+from riverhog_api.auth import KeyManager
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.apps import (
     AppKeyCreatedOut,
@@ -19,6 +20,7 @@ router = APIRouter(tags=["apps"])
 @router.get("/apps", response_model=AppListOut)
 def list_apps(
     container: ContainerDep,
+    _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     sort: str = Query("name"),
@@ -45,10 +47,13 @@ def create_app_key(
     app: str,
     request: CreateAppKeyRequest,
     container: ContainerDep,
+    principal: KeyManager,
 ) -> AppKeyCreatedOut:
     return AppKeyCreatedOut.model_validate(
         container.app_keys.create(
             app=app,
+            permissions=request.permissions,
+            grantor=principal,
             expires_in=(
                 timedelta(seconds=request.expires_in_seconds)
                 if request.expires_in_seconds is not None
@@ -62,6 +67,7 @@ def create_app_key(
 def list_app_keys(
     app: str,
     container: ContainerDep,
+    _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     sort: str = Query("created_at"),
@@ -85,5 +91,10 @@ def list_app_keys(
 
 
 @router.post("/apps/{app}/keys/{key_id}/revoke", response_model=AppKeyOut)
-def revoke_app_key(app: str, key_id: str, container: ContainerDep) -> AppKeyOut:
+def revoke_app_key(
+    app: str,
+    key_id: str,
+    container: ContainerDep,
+    _principal: KeyManager,
+) -> AppKeyOut:
     return AppKeyOut.model_validate(container.app_keys.revoke(app=app, key_id=key_id))

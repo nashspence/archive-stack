@@ -16,9 +16,19 @@ import jeb.collector as collector_module
 from jeb.collector import Collector, config_from_env
 from jeb.service_api import JebServiceState, start_jeb_service_server
 
+API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
-def read_json(url: str) -> dict[str, object]:
-    with urllib.request.urlopen(url, timeout=5) as response:
+
+def read_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object]:
+    request = urllib.request.Request(
+        url,
+        headers=API_HEADERS if headers is None else headers,
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -31,7 +41,10 @@ def post_json(
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **(headers or {})},
+        headers={
+            "Content-Type": "application/json",
+            **(API_HEADERS if headers is None else headers),
+        },
         method="POST",
     )
     try:
@@ -45,11 +58,16 @@ def request_json(
     method: str,
     url: str,
     payload: dict[str, Any] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, object]]:
     request = urllib.request.Request(
         url,
         data=None if payload is None else json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            **(API_HEADERS if headers is None else headers),
+        },
         method=method,
     )
     try:
@@ -129,7 +147,7 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
             "source_count": 1,
             "status": "ok",
         }
-        status = read_json(f"http://{host}:{port}/v1/jeb/status")
+        status = read_json(f"http://{host}:{port}/v1/status")
         sources = status["sources"]
         assert isinstance(sources, list)
         assert sources[0]["id"] == "phone"
@@ -149,13 +167,28 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> None:
+    collector = collector_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    try:
+        host, port = server.server_address[:2]
+        request = urllib.request.Request(f"http://{host}:{port}/v1/status")
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(request, timeout=5)
+        assert denied.value.code == 401
+        assert denied.value.headers["WWW-Authenticate"] == "Bearer"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
     collector = Collector(config_from_env(jeb_env(tmp_path)))
     collector.init_db()
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
         host, port = server.server_address[:2]
-        base = f"http://{host}:{port}/v1/jeb/sources"
+        base = f"http://{host}:{port}/v1/sources"
         status, created = request_json(
             "POST",
             base,
@@ -315,7 +348,7 @@ def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Pat
         host, port = server.server_address[:2]
 
         status, payload = post_json(
-            f"http://{host}:{port}/v1/jeb/archive-now",
+            f"http://{host}:{port}/v1/archive-now",
             {"source": "phone", "process": "false"},
         )
 
@@ -344,7 +377,7 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
         host, port = server.server_address[:2]
 
         status, payload = post_json(
-            f"http://{host}:{port}/v1/jeb/archive-now",
+            f"http://{host}:{port}/v1/archive-now",
             {"source": "phone", "dry_run": True},
         )
 
@@ -382,7 +415,7 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
         host, port = server.server_address[:2]
 
         status, payload = post_json(
-            f"http://{host}:{port}/v1/jeb/archive-now",
+            f"http://{host}:{port}/v1/archive-now",
             {"source": "phone"},
         )
 

@@ -13,13 +13,11 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from riverhog_api.auth import api_auth_dependencies
 from riverhog_api.deps import ServiceContainer, default_container, get_container
 from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.internal import router as internal_router
-from riverhog_api.routers.jeb import router as jeb_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
@@ -342,6 +340,7 @@ def create_app(
     async def handle_riverhog_error(_: Request, exc: RiverhogError) -> JSONResponse:
         status_map = {
             "bad_request": 400,
+            "forbidden": 403,
             "invalid_target": 400,
             "not_found": 404,
             "conflict": 409,
@@ -368,13 +367,11 @@ def create_app(
             "instance_id": str(app.state.instance_id),
         }
 
-    auth_deps = list(api_auth_dependencies())
     app.include_router(internal_router)
-    app.include_router(collections_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(search_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(archive_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(apps_router, prefix="/v1", dependencies=auth_deps)
-    app.include_router(jeb_router, prefix="/v1", dependencies=auth_deps)
+    app.include_router(collections_router, prefix="/v1")
+    app.include_router(search_router, prefix="/v1")
+    app.include_router(archive_router, prefix="/v1")
+    app.include_router(apps_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)
     return app
