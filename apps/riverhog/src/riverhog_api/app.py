@@ -380,7 +380,13 @@ def create_app(
 
 
 def main() -> None:
-    uvicorn.run("riverhog_api.app:create_app", factory=True, reload=False)
+    uvicorn.run(
+        "riverhog_api.app:create_app",
+        factory=True,
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+    )
 
 
 if __name__ == "__main__":
