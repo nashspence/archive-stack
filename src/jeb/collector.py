@@ -35,6 +35,7 @@ from lifecycle_events import (
     SQLiteLifecycleEventLog,
     caused_event,
     cloud_event,
+    normalize_event_context,
 )
 from lifecycle_events.repeats import (
     event_repeat_due,
@@ -255,6 +256,7 @@ class CollectorSettings:
 class LifecycleEventSettings:
     source: str = "urn:jeb"
     upstream_poll_seconds: float = 5.0
+    context_retention_seconds: int = 30 * 86_400
     repeat_interval_seconds: int = 86_400
     repeat_time: str | None = None
     repeat_timezone: str = "UTC"
@@ -699,7 +701,19 @@ class Collector:
             subject=str(row["attempt_id"]),
             data=details,
         )
-        self.event_log.append_once(translated, owner="jeb")
+        context = normalize_event_context(event.data.get("context"))
+        context_expires_at = None
+        if context is not None:
+            context_expires_at = event_timestamp(
+                current_time()
+                + timedelta(seconds=self.config.events.context_retention_seconds)
+            )
+        self.event_log.append_once(
+            translated,
+            owner="jeb",
+            context=context,
+            context_expires_at=context_expires_at,
+        )
         return True
 
     def active_attempts(self) -> list[sqlite3.Row]:
@@ -3301,6 +3315,10 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         upstream_poll_seconds=max(
             1.0,
             float(env_value_from(values, "JEB_UPSTREAM_EVENT_POLL_SECONDS", "5") or "5"),
+        ),
+        context_retention_seconds=parse_duration(
+            env_value_from(values, "JEB_EVENT_CONTEXT_RETENTION", "30d"),
+            30 * 86_400,
         ),
         repeat_interval_seconds=parse_duration(
             env_value_from(values, "JEB_EVENT_REPEAT_INTERVAL", "24h"),

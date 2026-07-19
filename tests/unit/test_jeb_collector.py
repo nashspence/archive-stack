@@ -307,11 +307,13 @@ def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
             **env_for(tmp_path, sources="camera"),
             "JEB_EVENT_SOURCE": "urn:test:jeb",
             "JEB_UPSTREAM_EVENT_POLL_SECONDS": "7",
+            "JEB_EVENT_CONTEXT_RETENTION": "2d",
         }
     )
 
     assert config.events.source == "urn:test:jeb"
     assert config.events.upstream_poll_seconds == 7
+    assert config.events.context_retention_seconds == 2 * 86_400
 
 
 def test_source_registry_requires_safe_source_slugs(tmp_path: Path) -> None:
@@ -606,7 +608,11 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
         source="urn:munchy",
         type="io.riverhog.munchy.job.archive.finalized",
         subject=job_id,
-        data={"job_id": job_id, "collection_id": "2026/example"},
+        data={
+            "job_id": job_id,
+            "collection_id": "2026/example",
+            "context": {"notification_recipient": "katie"},
+        },
     )
 
     assert collector.translate_munchy_event(upstream)
@@ -618,6 +624,7 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
     assert event.type == "io.riverhog.jeb.attempt.target.archive.finalized"
     assert event.subject == attempt_id
     assert event.data["target_submission_id"] == job_id
+    assert event.data["context"] == {"notification_recipient": "katie"}
     assert event.data["cause"] == {
         "id": upstream.id,
         "source": upstream.source,
