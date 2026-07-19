@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from cli_support.output import json_text
 from gogurt.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,
     DEFAULT_GOGURT_MARKER_NAME,
@@ -22,7 +22,7 @@ app = typer.Typer(help="Gogurt route and trigger utility.")
 
 def emit(payload: object, *, json_mode: bool) -> None:
     if json_mode:
-        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        typer.echo(json_text(payload))
         return
     typer.echo(str(payload))
 
@@ -127,11 +127,7 @@ def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
     message = str(exc) or type(exc).__name__
     if json_mode:
         typer.echo(
-            json.dumps(
-                {"error": {"code": "config_error", "message": message}},
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+            json_text({"error": {"code": "config_error", "message": message}})
         )
         return
     typer.echo(f"gogurt: {message}", err=True)

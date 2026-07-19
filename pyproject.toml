@@ -55,6 +55,7 @@ gogurt = "gogurt.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
+  "src/cli_support",
   "src/munchy",
   "src/munchy_cli",
   "src/gogurt",

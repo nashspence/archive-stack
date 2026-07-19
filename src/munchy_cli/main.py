@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -10,6 +9,7 @@ from typing import Annotated, Any, NoReturn
 import typer
 from pydantic import ValidationError
 
+from cli_support.output import format_list_ids, json_text
 from munchy.job_authoring import (
     HANDOFF_DESTINATIONS,
     HASH_CACHE_ENV,
@@ -125,7 +125,7 @@ def _console() -> Any:
 
 def emit(payload: Any, *, json_mode: bool) -> None:
     if json_mode:
-        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        typer.echo(json_text(payload))
         return
     if isinstance(payload, str):
         typer.echo(payload)
@@ -192,19 +192,6 @@ def _sequence(value: object) -> list[Any]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return list(value)
     return []
-
-
-def _format_list_ids(
-    payload: Mapping[str, object],
-    key: str,
-    *,
-    id_key: str = "id",
-) -> str:
-    return "\n".join(
-        str(item[id_key])
-        for item in _sequence(payload.get(key))
-        if isinstance(item, Mapping) and item.get(id_key) is not None and item.get(id_key) != ""
-    )
 
 
 def _mapping(value: object, *, label: str) -> dict[str, Any]:
@@ -709,7 +696,7 @@ def list_job_templates(
     except Exception as exc:
         _exit_runner_error(exc)
     if ids:
-        emit(_format_list_ids(payload, "templates", id_key="name"), json_mode=False)
+        emit(format_list_ids(payload, "templates", id_key="name"), json_mode=False)
         return
     emit(payload if json_mode else format_job_templates(payload), json_mode=json_mode)
 
@@ -1170,7 +1157,7 @@ def list_jobs(
     except Exception as exc:
         _exit_runner_error(exc)
     if ids:
-        emit(_format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
+        emit(format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
         return
     emit(payload if json_mode else format_jobs(payload), json_mode=json_mode)
 

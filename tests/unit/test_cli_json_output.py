@@ -4,8 +4,8 @@ import json
 
 from pytest import CaptureFixture
 
+from cli_support.output import emit
 from riverhog_cli.main import _compact_collection_page
-from riverhog_cli.output import emit
 
 
 def test_collection_list_json_keeps_collection_summaries_compact() -> None:

@@ -1,45 +1,16 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
-from typing import Any
 
-
-def emit(payload: Any, *, json_mode: bool) -> None:
-    if json_mode:
-        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    else:
-        print(payload)
-
-
-def _bytes(value: object) -> str:
-    if not isinstance(value, (int, float, str)):
-        return str(value)
-    try:
-        amount = float(value or 0)
-    except (TypeError, ValueError):
-        return str(value)
-    if amount < 1000:
-        return f"{int(amount)} B"
-    for unit in ("KB", "MB", "GB", "TB", "PB"):
-        amount /= 1000
-        if amount < 1000 or unit == "PB":
-            return f"{amount:.1f} {unit}"
-    raise AssertionError("unreachable")
-
-
-def _items(payload: Mapping[str, object], key: str) -> list[Mapping[str, object]]:
-    value = payload.get(key)
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
-
-
-def _page_line(payload: Mapping[str, object], noun: str) -> str:
-    return (
-        f"{noun}: {payload.get('total', 0)} "
-        f"(page {payload.get('page', 1)}/{payload.get('pages', 0)})"
-    )
+from cli_support.output import (
+    human_bytes as _bytes,
+)
+from cli_support.output import (
+    mapping_items as _items,
+)
+from cli_support.output import (
+    page_line as _page_line,
+)
 
 
 def format_attempts(payload: Mapping[str, object]) -> str:
@@ -69,19 +40,6 @@ def format_sources(payload: Mapping[str, object]) -> str:
             f"adapters={adapters}  target={source.get('target', 'unknown')}"
         )
     return "\n".join(lines)
-
-
-def format_list_ids(
-    payload: Mapping[str, object],
-    key: str,
-    *,
-    id_key: str = "id",
-) -> str:
-    return "\n".join(
-        str(item[id_key])
-        for item in _items(payload, key)
-        if item.get(id_key) is not None and item.get(id_key) != ""
-    )
 
 
 def format_status(payload: Mapping[str, object]) -> str:
@@ -130,11 +88,9 @@ def format_operation(payload: Mapping[str, object], *, title: str) -> str:
 
 
 __all__ = [
-    "emit",
     "format_archive_plan",
     "format_attempts",
     "format_config_check",
-    "format_list_ids",
     "format_operation",
     "format_sources",
     "format_status",

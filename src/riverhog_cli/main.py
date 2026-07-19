@@ -14,10 +14,10 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 import httpx
 import typer
 
+from cli_support.output import emit, format_list_ids
 from riverhog_cli.client import ApiClient
 from riverhog_cli.local import local_app
 from riverhog_cli.output import (
-    emit,
     format_app_key_created,
     format_app_key_revoked,
     format_app_keys,
@@ -33,7 +33,6 @@ from riverhog_cli.output import (
     format_collections,
     format_file_selectors,
     format_find,
-    format_list_ids,
 )
 from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
 from riverhog_core.domain.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
