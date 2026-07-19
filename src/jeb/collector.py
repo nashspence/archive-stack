@@ -150,6 +150,10 @@ def event_timestamp(value: datetime | None = None) -> str:
     return format_utc_timestamp(value or current_time())
 
 
+def collection_identity_timestamp(value: datetime | None = None) -> str:
+    return (value or current_time()).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
 def parse_duration(value: Any, default: int | None = None) -> int:
     if value is None:
         if default is None:
@@ -1642,7 +1646,7 @@ class Collector:
         source_id: str,
         period: datetime,
     ) -> bool:
-        timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+        timestamp = collection_identity_timestamp(period)
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -1738,7 +1742,7 @@ class Collector:
                 for item in files
             ),
             collection_slug=source.collection_slug,
-            collection_timestamp=current_time().strftime("%Y%m%dT%H%M%S.%fZ"),
+            collection_timestamp=collection_identity_timestamp(),
         )
         client = MunchyRunnerClient(target.url, token=target.token)
         try:
@@ -2006,7 +2010,7 @@ class Collector:
             "source_id": source_id,
             "target_name": str(row_payload["target_name"]),
             "collection_slug": str(row_payload["collection_slug"]),
-            "collection_timestamp": current_time().strftime("%Y%m%dT%H%M%S.%fZ"),
+            "collection_timestamp": collection_identity_timestamp(),
             "state": "failed",
         }
         if not self.emit_issue(
@@ -2168,7 +2172,7 @@ class Collector:
                 }
 
             batch_id, digest = self.batch_identity(source, accepted_files, period=period)
-            collection_timestamp = period.strftime("%Y%m%dT%H%M%S.%fZ")
+            collection_timestamp = collection_identity_timestamp(period)
             target_submission_id = f"jeb-{source.id}-{collection_timestamp.lower()}-{digest}"
             return {
                 **base_payload,
@@ -2335,7 +2339,7 @@ class Collector:
         batch_id: str | None = None,
         digest: str | None = None,
     ) -> str:
-        collection_timestamp = period.strftime("%Y%m%dT%H%M%S.%fZ")
+        collection_timestamp = collection_identity_timestamp(period)
         if batch_id is None or digest is None:
             batch_id, digest = self.batch_identity(source, files, period=period)
         target = self.target_by_name(source.target)
@@ -2419,7 +2423,7 @@ class Collector:
         *,
         period: datetime,
     ) -> tuple[str, str]:
-        collection_timestamp = period.strftime("%Y%m%dT%H%M%SZ")
+        collection_timestamp = collection_identity_timestamp(period)
         manifest = "\n".join(f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files)
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
         return f"{collection_timestamp}__{source.id}__{digest}", digest

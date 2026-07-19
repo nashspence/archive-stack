@@ -199,7 +199,9 @@ class SourceRegistry:
                     ),
                 )
         except sqlite3.IntegrityError as exc:
-            raise SourceRegistryError(f"source already exists: {normalized_id}") from exc
+            if getattr(exc, "sqlite_errorname", "") == "SQLITE_CONSTRAINT_PRIMARYKEY":
+                raise SourceRegistryError(f"source already exists: {normalized_id}") from exc
+            raise SourceRegistryError("source registry rejected source enrollment") from exc
         self.write_ftp_projection()
         return self.get(normalized_id), secret if credential is None else None
 

@@ -117,6 +117,14 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
     ]
     assert [source.template for source in sources] == [TEST_TEMPLATE, TEST_TEMPLATE]
 
+    with pytest.raises(SourceRegistryError, match="source already exists: camera"):
+        collector.add_source(
+            "camera",
+            adapters=("tus",),
+            template=TEST_TEMPLATE,
+            credential="replacement-password",
+        )
+
 
 def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources="camera"))
@@ -513,15 +521,23 @@ def test_seasonal_cadence_uses_first_scheduled_run_after_custom_season_boundary(
     assert collector.source_period(collection) == datetime(2026, 3, 2, 3, tzinfo=UTC)
 
 
-def test_munchy_submission_uses_template_and_generic_target_identity(tmp_path: Path) -> None:
+def test_munchy_submission_uses_template_and_generic_target_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     collector = collector_from_env(
         env_for(tmp_path, sources="camera"),
         templates={"camera": "camera-review"},
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
+    monkeypatch.setattr(
+        "jeb.collector.current_time",
+        lambda: datetime(2026, 7, 19, 16, 1, 2, 345678, tzinfo=UTC),
+    )
 
     batch_id = collector.archive_now(source_id="camera", process=False)
     assert batch_id is not None
+    assert batch_id.startswith("20260719T160102Z__camera__")
     request = munchy_submission_request(
         collector,
         batch_id,
@@ -531,6 +547,7 @@ def test_munchy_submission_uses_template_and_generic_target_identity(tmp_path: P
     assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
     assert request.template == "camera-review"
     assert request.collection_slug == "camera"
+    assert request.collection_timestamp == "20260719T160102Z"
     assert request.event_context == {
         "initiator": {"app": "jeb", "attempt_id": batch_id}
     }
