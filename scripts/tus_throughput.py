@@ -175,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         auth=auth,
         http2=args.http_version == "2",
         timeout=float(args.timeout_seconds),
-        headers={"User-Agent": "riverhog-tus-throughput/1"},
+        headers={"User-Agent": "tus-throughput/1"},
     ) as client:
         _require_termination(client, args.url)
         for chunk_mib in chunk_sizes:
