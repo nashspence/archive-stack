@@ -71,7 +71,7 @@ def format_archive_plan(payload: Mapping[str, object]) -> str:
     lines = [
         f"Jeb archive plan: {payload.get('source', payload.get('source_id', 'unknown'))}",
         f"eligible files: {payload.get('file_count', 0)}",
-        f"eligible bytes: {payload.get('bytes', 0)}",
+        f"eligible bytes: {payload.get('total_bytes', 0)}",
     ]
     if payload.get("period_start") or payload.get("period_end"):
         lines.append(f"period: {payload.get('period_start')} — {payload.get('period_end')}")

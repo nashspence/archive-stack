@@ -265,6 +265,7 @@ def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  #
     output = capsys.readouterr().out
     assert "Jeb archive plan: camera" in output
     assert "eligible files: 1" in output
+    assert "eligible bytes: 42" in output
 
 
 def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
