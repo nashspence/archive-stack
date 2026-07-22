@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.archive_objects import (
+    CollectionArchiveDataObject,
     CollectionArchiveFile,
     iter_verified_file_chunks,
+    iter_verified_object_chunks,
     load_collection_archive,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -350,24 +352,15 @@ class SqlAlchemyRetrievalService:
             }
 
         identities = {row.object_id: _object_identity(row) for row in object_rows}
-        store = self._archive_stores.require(source_store)
 
         def read_object(object_id: str) -> Iterable[bytes]:
             identity = identities[object_id]
-            cached = cache_rows.get(object_id)
-            if cached is not None:
-                if self._cache is None:
-                    raise RuntimeError("retrieval cache is unavailable")
-                return iter_decrypt_age_scrypt(
-                    self._cache.iter_object(
-                        object_path=cached.object_path,
-                        version_id=cached.version_id,
-                        expected_bytes=cached.stored_bytes,
-                        expected_sha256=cached.stored_sha256,
-                    ),
-                    self._config.archive_passphrase,
-                )
-            return store.iter_archive_object(collection_id=collection_id, object=identity)
+            return self._read_archive_object(
+                source_store=source_store,
+                collection_id=collection_id,
+                identity=identity,
+                cached=cache_rows.get(object_id),
+            )
 
         manifest_identity = identities.get("manifest")
         proof_identity = identities.get("proof")
@@ -408,6 +401,62 @@ class SqlAlchemyRetrievalService:
             if file_record is None:
                 raise NotFound("file is no longer present")
             return file_record.bytes, file_record.sha256
+
+    def object_content(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        object_id: str,
+    ) -> tuple[Iterator[bytes], int, str]:
+        with session_scope(self._session_factory) as session:
+            object_record, cache_record = self._require_job_data_object(
+                session,
+                app=app,
+                job_id=job_id,
+                collection_id=collection_id,
+                object_id=object_id,
+            )
+            source_store = object_record.store
+            identity = _object_identity(object_record)
+        current = CollectionArchiveDataObject(
+            object_id=identity.object_id,
+            kind=identity.kind,
+            plaintext_bytes=identity.plaintext_bytes,
+            sha256=identity.sha256,
+            placements=(),
+            _chunks=lambda: iter(()),
+        )
+        chunks = self._read_archive_object(
+            source_store=source_store,
+            collection_id=collection_id,
+            identity=identity,
+            cached=cache_record,
+        )
+        return (
+            iter_verified_object_chunks(current, chunks),
+            identity.plaintext_bytes,
+            identity.sha256,
+        )
+
+    def object_content_metadata(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        object_id: str,
+    ) -> tuple[int, str]:
+        with session_scope(self._session_factory) as session:
+            object_record, _cache_record = self._require_job_data_object(
+                session,
+                app=app,
+                job_id=job_id,
+                collection_id=collection_id,
+                object_id=object_id,
+            )
+            return object_record.plaintext_bytes, object_record.sha256
 
     def process_due(self, *, limit: int = 10) -> int:
         if limit < 1:
@@ -492,7 +541,7 @@ class SqlAlchemyRetrievalService:
     ) -> dict[str, object]:
         files_payload: list[dict[str, object]] = []
         objects_payload: list[dict[str, object]] = []
-        seen_objects: set[tuple[str, str, str]] = set()
+        object_payloads: dict[tuple[str, str, str], dict[str, object]] = {}
         copy_by_collection: dict[str, CollectionArchiveCopyRecord] = {}
         for collection_id, path in files:
             file_record = session.get(CollectionFileRecord, (collection_id, path))
@@ -510,9 +559,9 @@ class SqlAlchemyRetrievalService:
                     "sha256": file_record.sha256,
                 }
             )
-            object_ids = list(
+            placements = list(
                 session.scalars(
-                    select(CollectionArchiveFileObjectRecord.object_id)
+                    select(CollectionArchiveFileObjectRecord)
                     .where(
                         CollectionArchiveFileObjectRecord.collection_id == collection_id,
                         CollectionArchiveFileObjectRecord.store == copy.store,
@@ -521,41 +570,77 @@ class SqlAlchemyRetrievalService:
                     .order_by(CollectionArchiveFileObjectRecord.sequence)
                 )
             )
-            if not object_ids:
+            if not placements:
                 raise InvalidState(f"archive placement is missing: {collection_id}/{path}")
-            for object_id in [*object_ids, "manifest", "proof"]:
+            for placement in placements:
+                object_id = placement.object_id
                 identity = (collection_id, copy.store, str(object_id))
-                if identity in seen_objects:
-                    continue
-                seen_objects.add(identity)
-                object_record = session.get(CollectionArchiveObjectRecord, identity)
-                if object_record is None:
-                    raise InvalidState("archive object record is missing")
-                cached = session.get(
-                    RetrievalCacheObjectRecord,
-                    (copy.store, collection_id, str(object_id)),
-                )
-                if cached is not None:
-                    read_mode = "cache"
-                elif object_record.kind not in _DATA_KINDS:
-                    read_mode = "immediate"
-                else:
-                    read_mode = self._archive_stores.require(copy.store).read_mode()
-                objects_payload.append(
+                payload = object_payloads.get(identity)
+                if payload is None:
+                    payload = self._plan_object_payload(
+                        session,
+                        collection_id=collection_id,
+                        store=copy.store,
+                        object_id=str(object_id),
+                    )
+                    object_payloads[identity] = payload
+                    objects_payload.append(payload)
+                cast(list[dict[str, object]], payload["placements"]).append(
                     {
-                        "collection_id": collection_id,
-                        "source_store": copy.store,
-                        "object_id": object_record.object_id,
-                        "kind": object_record.kind,
-                        "stored_bytes": object_record.stored_bytes,
-                        "read_mode": read_mode,
+                        "path": placement.path,
+                        "sequence": placement.sequence,
+                        "file_offset": placement.file_offset,
+                        "bytes": placement.bytes,
+                        "member": placement.member,
                     }
                 )
+            for object_id in ("manifest", "proof"):
+                identity = (collection_id, copy.store, object_id)
+                if identity not in object_payloads:
+                    payload = self._plan_object_payload(
+                        session,
+                        collection_id=collection_id,
+                        store=copy.store,
+                        object_id=object_id,
+                    )
+                    object_payloads[identity] = payload
+                    objects_payload.append(payload)
         return {
             "format": "riverhog-retrieval-plan/v1",
             "lease_seconds": int(lease.total_seconds()),
             "files": files_payload,
             "objects": objects_payload,
+        }
+
+    def _plan_object_payload(
+        self,
+        session: Session,
+        *,
+        collection_id: str,
+        store: str,
+        object_id: str,
+    ) -> dict[str, object]:
+        identity = (collection_id, store, object_id)
+        object_record = session.get(CollectionArchiveObjectRecord, identity)
+        if object_record is None:
+            raise InvalidState("archive object record is missing")
+        cached = session.get(RetrievalCacheObjectRecord, (store, collection_id, object_id))
+        if cached is not None:
+            read_mode = "cache"
+        elif object_record.kind not in _DATA_KINDS:
+            read_mode = "immediate"
+        else:
+            read_mode = self._archive_stores.require(store).read_mode()
+        return {
+            "collection_id": collection_id,
+            "source_store": store,
+            "object_id": object_record.object_id,
+            "kind": object_record.kind,
+            "plaintext_bytes": object_record.plaintext_bytes,
+            "stored_bytes": object_record.stored_bytes,
+            "sha256": object_record.sha256,
+            "read_mode": read_mode,
+            "placements": [],
         }
 
     def _select_copy(self, session: Session, collection_id: str) -> CollectionArchiveCopyRecord:
@@ -572,6 +657,65 @@ class SqlAlchemyRetrievalService:
             if store in copies:
                 return copies[store]
         raise InvalidState(f"collection has no readable archive copy: {collection_id}")
+
+    def _require_job_data_object(
+        self,
+        session: Session,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        object_id: str,
+    ) -> tuple[CollectionArchiveObjectRecord, RetrievalCacheObjectRecord | None]:
+        job = self._require_job(session, app=app, job_id=job_id)
+        self._expire_job_if_due(session, job)
+        if job.state != "ready":
+            raise InvalidState("retrieval job is not ready")
+        planned = session.scalar(
+            select(RetrievalJobObjectRecord).where(
+                RetrievalJobObjectRecord.job_id == job_id,
+                RetrievalJobObjectRecord.collection_id == collection_id,
+                RetrievalJobObjectRecord.object_id == object_id,
+            )
+        )
+        if planned is None:
+            raise NotFound("archive object is not part of this retrieval job")
+        object_record = session.get(
+            CollectionArchiveObjectRecord,
+            (collection_id, planned.source_store, object_id),
+        )
+        if object_record is None or object_record.kind not in _DATA_KINDS:
+            raise NotFound("retrieval data object is not present")
+        cached = session.get(
+            RetrievalCacheObjectRecord,
+            (planned.source_store, collection_id, object_id),
+        )
+        return object_record, cached
+
+    def _read_archive_object(
+        self,
+        *,
+        source_store: str,
+        collection_id: str,
+        identity: ArchiveObjectIdentity,
+        cached: RetrievalCacheObjectRecord | None,
+    ) -> Iterable[bytes]:
+        if cached is not None:
+            if self._cache is None:
+                raise RuntimeError("retrieval cache is unavailable")
+            return iter_decrypt_age_scrypt(
+                self._cache.iter_object(
+                    object_path=cached.object_path,
+                    version_id=cached.version_id,
+                    expected_bytes=cached.stored_bytes,
+                    expected_sha256=cached.stored_sha256,
+                ),
+                self._config.archive_passphrase,
+            )
+        return self._archive_stores.require(source_store).iter_archive_object(
+            collection_id=collection_id,
+            object=identity,
+        )
 
     def _request_job_objects(self, job_id: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -856,4 +1000,5 @@ def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
         "canceled_at": record.canceled_at,
         "failure": record.failure,
         "files": plan["files"],
+        "objects": plan["objects"],
     }

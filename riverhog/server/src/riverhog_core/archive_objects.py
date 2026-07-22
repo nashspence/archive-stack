@@ -1076,7 +1076,7 @@ def _iter_verified_pack_member(
     member: str,
     expected: CollectionArchiveFile,
 ) -> Iterator[bytes]:
-    verified = _verified_object_chunks(current, chunks)
+    verified = iter_verified_object_chunks(current, chunks)
     stream = _ChunkIteratorReader(verified)
     found = False
     with tarfile.open(fileobj=cast(Any, stream), mode="r|*") as archive:
@@ -1114,7 +1114,7 @@ def _iter_verified_raw_file(
     byte_count = 0
     for current, placement in placements:
         segment_bytes = 0
-        for chunk in _verified_object_chunks(current, read_object(current.object_id)):
+        for chunk in iter_verified_object_chunks(current, read_object(current.object_id)):
             segment_bytes += len(chunk)
             byte_count += len(chunk)
             digest.update(chunk)
@@ -1125,7 +1125,7 @@ def _iter_verified_raw_file(
         raise ValueError(f"collection archive file verification failed: {expected.path}")
 
 
-def _verified_object_chunks(
+def iter_verified_object_chunks(
     current: CollectionArchiveDataObject,
     chunks: Iterable[bytes],
 ) -> Iterator[bytes]:

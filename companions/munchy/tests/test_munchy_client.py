@@ -182,7 +182,7 @@ def test_format_handoff_progress_renders_adapter_stages_in_order() -> None:
         {
             "destination": "riverhog",
             "stages": [
-                {"id": "archive", "label": "Riverhog Deep Archive", "state": "uploading"},
+                {"id": "archive", "label": "Riverhog Archive", "state": "uploading"},
                 {
                     "id": "verify",
                     "label": "Riverhog Verification",
@@ -193,7 +193,7 @@ def test_format_handoff_progress_renders_adapter_stages_in_order() -> None:
         }
     )
 
-    assert line == ("Riverhog Deep Archive, uploading | Riverhog Verification, 3/10 items")
+    assert line == ("Riverhog Archive, uploading | Riverhog Verification, 3/10 items")
 
 
 def test_format_job_summary_line_renders_review_clip_progress() -> None:
@@ -553,7 +553,7 @@ def test_rich_renderer_uses_adapter_supplied_handoff_rows() -> None:
             "stages": [
                 {
                     "id": "archive",
-                    "label": "Riverhog Deep Archive",
+                    "label": "Riverhog Archive",
                     "state": "waiting",
                 }
             ],
@@ -564,7 +564,7 @@ def test_rich_renderer_uses_adapter_supplied_handoff_rows() -> None:
     console.print(renderer._render(job))
     text = console.export_text()
 
-    assert "Riverhog Deep Archive" in text
+    assert "Riverhog Archive" in text
     assert "waiting" in text
 
 

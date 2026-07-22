@@ -118,6 +118,22 @@ class RetrievalService(Protocol):
         collection_id: str,
         path: str,
     ) -> tuple[Iterator[bytes], int, str]: ...
+    def object_content_metadata(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        object_id: str,
+    ) -> tuple[int, str]: ...
+    def object_content(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        collection_id: str,
+        object_id: str,
+    ) -> tuple[Iterator[bytes], int, str]: ...
     def process_due(self, *, limit: int = 10) -> int: ...
     def sweep(self) -> int: ...
 

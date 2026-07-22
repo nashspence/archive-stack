@@ -24,6 +24,7 @@ def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
         "/v1/retrieval-jobs",
         "/v1/retrieval-jobs/{job_id}",
         "/v1/retrieval-jobs/{job_id}/content",
+        "/v1/retrieval-jobs/{job_id}/objects/{object_id}/content",
         "/v1/retrieval-jobs/{job_id}/ack",
         "/v1/search",
     }.issubset(paths)
@@ -40,7 +41,9 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
         "objects",
         "etag",
     }
-    assert {"id", "state", "plan_etag", "files"} <= set(schemas["RetrievalJobOut"]["required"])
+    assert {"id", "state", "plan_etag", "files", "objects"} <= set(
+        schemas["RetrievalJobOut"]["required"]
+    )
 
 
 def test_collection_file_preflight_requires_client_side_encryption() -> None:

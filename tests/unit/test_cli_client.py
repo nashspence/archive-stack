@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -96,6 +97,37 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
             "/v1/retrieval-jobs",
             {"json": payload, "headers": {"If-Match": '"' + "a" * 64 + '"'}},
         ),
+    ]
+
+
+def test_retrieval_object_download_uses_the_planned_object_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = ApiClient(base_url="http://example.invalid")
+    calls: list[tuple[str, Path]] = []
+    output = tmp_path / "object"
+
+    def download(path: str, destination: Path, **_kwargs: object) -> int:
+        calls.append((path, destination))
+        return 42
+
+    monkeypatch.setattr(client, "_download", download)
+
+    result = client.download_retrieval_object(
+        "job-id",
+        collection_id="2025/20250102T030405Z__docs",
+        object_id="data-000000",
+        output=output,
+    )
+
+    assert result == 42
+    assert calls == [
+        (
+            "/v1/retrieval-jobs/job-id/objects/data-000000/content?"
+            "collection_id=2025%2F20250102T030405Z__docs",
+            output,
+        )
     ]
 
 

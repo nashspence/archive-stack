@@ -8196,7 +8196,7 @@ class RiverhogHandoffAdapter:
             stages.append(
                 {
                     "id": "archive",
-                    "label": "Riverhog Deep Archive",
+                    "label": "Riverhog Archive",
                     "state": progress.get("archive_phase") or "waiting",
                     "bytes_done": progress.get("archive_uploaded_bytes"),
                     "bytes_total": progress.get("archive_total_bytes"),

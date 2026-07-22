@@ -22,13 +22,24 @@ class RetrievalPlanFileOut(RetrievalFileIn):
     sha256: str
 
 
+class RetrievalPlanObjectPlacementOut(RiverhogModel):
+    path: str
+    sequence: int
+    file_offset: int
+    bytes: int
+    member: str | None
+
+
 class RetrievalPlanObjectOut(RiverhogModel):
     collection_id: str
     source_store: str
     object_id: str
     kind: Literal["pack", "file", "segment", "manifest", "proof"]
+    plaintext_bytes: int
     stored_bytes: int
+    sha256: str
     read_mode: Literal["immediate", "restore_required", "cache"]
+    placements: list[RetrievalPlanObjectPlacementOut]
 
 
 class RetrievalPlanOut(RiverhogModel):
@@ -55,3 +66,4 @@ class RetrievalJobOut(RiverhogModel):
     canceled_at: str | None
     failure: str | None
     files: list[RetrievalPlanFileOut]
+    objects: list[RetrievalPlanObjectOut]

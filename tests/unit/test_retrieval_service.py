@@ -133,6 +133,13 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
         files=selection,
         plan_etag=str(plan["etag"]),
     )
+    object_chunks, object_bytes, object_sha256 = service.object_content(
+        app="local",
+        job_id=str(job["id"]),
+        collection_id=COLLECTION_ID,
+        object_id="data-000000",
+    )
+    object_content = b"".join(object_chunks)
     chunks, byte_count, sha256 = service.content(
         app="local",
         job_id=str(job["id"]),
@@ -142,7 +149,20 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
 
     assert plan["format"] == "riverhog-retrieval-plan/v1"
     assert [item["kind"] for item in plan["objects"]] == ["pack", "manifest", "proof"]
+    assert plan["objects"][0]["placements"] == [
+        {
+            "path": "two.txt",
+            "sequence": 0,
+            "file_offset": 0,
+            "bytes": len(FILES["two.txt"]),
+            "member": "two.txt",
+        }
+    ]
     assert job["state"] == "ready"
+    assert job["objects"] == plan["objects"]
+    assert object_bytes == len(object_content)
+    assert object_sha256 == hashlib.sha256(object_content).hexdigest()
+    assert store.read[0] == "data-000000"
     assert byte_count == len(FILES["two.txt"])
     assert sha256 == hashlib.sha256(FILES["two.txt"]).hexdigest()
     assert b"".join(chunks) == FILES["two.txt"]

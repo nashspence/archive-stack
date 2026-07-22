@@ -359,6 +359,24 @@ class ApiClient(_HttpApiClient):
         )
         return int(result)
 
+    def download_retrieval_object(
+        self,
+        job_id: str,
+        *,
+        collection_id: str,
+        object_id: str,
+        output: Path,
+        progress: DownloadProgress | None = None,
+    ) -> int:
+        result = self._download(
+            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/objects/"
+            f"{quote(object_id, safe='')}/content?"
+            f"collection_id={quote(collection_id, safe='')}",
+            output,
+            progress=progress,
+        )
+        return int(result)
+
     def create_or_resume_collection_upload(
         self,
         slug: str,
