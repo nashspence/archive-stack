@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
@@ -67,6 +68,7 @@ from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
+_UPLOAD_FORGET_WORKERS = 32
 _COLLECTION_SORT_FIELDS = {
     "id",
     "bytes",
@@ -1457,12 +1459,30 @@ def _forget_collection_upload(
     upload: CollectionUploadRecord,
     upload_store: UploadStore,
 ) -> None:
-    for file_record in upload.files:
-        if file_record.tus_url is not None:
-            upload_store.cancel_upload(file_record.tus_url)
-        upload_store.delete_target(
-            _collection_upload_target_path(upload.collection_id, file_record.path)
+    targets = [
+        (
+            file_record.tus_url,
+            _collection_upload_target_path(upload.collection_id, file_record.path),
         )
+        for file_record in upload.files
+    ]
+
+    def forget_target(target: tuple[str | None, str]) -> None:
+        tus_url, target_path = target
+        if tus_url is not None:
+            upload_store.cancel_upload(tus_url)
+        upload_store.delete_target(target_path)
+
+    if len(targets) <= 1:
+        for target in targets:
+            forget_target(target)
+        return
+
+    with ThreadPoolExecutor(
+        max_workers=min(_UPLOAD_FORGET_WORKERS, len(targets)),
+        thread_name_prefix="riverhog-upload-cleanup",
+    ) as executor:
+        list(executor.map(forget_target, targets))
 
 
 def _collection_upload_is_complete_for_session(session: Session, collection_id: str) -> bool:

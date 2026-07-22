@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -12,6 +13,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -25,6 +27,34 @@ class UploadStoreStub:
 
     def get_offset(self, tus_url: str) -> int:
         return 0
+
+
+class ConcurrentCancelUploadStore(UploadStoreStub):
+    def __init__(self, expected_concurrency: int) -> None:
+        super().__init__()
+        self.expected_concurrency = expected_concurrency
+        self.canceled: list[str] = []
+        self.deleted: list[str] = []
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+        self.all_active = threading.Event()
+
+    def cancel_upload(self, tus_url: str) -> None:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            if self.active == self.expected_concurrency:
+                self.all_active.set()
+        if not self.all_active.wait(timeout=2):
+            raise AssertionError("upload cancellation did not run concurrently")
+        with self.lock:
+            self.canceled.append(tus_url)
+            self.active -= 1
+
+    def delete_target(self, target_path: str) -> None:
+        with self.lock:
+            self.deleted.append(target_path)
 
 
 def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyCollectionService:
@@ -162,3 +192,30 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
         assert record.ingress_secret_envelope.startswith("v1.")
         assert record.ingress_secret_envelope != encryption["passphrase"]
         assert encryption["passphrase"] not in record.ingress_state_json
+
+
+def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    file_count = 4
+    upload_store = ConcurrentCancelUploadStore(file_count)
+    service = _service(path, upload_store)
+    created = service.create_or_resume_upload_session(
+        upload_slug="cancel-me",
+        upload_timestamp="20250103T000000Z",
+    )
+    collection_id = str(created["collection_id"])
+    for index in range(file_count):
+        file_path = f"file-{index}.txt"
+        service.register_upload_session_file(
+            collection_id,
+            {"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64},
+        )
+        service.create_or_resume_file_upload(collection_id, file_path)
+
+    canceled = service.cancel_upload_session(collection_id)
+
+    assert canceled["state"] == "canceled"
+    assert upload_store.max_active == file_count
+    assert len(upload_store.canceled) == file_count
+    assert len(upload_store.deleted) == file_count
