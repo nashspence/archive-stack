@@ -481,6 +481,8 @@ riverhog_upload_call_locks: dict[str, threading.Lock] = {}
 riverhog_upload_call_locks_guard = threading.Lock()
 input_file_upload_setup_locks: dict[tuple[str, str], threading.Lock] = {}
 input_file_upload_setup_locks_guard = threading.Lock()
+input_upload_state_locks: dict[str, threading.RLock] = {}
+input_upload_state_locks_guard = threading.Lock()
 
 
 def request_bearer_token(request: Request) -> str:
@@ -572,6 +574,15 @@ def input_file_upload_setup_lock(upload_id: str, rel_path: str) -> threading.Loc
         if lock is None:
             lock = threading.Lock()
             input_file_upload_setup_locks[key] = lock
+        return lock
+
+
+def input_upload_state_lock(upload_id: str) -> threading.RLock:
+    with input_upload_state_locks_guard:
+        lock = input_upload_state_locks.get(upload_id)
+        if lock is None:
+            lock = threading.RLock()
+            input_upload_state_locks[upload_id] = lock
         return lock
 
 
@@ -1866,15 +1877,17 @@ def create_submission_state(
             storage_hint=storage_hint,
         )
         upload_created = True
-        upload["submission_id"] = submission_id
-        upload["submission_inputs"] = dict(req.inputs)
-        upload["submission_request_digest"] = digest
-        upload["job_template"] = {
-            "name": template["name"],
-            "revision": template["revision"],
-            "digest": template["digest"],
-        }
-        save_input_upload_raw(upload)
+        with input_upload_state_lock(submission_id):
+            upload = load_input_upload_raw(submission_id)
+            upload["submission_id"] = submission_id
+            upload["submission_inputs"] = dict(req.inputs)
+            upload["submission_request_digest"] = digest
+            upload["job_template"] = {
+                "name": template["name"],
+                "revision": template["revision"],
+                "digest": template["digest"],
+            }
+            save_input_upload_raw(upload)
         job = create_job_state_from_request(
             job_request,
             initiated_by_app=initiator.app,
@@ -1891,10 +1904,11 @@ def create_submission_state(
         job = save_job(job)
     except Exception:
         if upload_created:
-            cleanup_upload = read_state("input-upload", submission_id)
-            if cleanup_upload is not None:
-                remove_input_upload_data(cleanup_upload)
-            delete_state("input-upload", submission_id)
+            with input_upload_state_lock(submission_id):
+                cleanup_upload = read_state("input-upload", submission_id)
+                if cleanup_upload is not None:
+                    remove_input_upload_data(cleanup_upload)
+                delete_state("input-upload", submission_id)
         raise
     return job, True
 
@@ -2823,7 +2837,7 @@ def refresh_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
 
 def save_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
     upload = refresh_input_upload(upload)
-    return write_state("input-upload", str(upload["input_upload_id"]), upload)
+    return save_input_upload_raw(upload)
 
 
 def load_input_upload_raw(upload_id: str) -> dict[str, Any]:
@@ -2835,7 +2849,38 @@ def load_input_upload_raw(upload_id: str) -> dict[str, Any]:
 
 def save_input_upload_raw(upload: dict[str, Any]) -> dict[str, Any]:
     upload = normalized_input_upload(upload)
-    return write_state("input-upload", str(upload["input_upload_id"]), upload)
+    upload_id = str(upload["input_upload_id"])
+    expected_updated_at = str(upload.get("updated_at") or "")
+    payload = dict(upload)
+    payload["updated_at"] = utc_timestamp_now()
+    encoded = json.dumps(payload, sort_keys=True)
+    with input_upload_state_lock(upload_id), closing(state_db()) as conn:
+        if expected_updated_at:
+            result = conn.execute(
+                """
+                UPDATE states
+                SET payload = ?, updated_at = ?
+                WHERE kind = 'input-upload' AND id = ? AND updated_at = ?
+                """,
+                (encoded, payload["updated_at"], upload_id, expected_updated_at),
+            )
+            if result.rowcount != 1:
+                conn.rollback()
+                raise RuntimeError(f"stale input upload state: {upload_id}")
+        else:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO states(kind, id, payload, updated_at)
+                    VALUES('input-upload', ?, ?, ?)
+                    """,
+                    (upload_id, encoded, payload["updated_at"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise RuntimeError(f"stale input upload state: {upload_id}") from exc
+        conn.commit()
+    return payload
 
 
 def remove_input_upload_data(upload: dict[str, Any]) -> None:
@@ -2917,8 +2962,7 @@ def input_upload_data_last_activity(upload: dict[str, Any]) -> datetime:
 
 
 def load_input_upload(upload_id: str) -> dict[str, Any]:
-    with state_lock:
-        return refresh_input_upload(load_input_upload_raw(upload_id))
+    return refresh_input_upload(load_input_upload_raw(upload_id))
 
 
 def item_lifecycle_time(item: dict[str, Any]) -> datetime | None:
@@ -4482,6 +4526,20 @@ def route_completed_input_files(
     upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    upload_id = str(upload["input_upload_id"])
+    with input_upload_state_lock(upload_id):
+        return route_completed_input_files_locked(
+            job,
+            load_input_upload(upload_id),
+            groups,
+        )
+
+
+def route_completed_input_files_locked(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     if not isinstance(job.get("routing"), dict):
         return upload
     changed = False
@@ -4586,10 +4644,9 @@ def route_completed_input_files(
         upload,
         groups,
     )
-    with state_lock:
-        save_input_upload_raw(upload)
-        save_job(job)
-    return load_input_upload(str(upload["input_upload_id"]))
+    upload = save_input_upload_raw(upload)
+    save_job(job)
+    return refresh_input_upload(upload)
 
 
 def grouped_task_union(groups: dict[str, dict[str, Any]]) -> list[TaskName]:
@@ -5397,6 +5454,22 @@ def write_metadata_projection_sidecars(
     groups: dict[str, dict[str, Any]],
     archive_dir: Path,
 ) -> dict[str, Any]:
+    upload_id = str(upload["input_upload_id"])
+    with input_upload_state_lock(upload_id):
+        return write_metadata_projection_sidecars_locked(
+            job,
+            load_input_upload_raw(upload_id),
+            groups,
+            archive_dir,
+        )
+
+
+def write_metadata_projection_sidecars_locked(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    archive_dir: Path,
+) -> dict[str, Any]:
     sidecars_written = 0
     groups_written: dict[str, int] = {}
     upload_changed = False
@@ -5738,15 +5811,16 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
     job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")
     if upload_id:
-        upload = read_state("input-upload", upload_id)
-        if upload is not None and not jobs_referencing_input_upload(
-            upload_id,
-            exclude_job_id=job_id,
-        ):
-            remove_input_upload_data(upload)
-            delete_state("input-upload", upload_id)
-            removed.append(f"input-upload:{upload_id}")
-            job["input_upload_deleted_at"] = utc_timestamp_now()
+        with input_upload_state_lock(upload_id):
+            upload = read_state("input-upload", upload_id)
+            if upload is not None and not jobs_referencing_input_upload(
+                upload_id,
+                exclude_job_id=job_id,
+            ):
+                remove_input_upload_data(upload)
+                delete_state("input-upload", upload_id)
+                removed.append(f"input-upload:{upload_id}")
+                job["input_upload_deleted_at"] = utc_timestamp_now()
     append_cleanup_removed(job, removed)
     if removed and int(job.get("cleanup_removed_count") or 0) < len(removed):
         job["cleanup_removed"] = removed
@@ -8718,7 +8792,7 @@ def consume_input_upload_file(upload: dict[str, Any], file_state: dict[str, Any]
 
 
 def consume_input_upload_files(upload_id: str, rel_paths: set[str]) -> dict[str, Any]:
-    with state_lock:
+    with input_upload_state_lock(upload_id):
         upload = load_input_upload(upload_id)
         changed = False
         by_path = {str(file_state["path"]): file_state for file_state in upload.get("files", [])}
@@ -8733,6 +8807,24 @@ def consume_input_upload_files(upload_id: str, rel_paths: set[str]) -> dict[str,
 
 
 def mark_existing_eager_outputs(
+    job: dict[str, Any],
+    upload: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    eager_groups: set[str],
+    archive_dir: Path,
+) -> tuple[dict[str, Any], bool]:
+    upload_id = str(upload["input_upload_id"])
+    with input_upload_state_lock(upload_id):
+        return mark_existing_eager_outputs_locked(
+            job,
+            load_input_upload_raw(upload_id),
+            groups,
+            eager_groups,
+            archive_dir,
+        )
+
+
+def mark_existing_eager_outputs_locked(
     job: dict[str, Any],
     upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
@@ -9538,6 +9630,74 @@ def submit_eager_gpu_job(
     return True
 
 
+def prepare_eager_gpu_batch_input(
+    job: dict[str, Any],
+    upload_id: str,
+    *,
+    paths: list[str],
+    batch_id: str,
+    group_name: str,
+    group_config: dict[str, Any],
+    tasks: list[TaskName],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    job_id = str(job["job_id"])
+    with input_upload_state_lock(upload_id):
+        upload = load_input_upload(upload_id)
+        files_by_path = {
+            str(file_state["path"]): file_state for file_state in upload.get("files", [])
+        }
+        try:
+            file_states = [files_by_path[path] for path in paths]
+        except KeyError as exc:
+            raise RuntimeError(f"unknown eager input file: {exc.args[0]}") from exc
+        evidence_file_states = sidecar_evidence_files_for_primaries(upload, file_states)
+        batch_root = eager_batch_input_root(job_id, batch_id)
+        if batch_root.exists():
+            shutil.rmtree(batch_root, ignore_errors=True)
+        batch_root.mkdir(parents=True, exist_ok=True)
+        for file_state in [*file_states, *evidence_file_states]:
+            materialize_upload_file(file_state, batch_root)
+        source_paths_by_path = {
+            str(file_state["path"]): batch_root / materialized_input_rel_path(file_state)
+            for file_state in [*file_states, *evidence_file_states]
+        }
+        container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
+            job,
+            upload,
+            file_states,
+            group_name=group_name,
+            group_config=group_config,
+            tasks=tasks,
+            source_paths_by_path=source_paths_by_path,
+        )
+        if container_metadata_changed:
+            upload = save_input_upload_raw(upload)
+        write_group_filesystem_metadata(
+            batch_root,
+            group_name,
+            [*file_states, *evidence_file_states],
+        )
+        source_artifacts_sidecars = source_artifacts_sidecar_entries(
+            upload,
+            file_states,
+            group_name=group_name,
+            materialized_group_root=batch_root / group_name,
+            container_group_root=Path(
+                f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"
+            ),
+        )
+        payload = build_eager_gpu_payload(
+            job,
+            batch_id=batch_id,
+            group_name=group_name,
+            group_config=group_config,
+            tasks=tasks,
+            container_metadata=container_metadata,
+            source_artifacts_sidecars=source_artifacts_sidecars,
+        )
+        return upload, file_states, evidence_file_states, payload
+
+
 def start_eager_gpu_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
@@ -9548,7 +9708,6 @@ def start_eager_gpu_batch(
     archive_dir: Path,
     space_checked: bool = False,
 ) -> dict[str, Any]:
-    job_id = str(job["job_id"])
     paths = [str(file_state["path"]) for file_state in file_states]
     evidence_file_states = sidecar_evidence_files_for_primaries(upload, file_states)
     evidence_paths = [str(file_state["path"]) for file_state in evidence_file_states]
@@ -9561,45 +9720,17 @@ def start_eager_gpu_batch(
     if not space_checked:
         wait_for_free_space(job, GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch")
 
-    batch_root = eager_batch_input_root(job_id, batch_id)
-    if batch_root.exists():
-        shutil.rmtree(batch_root, ignore_errors=True)
-    batch_root.mkdir(parents=True, exist_ok=True)
-    for file_state in [*file_states, *evidence_file_states]:
-        materialize_upload_file(file_state, batch_root)
-    source_paths_by_path = {
-        str(file_state["path"]): batch_root / materialized_input_rel_path(file_state)
-        for file_state in [*file_states, *evidence_file_states]
-    }
     tasks: list[TaskName] = ["archive_video"]
-    container_metadata, container_metadata_changed = container_metadata_for_gpu_payload(
+    upload, file_states, evidence_file_states, payload = prepare_eager_gpu_batch_input(
         job,
-        upload,
-        file_states,
-        group_name=group_name,
-        group_config=group_config,
-        tasks=tasks,
-        source_paths_by_path=source_paths_by_path,
-    )
-    if container_metadata_changed:
-        upload = save_input_upload_raw(upload)
-    write_group_filesystem_metadata(batch_root, group_name, [*file_states, *evidence_file_states])
-    source_artifacts_sidecars = source_artifacts_sidecar_entries(
-        upload,
-        file_states,
-        group_name=group_name,
-        materialized_group_root=batch_root / group_name,
-        container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
-    )
-    payload = build_eager_gpu_payload(
-        job,
+        str(upload["input_upload_id"]),
+        paths=paths,
         batch_id=batch_id,
         group_name=group_name,
         group_config=group_config,
         tasks=tasks,
-        container_metadata=container_metadata,
-        source_artifacts_sidecars=source_artifacts_sidecars,
     )
+    evidence_paths = [str(file_state["path"]) for file_state in evidence_file_states]
     batch = {
         "batch_id": batch_id,
         "state": "running",
@@ -9647,26 +9778,34 @@ def start_eager_audio_batch(
     job_id = str(job["job_id"])
     paths = [str(file_state["path"]) for file_state in file_states]
     batch_id = next_eager_batch_id(job, group_name, paths)
-
-    upload_changed = False
-    for file_state in file_states:
-        if ensure_file_projection_metadata(
-            upload,
-            file_state,
-            job=job,
-            group_config=group_config,
-        ):
-            upload_changed = True
-    if upload_changed:
-        upload = save_input_upload_raw(upload)
-
     batch_root = eager_batch_input_root(job_id, batch_id)
-    if batch_root.exists():
-        shutil.rmtree(batch_root, ignore_errors=True)
-    batch_root.mkdir(parents=True, exist_ok=True)
-    for file_state in file_states:
-        materialize_upload_file(file_state, batch_root)
-    write_group_filesystem_metadata(batch_root, group_name, file_states)
+    upload_id = str(upload["input_upload_id"])
+    with input_upload_state_lock(upload_id):
+        upload = load_input_upload(upload_id)
+        files_by_path = {
+            str(file_state["path"]): file_state for file_state in upload.get("files", [])
+        }
+        try:
+            file_states = [files_by_path[path] for path in paths]
+        except KeyError as exc:
+            raise RuntimeError(f"unknown eager input file: {exc.args[0]}") from exc
+        upload_changed = False
+        for file_state in file_states:
+            if ensure_file_projection_metadata(
+                upload,
+                file_state,
+                job=job,
+                group_config=group_config,
+            ):
+                upload_changed = True
+        if upload_changed:
+            upload = save_input_upload_raw(upload)
+        if batch_root.exists():
+            shutil.rmtree(batch_root, ignore_errors=True)
+        batch_root.mkdir(parents=True, exist_ok=True)
+        for file_state in file_states:
+            materialize_upload_file(file_state, batch_root)
+        write_group_filesystem_metadata(batch_root, group_name, file_states)
 
     batch: dict[str, Any] = {
         "batch_id": batch_id,
@@ -10011,13 +10150,16 @@ def run_job(job_id: str) -> None:
                     source_root=input_dir / group_name,
                     dest_root=archive_dir / group_name,
                 )
-                preserve_source_artifacts = build_preserve_group_source_artifacts(
-                    input_upload,
-                    group_name=group_name,
-                    source_root=input_dir / group_name,
-                    output_root=archive_dir / group_name,
-                )
-                input_upload = save_input_upload_raw(input_upload)
+                input_upload_id = str(input_upload["input_upload_id"])
+                with input_upload_state_lock(input_upload_id):
+                    input_upload = load_input_upload(input_upload_id)
+                    preserve_source_artifacts = build_preserve_group_source_artifacts(
+                        input_upload,
+                        group_name=group_name,
+                        source_root=input_dir / group_name,
+                        output_root=archive_dir / group_name,
+                    )
+                    input_upload = save_input_upload_raw(input_upload)
                 group_results[group_name] = {
                     **group_results.get(group_name, {}),
                     "preserve_copied": True,
@@ -10070,22 +10212,25 @@ def run_job(job_id: str) -> None:
             try:
                 for group_name, group_config, tasks in gpu_work:
                     raise_if_job_canceled(job_id)
-                    group_file_states = mutable_primary_upload_files_for_groups(
-                        input_upload,
-                        {group_name},
-                    )
-                    container_metadata, container_metadata_changed = (
-                        container_metadata_for_gpu_payload(
-                            job,
+                    input_upload_id = str(input_upload["input_upload_id"])
+                    with input_upload_state_lock(input_upload_id):
+                        input_upload = load_input_upload(input_upload_id)
+                        group_file_states = mutable_primary_upload_files_for_groups(
                             input_upload,
-                            group_file_states,
-                            group_name=group_name,
-                            group_config=group_config,
-                            tasks=tasks,
+                            {group_name},
                         )
-                    )
-                    if container_metadata_changed:
-                        input_upload = save_input_upload_raw(input_upload)
+                        container_metadata, container_metadata_changed = (
+                            container_metadata_for_gpu_payload(
+                                job,
+                                input_upload,
+                                group_file_states,
+                                group_name=group_name,
+                                group_config=group_config,
+                                tasks=tasks,
+                            )
+                        )
+                        if container_metadata_changed:
+                            input_upload = save_input_upload_raw(input_upload)
                     gpu_job_id = gpu_group_job_id(job_id, group_name)
                     job["phase"] = f"gpu:{group_name}"
                     save_job(job)
@@ -10824,37 +10969,38 @@ def create_input_upload_state(
     files: list[InputFileSpec],
     storage_hint: InputUploadStorageHint,
 ) -> dict[str, Any]:
-    if state_exists("input-upload", input_upload_id):
-        raise HTTPException(
-            status_code=409,
-            detail=f"input upload already exists: {input_upload_id}",
-        )
     require_input_upload_capacity(files, storage_hint)
-    file_states = []
-    for item in files:
-        target_path = target_path_for(input_upload_id, item.path)
-        file_states.append(
-            {
-                "path": item.path,
-                "bytes": item.bytes,
-                "sha256": item.sha256,
-                "filesystem_metadata": item.filesystem_metadata,
-                "target_path": target_path,
-                "input_upload_id": input_upload_id,
-                "file_upload_id": tusd_upload_id_for_target_path(target_path),
-                "upload_url": None,
-                "structured_routing": storage_hint.structured_routing,
-            }
-        )
-    upload = {
-        "input_upload_id": input_upload_id,
-        "state": "uploading",
-        "created_at": utc_timestamp_now(),
-        "files": file_states,
-        "storage_hint": storage_hint.model_dump(exclude_none=True),
-        "tusd_creation_url": TUSD_PUBLIC_BASE_URL,
-    }
-    return save_input_upload(upload)
+    with input_upload_state_lock(input_upload_id):
+        if state_exists("input-upload", input_upload_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"input upload already exists: {input_upload_id}",
+            )
+        file_states = []
+        for item in files:
+            target_path = target_path_for(input_upload_id, item.path)
+            file_states.append(
+                {
+                    "path": item.path,
+                    "bytes": item.bytes,
+                    "sha256": item.sha256,
+                    "filesystem_metadata": item.filesystem_metadata,
+                    "target_path": target_path,
+                    "input_upload_id": input_upload_id,
+                    "file_upload_id": tusd_upload_id_for_target_path(target_path),
+                    "upload_url": None,
+                    "structured_routing": storage_hint.structured_routing,
+                }
+            )
+        upload = {
+            "input_upload_id": input_upload_id,
+            "state": "uploading",
+            "created_at": utc_timestamp_now(),
+            "files": file_states,
+            "storage_hint": storage_hint.model_dump(exclude_none=True),
+            "tusd_creation_url": TUSD_PUBLIC_BASE_URL,
+        }
+        return save_input_upload(upload)
 
 
 def input_file_upload_response(
@@ -10879,7 +11025,7 @@ def _create_or_resume_input_file_upload(
     input_upload_id: str,
     rel_path: str,
 ) -> dict[str, Any]:
-    with state_lock:
+    with input_upload_state_lock(input_upload_id):
         upload = load_input_upload_raw(input_upload_id)
         file_state = find_upload_file(upload, rel_path)
         if file_state.get("consumed_at"):
@@ -10897,7 +11043,7 @@ def _create_or_resume_input_file_upload(
     offset = head_tusd_upload(str(upload_url)) if upload_url else -1
     if offset < 0:
         created_upload_url = create_tusd_upload(target_path, length)
-        with state_lock:
+        with input_upload_state_lock(input_upload_id):
             upload = load_input_upload_raw(input_upload_id)
             file_state = find_upload_file(upload, rel_path)
             if file_state.get("consumed_at"):
@@ -10923,7 +11069,7 @@ def _create_or_resume_input_file_upload(
             if offset < 0:
                 offset = 0
 
-    with state_lock:
+    with input_upload_state_lock(input_upload_id):
         upload = load_input_upload_raw(input_upload_id)
         file_state = find_upload_file(upload, rel_path)
         if file_state.get("consumed_at"):
@@ -11142,21 +11288,25 @@ def cleanup_once() -> dict[str, Any]:
     with state_lock:
         referenced_uploads = referenced_input_upload_ids()
         for upload_state in input_upload_states():
-            upload = refresh_input_upload(upload_state)
-            upload_id = str(upload["input_upload_id"])
-            last_activity = input_upload_last_activity(upload)
-            if upload.get("state") == "uploaded":
-                if upload_id in referenced_uploads or last_activity > orphan_upload_cutoff:
+            upload_id = str(upload_state["input_upload_id"])
+            with input_upload_state_lock(upload_id):
+                current = read_state("input-upload", upload_id)
+                if current is None:
+                    continue
+                upload = refresh_input_upload(current)
+                last_activity = input_upload_last_activity(upload)
+                if upload.get("state") == "uploaded":
+                    if upload_id in referenced_uploads or last_activity > orphan_upload_cutoff:
+                        continue
+                    remove_input_upload_data(upload)
+                    delete_state("input-upload", upload_id)
+                    removed.append(f"orphan-input-upload:{upload_id}")
+                    continue
+                if last_activity > upload_cutoff:
                     continue
                 remove_input_upload_data(upload)
                 delete_state("input-upload", upload_id)
-                removed.append(f"orphan-input-upload:{upload_id}")
-                continue
-            if last_activity > upload_cutoff:
-                continue
-            remove_input_upload_data(upload)
-            delete_state("input-upload", upload_id)
-            removed.append(f"input-upload:{upload_id}")
+                removed.append(f"input-upload:{upload_id}")
 
         job_cutoff = datetime.now(UTC) - timedelta(hours=LOCAL_CLEANUP_MIN_AGE_HOURS)
         for job in job_states():

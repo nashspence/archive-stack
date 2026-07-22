@@ -2175,6 +2175,182 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     )
 
 
+def test_eager_projection_and_upload_setup_mutations_are_serialized(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    server.init_state_store()
+    upload_id = "upload-1"
+    source_path = "camera/Back Yard_00_20260630123456.mp4"
+    pending_path = "other/pending.mp4"
+    tusd_source = server.tusd_data_path("upload-a")
+    tusd_source.parent.mkdir(parents=True, exist_ok=True)
+    tusd_source.write_bytes(b"video")
+    upload = server.save_input_upload_raw(
+        {
+            "input_upload_id": upload_id,
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "handoff_destination": "riverhog",
+                "groups": {
+                    "camera": {"output_mode": "video", "tasks": ["archive_video"]},
+                    "other": {"output_mode": "preserve", "tasks": []},
+                },
+            },
+            "files": [
+                {
+                    "path": source_path,
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "target_path": server.target_path_for(upload_id, source_path),
+                },
+                {
+                    "path": pending_path,
+                    "bytes": 7,
+                    "file_upload_id": "upload-b",
+                    "target_path": server.target_path_for(upload_id, pending_path),
+                    "upload_url": None,
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": upload_id,
+        "collection_slug": "camera-archive",
+        "collection_timestamp": "20260101T000000Z",
+    }
+    server.save_job(job)
+    group_config = {
+        "output_mode": "video",
+        "tasks": ["archive_video"],
+        "encode_profile": {"archive": {"container": "webm"}},
+        "metadata_projection": {
+            "enabled": True,
+            "device": {"make": "Example", "model": "Camera"},
+            "gps": {"latitude": 48.9995, "longitude": -122.7404},
+            "creators": ["Example Operator"],
+        },
+    }
+    metadata_started = threading.Event()
+    release_metadata = threading.Event()
+    request_started = threading.Event()
+    tusd_create_started = threading.Event()
+    errors: list[BaseException] = []
+
+    monkeypatch.setattr(server, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []})
+
+    def fake_exiftool(_path: Path, **_kwargs: object) -> dict[str, object]:
+        metadata_started.set()
+        assert release_metadata.wait(timeout=5)
+        return {"DateTimeOriginal": "2026:06:30 12:34:56-0700"}
+
+    def fake_create_tusd_upload(target_path: str, _length: int) -> str:
+        tusd_create_started.set()
+        return f"{server.TUSD_PUBLIC_BASE_URL}/{target_path}"
+
+    monkeypatch.setattr(server, "exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr(server, "start_gpu_job", lambda _payload: None)
+    monkeypatch.setattr(server, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(server, "head_tusd_upload", lambda _url: 0)
+
+    def capture_metadata() -> None:
+        try:
+            server.start_eager_gpu_batch(
+                job,
+                upload,
+                group_name="camera",
+                group_config=group_config,
+                file_states=[upload["files"][0]],
+                archive_dir=tmp_path / "archive",
+                space_checked=True,
+            )
+        except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
+            errors.append(exc)
+
+    def create_pending_upload() -> None:
+        request_started.set()
+        try:
+            server._create_or_resume_input_file_upload(upload_id, pending_path)
+        except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
+            errors.append(exc)
+
+    metadata_thread = threading.Thread(target=capture_metadata)
+    request_thread = threading.Thread(target=create_pending_upload)
+    metadata_thread.start()
+    assert metadata_started.wait(timeout=5)
+    request_thread.start()
+    assert request_started.wait(timeout=5)
+    assert not tusd_create_started.wait(timeout=0.25)
+    release_metadata.set()
+    metadata_thread.join(timeout=5)
+    request_thread.join(timeout=5)
+
+    assert errors == []
+    assert not metadata_thread.is_alive()
+    assert not request_thread.is_alive()
+    assert tusd_create_started.is_set()
+    stored = server.load_input_upload(upload_id)
+    stored_by_path = {item["path"]: item for item in stored["files"]}
+    assert stored_by_path[source_path]["metadata_projection_metadata"]["capture_date"] == (
+        "2026-06-30T12:34:56-07:00"
+    )
+    assert stored_by_path[pending_path]["upload_url"]
+
+    stored = server.consume_input_upload_files(upload_id, {source_path})
+    server.shutil.rmtree(server.GPU_RUNTIME_DIR / "jobs" / "job-1" / "eager-input")
+    archive_dir = tmp_path / "archive"
+    output = server.archive_output_for_upload_file(
+        stored_by_path[source_path],
+        group_name="camera",
+        group_config=group_config,
+        archive_dir=archive_dir,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"webm")
+
+    projected = server.write_metadata_projection_sidecars(
+        job,
+        stored,
+        {"camera": group_config},
+        archive_dir,
+    )
+
+    projected_by_path = {item["path"]: item for item in projected["files"]}
+    assert projected_by_path[source_path]["consumed_at"]
+    assert output.with_name(f"{output.name}.xmp").exists()
+
+
+def test_input_upload_state_compare_and_swap_rejects_stale_snapshots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    server.init_state_store()
+    server.save_input_upload_raw(
+        {
+            "input_upload_id": "upload-1",
+            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+        }
+    )
+    stale = server.load_input_upload_raw("upload-1")
+    current = server.load_input_upload_raw("upload-1")
+    current["files"][0]["metadata_projection_metadata"] = {"capture_date": "2026-06-30"}
+    server.save_input_upload_raw(current)
+    stale["files"][0]["upload_url"] = "https://uploads.example.invalid/upload-a"
+
+    with pytest.raises(RuntimeError, match="stale input upload state"):
+        server.save_input_upload_raw(stale)
+
+    stored = server.load_input_upload_raw("upload-1")
+    assert stored["files"][0]["metadata_projection_metadata"] == {
+        "capture_date": "2026-06-30"
+    }
+
+
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     tmp_path: Path,
     monkeypatch,
@@ -7721,10 +7897,12 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
             "next_batch_number": 2,
         },
     }
-    upload = {
-        "input_upload_id": "upload-1",
-        "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
-    }
+    upload = server.save_input_upload_raw(
+        {
+            "input_upload_id": "upload-1",
+            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+        }
+    )
 
     updated_upload, changed = server.mark_existing_eager_outputs(
         job,
@@ -7734,7 +7912,7 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
         archive_dir,
     )
 
-    assert updated_upload is upload
+    assert updated_upload["input_upload_id"] == upload["input_upload_id"]
     assert changed is False
     assert job["eager_archive"]["files"]["camera/a.mp4"]["state"] == "encoding"
     assert job["eager_archive"]["files"]["camera/a.mp4"]["batch_id"] == "batch-1"
