@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from riverhog_protocol.errors import InvalidPath
-from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-
-_YEAR_RE = re.compile(r"^\d{4}$")
+from riverhog_protocol.paths import (
+    PathNormalizationError,
+    normalize_collection_id,
+    normalize_upload_slug,
+)
 
 
 @dataclass(frozen=True)
@@ -39,8 +40,12 @@ def parse_logical_path(raw: str) -> LogicalPath:
         raise InvalidPath("path must be canonical")
     parts = path.parts
     if len(parts) == 1:
-        if not is_directory or not _YEAR_RE.fullmatch(parts[0]):
-            raise InvalidPath("a year path must use YYYY/")
+        try:
+            canonical_slug = normalize_upload_slug(parts[0])
+        except PathNormalizationError as exc:
+            raise InvalidPath("a collection slug path must be canonical") from exc
+        if not is_directory or parts[0] != canonical_slug:
+            raise InvalidPath("a collection slug path must be canonical and end with '/'")
         return LogicalPath(path=path, is_directory=True)
 
     try:

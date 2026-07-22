@@ -38,7 +38,7 @@ FILES = {
     "one.txt": b"first archived file\n",
     "two.txt": b"second archived file\n",
 }
-SECOND_COLLECTION_ID = "2026/20260102T030406Z__more-docs"
+SECOND_COLLECTION_ID = "more-docs/20260102T030406Z"
 
 
 class MemoryRetrievalCache:

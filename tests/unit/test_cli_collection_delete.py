@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 
-from typer.testing import CliRunner
-
 import riverhog_cli.main
 from riverhog_cli.main import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -13,7 +12,7 @@ runner = CliRunner()
 def _plan() -> dict[str, object]:
     return {
         "status": "ready",
-        "collection_id": "2025/20250102T030405Z__docs",
+        "collection_id": "docs/20250102T030405Z",
         "warning": "DANGER: These encrypted objects are the sole durable copies.",
         "expires_at": "2026-07-14T22:00:00Z",
         "challenge": "delete-1-" + "a" * 64,
@@ -36,14 +35,12 @@ def _plan() -> dict[str, object]:
 def test_collection_delete_dry_run_emits_warning_and_challenge(monkeypatch) -> None:
     class FakeClient:
         def plan_collection_deletion(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2025/20250102T030405Z__docs"
+            assert collection_id == "docs/20250102T030405Z"
             return _plan()
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
-    result = runner.invoke(
-        app, ["collection", "delete", "2025/20250102T030405Z__docs", "--dry-run"]
-    )
+    result = runner.invoke(app, ["collection", "delete", "docs/20250102T030405Z", "--dry-run"])
 
     assert result.exit_code == 0
     assert "sole durable copies" in result.stdout
@@ -56,7 +53,7 @@ def test_collection_delete_interactive_requires_exact_id_after_warning(monkeypat
 
     class FakeClient:
         def plan_collection_deletion(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2025/20250102T030405Z__docs"
+            assert collection_id == "docs/20250102T030405Z"
             return _plan()
 
         def delete_collection(self, collection_id: str, *, challenge: str) -> dict[str, object]:
@@ -73,15 +70,15 @@ def test_collection_delete_interactive_requires_exact_id_after_warning(monkeypat
 
     result = runner.invoke(
         app,
-        ["collection", "delete", "2025/20250102T030405Z__docs"],
-        input="2025/20250102T030405Z__docs\n",
+        ["collection", "delete", "docs/20250102T030405Z"],
+        input="docs/20250102T030405Z\n",
     )
 
     assert result.exit_code == 0
     assert result.stdout.index("sole durable copies") < result.stdout.index(
         "Type the complete collection id"
     )
-    assert calls == [("2025/20250102T030405Z__docs", "delete-1-" + "a" * 64)]
+    assert calls == [("docs/20250102T030405Z", "delete-1-" + "a" * 64)]
     assert "collection deletion: deleted" in result.stdout
 
 
@@ -95,9 +92,7 @@ def test_collection_delete_interactive_mismatch_stops_before_execution(monkeypat
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
-    result = runner.invoke(
-        app, ["collection", "delete", "2025/20250102T030405Z__docs"], input="other\n"
-    )
+    result = runner.invoke(app, ["collection", "delete", "docs/20250102T030405Z"], input="other\n")
 
     assert result.exit_code == 1
     assert "nothing was deleted" in result.output
@@ -124,7 +119,7 @@ def test_collection_delete_noninteractive_uses_prior_challenge(monkeypatch) -> N
 
     result = runner.invoke(
         app,
-        ["collection", "delete", "2025/20250102T030405Z__docs", "--confirm", challenge, "--json"],
+        ["collection", "delete", "docs/20250102T030405Z", "--confirm", challenge, "--json"],
     )
 
     assert result.exit_code == 0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from riverhog_core.catalog_models import (
     CollectionUploadFileRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import collections
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_protocol.errors import Conflict, NotFound
 from sqlalchemy import select
@@ -129,7 +131,7 @@ def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyColl
 
 
 def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyRecord:
-    collection_id = "2025/20250101T000000Z__alpha"
+    collection_id = "alpha/20250101T000000Z"
     verified_at = "2026-07-14T00:00:00Z"
     prefix = f"collections/alpha/{store}"
     copy = CollectionArchiveCopyRecord(
@@ -173,8 +175,8 @@ def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         for collection_id, size in (
-            ("2025/20250101T000000Z__alpha", 10),
-            ("2025/20250102T000000Z__beta", 20),
+            ("alpha/20250101T000000Z", 10),
+            ("beta/20250102T000000Z", 20),
         ):
             session.add(CollectionRecord(id=collection_id, manifest_etag="0" * 64))
             session.add(
@@ -182,7 +184,7 @@ def _seed(path: Path) -> None:
                     collection_id=collection_id,
                     path="file.txt",
                     bytes=size,
-                    sha256=("a" if collection_id.endswith("__alpha") else "b") * 64,
+                    sha256=("a" if collection_id.startswith("alpha/") else "b") * 64,
                 )
             )
         session.add(_archive_copy("deep", stored_bytes=14))
@@ -195,7 +197,7 @@ def test_collection_summary_reports_each_archive_copy(tmp_path: Path) -> None:
     with session_scope(make_session_factory(sqlite_url(path))) as session:
         session.add(_archive_copy("b2", stored_bytes=15))
 
-    summary = _service(path).get("2025/20250101T000000Z__alpha")
+    summary = _service(path).get("alpha/20250101T000000Z")
 
     assert summary.files == 1
     assert summary.bytes == 10
@@ -216,9 +218,35 @@ def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) ->
     )
 
     assert [(str(item.id), item.files, item.bytes) for item in page.collections] == [
-        ("2025/20250102T000000Z__beta", 1, 20),
-        ("2025/20250101T000000Z__alpha", 1, 10),
+        ("beta/20250102T000000Z", 1, 20),
+        ("alpha/20250101T000000Z", 1, 10),
     ]
+
+
+def test_same_slug_and_second_with_different_manifest_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    service = _service(path)
+    monkeypatch.setattr(
+        collections,
+        "utc_now",
+        lambda: datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+    )
+
+    first = service.create_or_resume_upload(
+        upload_slug="photos",
+        files=[{"path": "one.jpg", "bytes": 1, "sha256": "a" * 64}],
+    )
+
+    assert first["collection_id"] == "photos/20250102T030405Z"
+    with pytest.raises(Conflict, match="different manifest"):
+        service.create_or_resume_upload(
+            upload_slug="photos",
+            files=[{"path": "two.jpg", "bytes": 1, "sha256": "b" * 64}],
+        )
 
 
 def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope(

@@ -20,28 +20,28 @@ def test_normalize_relpath_rejects_escape() -> None:
         normalize_relpath("../x")
 
 
-def test_collection_id_for_upload_uses_year_timestamp_and_slug() -> None:
+def test_collection_id_for_upload_uses_slug_and_timestamp() -> None:
     assert (
         collection_id_for_upload("Family Photos", "20250712T213200Z")
-        == "2025/20250712T213200Z__family-photos"
+        == "family-photos/20250712T213200Z"
     )
 
 
 def test_normalize_collection_id_accepts_canonical_upload_id() -> None:
-    collection_id = "2025/20250712T213200Z__family-photos"
+    collection_id = "family-photos/20250712T213200Z"
     assert normalize_collection_id(collection_id) == collection_id
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "2025/20250712T213200Z__Family-Photos",
-        "2024/20250712T213200Z__family-photos",
-        "2025/20250230T213200Z__family-photos",
-        "2025/20250712T213200Z__family_photos",
-        " 2025/20250712T213200Z__family-photos ",
-        "2025//20250712T213200Z__family-photos",
-        "/2025/20250712T213200Z__family-photos",
+        "Family-Photos/20250712T213200Z",
+        "family-photos/20250230T213200Z",
+        "family_photos/20250712T213200Z",
+        "family photos/20250712T213200Z",
+        " family-photos/20250712T213200Z ",
+        "family-photos//20250712T213200Z",
+        "/family-photos/20250712T213200Z",
     ],
 )
 def test_normalize_collection_id_requires_canonical_upload_id(raw: str) -> None:

@@ -36,7 +36,7 @@ def test_main_prints_json_error_for_json_mode(
     monkeypatch.setattr(
         riverhog_main.sys,
         "argv",
-        ["riverhog", "collection", "show", "2025/20250102T030405Z__docs", "--json"],
+        ["riverhog", "collection", "show", "docs/20250102T030405Z", "--json"],
     )
 
     exit_code = riverhog_main.main()

@@ -713,7 +713,7 @@ def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
             "state": "succeeded",
             "handoff": {"state": "transferring", "safe_to_delete": False},
             "handoff_progress": {
-                "external_id": "2026/20260101T000000Z__camera",
+                "external_id": "camera/20260101T000000Z",
                 "state": "archiving",
                 "safe_to_delete": False,
             },
@@ -723,7 +723,7 @@ def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
             "state": "succeeded",
             "handoff": {"state": "complete", "safe_to_delete": True},
             "handoff_progress": {
-                "external_id": "2026/20260101T000000Z__camera",
+                "external_id": "camera/20260101T000000Z",
                 "state": "finalized",
                 "safe_to_delete": True,
             },
@@ -749,7 +749,7 @@ def test_job_finished_cleanly_requires_safe_handoff() -> None:
             "state": "succeeded",
             "handoff": {"state": "transferring", "safe_to_delete": False},
             "handoff_progress": {
-                "external_id": "2026/20260101T000000Z__camera",
+                "external_id": "camera/20260101T000000Z",
                 "state": "archiving",
                 "safe_to_delete": False,
             },

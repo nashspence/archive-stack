@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 
-from typer.testing import CliRunner
-
 import riverhog_cli.main
 from riverhog_cli.main import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
-_COLLECTION_ID = "2026/20260102T030405Z__docs"
+_COLLECTION_ID = "docs/20260102T030405Z"
 
 
 def _plan() -> dict[str, object]:

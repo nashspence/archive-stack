@@ -6003,11 +6003,9 @@ def job_for_riverhog_collection(
                  OR json_extract(payload, '$.handoff_receipt.external_id') = ?
                  OR json_extract(payload, '$.handoff_progress.external_id') = ?
                  OR (
-                        substr(json_extract(payload, '$.collection_timestamp'), 1, 4)
+                        json_extract(payload, '$.collection_slug')
                         || '/'
                         || json_extract(payload, '$.collection_timestamp')
-                        || '__'
-                        || json_extract(payload, '$.collection_slug')
                     ) = ?
               )
             ORDER BY updated_at DESC
@@ -6562,9 +6560,9 @@ def riverhog_collection_id_for_job(job: dict[str, Any]) -> str | None:
 def derived_riverhog_collection_id(job: dict[str, Any]) -> str | None:
     timestamp = str(job.get("collection_timestamp") or "").strip()
     slug = str(job.get("collection_slug") or "").strip()
-    if len(timestamp) < 4 or not slug:
+    if not timestamp or not slug:
         return None
-    return f"{timestamp[:4]}/{timestamp}__{slug}"
+    return f"{slug}/{timestamp}"
 
 
 def riverhog_session_state(job: dict[str, Any]) -> dict[str, Any]:

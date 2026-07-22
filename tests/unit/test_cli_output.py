@@ -14,7 +14,7 @@ from riverhog_cli.output import (
 def test_collection_upload_output_reports_archive_progress() -> None:
     active = format_collection_upload(
         {
-            "collection_id": "2026/20260101T000000Z__docs",
+            "collection_id": "docs/20260101T000000Z",
             "state": "archiving",
             "files_uploaded": 2,
             "files_total": 2,
@@ -25,7 +25,7 @@ def test_collection_upload_output_reports_archive_progress() -> None:
     )
     planned = format_collection_upload_plan(
         {
-            "collection_id": "2026/20260101T000000Z__docs",
+            "collection_id": "docs/20260101T000000Z",
             "files_total": 2,
             "bytes_total": 10,
         }
@@ -38,7 +38,7 @@ def test_collection_upload_output_reports_archive_progress() -> None:
 def test_collection_output_leads_with_archive_copy_state() -> None:
     rendered = format_collection_summary(
         {
-            "id": "2025/20250102T030405Z__docs",
+            "id": "docs/20250102T030405Z",
             "files": 2,
             "bytes": 100,
             "archive_copies": [
@@ -51,7 +51,7 @@ def test_collection_output_leads_with_archive_copy_state() -> None:
         }
     )
 
-    assert "collection 2025/20250102T030405Z__docs" in rendered
+    assert "collection docs/20250102T030405Z" in rendered
     assert "archive copies: deep=uploaded" in rendered
 
 
@@ -63,7 +63,7 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
             "total": 1,
             "collections": [
                 {
-                    "id": "2025/20250102T030405Z__docs",
+                    "id": "docs/20250102T030405Z",
                     "files": 1,
                     "bytes": 10,
                     "archive_copies": [{"store": "deep", "state": "uploaded"}],
@@ -78,7 +78,7 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
             "total": 1,
             "files": [
                 {
-                    "logical_path": "2025/20250102T030405Z__docs/a.txt",
+                    "logical_path": "docs/20250102T030405Z/a.txt",
                     "bytes": 10,
                 }
             ],
@@ -86,7 +86,7 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
     )
 
     assert "archive=deep=uploaded" in collections
-    assert "2025/20250102T030405Z__docs/a.txt" in files
+    assert "docs/20250102T030405Z/a.txt" in files
 
 
 def test_archive_report_uses_remote_storage_measurement() -> None:

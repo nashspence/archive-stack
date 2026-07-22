@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 
-from pytest import CaptureFixture
-
 from cli_support.output import emit
+from pytest import CaptureFixture
 from riverhog_cli.main import _compact_collection_page
 
 
@@ -19,7 +18,7 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
             "order": "asc",
             "collections": [
                 {
-                    "id": "2025/20250102T030405Z__docs",
+                    "id": "docs/20250102T030405Z",
                     "files": 2,
                     "bytes": 100,
                     "archive_copies": [
@@ -38,7 +37,7 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
 
     assert payload["collections"] == [
         {
-            "id": "2025/20250102T030405Z__docs",
+            "id": "docs/20250102T030405Z",
             "files": 2,
             "bytes": 100,
             "archive_copies": [

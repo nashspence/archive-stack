@@ -29,10 +29,11 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import apply_archive_receipt
+
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
-COLLECTION_ID = "2026/20260102T030405Z__docs"
+COLLECTION_ID = "docs/20260102T030405Z"
 UPLOADED_AT = "2026-07-15T00:00:00.000000Z"
 
 

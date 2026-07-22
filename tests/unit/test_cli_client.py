@@ -21,7 +21,7 @@ def test_search_uses_current_collection_filters() -> None:
     client = RecordingClient()
     client.search(
         "tax",
-        collection="2025/20250102T030405Z__docs",
+        collection="docs/20250102T030405Z",
         sort="collection_path",
         order="desc",
         all_items=True,
@@ -38,7 +38,7 @@ def test_search_uses_current_collection_filters() -> None:
                     "sort": "collection_path",
                     "order": "desc",
                     "q": "tax",
-                    "collection": "2025/20250102T030405Z__docs",
+                    "collection": "docs/20250102T030405Z",
                     "all": True,
                 }
             },
@@ -63,12 +63,12 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
     client = RecordingClient()
 
-    client.cancel_collection_upload_session("2025/20250102T030405Z__docs")
+    client.cancel_collection_upload_session("docs/20250102T030405Z")
 
     assert client.calls == [
         (
             "POST",
-            "/v1/collection-upload-sessions/2025/20250102T030405Z__docs/cancel",
+            "/v1/collection-upload-sessions/docs/20250102T030405Z/cancel",
             {"timeout": 1800.0},
         )
     ]
@@ -76,7 +76,7 @@ def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
 
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     client = RecordingClient()
-    files = [("2025/20250102T030405Z__docs", "invoice.pdf")]
+    files = [("docs/20250102T030405Z", "invoice.pdf")]
 
     client.plan_retrieval(files, lease_seconds=3600)
     client.create_retrieval_job(files, plan_etag="a" * 64, lease_seconds=3600)
@@ -84,7 +84,7 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     payload = {
         "files": [
             {
-                "collection_id": "2025/20250102T030405Z__docs",
+                "collection_id": "docs/20250102T030405Z",
                 "path": "invoice.pdf",
             }
         ],
@@ -116,7 +116,7 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
 
     result = client.download_retrieval_object(
         "job-id",
-        collection_id="2025/20250102T030405Z__docs",
+        collection_id="docs/20250102T030405Z",
         object_id="data-000000",
         output=output,
     )
@@ -125,7 +125,7 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
     assert calls == [
         (
             "/v1/retrieval-jobs/job-id/objects/data-000000/content?"
-            "collection_id=2025%2F20250102T030405Z__docs",
+            "collection_id=docs%2F20250102T030405Z",
             output,
         )
     ]

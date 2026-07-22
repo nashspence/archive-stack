@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from typer.testing import CliRunner
-
 import riverhog_cli.main
 from riverhog_cli.main import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -21,8 +20,8 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
                 "total": 2,
                 "pages": 1,
                 "collections": [
-                    {"id": "2025/20250101T000000Z__alpha"},
-                    {"id": "2025/20250102T000000Z__beta"},
+                    {"id": "alpha/20250101T000000Z"},
+                    {"id": "beta/20250102T000000Z"},
                 ],
             }
 
@@ -34,7 +33,7 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
     )
 
     assert result.exit_code == 0
-    assert result.stdout == ("2025/20250101T000000Z__alpha\n2025/20250102T000000Z__beta\n")
+    assert result.stdout == ("alpha/20250101T000000Z\nbeta/20250102T000000Z\n")
 
 
 def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
@@ -45,11 +44,11 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
             return {
                 "files": [
                     {
-                        "collection_id": "2025/20250101T000000Z__docs",
+                        "collection_id": "docs/20250101T000000Z",
                         "collection_path": "tax/invoice.pdf",
                     },
                     {
-                        "collection_id": "2025/20250102T000000Z__docs",
+                        "collection_id": "docs/20250102T000000Z",
                         "collection_path": "tax/invoice.pdf",
                     },
                 ]
@@ -61,8 +60,7 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == (
-        "2025/20250101T000000Z__docs::tax/invoice.pdf\n"
-        "2025/20250102T000000Z__docs::tax/invoice.pdf\n"
+        "docs/20250101T000000Z::tax/invoice.pdf\ndocs/20250102T000000Z::tax/invoice.pdf\n"
     )
 
 

@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from tests.unit.db_helpers import sqlite_url
 
 RUNNER = CliRunner()
-COLLECTION_ID = "2025/20250101T000000Z__collection"
+COLLECTION_ID = "collection/20250101T000000Z"
 
 
 def _descriptor(tmp_path: Path, *, content: bytes) -> dict[str, object]:
@@ -97,7 +97,7 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["collection_id"] == "2026/20260713T120000Z__my-trip"
+    assert payload["collection_id"] == "my-trip/20260713T120000Z"
     assert payload["archive_store"] == "b2"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
 

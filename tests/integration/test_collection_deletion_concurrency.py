@@ -36,7 +36,7 @@ from tests.fixtures.crypto import FixtureProofVerifier
 
 pytestmark = pytest.mark.integration
 
-COLLECTION_ID = "2025/20250102T030405Z__docs"
+COLLECTION_ID = "docs/20250102T030405Z"
 FILE_PATH = "document.txt"
 CONTENT = b"archived document"
 

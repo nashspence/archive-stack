@@ -166,8 +166,7 @@ class SqlAlchemyCollectionService:
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
             if upload is None:
                 normalized_collection_id = requested_collection_id or _mint_collection_id(
-                    session,
-                    normalized_slug,
+                    normalized_slug
                 )
                 _ensure_collection_id_unused(session, normalized_collection_id)
                 upload = CollectionUploadRecord(
@@ -296,8 +295,7 @@ class SqlAlchemyCollectionService:
                 )
 
             normalized_collection_id = requested_collection_id or _mint_collection_id(
-                session,
-                normalized_slug,
+                normalized_slug
             )
             _ensure_collection_id_unused(session, normalized_collection_id)
             now = utc_timestamp_now()
@@ -970,9 +968,9 @@ def _like_pattern(value: str) -> str:
     return f"%{escaped}%"
 
 
-def _like_suffix(value: str) -> str:
+def _like_prefix(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}"
+    return f"{escaped}%"
 
 
 def _normalize_upload_slug_or_raise(raw: str) -> str:
@@ -1072,7 +1070,7 @@ def _find_matching_collection(
         .options(selectinload(CollectionRecord.archive_copies))
         .join(stats, stats.c.collection_id == CollectionRecord.id)
         .where(
-            CollectionRecord.id.like(_like_suffix(f"__{upload_slug}"), escape="\\"),
+            CollectionRecord.id.like(_like_prefix(f"{upload_slug}/"), escape="\\"),
             stats.c.files_total == len(files),
             stats.c.files_matching == len(files),
         )
@@ -1114,7 +1112,7 @@ def _find_matching_upload(
                 ~CollectionUploadRecord.state.in_(("open", "canceled", "expired")),
             ),
             CollectionUploadRecord.collection_id.like(
-                _like_suffix(f"__{upload_slug}"),
+                _like_prefix(f"{upload_slug}/"),
                 escape="\\",
             ),
             stats.c.files_total == len(files),
@@ -1143,7 +1141,7 @@ def _find_open_upload_session(
         .where(
             CollectionUploadRecord.state == "open",
             CollectionUploadRecord.collection_id.like(
-                _like_suffix(f"__{upload_slug}"),
+                _like_prefix(f"{upload_slug}/"),
                 escape="\\",
             ),
         )
@@ -1180,17 +1178,9 @@ def _collection_manifest_match_stats(
     )
 
 
-def _mint_collection_id(session: Session, upload_slug: str) -> str:
-    current = utc_now().replace(microsecond=0)
-    while True:
-        stamp = current.strftime("%Y%m%dT%H%M%SZ")
-        collection_id = collection_id_for_upload(upload_slug, stamp)
-        if (
-            session.get(CollectionRecord, collection_id) is None
-            and session.get(CollectionUploadRecord, collection_id) is None
-        ):
-            return collection_id
-        current += timedelta(seconds=1)
+def _mint_collection_id(upload_slug: str) -> str:
+    stamp = utc_now().replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ")
+    return collection_id_for_upload(upload_slug, stamp)
 
 
 def _ensure_collection_id_unused(session: Session, collection_id: str) -> None:

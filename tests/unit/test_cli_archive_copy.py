@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 
-from typer.testing import CliRunner
-
 import riverhog_cli.main
 from riverhog_cli.main import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -40,7 +39,7 @@ def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> No
         [
             "archive",
             "copy",
-            "2026/20260102T030405Z__docs",
+            "docs/20260102T030405Z",
             "--from",
             "b2",
             "--to",
@@ -51,4 +50,4 @@ def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> No
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["state"] == "requested"
-    assert calls == [("2026/20260102T030405Z__docs", "deep", "b2")]
+    assert calls == [("docs/20260102T030405Z", "deep", "b2")]

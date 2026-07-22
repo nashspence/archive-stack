@@ -12,7 +12,7 @@ from riverhog_api.routers.resourcesync import (
 from riverhog_api_client.client import ApiClient
 from starlette.requests import Request
 
-COLLECTION_ID = "2026/20260102T030405Z__catalog"
+COLLECTION_ID = "catalog/20260102T030405Z"
 ETAG = "a" * 64
 
 

@@ -11,7 +11,7 @@ from typing import Any
 from riverhog_cli import local as local_materialization
 from typer.testing import CliRunner
 
-COLLECTION_ID = "2026/20260102T030405Z__local"
+COLLECTION_ID = "local/20260102T030405Z"
 CONTENT = b"locally materialized archive file\n"
 SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {

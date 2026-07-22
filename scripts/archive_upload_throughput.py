@@ -25,7 +25,7 @@ from riverhog_core.stores.s3_support import create_archive_s3_client
 MIB = 1024 * 1024
 READ_BYTES = 8 * MIB
 MINIMUM_PROBE_BYTES = 5 * MIB
-COLLECTION_ID = "2000/20000101T000000Z__archive-throughput-probe"
+COLLECTION_ID = "archive-throughput-probe/20000101T000000Z"
 
 
 @dataclass(frozen=True)

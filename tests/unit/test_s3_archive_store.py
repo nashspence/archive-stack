@@ -44,7 +44,7 @@ from riverhog_protocol.errors import DownloadAllowanceExceeded
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
-COLLECTION_ID = "2025/20250102T030405Z__docs"
+COLLECTION_ID = "docs/20250102T030405Z"
 ARCHIVE_PREFIX = "archive/archives/opaque-docs"
 
 

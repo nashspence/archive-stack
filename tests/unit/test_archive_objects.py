@@ -5,7 +5,6 @@ import tarfile
 from io import BytesIO
 
 import yaml
-
 from riverhog_age import age_ciphertext_len_for_plaintext_len
 from riverhog_core import archive_objects as archive_object_module
 from riverhog_core.archive_objects import (
@@ -21,9 +20,10 @@ from riverhog_core.archive_objects import (
     max_age_plaintext_object_bytes,
     parse_collection_archive_manifest,
 )
+
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 
-COLLECTION_ID = "2026/20260715T170000Z__object-policy"
+COLLECTION_ID = "object-policy/20260715T170000Z"
 
 
 def _source(path: str, content: bytes) -> CollectionArchiveSourceFile:

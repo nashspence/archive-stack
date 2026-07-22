@@ -17,6 +17,7 @@ from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -29,20 +30,20 @@ def _seed(path: Path) -> None:
     with session_scope(factory) as session:
         session.add(
             CollectionRecord(
-                id="2025/20250102T030405Z__docs",
+                id="docs/20250102T030405Z",
                 manifest_etag="0" * 64,
             )
         )
         session.add(
             CollectionFileRecord(
-                collection_id="2025/20250102T030405Z__docs",
+                collection_id="docs/20250102T030405Z",
                 path="readme.txt",
                 bytes=12,
                 sha256="a" * 64,
             )
         )
         copy = CollectionArchiveCopyRecord(
-            collection_id="2025/20250102T030405Z__docs",
+            collection_id="docs/20250102T030405Z",
             store="deep",
             state="uploaded",
             archive_storage_prefix="collections/docs",
@@ -151,14 +152,14 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
     with session_scope(factory) as session:
         session.add(
             CollectionUploadRecord(
-                collection_id="2025/20250103T030405Z__pending",
+                collection_id="pending/20250103T030405Z",
                 archive_store="deep",
                 state="archiving",
             )
         )
         session.add(
             CollectionUploadFileRecord(
-                collection_id="2025/20250103T030405Z__pending",
+                collection_id="pending/20250103T030405Z",
                 path="pending.txt",
                 file_order=1,
                 bytes=7,
@@ -181,6 +182,6 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         for item in report.collections
     ]
     assert collection_rows == [
-        ("2025/20250102T030405Z__docs", 12, "uploaded"),
-        ("2025/20250103T030405Z__pending", 7, "uploading"),
+        ("docs/20250102T030405Z", 12, "uploaded"),
+        ("pending/20250103T030405Z", 7, "uploading"),
     ]

@@ -2367,9 +2367,7 @@ def test_input_upload_state_compare_and_swap_rejects_stale_snapshots(
         server.save_input_upload_raw(stale)
 
     stored = server.load_input_upload_raw("upload-1")
-    assert stored["files"][0]["metadata_projection_metadata"] == {
-        "capture_date": "2026-06-30"
-    }
+    assert stored["files"][0]["metadata_projection_metadata"] == {"capture_date": "2026-06-30"}
 
 
 def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
@@ -3501,7 +3499,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     server = load_server(tmp_path, monkeypatch)
     server.ensure_dirs()
     server.init_state_store()
-    collection_id = "2026/20260605T120000Z__collection"
+    collection_id = "collection/20260605T120000Z"
     server.save_job(
         {
             "job_id": "job-1",
@@ -3558,7 +3556,7 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     server = load_server(tmp_path, monkeypatch)
     server.ensure_dirs()
     server.init_state_store()
-    collection_id = "2026/20260605T120000Z__collection"
+    collection_id = "collection/20260605T120000Z"
     for job_id, created_at in (
         ("job-1", "2026-06-05T12:00:00.000000Z"),
         ("job-2", "2026-06-05T13:00:00.000000Z"),
@@ -3594,7 +3592,7 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
     server.ensure_dirs()
     server.init_state_store()
     monkeypatch.setattr(server, "RIVERHOG_HANDOFF_ENABLED", True)
-    collection_id = "2026/20260605T120000Z__collection"
+    collection_id = "collection/20260605T120000Z"
     job = {
         "job_id": "job-1",
         "state": "running",
@@ -3964,7 +3962,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
         ),
     )
     riverhog_session = {
-        "collection_id": "2026/20260615T030000Z__weekly-device-artifacts",
+        "collection_id": "weekly-device-artifacts/20260615T030000Z",
         "state": "open",
         "files": {
             "camera/a.webm": {
@@ -4205,7 +4203,7 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
-                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "collection_id": "camera-archive/20260101T000000Z",
                 "files": {},
             },
         }
@@ -5886,11 +5884,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             return self.payload(state="open")
 
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             return self.payload(state="open")
 
         def get_collection(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             return {
                 "files": 2,
                 "bytes": 9,
@@ -5902,7 +5900,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             collection_id: str,
             file: dict[str, object],
         ) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             path = str(file["path"])
             self.offsets.setdefault(path, 0)
             descriptor = self.descriptors.get(path)
@@ -5948,7 +5946,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             }
 
         def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             self.completed = True
             return self.payload(state="archiving")
 
@@ -5967,7 +5965,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 for path, payload in sorted(self.registered.items())
             ]
             return {
-                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "collection_id": "camera-archive/20260101T000000Z",
                 "state": state,
                 "files_total": len(files),
                 "files_uploaded": sum(
@@ -6006,7 +6004,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     result = server.upload_to_riverhog(job, archive_dir)
 
     assert result["destination"] == "riverhog"
-    assert result["external_id"] == "2026/20260101T000000Z__camera-archive"
+    assert result["external_id"] == "camera-archive/20260101T000000Z"
     assert fake.completed is True
     assert sorted(fake.registered) == [
         "camera/a.webm",
@@ -6128,7 +6126,7 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -6148,7 +6146,7 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
     )
 
     def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
@@ -6183,7 +6181,7 @@ def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
     job = {
         "job_id": "job-1",
         "handoff_adapter_state": {
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {record["path"]: record},
         },
     }
@@ -6191,7 +6189,7 @@ def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda *_args: "2026/20260101T000000Z__camera-archive",
+        lambda *_args: "camera-archive/20260101T000000Z",
     )
     monkeypatch.setattr(server, "riverhog_file_record", lambda *_args: record)
     monkeypatch.setattr(
@@ -6227,7 +6225,7 @@ def test_stale_eager_handoff_stops_at_metadata_projection(
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
-                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "collection_id": "camera-archive/20260101T000000Z",
                 "files": {},
             },
             "eager_archive": {
@@ -6244,7 +6242,7 @@ def test_stale_eager_handoff_stops_at_metadata_projection(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -6320,7 +6318,7 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -6340,7 +6338,7 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
     )
 
     def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
@@ -6382,7 +6380,7 @@ def test_eager_riverhog_upload_uses_parallel_workers(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -6401,7 +6399,7 @@ def test_eager_riverhog_upload_uses_parallel_workers(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
     )
 
     barrier = threading.Barrier(2)
@@ -6450,7 +6448,7 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -6475,7 +6473,7 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "2026/20260101T000000Z__camera-archive",
+        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
     )
 
     barrier = threading.Barrier(2)
@@ -6525,7 +6523,7 @@ def test_riverhog_upload_bounds_single_chunk_completion_concurrency(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
     }
@@ -6902,7 +6900,7 @@ def test_handoff_progress_uses_expected_archive_output_count(
         "handoff_expected_primary_files_total": 3636,
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": files,
         },
     }
@@ -6933,18 +6931,18 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "archiving",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
     }
 
     class FakeApi:
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             raise server.NotFound("already finalized")
 
         def get_collection(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             return {
                 "id": collection_id,
                 "files": 7,
@@ -6976,14 +6974,14 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_receipt": {
             "destination": "riverhog",
-            "external_id": "2026/20260101T000000Z__camera-archive",
+            "external_id": "camera-archive/20260101T000000Z",
         },
     }
     server.save_job(job)
 
     class FakeApi:
         def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "2026/20260101T000000Z__camera-archive"
+            assert collection_id == "camera-archive/20260101T000000Z"
             return {
                 "collection_id": collection_id,
                 "state": "archiving",
@@ -7008,7 +7006,7 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
     refreshed = server.job_response(job)
     progress = refreshed["handoff_progress"]
 
-    assert progress["external_id"] == "2026/20260101T000000Z__camera-archive"
+    assert progress["external_id"] == "camera-archive/20260101T000000Z"
     assert progress["state"] == "archiving"
     assert progress["safe_to_delete"] is False
     archive_stage = progress["stages"][1]
@@ -7033,7 +7031,7 @@ def test_handoff_progress_prefers_recent_burst_rate(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "last_eager_upload_at": server.utc_timestamp_now(),
             "last_eager_upload_bytes": 2048,
             "last_eager_upload_elapsed_seconds": 2.0,
@@ -7182,7 +7180,7 @@ def test_handoff_progress_counts_known_local_sidecars(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
         "eager_archive": {
@@ -7223,7 +7221,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "collection_id": "camera-archive/20260101T000000Z",
             "files": {},
         },
     }
@@ -7254,7 +7252,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
 
     server.cancel_riverhog_upload_session(job, reason="test")
 
-    assert fake.canceled == ["2026/20260101T000000Z__camera-archive"]
+    assert fake.canceled == ["camera-archive/20260101T000000Z"]
     stored = server.load_job("job-1")
     assert stored["handoff_adapter_state"]["state"] == "canceled"
     assert stored["handoff_adapter_state"]["canceled_at"]
@@ -7295,7 +7293,7 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
                 "on_failure": "preserve_for_resume",
             },
             "handoff_adapter_state": {
-                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "collection_id": "camera-archive/20260101T000000Z",
                 "state": "open",
                 "files": {
                     "camera/a.webm": {
@@ -7365,7 +7363,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
                 "on_failure": "cancel",
             },
             "handoff_adapter_state": {
-                "collection_id": "2026/20260101T000000Z__camera-archive",
+                "collection_id": "camera-archive/20260101T000000Z",
                 "state": "open",
                 "files": {
                     "camera/a.webm": {
@@ -7445,11 +7443,9 @@ def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(
 
     server.cancel_riverhog_upload_session(job, reason="test")
 
-    assert fake.canceled == ["2026/20260101T000000Z__camera-archive"]
+    assert fake.canceled == ["camera-archive/20260101T000000Z"]
     stored = server.load_job("job-1")
-    assert stored["handoff_adapter_state"]["collection_id"] == (
-        "2026/20260101T000000Z__camera-archive"
-    )
+    assert stored["handoff_adapter_state"]["collection_id"] == ("camera-archive/20260101T000000Z")
     assert stored["handoff_adapter_state"]["state"] == "canceled"
     assert stored["handoff_adapter_state"]["canceled_at"]
     assert stored["handoff_adapter_state"]["cancel_reason"] == "test"

@@ -19,7 +19,7 @@ from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_support import create_archive_s3_client
 
-COLLECTION_ID = "2000/20000101T000000Z__archive-download-smoke"
+COLLECTION_ID = "archive-download-smoke/20000101T000000Z"
 
 
 @dataclass(frozen=True)

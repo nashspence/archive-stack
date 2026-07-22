@@ -79,7 +79,7 @@ def normalize_upload_timestamp(raw: str) -> str:
 def collection_id_for_upload(upload_slug: str, upload_timestamp: str) -> str:
     slug = normalize_upload_slug(upload_slug)
     timestamp = normalize_upload_timestamp(upload_timestamp)
-    return f"{timestamp[:4]}/{timestamp}__{slug}"
+    return f"{slug}/{timestamp}"
 
 
 def normalize_collection_id(raw: str) -> str:
@@ -89,16 +89,15 @@ def normalize_collection_id(raw: str) -> str:
     if raw != normalized:
         raise PathNormalizationError("collection id must be canonical")
     parts = normalized.split("/")
-    if len(parts) != 2 or "__" not in parts[1]:
-        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug")
-    year, leaf = parts
-    timestamp, slug = leaf.split("__", 1)
+    if len(parts) != 2:
+        raise PathNormalizationError("collection id must use slug/YYYYMMDDTHHMMSSZ")
+    slug, timestamp = parts
     try:
         expected = collection_id_for_upload(slug, timestamp)
     except PathNormalizationError as exc:
-        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug") from exc
-    if year != timestamp[:4] or normalized != expected:
-        raise PathNormalizationError("collection id must use YYYY/YYYYMMDDTHHMMSSZ__slug")
+        raise PathNormalizationError("collection id must use slug/YYYYMMDDTHHMMSSZ") from exc
+    if normalized != expected:
+        raise PathNormalizationError("collection id must use slug/YYYYMMDDTHHMMSSZ")
     return normalized
 
 

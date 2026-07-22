@@ -6,6 +6,7 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -14,26 +15,26 @@ def _seed(path: Path) -> None:
     with session_scope(factory) as session:
         session.add(
             CollectionRecord(
-                id="2025/20250102T030405Z__docs",
+                id="docs/20250102T030405Z",
                 manifest_etag="0" * 64,
             )
         )
         session.add_all(
             [
                 CollectionFileRecord(
-                    collection_id="2025/20250102T030405Z__docs",
+                    collection_id="docs/20250102T030405Z",
                     path="letters/cover.txt",
                     bytes=13,
                     sha256="a" * 64,
                 ),
                 CollectionFileRecord(
-                    collection_id="2025/20250102T030405Z__docs",
+                    collection_id="docs/20250102T030405Z",
                     path="tax/invoice.pdf",
                     bytes=34,
                     sha256="b" * 64,
                 ),
                 CollectionFileRecord(
-                    collection_id="2025/20250102T030405Z__docs",
+                    collection_id="docs/20250102T030405Z",
                     path="tax/receipt.pdf",
                     bytes=21,
                     sha256="c" * 64,
@@ -49,7 +50,7 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
         q="tax",
-        collection="2025/20250102T030405Z__docs",
+        collection="docs/20250102T030405Z",
         page=2,
         per_page=1,
         sort="collection_path",
@@ -58,7 +59,7 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
 
     assert payload == {
         "query": "tax",
-        "collection": "2025/20250102T030405Z__docs",
+        "collection": "docs/20250102T030405Z",
         "page": 2,
         "per_page": 1,
         "total": 2,
@@ -67,8 +68,8 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
         "order": "asc",
         "files": [
             {
-                "logical_path": ("2025/20250102T030405Z__docs/tax/receipt.pdf"),
-                "collection_id": "2025/20250102T030405Z__docs",
+                "logical_path": ("docs/20250102T030405Z/tax/receipt.pdf"),
+                "collection_id": "docs/20250102T030405Z",
                 "collection_path": "tax/receipt.pdf",
                 "bytes": 21,
                 "sha256": "c" * 64,
