@@ -272,7 +272,7 @@ class SqlAlchemyArchiveUploadService:
                     path=file_record.path,
                     bytes=file_record.bytes,
                     sha256=file_record.sha256,
-                    target_path=_collection_upload_target_path(collection_id, file_record.path),
+                    target_path=_collection_upload_target_path(file_record),
                     ingress_secret_envelope=file_record.ingress_secret_envelope,
                     ingress_state_json=file_record.ingress_state_json,
                 )

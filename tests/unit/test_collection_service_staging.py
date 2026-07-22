@@ -4,6 +4,7 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -14,6 +15,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_protocol.errors import Conflict, NotFound
 from sqlalchemy import select
 
 from tests.unit.db_helpers import sqlite_url
@@ -29,6 +31,34 @@ class UploadStoreStub:
 
     def get_offset(self, tus_url: str) -> int:
         return 0
+
+    def cancel_upload(self, tus_url: str) -> None:
+        pass
+
+    def delete_target(self, target_path: str) -> None:
+        pass
+
+
+class MissingTargetUploadStore(UploadStoreStub):
+    def __init__(self) -> None:
+        super().__init__()
+        self.canceled: list[str] = []
+        self.deleted: list[str] = []
+
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        raise NotFound(f"upload target not found: {target_path}")
+
+    def cancel_upload(self, tus_url: str) -> None:
+        self.canceled.append(tus_url)
+
+    def delete_target(self, target_path: str) -> None:
+        self.deleted.append(target_path)
 
 
 class ConcurrentCancelUploadStore(UploadStoreStub):
@@ -228,6 +258,31 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
         assert encryption["passphrase"] not in record.ingress_state_json
 
 
+def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    service = _service(path)
+    upload_ids: list[str] = []
+
+    for _ in range(2):
+        created = service.create_or_resume_upload_session(
+            upload_slug="repeat",
+            upload_timestamp="20250103T000000Z",
+        )
+        collection_id = str(created["collection_id"])
+        service.register_upload_session_file(
+            collection_id,
+            {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+        )
+        with session_scope(make_session_factory(sqlite_url(path))) as session:
+            record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+            assert record is not None
+            upload_ids.append(record.ingress_upload_id)
+        service.cancel_upload_session(collection_id)
+
+    assert len(set(upload_ids)) == 2
+
+
 def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
@@ -295,3 +350,38 @@ def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     assert completed["state"] == "archiving"
     assert upload_store.max_active == worker_count
     assert len(upload_store.verified) == file_count
+
+
+def test_collection_upload_completion_persists_missing_target_state(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    upload_store = MissingTargetUploadStore()
+    service = _service(path, upload_store)
+    created = service.create_or_resume_upload_session(
+        upload_slug="missing-target",
+        upload_timestamp="20250103T000000Z",
+    )
+    collection_id = str(created["collection_id"])
+    service.register_upload_session_file(
+        collection_id,
+        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+    )
+    service.create_or_resume_file_upload(collection_id, "one.txt")
+
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+        assert record is not None
+        record.ingress_uploaded_bytes = record.ingress_bytes
+        record.upload_expires_at = None
+
+    with pytest.raises(Conflict, match="still has missing file bytes"):
+        service.complete_upload_session(collection_id)
+
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+        assert record is not None
+        assert record.ingress_uploaded_bytes == 0
+        assert record.tus_url is None
+        assert record.upload_expires_at is None
+    assert len(upload_store.canceled) == 1
+    assert len(upload_store.deleted) == 1

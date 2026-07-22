@@ -89,7 +89,6 @@ def _stage(path: Path, upload_store: MemoryUploadStore) -> RuntimeConfig:
     database_url = sqlite_url(path / "catalog.sqlite3")
     initialize_db(database_url)
     config = RuntimeConfig(database_url=database_url)
-    target = _collection_upload_target_path(COLLECTION_ID, "document.txt")
     encryption = create_ingress_encryption(
         config,
         collection_id=COLLECTION_ID,
@@ -107,6 +106,20 @@ def _stage(path: Path, upload_store: MemoryUploadStore) -> RuntimeConfig:
     )
     source = path / "document.txt"
     source.write_bytes(CONTENT)
+    file_record = CollectionUploadFileRecord(
+        collection_id=COLLECTION_ID,
+        path="document.txt",
+        file_order=1,
+        bytes=len(CONTENT),
+        sha256=hashlib.sha256(CONTENT).hexdigest(),
+        ingress_bytes=encryption.ciphertext_bytes,
+        ingress_uploaded_bytes=encryption.ciphertext_bytes,
+        ingress_secret_envelope=encryption.secret_envelope,
+        ingress_state_json=encryption.state_json,
+        ingress_upload_id="",
+    )
+    target = _collection_upload_target_path(file_record)
+    file_record.ingress_upload_id = tusd_upload_id_for_target_path(target)
     upload_store.targets[target] = b"".join(
         part.ciphertext
         for part in iter_ingress_upload_parts(
@@ -124,20 +137,7 @@ def _stage(path: Path, upload_store: MemoryUploadStore) -> RuntimeConfig:
                 state="archiving",
             )
         )
-        session.add(
-            CollectionUploadFileRecord(
-                collection_id=COLLECTION_ID,
-                path="document.txt",
-                file_order=1,
-                bytes=len(CONTENT),
-                sha256=hashlib.sha256(CONTENT).hexdigest(),
-                ingress_bytes=encryption.ciphertext_bytes,
-                ingress_uploaded_bytes=encryption.ciphertext_bytes,
-                ingress_secret_envelope=encryption.secret_envelope,
-                ingress_state_json=encryption.state_json,
-                ingress_upload_id=tusd_upload_id_for_target_path(target),
-            )
-        )
+        session.add(file_record)
     return config
 
 

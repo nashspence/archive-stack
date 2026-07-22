@@ -423,6 +423,10 @@ class RoutingFailed(RuntimeError):
     pass
 
 
+class HandoffFailed(RuntimeError):
+    pass
+
+
 class JobCanceled(RuntimeError):
     pass
 
@@ -3227,6 +3231,7 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     allow_clear_cancel = bool(payload.pop("_allow_clear_cancel", False))
     reset_runtime_state = bool(payload.pop("_reset_runtime_state", False))
+    replace_handoff_adapter_state = bool(payload.pop("_replace_handoff_adapter_state", False))
     job_id = str(payload["job_id"])
     with job_state_lock:
         current = read_state("job", job_id)
@@ -3244,7 +3249,11 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
         ):
             current_adapter_state = current.get("handoff_adapter_state")
             incoming_adapter_state = payload.get("handoff_adapter_state")
-            if isinstance(current_adapter_state, dict) and isinstance(incoming_adapter_state, dict):
+            if (
+                isinstance(current_adapter_state, dict)
+                and isinstance(incoming_adapter_state, dict)
+                and not replace_handoff_adapter_state
+            ):
                 payload["handoff_adapter_state"] = merge_handoff_adapter_state(
                     payload,
                     current_adapter_state,
@@ -5951,11 +5960,15 @@ RIVERHOG_CAUSAL_EVENT_TYPES = {
 }
 
 
-def job_for_riverhog_collection(collection_id: str) -> dict[str, Any] | None:
+def job_for_riverhog_collection(
+    collection_id: str,
+    *,
+    event_time: str | None = None,
+) -> dict[str, Any] | None:
     with closing(state_db()) as conn:
         rows = conn.execute(
             """
-            SELECT payload
+            SELECT payload, updated_at
             FROM states
             WHERE kind = 'job'
               AND (
@@ -5971,16 +5984,26 @@ def job_for_riverhog_collection(collection_id: str) -> dict[str, Any] | None:
                     ) = ?
               )
             ORDER BY updated_at DESC
-            LIMIT 2
             """,
             (collection_id, collection_id, collection_id, collection_id),
         ).fetchall()
     if not rows:
         return None
-    if len(rows) > 1:
-        raise RuntimeError(f"multiple Munchy jobs claim Riverhog collection {collection_id}")
-    payload = json.loads(str(rows[0]["payload"]))
-    return payload if isinstance(payload, dict) else None
+    occurred_at = safe_parse_timestamp(event_time)
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for row in rows:
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):
+            continue
+        created_at = safe_parse_timestamp(payload.get("created_at"))
+        if occurred_at is not None and created_at is not None and created_at > occurred_at:
+            continue
+        rank = created_at or safe_parse_timestamp(row["updated_at"])
+        if rank is not None:
+            candidates.append((rank, payload))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def translate_riverhog_event(event: CloudEvent) -> bool:
@@ -5990,7 +6013,7 @@ def translate_riverhog_event(event: CloudEvent) -> bool:
     collection_id = str(event.data.get("collection_id") or event.subject or "")
     if not collection_id:
         raise RuntimeError(f"Riverhog event {event.id} has no collection identity")
-    job = job_for_riverhog_collection(collection_id)
+    job = job_for_riverhog_collection(collection_id, event_time=event.time)
     if job is None:
         log.warning(
             "Riverhog event %s for collection %s has no owning Munchy job",
@@ -6293,7 +6316,7 @@ def retry_handoff_until_success(
             attempts.pop(f"{result_key}_last_error", None)
             save_job(job)
             return result
-        except JobCanceled:
+        except (HandoffFailed, JobCanceled):
             raise
         except Exception as exc:
             next_retry_at = format_utc_timestamp(utc_now() + timedelta(seconds=delay))
@@ -6587,6 +6610,8 @@ def finalized_riverhog_payload_from_collection(
 def update_remote_state_from_payload(
     job: dict[str, Any],
     payload: dict[str, Any],
+    *,
+    authoritative_files: bool = False,
 ) -> dict[str, Any]:
     with riverhog_upload_lock(str(job.get("job_id") or "")):
         state = riverhog_session_state(job)
@@ -6620,8 +6645,16 @@ def update_remote_state_from_payload(
                     record["sha256"] = str(item["sha256"])
                 existing_uploaded = int(record.get("uploaded_bytes") or 0)
                 incoming_uploaded = int(item.get("uploaded_bytes") or 0)
-                record["uploaded_bytes"] = max(existing_uploaded, incoming_uploaded)
-                record["upload_state"] = str(item.get("upload_state") or "")
+                record["uploaded_bytes"] = (
+                    incoming_uploaded
+                    if authoritative_files
+                    else max(existing_uploaded, incoming_uploaded)
+                )
+                upload_state = str(item.get("upload_state") or "")
+                record["upload_state"] = upload_state
+                if authoritative_files and upload_state != "uploaded":
+                    record["state"] = "missing"
+                    record.pop("uploaded_at", None)
                 if (
                     int(record.get("bytes") or 0) > 0
                     and int(record.get("uploaded_bytes") or 0) >= int(record.get("bytes") or 0)
@@ -6629,6 +6662,8 @@ def update_remote_state_from_payload(
                 ):
                     record["state"] = "uploaded"
                     record["uploaded_at"] = record.get("uploaded_at") or utc_timestamp_now()
+        if authoritative_files:
+            job["_replace_handoff_adapter_state"] = True
         return state
 
 
@@ -7591,7 +7626,25 @@ def complete_riverhog_session(
     archive_dir: Path,
 ) -> dict[str, Any]:
     collection_id = ensure_riverhog_session(job, api, archive_dir)
-    payload = api.complete_collection_upload_session(collection_id)
+    try:
+        payload = api.complete_collection_upload_session(collection_id)
+    except Conflict:
+        payload = api.get_collection_upload(collection_id)
+        update_remote_state_from_payload(job, payload, authoritative_files=True)
+        files = dict_or_empty(riverhog_session_state(job).get("files"))
+        missing_paths = [
+            str(path)
+            for path, record in files.items()
+            if isinstance(record, dict) and not riverhog_upload_file_complete(record)
+        ]
+        unavailable = sum(1 for path in missing_paths if not (archive_dir / path).is_file())
+        save_job(job)
+        if unavailable:
+            raise HandoffFailed(
+                f"riverhog reports missing ingress objects ({len(missing_paths)}); "
+                f"local handoff artifacts unavailable ({unavailable})"
+            ) from None
+        raise
     update_remote_state_from_payload(job, payload)
     state = riverhog_session_state(job)
     state["completed_at"] = state.get("completed_at") or utc_timestamp_now()

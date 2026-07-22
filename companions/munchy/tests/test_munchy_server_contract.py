@@ -3530,6 +3530,100 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     }
 
 
+def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    server.init_state_store()
+    collection_id = "2026/20260605T120000Z__collection"
+    for job_id, created_at in (
+        ("job-1", "2026-06-05T12:00:00.000000Z"),
+        ("job-2", "2026-06-05T13:00:00.000000Z"),
+    ):
+        server.save_job(
+            {
+                "job_id": job_id,
+                "created_at": created_at,
+                "collection_slug": "collection",
+                "collection_timestamp": "20260605T120000Z",
+                "handoff_adapter_state": {"collection_id": collection_id},
+            }
+        )
+
+    earlier = server.job_for_riverhog_collection(
+        collection_id,
+        event_time="2026-06-05T12:30:00.000000Z",
+    )
+    later = server.job_for_riverhog_collection(
+        collection_id,
+        event_time="2026-06-05T13:30:00.000000Z",
+    )
+
+    assert earlier is not None and earlier["job_id"] == "job-1"
+    assert later is not None and later["job_id"] == "job-2"
+
+
+def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    server.init_state_store()
+    monkeypatch.setattr(server, "RIVERHOG_HANDOFF_ENABLED", True)
+    collection_id = "2026/20260605T120000Z__collection"
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "handoff",
+        "collection_slug": "collection",
+        "collection_timestamp": "20260605T120000Z",
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {
+            "collection_id": collection_id,
+            "files": {
+                "camera/a.webm": {
+                    "path": "camera/a.webm",
+                    "bytes": 10,
+                    "uploaded_bytes": 10,
+                    "state": "deleted",
+                }
+            },
+        },
+    }
+    server.save_job(job)
+
+    class MissingApi:
+        def complete_collection_upload_session(self, requested: str):
+            assert requested == collection_id
+            raise server.Conflict("collection upload session still has missing file bytes")
+
+        def get_collection_upload(self, requested: str):
+            assert requested == collection_id
+            return {
+                "collection_id": collection_id,
+                "state": "open",
+                "files": [
+                    {
+                        "path": "camera/a.webm",
+                        "bytes": 10,
+                        "uploaded_bytes": 0,
+                        "upload_state": "pending",
+                    }
+                ],
+            }
+
+    with pytest.raises(server.HandoffFailed, match=r"missing ingress objects \(1\)"):
+        server.complete_riverhog_session(job, MissingApi(), tmp_path / "archive")
+
+    stored = server.load_job("job-1")
+    record = stored["handoff_adapter_state"]["files"]["camera/a.webm"]
+    assert record["uploaded_bytes"] == 0
+    assert record["state"] == "missing"
+
+
 def test_job_issue_event_carries_operational_facts_without_presentation(
     tmp_path: Path,
     monkeypatch,

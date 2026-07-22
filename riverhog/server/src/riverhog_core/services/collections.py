@@ -358,10 +358,7 @@ class SqlAlchemyCollectionService:
                 normalized_collection_id=normalized_collection_id,
                 normalized_file=normalized_file,
             )
-            target_path = _collection_upload_target_path(
-                normalized_collection_id,
-                str(normalized_file["path"]),
-            )
+            target_path = _collection_upload_target_path(file_record)
             _expire_collection_upload_file(file_record, self._upload_store)
             updated, tus_url = create_or_resume_upload_state(
                 current=_upload_lifecycle_state(file_record),
@@ -392,10 +389,7 @@ class SqlAlchemyCollectionService:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is None or upload.state in {"canceled", "expired"}:
                 return None
-            target_path = _collection_upload_target_path(
-                normalized_collection_id,
-                file_record.path,
-            )
+            target_path = _collection_upload_target_path(file_record)
             content_digest = _sha256_hex_chunks(
                 iter_ingress_plaintext(
                     self._config,
@@ -485,6 +479,8 @@ class SqlAlchemyCollectionService:
     def complete_upload_session(self, collection_id: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         staged_event_details: dict[str, object] | None = None
+        missing_file_bytes = False
+        payload: dict[str, object] | None = None
 
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_collection_id)
@@ -523,25 +519,28 @@ class SqlAlchemyCollectionService:
             if _collection_upload_stats(session, normalized_collection_id)["files_total"] == 0:
                 raise Conflict("collection upload session cannot complete without files")
             if not _collection_upload_is_complete_for_session(session, normalized_collection_id):
-                raise Conflict("collection upload session still has missing file bytes")
-
-            _ensure_collection_upload_archiving(upload)
-            now = utc_timestamp_now()
-            upload.closed_at = now
-            upload.last_activity_at = now
-            staged_event_details = _collection_upload_event_details(session, upload)
-            payload = _collection_upload_payload(
-                session=session,
-                upload=upload,
-                state=None,
-                collection=None,
-            )
+                missing_file_bytes = True
+            else:
+                _ensure_collection_upload_archiving(upload)
+                now = utc_timestamp_now()
+                upload.closed_at = now
+                upload.last_activity_at = now
+                staged_event_details = _collection_upload_event_details(session, upload)
+                payload = _collection_upload_payload(
+                    session=session,
+                    upload=upload,
+                    state=None,
+                    collection=None,
+                )
+        if missing_file_bytes:
+            raise Conflict("collection upload session still has missing file bytes")
         if staged_event_details is not None:
             self._lifecycle_events.emit_collection(
                 type="collection.upload_staged",
                 collection_id=normalized_collection_id,
                 details=staged_event_details,
             )
+        assert payload is not None
         return payload
 
     def cancel_upload_session(self, collection_id: str) -> dict[str, object]:
@@ -660,7 +659,7 @@ class SqlAlchemyCollectionService:
                 normalized_collection_id,
                 normalized_path,
             )
-            target_path = _collection_upload_target_path(normalized_collection_id, normalized_path)
+            target_path = _collection_upload_target_path(file_record)
             _expire_collection_upload_file(file_record, self._upload_store)
             updated, tus_url = create_or_resume_upload_state(
                 current=_upload_lifecycle_state(file_record),
@@ -724,10 +723,7 @@ class SqlAlchemyCollectionService:
 
             if next_offset >= file_record.ingress_bytes:
                 file_record.upload_expires_at = None
-                target_path = _collection_upload_target_path(
-                    normalized_collection_id,
-                    normalized_path,
-                )
+                target_path = _collection_upload_target_path(file_record)
                 content_digest = _sha256_hex_chunks(
                     iter_ingress_plaintext(
                         self._config,
@@ -816,9 +812,7 @@ class SqlAlchemyCollectionService:
                 raise NotFound(f"collection upload file is not resumable: {normalized_path}")
 
             self._upload_store.cancel_upload(file_record.tus_url)
-            self._upload_store.delete_target(
-                _collection_upload_target_path(normalized_collection_id, normalized_path)
-            )
+            self._upload_store.delete_target(_collection_upload_target_path(file_record))
             _apply_upload_lifecycle_state(
                 file_record,
                 UploadLifecycleState(
@@ -1242,8 +1236,22 @@ def _apply_upload_lifecycle_state(
     file_record.upload_expires_at = state.upload_expires_at
 
 
-def _collection_upload_target_path(collection_id: str, path: str) -> str:
-    return f"/.riverhog/uploads/collections/{collection_id}/{path}"
+def _collection_upload_target_path(file_record: CollectionUploadFileRecord) -> str:
+    return _collection_upload_registration_target_path(
+        collection_id=file_record.collection_id,
+        path=file_record.path,
+        secret_envelope=file_record.ingress_secret_envelope,
+    )
+
+
+def _collection_upload_registration_target_path(
+    *,
+    collection_id: str,
+    path: str,
+    secret_envelope: str,
+) -> str:
+    identity = hashlib.sha256(f"{collection_id}\0{path}\0{secret_envelope}".encode()).hexdigest()
+    return f"/.riverhog/uploads/objects/{identity}"
 
 
 def _new_collection_upload_file(
@@ -1261,7 +1269,11 @@ def _new_collection_upload_file(
         path=path,
         plaintext_bytes=bytes,
     )
-    target_path = _collection_upload_target_path(collection_id, path)
+    target_path = _collection_upload_registration_target_path(
+        collection_id=collection_id,
+        path=path,
+        secret_envelope=encryption.secret_envelope,
+    )
     return CollectionUploadFileRecord(
         collection_id=collection_id,
         path=path,
@@ -1276,23 +1288,6 @@ def _new_collection_upload_file(
         upload_expires_at=None,
         tus_url=None,
     )
-
-
-def _collection_upload_target_parts(target_path: str) -> tuple[str, str] | None:
-    normalized = target_path.lstrip("/")
-    prefix = ".riverhog/uploads/collections/"
-    if not normalized.startswith(prefix):
-        return None
-    rest = normalized.removeprefix(prefix)
-    parts = rest.split("/", 2)
-    if len(parts) != 3:
-        return None
-    collection_id = _normalize_collection_id_or_raise(f"{parts[0]}/{parts[1]}")
-    relpath = _normalize_relpath_or_raise(parts[2])
-    expected = _collection_upload_target_path(collection_id, relpath).lstrip("/")
-    if normalized != expected:
-        raise BadRequest("collection upload target path is not normalized")
-    return collection_id, relpath
 
 
 def _collection_file_upload_payload(
@@ -1344,7 +1339,7 @@ def _sync_collection_upload_files(
     tasks = [
         (
             _upload_lifecycle_state(file_record),
-            _collection_upload_target_path(file_record.collection_id, file_record.path),
+            _collection_upload_target_path(file_record),
             file_record.ingress_bytes,
         )
         for file_record in records
@@ -1370,7 +1365,7 @@ def _expire_collection_upload_files(
     for file_record in file_records:
         updated, expired = expire_upload_state(
             current=_upload_lifecycle_state(file_record),
-            target_path=_collection_upload_target_path(file_record.collection_id, file_record.path),
+            target_path=_collection_upload_target_path(file_record),
             upload_store=upload_store,
         )
         _apply_upload_lifecycle_state(file_record, updated)
@@ -1382,7 +1377,7 @@ def _expire_collection_upload_file(
     file_record: CollectionUploadFileRecord,
     upload_store: UploadStore,
 ) -> None:
-    target_path = _collection_upload_target_path(file_record.collection_id, file_record.path)
+    target_path = _collection_upload_target_path(file_record)
     updated, _ = expire_upload_state(
         current=_upload_lifecycle_state(file_record),
         target_path=target_path,
@@ -1487,7 +1482,7 @@ def _forget_collection_upload(
     targets = [
         (
             file_record.tus_url,
-            _collection_upload_target_path(upload.collection_id, file_record.path),
+            _collection_upload_target_path(file_record),
         )
         for file_record in upload.files
     ]

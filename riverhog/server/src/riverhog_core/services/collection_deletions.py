@@ -147,9 +147,7 @@ class SqlAlchemyCollectionDeletionService:
             for file in upload.files:
                 if file.tus_url:
                     self._upload_store.cancel_upload(file.tus_url)
-                self._upload_store.delete_target(
-                    _collection_upload_target_path(collection_id, file.path)
-                )
+                self._upload_store.delete_target(_collection_upload_target_path(file))
 
     def _delete_cached_objects(self, collection_id: str) -> None:
         with session_scope(self._session_factory) as session:
