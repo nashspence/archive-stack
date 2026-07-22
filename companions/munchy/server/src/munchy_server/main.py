@@ -6956,6 +6956,7 @@ def riverhog_upload_artifact(
         )
         return True
 
+    interruption_delay = 1.0
     while offset < ingress_length:
         part = next(
             iter_ingress_upload_parts(
@@ -6992,11 +6993,17 @@ def riverhog_upload_artifact(
                 raise RuntimeError(
                     f"riverhog upload offset for {rel_path} is past expected length"
                 ) from exc
+            if recovered_offset == offset:
+                retry_sleep(interruption_delay, job_id=job_id)
+                interruption_delay = min(30.0, interruption_delay * 2)
+            else:
+                interruption_delay = 1.0
             offset = recovered_offset
             continue
         if next_offset != offset + len(part.ciphertext):
             raise RuntimeError(f"riverhog upload offset advanced unexpectedly for {rel_path}")
         offset = next_offset
+        interruption_delay = 1.0
         with riverhog_upload_lock(job_id):
             record["uploaded_bytes"] = max(
                 int(record.get("uploaded_bytes") or 0),

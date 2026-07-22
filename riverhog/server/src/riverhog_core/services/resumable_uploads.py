@@ -51,9 +51,16 @@ def sync_upload_state(
         if not _upload_target_exists(upload_store, target_path):
             # Another worker may have consumed and deleted the backing upload between
             # loading the row and syncing the current offset. Preserve the current
-            # lifecycle state here so a stale sync cannot roll committed progress back
-            # after the backing upload was consumed.
-            return current
+            # lifecycle state during observational syncs so a stale read cannot roll
+            # committed progress back. A forced create-or-resume request is authoritative:
+            # replace a lease when neither its upload nor its finalized target exists.
+            if not force:
+                return current
+            return _reset_upload_state(
+                current=current,
+                target_path=target_path,
+                upload_store=upload_store,
+            )
         offset = length
         target_confirmed = True
 

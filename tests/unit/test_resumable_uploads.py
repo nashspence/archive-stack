@@ -16,6 +16,8 @@ class _MissingUploadStore:
     def __init__(self) -> None:
         self.get_offset_calls = 0
         self.read_target_calls = 0
+        self.canceled: list[str] = []
+        self.deleted: list[str] = []
 
     def create_upload(self, target_path: str, length: int) -> str:
         raise AssertionError("create_upload should not be called")
@@ -49,10 +51,10 @@ class _MissingUploadStore:
         yield self.read_target(target_path)
 
     def delete_target(self, target_path: str) -> None:
-        raise AssertionError("delete_target should not be called")
+        self.deleted.append(target_path)
 
     def cancel_upload(self, tus_url: str) -> None:
-        raise AssertionError("cancel_upload should not be called")
+        self.canceled.append(tus_url)
 
 
 def test_sync_upload_state_skips_completed_uploads() -> None:
@@ -115,7 +117,7 @@ def test_sync_upload_state_skips_live_unexpired_uploads() -> None:
     assert store.read_target_calls == 0
 
 
-def test_sync_upload_state_force_checks_live_uploads() -> None:
+def test_sync_upload_state_force_replaces_a_missing_live_upload() -> None:
     store = _MissingUploadStore()
     current = UploadLifecycleState(
         tus_url="/uploads/fx-1/e1",
@@ -131,9 +133,15 @@ def test_sync_upload_state_force_checks_live_uploads() -> None:
         force=True,
     )
 
-    assert updated == current
+    assert updated == UploadLifecycleState(
+        tus_url=None,
+        uploaded_bytes=0,
+        upload_expires_at=None,
+    )
     assert store.get_offset_calls == 1
     assert store.read_target_calls == 1
+    assert store.canceled == ["/uploads/fx-1/e1"]
+    assert store.deleted == ["/.riverhog/recovery/fx-1/e1.enc"]
 
 
 class _FinalizedTargetStore(_MissingUploadStore):
