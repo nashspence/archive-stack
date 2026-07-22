@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from riverhog_protocol.errors import NotFound
+from riverhog_protocol.errors import NotFound, ServiceUnavailable
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.ports.upload_store import UploadStore
@@ -69,10 +69,8 @@ def sync_upload_state(
         and not target_confirmed
         and not _upload_target_exists(upload_store, target_path)
     ):
-        return _reset_upload_state(
-            current=current,
-            target_path=target_path,
-            upload_store=upload_store,
+        raise ServiceUnavailable(
+            "upload backend accepted all bytes but has not exposed the finalized target; retry"
         )
 
     expires_at = current.upload_expires_at

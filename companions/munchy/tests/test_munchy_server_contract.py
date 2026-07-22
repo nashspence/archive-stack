@@ -1363,6 +1363,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                         "creators": ["Example Operator"],
                         "tags": [],
                     },
+                    "metadata_projection_captured_at": "2026-06-29T03:00:00Z",
                     "route_id": "iphone-video",
                     "resolved_group_rel": "iphone/video/IMG_0001.MOV",
                     "pair_kind": "live-photo",
@@ -1406,6 +1407,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert sidecar.exists()
     xmp = sidecar.read_text(encoding="utf-8")
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
+    assert 'xmp:MetadataDate="2026-06-29T03:00:00Z"' in xmp
     assert 'tiff:Make="Apple"' in xmp
     assert 'tiff:Model="iPhone SE (2nd generation)"' in xmp
     assert 'geo:lat="37.3317"' in xmp
@@ -1429,6 +1431,25 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
             "bytes": sidecar.stat().st_size,
         }
     ]
+
+    updated["files"][0]["metadata_projection_captured_at"] = "2026-07-01T00:00:00Z"
+    server.save_input_upload_raw(updated)
+    job["handoff_adapter_state"] = {
+        "state": "open",
+        "files": {
+            sidecar.relative_to(archive_dir).as_posix(): {
+                "path": sidecar.relative_to(archive_dir).as_posix(),
+                "bytes": sidecar.stat().st_size,
+                "sha256": server.file_sha256(sidecar),
+                "uploaded_bytes": 0,
+                "state": "uploading",
+            }
+        },
+    }
+
+    server.write_metadata_projection_sidecars(job, updated, groups, archive_dir)
+
+    assert sidecar.read_text(encoding="utf-8") == xmp
 
 
 def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
@@ -6141,6 +6162,49 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
     assert result["uploaded_files"] == 1
     assert result["processed_files"] == 1
     assert uploaded == ["a.webm"]
+
+
+def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    archive_dir = tmp_path / "archive"
+    source = archive_dir / "camera" / "a.webm.xmp"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"metadata")
+    record = {
+        "path": "camera/a.webm.xmp",
+        "bytes": source.stat().st_size,
+        "sha256": server.file_sha256(source),
+        "uploaded_bytes": source.stat().st_size,
+        "state": "uploaded",
+    }
+    job = {
+        "job_id": "job-1",
+        "handoff_adapter_state": {
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {record["path"]: record},
+        },
+    }
+
+    monkeypatch.setattr(
+        server,
+        "ensure_riverhog_session",
+        lambda *_args: "2026/20260101T000000Z__camera-archive",
+    )
+    monkeypatch.setattr(server, "riverhog_file_record", lambda *_args: record)
+    monkeypatch.setattr(
+        server,
+        "confirm_riverhog_artifact_uploaded",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("remote acknowledgment pending")),
+    )
+
+    with pytest.raises(RuntimeError, match="remote acknowledgment pending"):
+        server.riverhog_upload_artifact(job, object(), archive_dir, source)
+
+    assert source.is_file()
+    assert record["state"] == "uploaded"
 
 
 def test_stale_eager_handoff_stops_at_metadata_projection(

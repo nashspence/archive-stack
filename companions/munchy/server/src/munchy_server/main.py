@@ -5486,7 +5486,11 @@ def write_metadata_projection_sidecars_locked(
     sidecars_written = 0
     groups_written: dict[str, int] = {}
     upload_changed = False
-    handed_off_paths: set[str] | None = None
+    handed_off_paths = metadata_projection_handed_off_paths(job)
+    adapter_state = job.get("handoff_adapter_state")
+    adapter_files = (
+        dict_or_empty(adapter_state.get("files")) if isinstance(adapter_state, dict) else {}
+    )
     for group_name, group_config in sorted(groups.items()):
         config = metadata_projection_config(group_config)
         if not config["enabled"]:
@@ -5501,8 +5505,6 @@ def write_metadata_projection_sidecars_locked(
                 archive_dir=archive_dir,
             )
             if not output.exists():
-                if handed_off_paths is None:
-                    handed_off_paths = metadata_projection_handed_off_paths(job)
                 output_rel = path_relative_to_archive(output, archive_dir)
                 if output_rel not in handed_off_paths:
                     raise RuntimeError(
@@ -5525,7 +5527,29 @@ def write_metadata_projection_sidecars_locked(
                 output_path=output,
             )
             sidecar = immich_xmp_sidecar_path(output)
-            metadata_date = utc_timestamp_now()
+            sidecar_rel = sidecar.relative_to(archive_dir).as_posix()
+            registered = adapter_files.get(sidecar_rel)
+            if isinstance(registered, dict):
+                groups_written[group_name] = groups_written.get(group_name, 0) + 1
+                if file_state.get("metadata_projection_sidecar") != sidecar_rel:
+                    file_state["metadata_projection_sidecar"] = sidecar_rel
+                    upload_changed = True
+                if riverhog_upload_file_complete(registered):
+                    continue
+                if not sidecar.is_file():
+                    raise RuntimeError(
+                        f"registered metadata projection sidecar is missing: {sidecar_rel}"
+                    )
+                if str(registered.get("sha256") or "") != file_sha256(sidecar):
+                    raise RuntimeError(
+                        f"registered metadata projection sidecar changed: {sidecar_rel}"
+                    )
+                continue
+            metadata_date = str(file_state.get("metadata_projection_captured_at") or "")
+            if not metadata_date:
+                metadata_date = utc_timestamp_now()
+                file_state["metadata_projection_captured_at"] = metadata_date
+                upload_changed = True
             xmp_evidence = (
                 xmp_evidence_sidecar_path(upload, file_state)
                 if normalize_output_mode(str(group_config.get("output_mode") or "video"))
@@ -5548,7 +5572,6 @@ def write_metadata_projection_sidecars_locked(
             if write_atomic_text(sidecar, rendered):
                 sidecars_written += 1
             groups_written[group_name] = groups_written.get(group_name, 0) + 1
-            sidecar_rel = sidecar.relative_to(archive_dir).as_posix()
             if file_state.get("metadata_projection_sidecar") != sidecar_rel:
                 file_state["metadata_projection_sidecar"] = sidecar_rel
                 upload_changed = True
@@ -6894,8 +6917,14 @@ def riverhog_upload_artifact(
     record = riverhog_file_record(job, archive_dir, source_path)
     rel_path = str(record["path"])
     length = int(record["bytes"])
+    file_payload = {
+        "path": rel_path,
+        "bytes": length,
+        "sha256": str(record["sha256"]),
+    }
     if riverhog_upload_file_complete(record):
         if source_path.exists() and record.get("state") != "deleted":
+            confirm_riverhog_artifact_uploaded(job, api, collection_id, file_payload)
             remove_uploaded_riverhog_artifact(
                 job,
                 archive_dir,
@@ -6906,11 +6935,6 @@ def riverhog_upload_artifact(
             return True
         return False
 
-    file_payload = {
-        "path": rel_path,
-        "bytes": length,
-        "sha256": str(record["sha256"]),
-    }
     session = api.create_or_resume_registered_collection_file_upload(collection_id, file_payload)
     update_remote_state_from_payload(job, session)
     with riverhog_upload_lock(job_id):
