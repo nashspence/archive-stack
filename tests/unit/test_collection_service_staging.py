@@ -197,8 +197,9 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
 def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    file_count = 4
-    upload_store = ConcurrentCancelUploadStore(file_count)
+    file_count = 8
+    worker_count = 4
+    upload_store = ConcurrentCancelUploadStore(worker_count)
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
         upload_slug="cancel-me",
@@ -216,6 +217,6 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     canceled = service.cancel_upload_session(collection_id)
 
     assert canceled["state"] == "canceled"
-    assert upload_store.max_active == file_count
+    assert upload_store.max_active == worker_count
     assert len(upload_store.canceled) == file_count
     assert len(upload_store.deleted) == file_count

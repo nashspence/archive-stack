@@ -68,7 +68,7 @@ from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
-_UPLOAD_FORGET_WORKERS = 32
+_UPLOAD_FORGET_WORKERS = 4
 _COLLECTION_SORT_FIELDS = {
     "id",
     "bytes",
