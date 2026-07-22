@@ -24,6 +24,7 @@ from riverhog_protocol.errors import (
 from riverhog_api_client.tus import TusHttpClient
 
 _HTTP_TIMEOUT_SECONDS = 300.0
+_CANCEL_TIMEOUT_SECONDS = 1800.0
 _UPLOAD_TIMEOUT_SECONDS = 300.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -423,6 +424,7 @@ class ApiClient(_HttpApiClient):
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/cancel",
+            timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
     def get_collection_upload(self, collection_id: str) -> dict[str, Any]:

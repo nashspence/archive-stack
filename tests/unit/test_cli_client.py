@@ -59,6 +59,20 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     assert client.calls[1][2]["json"] == {"slug": "docs", "archive_store": "b2"}
 
 
+def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
+    client = RecordingClient()
+
+    client.cancel_collection_upload_session("2025/20250102T030405Z__docs")
+
+    assert client.calls == [
+        (
+            "POST",
+            "/v1/collection-upload-sessions/2025/20250102T030405Z__docs/cancel",
+            {"timeout": 1800.0},
+        )
+    ]
+
+
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     client = RecordingClient()
     files = [("2025/20250102T030405Z__docs", "invoice.pdf")]

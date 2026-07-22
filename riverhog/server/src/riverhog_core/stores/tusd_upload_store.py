@@ -4,7 +4,7 @@ import base64
 import threading
 from collections.abc import Iterator
 from typing import Any
-from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from riverhog_protocol.errors import Conflict, NotFound, ServiceUnavailable
@@ -148,15 +148,6 @@ class _TusdHttpUploadStore:
             raise
         _ok_or_raise(response)
 
-    def _upload_id_from_tus_url(self, tus_url: str) -> str | None:
-        parsed = urlsplit(tus_url)
-        base_path = urlsplit(self._tusd_base_url).path.rstrip("/")
-        prefix = f"{base_path}/"
-        if not parsed.path.startswith(prefix):
-            return None
-        return unquote(parsed.path.removeprefix(prefix))
-
-
 class TusdUploadStore(_TusdHttpUploadStore):
     def __init__(self, config: RuntimeConfig) -> None:
         super().__init__(config)
@@ -234,12 +225,6 @@ class TusdUploadStore(_TusdHttpUploadStore):
 
     def delete_target(self, target_path: str) -> None:
         self._delete_upload_id(self._upload_id(target_path))
-
-    def cancel_upload(self, tus_url: str) -> None:
-        super().cancel_upload(tus_url)
-        upload_id = self._upload_id_from_tus_url(tus_url)
-        if upload_id is not None:
-            self._delete_upload_id(upload_id)
 
     def _delete_upload_id(self, upload_id: str) -> None:
         for suffix in ("", ".info", ".part"):
