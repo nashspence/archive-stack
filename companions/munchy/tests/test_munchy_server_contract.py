@@ -6441,6 +6441,62 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
     assert all(len(api_ids) == 1 for api_ids in api_ids_by_thread.values())
 
 
+def test_riverhog_upload_bounds_single_chunk_completion_concurrency(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    server.init_state_store()
+    monkeypatch.setattr(server, "RIVERHOG_HANDOFF_WORKERS", 4)
+    monkeypatch.setattr(server, "RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS", 2)
+
+    archive_dir = tmp_path / "archive"
+    outputs = [archive_dir / "camera" / f"{name}.xmp" for name in ("a", "b", "c", "d")]
+    outputs[0].parent.mkdir(parents=True)
+    for output in outputs:
+        output.write_bytes(b"x")
+    job = {
+        "job_id": "job-1",
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {
+            "state": "open",
+            "collection_id": "2026/20260101T000000Z__camera-archive",
+            "files": {},
+        },
+    }
+
+    class FakeRiverhogApi:
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(server, "ApiClient", FakeRiverhogApi)
+
+    active = 0
+    max_active = 0
+    first_pair_active = threading.Event()
+    lock = threading.Lock()
+
+    def fake_upload_artifact(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                first_pair_active.set()
+        assert first_pair_active.wait(timeout=2)
+        with lock:
+            active -= 1
+        return True
+
+    monkeypatch.setattr(server, "riverhog_upload_artifact", fake_upload_artifact)
+
+    result = server.upload_riverhog_artifacts(job, archive_dir, final=True)
+
+    assert result["uploaded_files"] == 4
+    assert max_active == 2
+
+
 def test_save_job_preserves_newer_riverhog_upload_state(
     tmp_path: Path,
     monkeypatch,

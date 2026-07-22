@@ -225,6 +225,10 @@ RIVERHOG_HANDOFF_WORKERS = max(
     1,
     int(os.getenv("MUNCHY_RIVERHOG_HANDOFF_WORKERS", "8")),
 )
+# A one-chunk upload immediately asks an S3-compatible ingress store to complete
+# its multipart object. Bound those completion bursts independently of streaming
+# concurrency so large files retain throughput without overwhelming the store.
+RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS = 2
 RIVERHOG_EAGER_HANDOFF_FILES_PER_TICK = max(
     1,
     int(os.getenv("MUNCHY_RIVERHOG_EAGER_HANDOFF_FILES_PER_TICK", "128")),
@@ -7426,6 +7430,9 @@ def _upload_riverhog_artifacts_unlocked(
         }
 
     worker_count = min(max(1, RIVERHOG_HANDOFF_WORKERS), len(selected))
+    single_chunk_slots = threading.BoundedSemaphore(
+        min(RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS, worker_count)
+    )
     last_save_at = started
 
     def persist_progress_if_due(*, force: bool = False) -> None:
@@ -7454,13 +7461,23 @@ def _upload_riverhog_artifacts_unlocked(
 
     def upload_one(item: tuple[Path, int]) -> tuple[int, int, int]:
         source_path, source_bytes = item
-        did_upload = riverhog_upload_artifact(
-            job,
-            api_for_worker(),
-            archive_dir,
-            source_path,
-            persist=False,
-        )
+        if source_bytes <= RIVERHOG_HANDOFF_CHUNK_BYTES:
+            with single_chunk_slots:
+                did_upload = riverhog_upload_artifact(
+                    job,
+                    api_for_worker(),
+                    archive_dir,
+                    source_path,
+                    persist=False,
+                )
+        else:
+            did_upload = riverhog_upload_artifact(
+                job,
+                api_for_worker(),
+                archive_dir,
+                source_path,
+                persist=False,
+            )
         return 1, 1 if did_upload else 0, source_bytes if did_upload else 0
 
     if worker_count > 1:

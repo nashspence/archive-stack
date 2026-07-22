@@ -83,6 +83,10 @@ class TusHttpClient:
                 raise ServiceUnavailable(
                     "upload backend reported a transient failure; retry after resyncing the offset"
                 ) from exc
+            if exc.status in {404, 410}:
+                raise Conflict(
+                    "upload lease is no longer available; retry after requesting a current lease"
+                ) from exc
             if exc.status in {400, 409}:
                 message = exc.body.decode("utf-8", errors="replace").strip()
                 raise Conflict(message or "upload chunk was rejected by tusd") from exc
