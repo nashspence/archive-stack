@@ -1,0 +1,1 @@
+"""munchy-server service package."""

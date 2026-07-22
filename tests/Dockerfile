@@ -32,9 +32,10 @@ RUN arch="$(dpkg --print-architecture)" \
 WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
-COPY apps apps
+COPY companions companions
 COPY packages packages
-COPY tools tools
+COPY riverhog riverhog
+COPY utilities utilities
 RUN uv sync --frozen --all-packages --group dev --no-editable
 
 COPY scripts scripts

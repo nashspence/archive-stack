@@ -16,7 +16,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
-COMPOSE_FILE = REPO_ROOT / "apps" / "riverhog" / "compose.yaml"
+COMPOSE_FILE = REPO_ROOT / "riverhog/server/compose.yaml"
 COMPOSE_ENV_EXAMPLE = REPO_ROOT / ".env.compose.example"
 
 
@@ -149,8 +149,8 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     runtime_source = "\n".join(
         path.read_text(encoding="utf-8")
         for package in (
-            REPO_ROOT / "apps/riverhog/src/riverhog_core",
-            REPO_ROOT / "apps/riverhog/src/riverhog_api",
+            REPO_ROOT / "riverhog/server/src/riverhog_core",
+            REPO_ROOT / "riverhog/server/src/riverhog_api",
         )
         for path in package.rglob("*.py")
     )
@@ -190,8 +190,8 @@ def test_compose_services_publish_every_static_runtime_setting() -> None:
     runtime_trees = (
         ast.parse(path.read_text(encoding="utf-8"))
         for package in (
-            REPO_ROOT / "apps/riverhog/src/riverhog_core",
-            REPO_ROOT / "apps/riverhog/src/riverhog_api",
+            REPO_ROOT / "riverhog/server/src/riverhog_core",
+            REPO_ROOT / "riverhog/server/src/riverhog_api",
         )
         for path in package.rglob("*.py")
     )
@@ -348,17 +348,21 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     ("target", "extra_args", "expected_command"),
     [
         ("ruff", (), "python -m ruff check ."),
-        ("ruff-fix", ("FILES=apps/jeb",), "python -m ruff check --fix apps/jeb"),
-        ("format", ("FILES=apps/jeb",), "python -m ruff format apps/jeb"),
+        (
+            "ruff-fix",
+            ("FILES=companions/jeb/server",),
+            "python -m ruff check --fix companions/jeb/server",
+        ),
+        ("format", ("FILES=companions/jeb/server",), "python -m ruff format companions/jeb/server"),
         (
             "unit",
             ("args=-k entrypoint",),
-            "python -m pytest -q apps packages tests/unit tools -k entrypoint",
+            "python -m pytest -q companions packages riverhog tests/unit utilities -k entrypoint",
         ),
         (
             "unit",
-            ("TESTS=apps/jeb/tests/test_jeb_health.py",),
-            "python -m pytest -q apps/jeb/tests/test_jeb_health.py",
+            ("TESTS=companions/jeb/tests/test_jeb_health.py",),
+            "python -m pytest -q companions/jeb/tests/test_jeb_health.py",
         ),
         (
             "spec",
@@ -405,15 +409,15 @@ def test_fix_runs_ruff_fix_then_format(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "fix",
-        "FILES=apps/jeb",
+        "FILES=companions/jeb/server",
     )
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 2
-    assert "python -m ruff check --fix apps/jeb" in uv_log_lines[0]
-    assert "python -m ruff format apps/jeb" in uv_log_lines[1]
+    assert "python -m ruff check --fix companions/jeb/server" in uv_log_lines[0]
+    assert "python -m ruff format companions/jeb/server" in uv_log_lines[1]
 
 
 def test_local_targets_fail_clearly_when_mise_is_missing(tmp_path: Path) -> None:
@@ -438,9 +442,10 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
-    assert "python -m mypy apps/jeb/src apps/mango-fish/src apps/munchy/src" in uv_log_lines[0]
-    assert "apps/riverhog/src packages/application-access/src" in uv_log_lines[0]
-    assert "packages/tus-transport/src tools/gogurt/src" in uv_log_lines[0]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[0]
+    assert "companions/munchy/client/src companions/munchy/server/src" in uv_log_lines[0]
+    assert "riverhog/client/src riverhog/server/src" in uv_log_lines[0]
+    assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
     assert "--no-error-summary --no-color-output --strict" in uv_log_lines[0]
 
 
@@ -452,7 +457,7 @@ def test_lint_runs_ruff_then_mypy(tmp_path: Path) -> None:
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 2
     assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy apps/jeb/src apps/mango-fish/src" in uv_log_lines[1]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[1]
 
 
 def test_build_targets_are_atomic(tmp_path: Path) -> None:
@@ -462,10 +467,10 @@ def test_build_targets_are_atomic(tmp_path: Path) -> None:
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert " build app" in docker_log
-    assert "apps/jeb/compose.yaml build jeb" in docker_log
-    assert "apps/mango-fish/Dockerfile --tag mango-fish:dev" in docker_log
-    assert "apps/munchy/runner/docker-compose.yaml build munchy-runner" in docker_log
-    assert "apps/munchy/targets/av1-nvenc/compose.yaml build api" in docker_log
+    assert "companions/jeb/server/compose.yaml build jeb" in docker_log
+    assert "utilities/mango-fish/Dockerfile --tag mango-fish:dev" in docker_log
+    assert "companions/munchy/server/compose.yaml build munchy-server" in docker_log
+    assert "companions/munchy/server/targets/av1-nvenc/compose.yaml build api" in docker_log
     assert " build test" in docker_log
 
 
@@ -500,7 +505,7 @@ def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) ->
 
 
 def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> None:
-    app_dockerfile = (REPO_ROOT / "apps" / "riverhog" / "Dockerfile").read_text()
+    app_dockerfile = (REPO_ROOT / "riverhog/server/Dockerfile").read_text()
     test_dockerfile = (REPO_ROOT / "tests" / "Dockerfile").read_text()
     dockerignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
 
@@ -511,13 +516,13 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert "pip install" not in app_dockerfile
     assert "pip install" not in test_dockerfile
     assert app_dockerfile.index("COPY pyproject.toml uv.lock ./") < app_dockerfile.index(
-        "COPY apps/riverhog/src apps/riverhog/src"
+        "COPY riverhog/server/src riverhog/server/src"
     )
-    assert app_dockerfile.index("COPY apps/riverhog/src apps/riverhog/src") < app_dockerfile.index(
-        "uv sync --frozen --package riverhog --no-dev --no-editable"
-    )
+    assert app_dockerfile.index(
+        "COPY riverhog/server/src riverhog/server/src"
+    ) < app_dockerfile.index("uv sync --frozen --package riverhog-server --no-dev --no-editable")
     assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
-        "COPY apps apps"
+        "COPY companions companions"
     )
     assert "uv sync --frozen --all-packages --group dev --no-editable" in test_dockerfile
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
@@ -526,9 +531,10 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
         "COPY tests tests"
     )
-    assert "COPY apps apps" in test_dockerfile
+    assert "COPY companions companions" in test_dockerfile
     assert "COPY packages packages" in test_dockerfile
-    assert "COPY tools tools" in test_dockerfile
+    assert "COPY riverhog riverhog" in test_dockerfile
+    assert "COPY utilities utilities" in test_dockerfile
     assert "COPY tests tests" in test_dockerfile
     assert "docs/" in dockerignore
 
@@ -536,7 +542,9 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
 def test_dockerfile_copy_sources_are_git_owned() -> None:
     dockerfiles = [
         REPO_ROOT / "tests" / "Dockerfile",
-        *sorted((REPO_ROOT / "apps").rglob("Dockerfile")),
+        *sorted((REPO_ROOT / "companions").rglob("Dockerfile")),
+        *sorted((REPO_ROOT / "riverhog").rglob("Dockerfile")),
+        *sorted((REPO_ROOT / "utilities").rglob("Dockerfile")),
     ]
 
     for dockerfile in dockerfiles:
@@ -559,10 +567,10 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
 
 
 def test_workspace_unit_lane_owns_application_unit_tests() -> None:
-    assert (REPO_ROOT / "apps/jeb/tests/test_jeb_health.py").is_file()
-    assert (REPO_ROOT / "apps/mango-fish/tests/test_mango_fish.py").is_file()
-    assert (REPO_ROOT / "apps/munchy/tests/test_munchy_runner_contract.py").is_file()
-    assert (REPO_ROOT / "tools/gogurt/tests/test_gogurt.py").is_file()
+    assert (REPO_ROOT / "companions/jeb/tests/test_jeb_health.py").is_file()
+    assert (REPO_ROOT / "utilities/mango-fish/tests/test_mango_fish.py").is_file()
+    assert (REPO_ROOT / "companions/munchy/tests/test_munchy_server_contract.py").is_file()
+    assert (REPO_ROOT / "utilities/gogurt/tests/test_gogurt.py").is_file()
 
 
 def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
@@ -573,18 +581,18 @@ def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
     assert "python -m ruff check --fix $(FILES)" in makefile
     assert "python -m ruff format $(FILES)" in makefile
     assert "MYPY_SOURCES" in makefile
-    assert "apps/riverhog/src" in makefile
+    assert "riverhog/server/src" in makefile
     assert "packages/tus-transport/src" in makefile
     assert "strict = true" in pyproject
 
 
 def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() -> None:
     service_dockerfiles = [
-        REPO_ROOT / "apps" / "riverhog" / "Dockerfile",
-        REPO_ROOT / "apps" / "jeb" / "Dockerfile",
-        REPO_ROOT / "apps" / "mango-fish" / "Dockerfile",
-        REPO_ROOT / "apps" / "munchy" / "runner" / "Dockerfile",
-        REPO_ROOT / "apps" / "munchy" / "targets" / "av1-nvenc" / "Dockerfile",
+        REPO_ROOT / "riverhog/server/Dockerfile",
+        REPO_ROOT / "companions/jeb/server/Dockerfile",
+        REPO_ROOT / "utilities/mango-fish/Dockerfile",
+        REPO_ROOT / "companions/munchy/server/Dockerfile",
+        REPO_ROOT / "companions/munchy/server/targets/av1-nvenc/Dockerfile",
     ]
 
     for path in service_dockerfiles:
@@ -597,10 +605,10 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
 
 
 def test_munchy_av1_image_identifies_its_source_revision() -> None:
-    dockerfile = (REPO_ROOT / "apps/munchy/targets/av1-nvenc" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    compose = (REPO_ROOT / "apps/munchy/targets/av1-nvenc" / "compose.yaml").read_text(
+    dockerfile = (
+        REPO_ROOT / "companions/munchy/server/targets/av1-nvenc" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    compose = (REPO_ROOT / "companions/munchy/server/targets/av1-nvenc" / "compose.yaml").read_text(
         encoding="utf-8"
     )
 
@@ -609,8 +617,8 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
 
 
-def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
-    dockerfile = (REPO_ROOT / "apps/munchy/runner" / "Dockerfile").read_text(encoding="utf-8")
+def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:
+    dockerfile = (REPO_ROOT / "companions/munchy/server" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "ffmpeg" in dockerfile
     assert "libimage-exiftool-perl" in dockerfile
@@ -620,7 +628,7 @@ def test_munchy_runner_image_includes_source_artifact_runtime_tools() -> None:
 
 def test_workspace_lock_and_app_manifests_own_runtime_dependencies() -> None:
     lock = (REPO_ROOT / "uv.lock").read_text()
-    riverhog = (REPO_ROOT / "apps/riverhog/pyproject.toml").read_text()
+    riverhog = (REPO_ROOT / "riverhog/server/pyproject.toml").read_text()
     root = (REPO_ROOT / "pyproject.toml").read_text()
 
     for package in ("boto3", "fastapi", "psycopg", "sqlalchemy", "uvicorn"):
@@ -639,8 +647,10 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 3
     assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy apps/jeb/src apps/mango-fish/src" in uv_log_lines[1]
-    assert "python -m pytest -q apps packages tests/unit tools" in uv_log_lines[2]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[1]
+    assert (
+        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[2]
+    )
 
 
 def test_down_target_uses_compose_down_with_volumes(tmp_path: Path) -> None:
@@ -669,7 +679,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-riverhog" in completed.stdout
     assert "make build-jeb" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
-    assert "make build-munchy-runner" in completed.stdout
+    assert "make build-munchy-server" in completed.stdout
     assert "make build-munchy-av1-nvenc" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make fix" in completed.stdout

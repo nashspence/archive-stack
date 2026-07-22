@@ -3,6 +3,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from tests.workspace import workspace_pyprojects
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -16,20 +18,18 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert mise["settings"]["lockfile"] is True
     assert "dev" in pyproject["dependency-groups"]
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
-        "apps/*",
+        "companions/*/client",
+        "companions/*/server",
         "packages/*",
-        "tools/*",
+        "riverhog/*",
+        "utilities/*",
     ]
     assert (REPO_ROOT / "mise.lock").is_file()
     assert (REPO_ROOT / "uv.lock").is_file()
     assert "mise.local.toml" in gitignore
     assert "mise.local.lock" in gitignore
 
-    members = sorted(
-        path
-        for owner in ("apps", "packages", "tools")
-        for path in (REPO_ROOT / owner).glob("*/pyproject.toml")
-    )
+    members = workspace_pyprojects(REPO_ROOT)
     assert members
     for member in members:
         project = tomllib.loads(member.read_text(encoding="utf-8"))["project"]
@@ -37,11 +37,7 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
 
 
 def test_workspace_distributions_publish_their_inline_types() -> None:
-    members = sorted(
-        path
-        for owner in ("apps", "packages", "tools")
-        for path in (REPO_ROOT / owner).glob("*/pyproject.toml")
-    )
+    members = workspace_pyprojects(REPO_ROOT)
 
     for member in members:
         config = tomllib.loads(member.read_text(encoding="utf-8"))

@@ -19,7 +19,8 @@ def _defaults(value: str) -> str:
 def _public_compose_files() -> tuple[Path, ...]:
     return tuple(
         path
-        for path in sorted((ROOT / "apps").rglob("*"))
+        for owner in ("companions", "riverhog", "utilities")
+        for path in sorted((ROOT / owner).rglob("*"))
         if path.is_file() and path.name in COMPOSE_NAMES
     )
 
@@ -39,24 +40,26 @@ def test_public_compose_published_ports_default_to_loopback() -> None:
 
 def test_public_munchy_host_network_services_default_to_loopback() -> None:
     compose = yaml.safe_load(
-        (ROOT / "apps/munchy/runner/docker-compose.yaml").read_text(encoding="utf-8")
+        (ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
     )
     assert {
         name
         for name, service in compose["services"].items()
         if service.get("network_mode") == "host"
-    } == {"munchy-runner", "munchy-runner-tusd", "munchy-runner-lan-gateway"}
+    } == {"munchy-server", "munchy-server-tusd", "munchy-server-lan-gateway"}
 
-    runner = compose["services"]["munchy-runner"]
-    assert _defaults(runner["environment"]["MUNCHY_RUNNER_HOST"]) == "127.0.0.1"
+    server = compose["services"]["munchy-server"]
+    assert _defaults(server["environment"]["MUNCHY_HOST"]) == "127.0.0.1"
 
-    tusd = compose["services"]["munchy-runner-tusd"]
+    tusd = compose["services"]["munchy-server-tusd"]
     host_argument = tusd["command"].index("-host") + 1
     assert tusd["command"][host_argument] == "127.0.0.1"
 
-    gateway = compose["services"]["munchy-runner-lan-gateway"]
+    gateway = compose["services"]["munchy-server-lan-gateway"]
     assert _defaults(gateway["environment"]["MUNCHY_GATEWAY_BIND_ADDR"]) == "127.0.0.1"
 
-    nginx = (ROOT / "apps/munchy/runner/config/nginx-lan-gateway.conf").read_text(encoding="utf-8")
+    nginx = (ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
+        encoding="utf-8"
+    )
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8092;" in nginx
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8093;" in nginx

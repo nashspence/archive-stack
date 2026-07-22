@@ -95,6 +95,36 @@ class UploadState:
         return cls(header=header, payload_nonce=payload_nonce, plaintext_size=plaintext_size)
 
 
+def plaintext_bytes_for_ciphertext_offset(
+    *,
+    state: UploadState | bytes | str | Mapping[str, object],
+    plaintext_bytes: int,
+    ciphertext_bytes: int,
+    ciphertext_offset: int,
+) -> int:
+    """Map an aligned age ciphertext offset to completed plaintext bytes."""
+
+    if ciphertext_offset <= 0:
+        return 0
+    if ciphertext_offset >= ciphertext_bytes:
+        return plaintext_bytes
+    if isinstance(state, UploadState):
+        upload_state = state
+    elif isinstance(state, (bytes, str)):
+        upload_state = UploadState.from_json_bytes(state)
+    else:
+        upload_state = UploadState.from_json_bytes(json.dumps(dict(state)))
+    prefix_bytes = len(upload_state.header) + len(upload_state.payload_nonce)
+    if ciphertext_offset <= prefix_bytes:
+        return 0
+    payload_offset = ciphertext_offset - prefix_bytes
+    encrypted_chunk_bytes = CHUNK_SIZE + AEAD_TAG_SIZE
+    complete_chunks, remainder = divmod(payload_offset, encrypted_chunk_bytes)
+    if remainder:
+        raise ValueError("ciphertext offset is not aligned to an age chunk boundary")
+    return min(complete_chunks * CHUNK_SIZE, plaintext_bytes)
+
+
 @dataclass(frozen=True)
 class S3PartPlan:
     """A single S3 multipart part whose contents align to age chunk boundaries."""

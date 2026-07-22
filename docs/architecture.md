@@ -79,17 +79,25 @@ presentation.
 
 ## Component boundaries
 
-- Riverhog owns custody, search, portable catalog publication, retrieval preparation, and
-  verified logical-file delivery.
+- The Riverhog custody platform server owns custody, search, portable catalog publication,
+  retrieval preparation, and verified logical-file delivery.
+- The official `riverhog` client is a separate API consumer. It contains no platform
+  server implementation and carries no privileged in-process access.
 - The `riverhog local` client owns one local materialization, including its directory,
   SQLite state, selection, repair, audit, and eviction. It uses the same permission-bearing
-application API as every other Riverhog client.
-- Munchy owns media discovery, routing, transformation, metadata projection, and assembly
-  before handing completed artifacts to a named destination adapter.
+  application API as every other Riverhog client.
+- Munchy is a companion application. Its server owns media discovery, routing,
+  transformation, metadata projection, and assembly before handing completed artifacts to
+  a named destination adapter; its client communicates through the Munchy API.
+- A Munchy execution target implements a server-owned target contract. The NVIDIA AV1
+  target is isolated in its own image solely for placement on compatible GPU hosts and is
+  not independently useful as a companion application.
 - Jeb owns source enrollment and credentials, transport-neutral landing, watched-drop
-  scheduling, named target submission, and its independently authenticated API and CLI.
+  scheduling, and named target submission. Its separately packaged client communicates
+  through Jeb's independently authenticated API.
 - Mango Fish owns generic credentialed CloudEvents cursor consumption and exact event
-  delivery to configured webhooks; it does not own notification policy or presentation.
+  delivery to configured webhooks; it is a platform-agnostic utility and does not own
+  notification policy or presentation.
 - Gogurt is operator tooling that maps mounted-volume markers to configured actions.
 - Focused shared packages own reusable protocol, client, configuration, transport, event,
   and CLI primitives. Applications and tools depend on those packages instead of one

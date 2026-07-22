@@ -1,8 +1,10 @@
 [tool.uv.workspace]
 members = [
-  "apps/*",
+  "companions/*/client",
+  "companions/*/server",
   "packages/*",
-  "tools/*",
+  "riverhog/*",
+  "utilities/*",
 ]
 
 [dependency-groups]
@@ -26,7 +28,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
-testpaths = ["apps", "packages", "tests", "tools"]
+testpaths = ["companions", "packages", "riverhog", "tests", "utilities"]
 markers = [
   "integration: non-contract regression coverage",
 ]

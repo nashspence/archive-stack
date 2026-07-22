@@ -1,0 +1,1 @@
+"""Munchy server behavior."""

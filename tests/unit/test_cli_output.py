@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jeb.output import format_archive_plan, format_attempts, format_status
+from jeb_cli_support.output import format_archive_plan, format_attempts, format_status
 from riverhog_cli.output import (
     format_archive_report,
     format_collection_summary,

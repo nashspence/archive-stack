@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-from riverhog_core.fs_paths import (
+from riverhog_protocol.paths import (
     collection_id_for_upload,
     normalize_collection_id,
     normalize_relpath,

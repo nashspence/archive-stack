@@ -1,10 +1,10 @@
 # riverhog
 
-Riverhog is a generic custody system for encrypted remote collection archives. It accepts
+Riverhog is a custody platform for encrypted remote collection archives. It accepts
 logical collections without staging plaintext on its host, preserves independently
 restorable archive objects, and gives applications a stable catalog and retrieval
-interface. The default client's `riverhog local` commands are the reference application
-and maintain selected collections in a client-owned local directory.
+interface. This repository centers the platform server and its official `riverhog` client;
+companion applications integrate through published APIs rather than platform internals.
 
 ## Custody
 
@@ -19,11 +19,27 @@ Use `make help` for development and validation commands. Use each installed comm
 `--help` output for its current interface. A running API publishes its current OpenAPI
 document at `/openapi.json`.
 
-The [Riverhog Compose stack](apps/riverhog/compose.yaml) runs from safe development
+The [Riverhog Compose stack](riverhog/server/compose.yaml) runs from safe development
 defaults. The intentionally empty [Compose override example](.env.compose.example) is the
 starting point for local overrides. Owner-scoped examples contain fake identities only:
-[Munchy](apps/munchy/config/examples/), [Jeb](apps/jeb/config/),
-[Mango Fish](apps/mango-fish/config/), and [Gogurt](tools/gogurt/config/examples/).
+[Munchy](companions/munchy/config/examples/), [Jeb](companions/jeb/server/config/),
+[Mango Fish](utilities/mango-fish/config/), and [Gogurt](utilities/gogurt/config/examples/).
+
+## Repository map
+
+- [`riverhog/server`](riverhog/server/) is the custody platform service.
+- [`riverhog/client`](riverhog/client/) is the direct platform CLI. Its `local` commands
+  are the reference external application and maintain client-owned local materialization.
+- [`companions`](companions/) contains applications with first-class ecosystem adapters:
+  Munchy for media workflows and Jeb for transport-neutral watched drops. Each has an
+  independently packaged `server` and `client`.
+- [`companions/munchy/server/targets`](companions/munchy/server/targets/) contains
+  server-owned execution targets. The NVIDIA AV1 target has a separate image so it can be
+  placed only on compatible hosts; it is not a standalone companion application.
+- [`utilities`](utilities/) contains Riverhog-agnostic tools: Mango Fish relays lifecycle
+  events and Gogurt maps mounted-volume markers to configured actions.
+- [`packages`](packages/) contains reusable libraries and protocol, API-client,
+  configuration, event, transport, and CLI primitives.
 
 ## Context
 

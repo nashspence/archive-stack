@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jeb-server"
+version = "0.1.0"
+description = "Transport-neutral watched-drop collection and target submission."
+requires-python = ">=3.12"
+dependencies = [
+  "argon2-cffi>=23,<26",
+  "cli-support",
+  "fastapi>=0.111,<1.0",
+  "httpx>=0.27,<1.0",
+  "jeb-cli-support",
+  "jeb-protocol",
+  "lifecycle-events",
+  "munchy-api-client",
+  "pydantic>=2.7,<3.0",
+  "time-formats",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+jeb-service = "jeb.service_cli:main"
+
+[tool.uv.sources]
+cli-support = { workspace = true }
+jeb-cli-support = { workspace = true }
+jeb-protocol = { workspace = true }
+lifecycle-events = { workspace = true }
+munchy-api-client = { workspace = true }
+time-formats = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jeb"]

@@ -4,15 +4,23 @@ Read [README.md](README.md) for the product entrypoint.
 
 ## Boundaries
 
-Riverhog owns generic collection custody, named archive stores and copies, collection
-search, ResourceSync catalog publication, and logical-file retrieval. The default client's
-`local` subtree is the reference application and owns its local materialization. Munchy
-owns generic media ingest, Jeb owns generic watched-drop collection, and Mango Fish owns
-generic CloudEvents-to-webhook delivery. Gogurt is mounted-volume operator tooling, not a
-Riverhog application. Applications may depend on focused packages, but never import one
-another's implementation modules; runtime integration crosses HTTP and CloudEvents
-contracts. Keep public code generic; real identity and deployment topology belong
-downstream.
+`riverhog/server` is the custody platform service. `riverhog/client` is its official direct
+CLI; the client's `local` subtree is the reference external application and owns its local
+materialization. Both are independent distributions and the client must not import server
+implementation modules.
+
+`companions/munchy` and `companions/jeb` are companion applications with independent
+server and client distributions. Munchy owns generic media ingest. Jeb owns generic
+watched-drop collection. Hardware-specific Munchy execution targets live beneath
+`companions/munchy/server/targets`; they are server-owned components with separate images
+for selective placement, not companion applications.
+
+`utilities/mango-fish` and `utilities/gogurt` are Riverhog-agnostic utilities. Mango Fish
+owns generic CloudEvents-to-webhook delivery. Gogurt maps mounted-volume markers to
+configured actions. Implementation projects may depend on focused packages, but never
+import one another's implementation modules; runtime integration crosses HTTP and
+CloudEvents contracts. Keep public code generic; real identity and deployment topology
+belong downstream.
 
 ## Safety
 
@@ -43,6 +51,8 @@ Manual documentation is limited to:
   a verified supported dependency requires one.
 - Keep domain behavior in services, external effects behind ports, and HTTP or CLI
   formatting in adapters.
+- Put reusable behavior in a focused package; never share code by importing across a
+  server, client, companion, target, or utility implementation boundary.
 
 ## Validation
 

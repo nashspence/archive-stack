@@ -1,0 +1,69 @@
+services:
+  api:
+    build:
+      context: ../../../../..
+      dockerfile: companions/munchy/server/targets/av1-nvenc/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: munchy-av1-nvenc-target:latest
+    mem_limit: "24g"
+    memswap_limit: "24g"
+    oom_kill_disable: false
+    shm_size: "2gb"
+    stop_grace_period: 120s
+    pids_limit: 2048
+    gpus: all
+    runtime: nvidia
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    ports:
+      - "${GPU_TARGET_BIND_ADDR:-127.0.0.1}:${GPU_TARGET_PORT:-8000}:8000"
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      OMP_NUM_THREADS: ${MUNCHY_OMP_NUM_THREADS:-1}
+
+      MUNCHY_DATA_DIR: /data
+      MUNCHY_MAX_PARALLEL_ENCODES: ${MUNCHY_MAX_PARALLEL_ENCODES:-4}
+      MUNCHY_FFMPEG_TIMEOUT_SECONDS: ${MUNCHY_FFMPEG_TIMEOUT_SECONDS:-0}
+      MUNCHY_VIDEO_DECODE_MODE: ${MUNCHY_VIDEO_DECODE_MODE:-cuvid}
+      MUNCHY_VIDEO_SCALE_MODE: ${MUNCHY_VIDEO_SCALE_MODE:-software}
+      MUNCHY_AV1_CQ: ${MUNCHY_AV1_CQ:-23}
+      MUNCHY_AV1_PRESET: ${MUNCHY_AV1_PRESET:-p7}
+      MUNCHY_AV1_TUNE: ${MUNCHY_AV1_TUNE:-uhq}
+      MUNCHY_AV1_LOOKAHEAD_LEVEL: ${MUNCHY_AV1_LOOKAHEAD_LEVEL:-3}
+      MUNCHY_AV1_SPLIT_ENCODE_MODE: ${MUNCHY_AV1_SPLIT_ENCODE_MODE:-disabled}
+      MUNCHY_AV1_PIX_FMT: ${MUNCHY_AV1_PIX_FMT:-p010le}
+      MUNCHY_AUDIO_BITRATE: ${MUNCHY_AUDIO_BITRATE:-128k}
+      MUNCHY_QCUT_TARGET_SECONDS: ${MUNCHY_QCUT_TARGET_SECONDS:-180}
+      MUNCHY_QCUT_MIN_SECONDS: ${MUNCHY_QCUT_MIN_SECONDS:-6}
+      MUNCHY_QCUT_MAX_SECONDS: ${MUNCHY_QCUT_MAX_SECONDS:-9}
+      MUNCHY_QCUT_CQ: ${MUNCHY_QCUT_CQ:-30}
+      MUNCHY_QCUT_TUNE: ${MUNCHY_QCUT_TUNE:-uhq}
+      MUNCHY_QCUT_LOOKAHEAD_LEVEL: ${MUNCHY_QCUT_LOOKAHEAD_LEVEL:-3}
+      MUNCHY_QCUT_SPLIT_ENCODE_MODE: ${MUNCHY_QCUT_SPLIT_ENCODE_MODE:-disabled}
+      MUNCHY_QCUT_TRUE_PEAK: ${MUNCHY_QCUT_TRUE_PEAK:-}
+      MUNCHY_REVIEW_AUDIO_BITRATE: ${MUNCHY_REVIEW_AUDIO_BITRATE:-96k}
+      MUNCHY_LOG_LEVEL: ${MUNCHY_LOG_LEVEL:-INFO}
+      TZ: America/Los_Angeles
+
+    volumes:
+      - ${MUNCHY_AV1_NVENC_DATA_DIR:-./runtime/data}:/data
+
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 2m

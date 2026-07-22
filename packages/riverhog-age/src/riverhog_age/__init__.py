@@ -21,6 +21,7 @@ from .resumable_age import (
     make_s3_part_plans,
     parse_scrypt_header,
     parse_scrypt_header_from_age_file,
+    plaintext_bytes_for_ciphertext_offset,
     split_plaintext_chunks,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "make_s3_part_plans",
     "parse_scrypt_header",
     "parse_scrypt_header_from_age_file",
+    "plaintext_bytes_for_ciphertext_offset",
     "split_plaintext_chunks",
 ]

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jeb-client"
+version = "0.1.0"
+description = "Command-line client for Jeb."
+requires-python = ">=3.12"
+dependencies = [
+  "cli-support",
+  "jeb-api-client",
+  "jeb-cli-support",
+  "jeb-protocol",
+  "PyYAML>=6.0,<7.0",
+]
+
+[project.scripts]
+jeb = "jeb_cli.main:main"
+
+[tool.uv.sources]
+cli-support = { workspace = true }
+jeb-api-client = { workspace = true }
+jeb-cli-support = { workspace = true }
+jeb-protocol = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jeb_cli"]

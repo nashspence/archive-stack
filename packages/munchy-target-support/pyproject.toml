@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "munchy-target-support"
+version = "0.1.0"
+description = "Shared support for Munchy execution targets and their coordinator."
+requires-python = ">=3.12"
+dependencies = [
+  "munchy-workflows",
+  "time-formats",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[tool.uv.sources]
+munchy-workflows = { workspace = true }
+time-formats = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/munchy_target_support"]

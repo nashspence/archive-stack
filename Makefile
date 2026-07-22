@@ -3,32 +3,40 @@ SHELL := bash
 
 MISE_BIN ?= mise
 FILES ?= .
-TESTS ?= apps packages tests/unit tools
+TESTS ?= companions packages riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py
 TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
-	apps/jeb/src \
-	apps/mango-fish/src \
-	apps/munchy/src \
-	apps/riverhog/src \
+	companions/jeb/client/src \
+	companions/jeb/server/src \
+	companions/munchy/client/src \
+	companions/munchy/server/src \
 	packages/application-access/src \
 	packages/cli-support/src \
 	packages/config-validation/src \
+	packages/jeb-api-client/src \
+	packages/jeb-cli-support/src \
+	packages/jeb-protocol/src \
 	packages/lifecycle-events/src \
 	packages/munchy-api-client/src \
 	packages/munchy-config/src \
+	packages/munchy-target-support/src \
+	packages/munchy-workflows/src \
 	packages/riverhog-age/src \
 	packages/riverhog-api-client/src \
 	packages/riverhog-protocol/src \
 	packages/time-formats/src \
 	packages/tus-transport/src \
-	tools/gogurt/src
+	riverhog/client/src \
+	riverhog/server/src \
+	utilities/gogurt/src \
+	utilities/mango-fish/src
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist build build-riverhog build-jeb build-mango-fish build-munchy-runner build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -59,7 +67,7 @@ help:
 		'  make build-riverhog    Build the Riverhog image.' \
 		'  make build-jeb         Build the Jeb image.' \
 		'  make build-mango-fish  Build the Mango Fish image.' \
-		'  make build-munchy-runner Build the Munchy runner image.' \
+		'  make build-munchy-server Build the Munchy server image.' \
 		'  make build-munchy-av1-nvenc Build the Munchy AV1 NVENC image.' \
 		'  make build-test        Build the test image.' \
 		'  make build             Build every application and test image.' \
@@ -134,21 +142,21 @@ build-riverhog:
 	@./scripts/build_riverhog.sh
 
 build-jeb:
-	@docker compose --file apps/jeb/compose.yaml build jeb
+	@docker compose --file companions/jeb/server/compose.yaml build jeb
 
 build-mango-fish:
-	@docker build --file apps/mango-fish/Dockerfile --tag mango-fish:dev .
+	@docker build --file utilities/mango-fish/Dockerfile --tag mango-fish:dev .
 
-build-munchy-runner:
-	@docker compose --file apps/munchy/runner/docker-compose.yaml build munchy-runner
+build-munchy-server:
+	@docker compose --file companions/munchy/server/compose.yaml build munchy-server
 
 build-munchy-av1-nvenc:
-	@docker compose --file apps/munchy/targets/av1-nvenc/compose.yaml build api
+	@docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build api
 
 build-test:
 	@./scripts/build_test.sh
 
-build: build-riverhog build-jeb build-mango-fish build-munchy-runner build-munchy-av1-nvenc build-test
+build: build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test
 
 bootstrap-garage:
 	@./scripts/bootstrap_garage.sh

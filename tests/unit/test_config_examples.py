@@ -7,22 +7,22 @@ import yaml
 from gogurt.core import load_gogurt_actions
 from jeb.collector import config_from_env
 from mango_fish.relay import load_config as load_mango_fish_config
-from munchy.job_authoring import (
+from munchy_workflows.job_authoring import (
     build_review_sweep_plan,
     load_munchy_job_config,
     munchy_job_defaults_from_config,
 )
-from munchy.profiles import load_encode_profile
+from munchy_workflows.profiles import load_encode_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FILES = {
-    REPO_ROOT / "apps/jeb/config/jeb.env",
-    REPO_ROOT / "apps/mango-fish/config/mango-fish.yaml",
-    REPO_ROOT / "apps/munchy/config/examples/av1-nvenc-profile.yaml",
-    REPO_ROOT / "apps/munchy/config/examples/job.yaml",
-    REPO_ROOT / "apps/munchy/config/examples/review-sweep-job.yaml",
-    REPO_ROOT / "tools/gogurt/config/examples/gogurt-routes.yaml",
-    REPO_ROOT / "tools/gogurt/config/examples/scripts/fake-archive-device",
+    REPO_ROOT / "companions/jeb/server/config/jeb.env",
+    REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml",
+    REPO_ROOT / "companions/munchy/config/examples/av1-nvenc-profile.yaml",
+    REPO_ROOT / "companions/munchy/config/examples/job.yaml",
+    REPO_ROOT / "companions/munchy/config/examples/review-sweep-job.yaml",
+    REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
+    REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake-archive-device",
 }
 
 
@@ -42,17 +42,17 @@ def test_every_checked_example_runs_through_its_real_consumer(
     checked_files = {
         path
         for root in (
-            REPO_ROOT / "apps/jeb/config",
-            REPO_ROOT / "apps/mango-fish/config",
-            REPO_ROOT / "apps/munchy/config/examples",
-            REPO_ROOT / "tools/gogurt/config/examples",
+            REPO_ROOT / "companions/jeb/server/config",
+            REPO_ROOT / "utilities/mango-fish/config",
+            REPO_ROOT / "companions/munchy/config/examples",
+            REPO_ROOT / "utilities/gogurt/config/examples",
         )
         for path in root.rglob("*")
         if path.is_file()
     }
     assert checked_files == EXAMPLE_FILES
 
-    gogurt_root = REPO_ROOT / "tools/gogurt/config/examples"
+    gogurt_root = REPO_ROOT / "utilities/gogurt/config/examples"
     actions = load_gogurt_actions(gogurt_root / "gogurt-routes.yaml")
     assert [action.route for action in actions] == ["example-camera-card"]
 
@@ -65,11 +65,11 @@ def test_every_checked_example_runs_through_its_real_consumer(
     )
     assert "archive example-camera" in completed.stdout
 
-    jeb_env = _parse_env_example(REPO_ROOT / "apps/jeb/config/jeb.env")
+    jeb_env = _parse_env_example(REPO_ROOT / "companions/jeb/server/config/jeb.env")
     assert jeb_env == {"JEB_FTP_PUBLIC_HOST": "127.0.0.1"}
     jeb_config = config_from_env(jeb_env)
-    assert jeb_config.targets["munchy"].url == "http://munchy-runner:8080"
-    compose = yaml.safe_load((REPO_ROOT / "apps/jeb/compose.yaml").read_text())
+    assert jeb_config.targets["munchy"].url == "http://munchy-server:8080"
+    compose = yaml.safe_load((REPO_ROOT / "companions/jeb/server/compose.yaml").read_text())
     assert compose["services"]["jeb-ftp"]["environment"]["JEB_FTP_PUBLIC_HOST"] == (
         "${JEB_FTP_PUBLIC_HOST:-127.0.0.1}"
     )
@@ -81,10 +81,10 @@ def test_every_checked_example_runs_through_its_real_consumer(
         "MANGO_FISH_WEBHOOK_URL",
     ):
         monkeypatch.setenv(name, "fake-example-value")
-    mango_fish = load_mango_fish_config(REPO_ROOT / "apps/mango-fish/config/mango-fish.yaml")
+    mango_fish = load_mango_fish_config(REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml")
     assert [source.name for source in mango_fish.sources] == ["riverhog", "munchy", "jeb"]
 
-    munchy_examples = REPO_ROOT / "apps/munchy/config/examples"
+    munchy_examples = REPO_ROOT / "companions/munchy/config/examples"
     profile = load_encode_profile(munchy_examples / "av1-nvenc-profile.yaml")
     assert profile.name == "example-camera"
 

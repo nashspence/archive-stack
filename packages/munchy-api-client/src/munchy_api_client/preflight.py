@@ -77,7 +77,7 @@ class PreflightCacheStats:
     hits: int = 0
     misses: int = 0
     writes: int = 0
-    seeded_from_runner_upload: int = 0
+    seeded_from_existing_upload: int = 0
 
 
 class MediaPreflightError(RuntimeError):
@@ -176,10 +176,10 @@ class MediaPreflightCache:
             return
         self.stats.writes += 1
 
-    def put_ok_from_runner_upload(self, files: list[MediaPreflightCacheFile]) -> None:
+    def put_ok_from_existing_upload(self, files: list[MediaPreflightCacheFile]) -> None:
         for file in files:
             self.put(file, [])
-            self.stats.seeded_from_runner_upload += 1
+            self.stats.seeded_from_existing_upload += 1
 
 
 def ffprobe_timeout_seconds() -> float:
@@ -299,7 +299,7 @@ def emit_local_preflight_progress(
                     "cache_hits": stats.hits,
                     "cache_misses": stats.misses,
                     "cache_writes": stats.writes,
-                    "cache_seeded": stats.seeded_from_runner_upload,
+                    "cache_seeded": stats.seeded_from_existing_upload,
                     "failures": failures,
                     "completed": completed,
                 }
@@ -360,7 +360,7 @@ def run_cached_media_preflight(
         and existing_upload_matches_files is not None
         and existing_upload_matches_files(files)
     ):
-        cache.put_ok_from_runner_upload(missing)
+        cache.put_ok_from_existing_upload(missing)
         for file in missing:
             results_by_label[file.label] = MediaPreflightResult(
                 file=MediaPreflightFile(source=file.source, label=file.label, bytes=file.bytes),
@@ -649,15 +649,15 @@ def print_media_preflight_report(report: MediaPreflightReport) -> None:
 def print_preflight_cache_stats(stats: PreflightCacheStats, total_files: int) -> None:
     if not stats.path:
         return
-    checked = max(0, total_files - stats.hits - stats.seeded_from_runner_upload)
+    checked = max(0, total_files - stats.hits - stats.seeded_from_existing_upload)
     print(
         (
             "preflight cache: "
             f"{stats.hits} hits, {checked} checked, "
             f"{stats.writes} writes"
             + (
-                f", {stats.seeded_from_runner_upload} seeded from existing runner upload"
-                if stats.seeded_from_runner_upload
+                f", {stats.seeded_from_existing_upload} seeded from an existing upload"
+                if stats.seeded_from_existing_upload
                 else ""
             )
             + f" ({stats.path})"

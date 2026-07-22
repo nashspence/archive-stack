@@ -36,8 +36,8 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
 
     assert imports == {
         ("riverhog_api_client.client", "ApiClient"),
-        ("riverhog_core.fs_paths", "normalize_collection_id"),
-        ("riverhog_core.fs_paths", "normalize_relpath"),
+        ("riverhog_protocol.paths", "normalize_collection_id"),
+        ("riverhog_protocol.paths", "normalize_relpath"),
     }
 
 

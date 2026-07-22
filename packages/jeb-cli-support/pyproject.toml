@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jeb-cli-support"
+version = "0.1.0"
+description = "Shared command-line presentation for Jeb."
+requires-python = ">=3.12"
+dependencies = ["cli-support", "jeb-protocol"]
+
+[tool.uv.sources]
+cli-support = { workspace = true }
+jeb-protocol = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jeb_cli_support"]

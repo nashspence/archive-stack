@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "munchy-workflows"
+version = "0.1.0"
+description = "Shared Munchy workflow authoring and profile behavior."
+requires-python = ">=3.12"
+dependencies = [
+  "config-validation",
+  "munchy-api-client",
+  "munchy-config",
+  "pydantic>=2.7,<3.0",
+  "time-formats",
+  "tus-transport",
+]
+
+[tool.uv.sources]
+config-validation = { workspace = true }
+munchy-api-client = { workspace = true }
+munchy-config = { workspace = true }
+time-formats = { workspace = true }
+tus-transport = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/munchy_workflows"]

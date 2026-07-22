@@ -21,9 +21,9 @@ import httpx
 from lifecycle_events import EventPage
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusHttpError, TusTransport
 
-DEFAULT_RUNNER_URL = "http://127.0.0.1:8092"
-RUNNER_URL_ENV = "MUNCHY_RUNNER_URL"
-RUNNER_TOKEN_ENV = "MUNCHY_RUNNER_TOKEN"
+DEFAULT_BASE_URL = "http://127.0.0.1:8092"
+BASE_URL_ENV = "MUNCHY_BASE_URL"
+TOKEN_ENV = "MUNCHY_TOKEN"
 ADMIN_TOKEN_ENV = "MUNCHY_ADMIN_TOKEN"
 PROGRESS_ENV = "MUNCHY_PROGRESS"
 KEEP_AWAKE_ENV = "MUNCHY_KEEP_AWAKE"
@@ -57,7 +57,7 @@ _KEEP_AWAKE_PROCESS: subprocess.Popen[bytes] | None = None
 
 
 @dataclass(frozen=True)
-class RunnerInputFile:
+class SubmissionInputFile:
     source: Path
     rel_path: str
     bytes: int
@@ -69,7 +69,7 @@ class RunnerInputFile:
 class SubmissionUploadRequest:
     submission_id: str
     template: str
-    files: tuple[RunnerInputFile, ...]
+    files: tuple[SubmissionInputFile, ...]
     inputs: dict[str, str] = field(default_factory=dict)
     collection_slug: str | None = None
     collection_timestamp: str | None = None
@@ -87,12 +87,12 @@ class SubmissionUploadRequest:
 UploadRequest = SubmissionUploadRequest
 
 
-def runner_url_setting(runner_url: str | None = None) -> str:
-    return (runner_url or os.getenv(RUNNER_URL_ENV) or DEFAULT_RUNNER_URL).rstrip("/")
+def server_url_setting(server_url: str | None = None) -> str:
+    return (server_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL).rstrip("/")
 
 
-def runner_token_setting(token: str | None = None) -> str:
-    return (token or os.getenv(RUNNER_TOKEN_ENV) or "").strip()
+def token_setting(token: str | None = None) -> str:
+    return (token or os.getenv(TOKEN_ENV) or "").strip()
 
 
 def admin_token_setting(token: str | None = None) -> str:
@@ -219,7 +219,7 @@ def short_path(value: str, *, max_len: int = 80) -> str:
     return "..." + value[-(max_len - 3) :]
 
 
-def format_runner_http_body(status: int, body: bytes) -> str:
+def format_http_body(status: int, body: bytes) -> str:
     text = body.decode("utf-8", "replace").strip()
     if not text:
         return ""
@@ -255,9 +255,9 @@ def format_runner_http_body(status: int, body: bytes) -> str:
     return text
 
 
-class RunnerHttpError(RuntimeError):
+class MunchyHttpError(RuntimeError):
     def __init__(self, method: str, url: str, status: int, body: bytes) -> None:
-        text = format_runner_http_body(status, body)
+        text = format_http_body(status, body)
         message = f"{method} {url} returned HTTP {status}"
         if text:
             message = f"{message}: {text}"
@@ -268,10 +268,10 @@ class RunnerHttpError(RuntimeError):
         self.body = body
 
 
-class RunnerJobTerminalDuringUpload(RuntimeError):
+class JobTerminalDuringUpload(RuntimeError):
     def __init__(self, job: dict[str, Any]) -> None:
         self.job = job
-        super().__init__(format_job_failure(job, label="runner job"))
+        super().__init__(format_job_failure(job, label="Munchy job"))
 
 
 def job_should_stop_upload(job: dict[str, Any]) -> bool:
@@ -285,7 +285,7 @@ def job_should_stop_upload(job: dict[str, Any]) -> bool:
 
 
 def is_transient_upload_error(exc: BaseException) -> bool:
-    if isinstance(exc, RunnerHttpError):
+    if isinstance(exc, MunchyHttpError):
         if exc.status == 400 and b"ERR_UPLOAD_INTERRUPTED" in exc.body:
             return True
         return exc.status in TRANSIENT_UPLOAD_HTTP_STATUSES
@@ -300,7 +300,7 @@ def is_transient_upload_error(exc: BaseException) -> bool:
 
 def upload_was_removed(exc: BaseException) -> bool:
     return (
-        isinstance(exc, RunnerHttpError)
+        isinstance(exc, MunchyHttpError)
         and exc.status == 404
         and b"ERR_UPLOAD_NOT_FOUND" in exc.body
     )
@@ -1270,7 +1270,7 @@ class UploadProgress:
             self.last_remote_uploaded_files = uploaded_files
         return merged
 
-    def mark_uploaded(self, item: RunnerInputFile, uploaded_bytes: int) -> None:
+    def mark_uploaded(self, item: SubmissionInputFile, uploaded_bytes: int) -> None:
         with self.lock:
             clamped = max(0, min(int(uploaded_bytes), item.bytes))
             if clamped > 0:
@@ -1279,7 +1279,7 @@ class UploadProgress:
                 self.inflight_uploaded_bytes.pop(item.rel_path, None)
             self._maybe_render(now=time.monotonic(), force=False)
 
-    def mark_complete(self, item: RunnerInputFile) -> None:
+    def mark_complete(self, item: SubmissionInputFile) -> None:
         with self.lock:
             self.inflight_uploaded_bytes.pop(item.rel_path, None)
             self.completed_files += 1
@@ -1316,7 +1316,7 @@ class UploadProgress:
                     if self.stop_event is not None:
                         self.stop_event.set()
                     self.renderer.update(remote_job, force=True)
-                    raise RunnerJobTerminalDuringUpload(remote_job)
+                    raise JobTerminalDuringUpload(remote_job)
         if not should_print:
             return
         upload_progress = self.local_upload_progress(now=now)
@@ -1344,7 +1344,7 @@ class UploadProgress:
         self.rendered_any = True
 
 
-class MunchyRunnerClient:
+class MunchyClient:
     def __init__(
         self,
         base_url: str,
@@ -1353,7 +1353,7 @@ class MunchyRunnerClient:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.token = runner_token_setting(token)
+        self.token = token_setting(token)
         self._http = httpx.Client(transport=transport)
         tus_headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         self._tus = TusTransport(client=self._http, headers=tus_headers)
@@ -1362,7 +1362,7 @@ class MunchyRunnerClient:
         self._tus.close()
         self._http.close()
 
-    def __enter__(self) -> MunchyRunnerClient:
+    def __enter__(self) -> MunchyClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -1411,7 +1411,7 @@ class MunchyRunnerClient:
         if (status >= 400 and (expect is None or status not in expect)) or (
             expect is not None and status not in expect
         ):
-            raise RunnerHttpError(method, url, status, response_body)
+            raise MunchyHttpError(method, url, status, response_body)
         return status, response_body, response
 
     def json(
@@ -1441,7 +1441,7 @@ class MunchyRunnerClient:
             )
         except Exception as exc:
             print(
-                f"warning: failed to record runner preflight failure: {exc}",
+                f"warning: failed to record Munchy preflight failure: {exc}",
                 file=sys.stderr,
             )
             return None
@@ -1633,7 +1633,7 @@ class MunchyRunnerClient:
     def _upload_files_serial(
         self,
         request: UploadRequest,
-        files: list[RunnerInputFile],
+        files: list[SubmissionInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
         *,
@@ -1652,7 +1652,7 @@ class MunchyRunnerClient:
         )
         for item in files:
             if stop_event.is_set():
-                raise RuntimeError("upload stopped because runner job reached a terminal state")
+                raise RuntimeError("upload stopped because the Munchy job reached a terminal state")
             self.upload_file(
                 request.submission_id,
                 item,
@@ -1666,7 +1666,7 @@ class MunchyRunnerClient:
     def _upload_files_parallel(
         self,
         request: UploadRequest,
-        files: list[RunnerInputFile],
+        files: list[SubmissionInputFile],
         retry_reporter: UploadRetryReporter,
         renderer: ProgressRenderer,
         *,
@@ -1723,19 +1723,19 @@ class MunchyRunnerClient:
     def upload_file(
         self,
         submission_id: str,
-        item: RunnerInputFile,
+        item: SubmissionInputFile,
         *,
         chunk_bytes: int,
         retry_reporter: UploadRetryReporter | None = None,
         stop_event: Event | None = None,
-        progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
+        progress_callback: Callable[[SubmissionInputFile, int], None] | None = None,
     ) -> None:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
         retry_count = 0
         retry_reporter = retry_reporter or UploadRetryReporter(label="upload")
         while True:
             if stop_event is not None and stop_event.is_set():
-                raise RuntimeError("upload stopped because runner job reached a terminal state")
+                raise RuntimeError("upload stopped because the Munchy job reached a terminal state")
             try:
                 self._upload_file_once(
                     submission_id,
@@ -1755,7 +1755,7 @@ class MunchyRunnerClient:
                     if isinstance(job, dict) and job_should_stop_upload(job):
                         if stop_event is not None:
                             stop_event.set()
-                        raise RunnerJobTerminalDuringUpload(job) from exc
+                        raise JobTerminalDuringUpload(job) from exc
                 if not is_transient_upload_error(exc):
                     raise
                 retry_count += 1
@@ -1776,7 +1776,7 @@ class MunchyRunnerClient:
                 content=content,
             )
         except TusHttpError as exc:
-            raise RunnerHttpError(
+            raise MunchyHttpError(
                 "PATCH",
                 upload_url,
                 exc.status,
@@ -1786,11 +1786,11 @@ class MunchyRunnerClient:
     def _upload_file_once(
         self,
         submission_id: str,
-        item: RunnerInputFile,
+        item: SubmissionInputFile,
         *,
         chunk_bytes: int,
         stop_event: Event | None = None,
-        progress_callback: Callable[[RunnerInputFile, int], None] | None = None,
+        progress_callback: Callable[[SubmissionInputFile, int], None] | None = None,
     ) -> None:
         escaped_submission_id = urllib.parse.quote(submission_id)
         escaped_rel = urllib.parse.quote(item.rel_path, safe="/")
@@ -1801,12 +1801,12 @@ class MunchyRunnerClient:
         length = int(upload.get("length") or item.bytes)
         if length != item.bytes:
             raise RuntimeError(
-                f"runner expected {length} bytes for {item.rel_path}, local file has {item.bytes}"
+                f"server expected {length} bytes for {item.rel_path}, local file has {item.bytes}"
             )
         if offset < 0:
             offset = 0
         if offset > item.bytes:
-            raise RuntimeError(f"runner upload offset is past EOF for {item.rel_path}: {offset}")
+            raise RuntimeError(f"server upload offset is past EOF for {item.rel_path}: {offset}")
         if offset == item.bytes:
             return
         if offset > 0 and progress_callback is not None:
@@ -1816,7 +1816,9 @@ class MunchyRunnerClient:
             fh.seek(offset)
             while offset < item.bytes:
                 if stop_event is not None and stop_event.is_set():
-                    raise RuntimeError("upload stopped because runner job reached a terminal state")
+                    raise RuntimeError(
+                        "upload stopped because the Munchy job reached a terminal state"
+                    )
                 chunk = fh.read(min(chunk_bytes, item.bytes - offset))
                 if not chunk:
                     break
@@ -1877,7 +1879,7 @@ class MunchyRunnerClient:
         payload = self.json("GET", f"/v1/jobs?{encoded_params}")
         jobs = payload.get("jobs")
         if not isinstance(jobs, list):
-            raise RuntimeError(f"runner returned invalid jobs page: {payload}")
+            raise RuntimeError(f"server returned invalid jobs page: {payload}")
         payload["jobs"] = [job for job in jobs if isinstance(job, dict)]
         return payload
 
@@ -2006,7 +2008,7 @@ class MunchyRunnerClient:
                 time.sleep(interval)
 
 
-class MunchyAdminClient(MunchyRunnerClient):
+class MunchyAdminClient(MunchyClient):
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
         super().__init__(base_url, token=admin_token_setting(token))
 
@@ -2116,7 +2118,7 @@ class MunchyAdminClient(MunchyRunnerClient):
         )
         templates = payload.get("templates")
         if not isinstance(templates, list):
-            raise RuntimeError(f"runner returned invalid job-template page: {payload}")
+            raise RuntimeError(f"server returned invalid job-template page: {payload}")
         payload["templates"] = [item for item in templates if isinstance(item, dict)]
         return payload
 
