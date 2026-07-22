@@ -638,6 +638,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
 ]
 
+[package.optional-dependencies]
+http2 = [
+    { name = "h2" },
+]
+
 [[package]]
 name = "hyperframe"
 version = "6.1.0"
@@ -1580,7 +1585,7 @@ dependencies = [
     { name = "boto3" },
     { name = "cryptography" },
     { name = "fastapi" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
     { name = "opentimestamps-client" },
     { name = "psycopg", extra = ["binary"] },
@@ -1599,7 +1604,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35,<2.0" },
     { name = "cryptography", specifier = ">=41,<47" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
-    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "opentimestamps-client", specifier = ">=0.7,<1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },

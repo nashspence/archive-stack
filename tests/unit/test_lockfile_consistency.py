@@ -42,3 +42,14 @@ def test_workspace_packages_resolve_internal_dependencies_through_uv_sources() -
         sources = {normalize_name(name): source for name, source in raw_sources.items()}
         assert internal <= sources.keys()
         assert all(sources[name] == {"workspace": True} for name in internal)
+
+
+def test_riverhog_server_declares_its_http2_download_transport() -> None:
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "riverhog/server/pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert any(
+        dependency.startswith("httpx[http2]")
+        for dependency in pyproject["project"]["dependencies"]
+    )
