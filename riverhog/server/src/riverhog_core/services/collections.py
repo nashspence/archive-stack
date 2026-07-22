@@ -69,6 +69,7 @@ from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOG = logging.getLogger(__name__)
 _UPLOAD_FORGET_WORKERS = 4
+_UPLOAD_SYNC_WORKERS = 4
 _COLLECTION_SORT_FIELDS = {
     "id",
     "bytes",
@@ -1326,14 +1327,38 @@ def _sync_collection_upload_files(
     *,
     force: bool = False,
 ) -> None:
-    for file_record in file_records:
-        updated = sync_upload_state(
-            current=_upload_lifecycle_state(file_record),
-            target_path=_collection_upload_target_path(file_record.collection_id, file_record.path),
-            length=file_record.ingress_bytes,
+    records = list(file_records)
+
+    def sync_file(
+        task: tuple[UploadLifecycleState, str, int],
+    ) -> UploadLifecycleState:
+        current, target_path, length = task
+        return sync_upload_state(
+            current=current,
+            target_path=target_path,
+            length=length,
             upload_store=upload_store,
             force=force,
         )
+
+    tasks = [
+        (
+            _upload_lifecycle_state(file_record),
+            _collection_upload_target_path(file_record.collection_id, file_record.path),
+            file_record.ingress_bytes,
+        )
+        for file_record in records
+    ]
+    if force and len(tasks) > 1:
+        with ThreadPoolExecutor(
+            max_workers=min(_UPLOAD_SYNC_WORKERS, len(tasks)),
+            thread_name_prefix="riverhog-upload-sync",
+        ) as executor:
+            updated_states = list(executor.map(sync_file, tasks))
+    else:
+        updated_states = list(map(sync_file, tasks))
+
+    for file_record, updated in zip(records, updated_states, strict=True):
         _apply_upload_lifecycle_state(file_record, updated)
 
 

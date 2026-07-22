@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -13,6 +14,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
+from sqlalchemy import select
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -55,6 +57,38 @@ class ConcurrentCancelUploadStore(UploadStoreStub):
     def delete_target(self, target_path: str) -> None:
         with self.lock:
             self.deleted.append(target_path)
+
+
+class ConcurrentVerifyUploadStore(UploadStoreStub):
+    def __init__(self, expected_concurrency: int) -> None:
+        super().__init__()
+        self.expected_concurrency = expected_concurrency
+        self.verified: list[str] = []
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+        self.all_active = threading.Event()
+
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        assert offset == 0
+        assert size == 1
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            if self.active == self.expected_concurrency:
+                self.all_active.set()
+        if not self.all_active.wait(timeout=2):
+            raise AssertionError("finalized-target verification did not run concurrently")
+        with self.lock:
+            self.verified.append(target_path)
+            self.active -= 1
+        yield b"x"
 
 
 def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyCollectionService:
@@ -220,3 +254,44 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     assert upload_store.max_active == worker_count
     assert len(upload_store.canceled) == file_count
     assert len(upload_store.deleted) == file_count
+
+
+def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    file_count = 8
+    worker_count = 4
+    upload_store = ConcurrentVerifyUploadStore(worker_count)
+    service = _service(path, upload_store)
+    created = service.create_or_resume_upload_session(
+        upload_slug="verify-me",
+        upload_timestamp="20250103T000000Z",
+    )
+    collection_id = str(created["collection_id"])
+    for index in range(file_count):
+        file_path = f"file-{index}.txt"
+        service.register_upload_session_file(
+            collection_id,
+            {"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64},
+        )
+        service.create_or_resume_file_upload(collection_id, file_path)
+
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        records = list(
+            session.scalars(
+                select(CollectionUploadFileRecord).where(
+                    CollectionUploadFileRecord.collection_id == collection_id
+                )
+            )
+        )
+        for record in records:
+            record.ingress_uploaded_bytes = record.ingress_bytes
+            record.upload_expires_at = None
+
+    completed = service.complete_upload_session(collection_id)
+
+    assert completed["state"] == "archiving"
+    assert upload_store.max_active == worker_count
+    assert len(upload_store.verified) == file_count
