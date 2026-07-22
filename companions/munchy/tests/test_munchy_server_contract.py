@@ -4068,10 +4068,17 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
             "handoff": {"destination": "command", "options": {}},
         }
     )
+    canceled: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "cancel_handoff",
+        lambda _job, *, reason: canceled.append(reason),
+    )
 
     result = server.cleanup_once()
 
     assert "job-cleanup:job-1" in result["removed"]
+    assert canceled == ["terminal_cleanup"]
     assert server.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()

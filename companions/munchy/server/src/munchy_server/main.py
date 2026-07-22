@@ -11168,6 +11168,8 @@ def cleanup_once() -> dict[str, Any]:
             if cleanup_due:
                 if job.get("state") == "failed":
                     write_job_debug_bundle(job, reason="maintenance_failed_cleanup")
+                if job.get("state") in {"failed", "canceled"}:
+                    cancel_handoff(job, reason="terminal_cleanup")
                 removed_for_job = cleanup_terminal_job(job)
             compacted_for_job = (
                 job.get("state") in TERMINAL_JOB_STATES
