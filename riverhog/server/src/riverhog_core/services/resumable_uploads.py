@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from riverhog_protocol.errors import NotFound
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.ports.upload_store import UploadStore
@@ -34,11 +35,18 @@ def sync_upload_state(
     if current.tus_url is None:
         return current
     if upload_state_name(uploaded_bytes=current.uploaded_bytes, length=length) == "uploaded":
-        return current
+        if not force or _upload_target_exists(upload_store, target_path):
+            return current
+        return _reset_upload_state(
+            current=current,
+            target_path=target_path,
+            upload_store=upload_store,
+        )
     if not force and _upload_state_is_live(current=current, length=length):
         return current
 
     offset = upload_store.get_offset(current.tus_url)
+    target_confirmed = False
     if offset == -1:
         if not _upload_target_exists(upload_store, target_path):
             # Another worker may have consumed and deleted the backing upload between
@@ -47,6 +55,18 @@ def sync_upload_state(
             # after the backing upload was consumed.
             return current
         offset = length
+        target_confirmed = True
+
+    if (
+        upload_state_name(uploaded_bytes=offset, length=length) == "uploaded"
+        and not target_confirmed
+        and not _upload_target_exists(upload_store, target_path)
+    ):
+        return _reset_upload_state(
+            current=current,
+            target_path=target_path,
+            upload_store=upload_store,
+        )
 
     expires_at = current.upload_expires_at
     if upload_state_name(uploaded_bytes=offset, length=length) == "uploaded":
@@ -134,11 +154,27 @@ def expire_upload_state(
 
 def _upload_target_exists(upload_store: UploadStore, target_path: str) -> bool:
     try:
-        for _ in upload_store.iter_target(target_path):
+        for _ in upload_store.iter_target(target_path, size=1):
             break
-    except Exception:
+    except NotFound:
         return False
     return True
+
+
+def _reset_upload_state(
+    *,
+    current: UploadLifecycleState,
+    target_path: str,
+    upload_store: UploadStore,
+) -> UploadLifecycleState:
+    if current.tus_url is not None:
+        upload_store.cancel_upload(current.tus_url)
+    upload_store.delete_target(target_path)
+    return UploadLifecycleState(
+        tus_url=None,
+        uploaded_bytes=0,
+        upload_expires_at=None,
+    )
 
 
 def _upload_state_is_live(
