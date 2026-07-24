@@ -402,6 +402,52 @@ def test_upload_resends_from_an_authoritative_storage_rollback(
     assert sum(resumed) + sum(progress) == len(content)
 
 
+def test_upload_stops_after_repeated_storage_rollbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = b"bounded storage rollback\n" * 20_000
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+    authoritative_offset = 70_000
+    reported_offset = authoritative_offset
+    patch_offsets: list[int] = []
+    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
+
+    class Api:
+        def create_or_resume_collection_file_upload(
+            self, _collection_id: str, _path: str
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/opaque",
+                "offset": reported_offset,
+                "length": descriptor["ciphertext_bytes"],
+                "checksum_algorithm": "sha256",
+                "encryption": descriptor,
+            }
+
+        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
+            nonlocal reported_offset
+            offset = int(kwargs["offset"])
+            patch_offsets.append(offset)
+            if offset > authoritative_offset:
+                reported_offset = authoritative_offset
+                raise riverhog_main.Conflict("authoritative offset changed")
+            reported_offset = offset + len(bytes(kwargs["content"]))
+            return {"offset": reported_offset, "expires_at": None}
+
+    with pytest.raises(RuntimeError, match="repeatedly rolled clip.bin back"):
+        riverhog_main._upload_collection_file(
+            Api(),  # type: ignore[arg-type]
+            COLLECTION_ID,
+            source,
+            {"path": "clip.bin", "bytes": len(content)},
+        )
+
+    assert patch_offsets == [70_000, 140_000] * riverhog_main.UPLOAD_STORAGE_ROLLBACK_LIMIT
+
+
 def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

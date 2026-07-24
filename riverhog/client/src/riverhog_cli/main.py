@@ -77,6 +77,7 @@ TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
 UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
+UPLOAD_STORAGE_ROLLBACK_LIMIT = 3
 UPLOAD_LOG_LOCK = threading.Lock()
 UploadWaitMode = Literal["staged", "finalized"]
 _API_CLIENT: ApiClient | None = None
@@ -682,6 +683,8 @@ def _upload_collection_file(
             ciphertext_offset=ciphertext_offset,
         )
 
+    highest_confirmed_offset = offset
+    storage_rollbacks = 0
     while offset < length:
         restart_at_recovered_offset = False
         for part in iter_ingress_upload_parts(
@@ -758,6 +761,13 @@ def _upload_collection_file(
                             f"was lost; continuing at {_format_bytes(recovered_offset)}"
                         )
                     elif recovered_offset < previous_offset:
+                        storage_rollbacks += 1
+                        if storage_rollbacks >= UPLOAD_STORAGE_ROLLBACK_LIMIT:
+                            raise RuntimeError(
+                                f"upload storage repeatedly rolled {path_value} back to "
+                                f"{_format_bytes(recovered_offset)} after accepting later "
+                                "offsets; cancel this upload session and retry"
+                            ) from exc
                         _log_upload(
                             f"Upload storage rolled {path_value} back to its authoritative "
                             f"offset {_format_bytes(recovered_offset)}; resending from there"
@@ -779,6 +789,9 @@ def _upload_collection_file(
                 if progress is not None and completed_after > completed_before:
                     progress(completed_after - completed_before)
                 offset = next_offset
+                if next_offset > highest_confirmed_offset:
+                    highest_confirmed_offset = next_offset
+                    storage_rollbacks = 0
             if restart_at_recovered_offset:
                 break
         if restart_at_recovered_offset:
