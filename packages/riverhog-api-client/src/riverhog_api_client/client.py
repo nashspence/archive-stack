@@ -505,11 +505,20 @@ class ApiClient(_HttpApiClient):
             f"/v1/collections/{quote(collection_id, safe='/')}/deletion-plan",
         )
 
-    def delete_collection(self, collection_id: str, *, challenge: str) -> dict[str, Any]:
+    def delete_collection(
+        self,
+        collection_id: str,
+        *,
+        challenge: str,
+        event_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"challenge": challenge}
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
         return self._json(
             "POST",
             f"/v1/collections/{quote(collection_id, safe='/')}/delete",
-            json={"challenge": challenge},
+            json=payload,
         )
 
     def list_collections(

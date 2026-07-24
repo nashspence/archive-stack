@@ -8,7 +8,9 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from itertools import chain
 from pathlib import Path
+from queue import Queue
 from typing import Annotated, Any, Literal, TypedDict, cast
 
 import httpx
@@ -47,7 +49,7 @@ from riverhog_cli.output import (
     format_file_selectors,
     format_find,
 )
-from riverhog_cli.upload_progress import CollectionUploadProgress, make_collection_upload_progress
+from riverhog_cli.upload_progress import make_collection_upload_progress
 
 app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
@@ -62,7 +64,9 @@ app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = DEFAULT_TUS_UPLOAD_CHUNK_MIB * 1024 * 1024
-UPLOAD_FILE_CONCURRENCY = 1
+UPLOAD_FILE_CONCURRENCY = 8
+UPLOAD_FILE_CONCURRENCY_MAX = 64
+UPLOAD_FILE_WINDOW_MAX = 256
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
@@ -319,9 +323,40 @@ def _upload_file_concurrency() -> int:
         raise typer.BadParameter(
             "RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer"
         ) from exc
-    if value <= 0:
-        raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer")
+    if value <= 0 or value > UPLOAD_FILE_CONCURRENCY_MAX:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_CONCURRENCY must be between 1 and "
+            f"{UPLOAD_FILE_CONCURRENCY_MAX}"
+        )
     return value
+
+
+def _upload_file_window(file_concurrency: int) -> int:
+    raw_value = os.getenv("RIVERHOG_UPLOAD_FILE_WINDOW")
+    if raw_value is None or raw_value.strip() == "":
+        return min(file_concurrency * 2, UPLOAD_FILE_WINDOW_MAX)
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_WINDOW must be an integer"
+        ) from exc
+    if value < file_concurrency or value > UPLOAD_FILE_WINDOW_MAX:
+        raise typer.BadParameter(
+            "RIVERHOG_UPLOAD_FILE_WINDOW must be between the configured file concurrency "
+            f"and {UPLOAD_FILE_WINDOW_MAX}"
+        )
+    return value
+
+
+def _new_upload_worker_client(api: ApiClient) -> ApiClient:
+    worker = ApiClient(base_url=api.base_url, token=api.token)
+    worker.host_header = api.host_header
+    worker.verify_tls = api.verify_tls
+    worker.http2 = api.http2
+    worker.upload_base_url = api.upload_base_url
+    worker.upload_http2 = api.upload_http2
+    return worker
 
 
 def _upload_file_log_bytes() -> int:
@@ -742,7 +777,7 @@ def _upload_collection_files(
     progress: Callable[[int], None],
     file_complete: Callable[[], None] | None = None,
     file_concurrency: int,
-    api_factory: Callable[[], ApiClient] = client,
+    api_factory: Callable[[], ApiClient] | None = None,
 ) -> None:
     pending_files = [
         file_payload for file_payload in upload_files if file_payload["upload_state"] != "uploaded"
@@ -764,9 +799,10 @@ def _upload_collection_files(
     next_file_lock = threading.Lock()
     stop_event = threading.Event()
     pending_iter = iter(pending_files)
+    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
 
     def upload_worker() -> None:
-        worker_api = api_factory()
+        worker_api = worker_factory()
         try:
             while not stop_event.is_set():
                 with next_file_lock:
@@ -1000,6 +1036,8 @@ def _upload_collection_via_session(
     wait_mode: UploadWaitMode,
     archive_store: str | None = None,
     json_mode: bool = False,
+    file_concurrency: int,
+    api_factory: Callable[[], ApiClient] | None = None,
 ) -> dict[str, object]:
     local_path_iter = _iter_local_collection_paths(resolved_root)
     try:
@@ -1018,70 +1056,134 @@ def _upload_collection_via_session(
     collection_id = str(session_payload["collection_id"])
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
 
-    manifest: list[CollectionManifestEntry] = []
+    manifest_by_path: dict[str, CollectionManifestEntry] = {}
     total_discovered_bytes = 0
     chunk_bytes = _upload_chunk_bytes()
+    file_window = _upload_file_window(file_concurrency)
 
     upload_progress = make_collection_upload_progress(
         collection_id=collection_id,
         files_total=0,
         bytes_total=0,
-        file_concurrency=1,
+        files_hashed=0,
+        files_registered=0,
+        file_concurrency=file_concurrency,
         chunk_bytes=chunk_bytes,
+        discovery_complete=False,
         json_mode=json_mode,
         interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
 
-    def upload_one(source_path: Path, progress: CollectionUploadProgress) -> None:
-        nonlocal total_discovered_bytes
+    work: Queue[tuple[Path, str, int] | None] = Queue(maxsize=file_window)
+    manifest_lock = threading.Lock()
+    failure_lock = threading.Lock()
+    failures: list[BaseException] = []
+    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
 
-        rel_path = source_path.relative_to(resolved_root).as_posix()
-        stat = source_path.stat()
-        if stat.st_size >= _upload_file_log_bytes():
-            _log_upload(f"Hashing {rel_path} ({_format_bytes(stat.st_size)})")
-        entry: CollectionManifestEntry = {
-            "path": rel_path,
-            "bytes": stat.st_size,
-            "sha256": _file_sha256(source_path),
-        }
-        manifest.append(entry)
-        total_discovered_bytes += stat.st_size
-        progress.set_totals(files_total=len(manifest), bytes_total=total_discovered_bytes)
+    def record_failure(exc: BaseException) -> None:
+        with failure_lock:
+            if not failures:
+                failures.append(exc)
 
-        registered_payload = _register_collection_upload_session_file(
-            api,
-            collection_id,
-            entry,
-        )
-        file_payload = next(
-            (
-                current
-                for current in _response_upload_files(registered_payload)
-                if isinstance(current, dict) and current.get("path") == rel_path
-            ),
-            CollectionUploadFilePayload(
-                path=rel_path,
-                bytes=stat.st_size,
-                sha256=entry["sha256"],
-                upload_state="pending",
-                uploaded_bytes=0,
-            ),
-        )
-        _upload_collection_file(
-            api,
-            collection_id,
-            source_path,
-            file_payload,
-            progress=progress.uploaded,
-            resumed=progress.resumed,
-        )
-        progress.complete_file()
+    def upload_worker() -> None:
+        worker_api = api if file_concurrency == 1 else worker_factory()
+        owns_api = worker_api is not api
+        try:
+            while True:
+                item = work.get()
+                try:
+                    if item is None:
+                        return
+                    if failures:
+                        continue
+                    source_path, rel_path, byte_count = item
+                    if byte_count >= _upload_file_log_bytes():
+                        _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
+                    entry: CollectionManifestEntry = {
+                        "path": rel_path,
+                        "bytes": byte_count,
+                        "sha256": _file_sha256(source_path),
+                    }
+                    upload_progress.hashed_file()
+                    registered_payload = _register_collection_upload_session_file(
+                        worker_api,
+                        collection_id,
+                        entry,
+                    )
+                    upload_progress.registered_file()
+                    file_payload = next(
+                        (
+                            current
+                            for current in _response_upload_files(registered_payload)
+                            if isinstance(current, dict) and current.get("path") == rel_path
+                        ),
+                        CollectionUploadFilePayload(
+                            path=rel_path,
+                            bytes=byte_count,
+                            sha256=entry["sha256"],
+                            upload_state="pending",
+                            uploaded_bytes=0,
+                        ),
+                    )
+                    _upload_collection_file(
+                        worker_api,
+                        collection_id,
+                        source_path,
+                        file_payload,
+                        progress=upload_progress.uploaded,
+                        resumed=upload_progress.resumed,
+                    )
+                    with manifest_lock:
+                        manifest_by_path[rel_path] = entry
+                    upload_progress.complete_file()
+                except BaseException as exc:
+                    record_failure(exc)
+                finally:
+                    work.task_done()
+        finally:
+            if owns_api:
+                worker_api.close()
 
     with upload_progress:
-        upload_one(first_source_path, upload_progress)
-        for source_path in local_path_iter:
-            upload_one(source_path, upload_progress)
+        with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
+            futures = [executor.submit(upload_worker) for _ in range(file_concurrency)]
+            discovery_complete = True
+            try:
+                for source_path in chain((first_source_path,), local_path_iter):
+                    if failures:
+                        discovery_complete = False
+                        break
+                    rel_path = source_path.relative_to(resolved_root).as_posix()
+                    byte_count = source_path.stat().st_size
+                    total_discovered_bytes += byte_count
+                    upload_progress.set_totals(
+                        files_total=upload_progress.files_total + 1,
+                        bytes_total=total_discovered_bytes,
+                    )
+                    work.put((source_path, rel_path, byte_count))
+            except BaseException as exc:
+                discovery_complete = False
+                record_failure(exc)
+            finally:
+                if discovery_complete:
+                    upload_progress.finish_discovery()
+                for _ in futures:
+                    work.put(None)
+                for future in futures:
+                    future.result()
 
+        if failures:
+            upload_progress.notice(
+                "Incremental upload interrupted; the open session remains resumable",
+                phase="failed",
+            )
+            raise failures[0]
+
+        manifest = [manifest_by_path[path] for path in sorted(manifest_by_path)]
+        if len(manifest) != upload_progress.files_total:
+            raise RuntimeError("incremental upload workers did not return every discovered file")
+
+        upload_progress.notice("Reconciling the complete discovered file set", phase="reconciling")
         latest_payload = api.get_collection_upload(collection_id)
         local_path_set = {item["path"] for item in manifest}
         registered_paths = {
@@ -1374,6 +1476,7 @@ def upload_cmd(
         return
 
     api = client()
+    file_concurrency = _upload_file_concurrency()
     if session_mode:
         payload = _upload_collection_via_session(
             api,
@@ -1384,6 +1487,7 @@ def upload_cmd(
             archive_store=archive_store,
             wait_mode=wait_mode,
             json_mode=json_mode,
+            file_concurrency=file_concurrency,
         )
         emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
         if payload.get("state") == "failed":
@@ -1421,7 +1525,6 @@ def upload_cmd(
         f"{uploaded_files}/{len(upload_files)} files already uploaded, "
         f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
     )
-    file_concurrency = _upload_file_concurrency()
     chunk_bytes = _upload_chunk_bytes()
     upload_progress = make_collection_upload_progress(
         collection_id=collection_id,

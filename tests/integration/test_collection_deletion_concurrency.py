@@ -7,6 +7,7 @@ from collections.abc import Iterator, Sequence
 from typing import cast
 
 import pytest
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     Base,
@@ -39,6 +40,11 @@ pytestmark = pytest.mark.integration
 COLLECTION_ID = "docs/20250102T030405Z"
 FILE_PATH = "document.txt"
 CONTENT = b"archived document"
+DELETER = ApplicationPrincipal(
+    app="riverhog-client",
+    key_id="client-key",
+    permissions=frozenset(),
+)
 
 
 class BlockingArchiveStore:
@@ -212,7 +218,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
 
     def delete_collection() -> None:
         try:
-            deletion.delete(COLLECTION_ID, challenge=challenge)
+            deletion.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
         except BaseException as exc:  # pragma: no cover - asserted by the parent thread
             failures.append(exc)
 

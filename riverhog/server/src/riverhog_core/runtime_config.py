@@ -209,6 +209,11 @@ class RuntimeConfig:
         )
     )
     ingress_secret_key: str = DEV_INGRESS_SECRET_KEY
+    ingress_cleanup_concurrency: int = 8
+    ingress_cleanup_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    ingress_cleanup_sweep_interval: timedelta = field(
+        default_factory=lambda: timedelta(seconds=10)
+    )
     retrieval_cache: RetrievalCacheConfig | None = None
     retrieval_initial_ingestion_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
@@ -404,6 +409,12 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT must be > 0")
         if self.s3_max_pool_connections < 1:
             raise ValueError("RIVERHOG_S3_MAX_POOL_CONNECTIONS must be >= 1")
+        if self.ingress_cleanup_concurrency < 1:
+            raise ValueError("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY must be >= 1")
+        if self.ingress_cleanup_retry_delay.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY must be > 0")
+        if self.ingress_cleanup_sweep_interval.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL must be > 0")
         if self.upload_session_idle_ttl.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_UPLOAD_SESSION_IDLE_TTL must be > 0")
         if self.archive_multipart_part_bytes < 1:
@@ -604,6 +615,17 @@ def load_runtime_config() -> RuntimeConfig:
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
     )
+    ingress_cleanup_concurrency = _parse_int(
+        os.getenv("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY", "8"),
+        name="RIVERHOG_INGRESS_CLEANUP_CONCURRENCY",
+        minimum=1,
+    )
+    ingress_cleanup_retry_delay = parse_duration(
+        os.getenv("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY", "5m")
+    )
+    ingress_cleanup_sweep_interval = parse_duration(
+        os.getenv("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL", "10s")
+    )
     retrieval_sweep_interval = parse_duration(os.getenv("RIVERHOG_RETRIEVAL_SWEEP_INTERVAL", "30s"))
     retrieval_estimated_latency = parse_duration(
         os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
@@ -677,6 +699,9 @@ def load_runtime_config() -> RuntimeConfig:
         s3_max_pool_connections=s3_max_pool_connections,
         ingress_store=ingress_store,
         ingress_secret_key=os.getenv("RIVERHOG_INGRESS_SECRET_KEY", DEV_INGRESS_SECRET_KEY).strip(),
+        ingress_cleanup_concurrency=ingress_cleanup_concurrency,
+        ingress_cleanup_retry_delay=ingress_cleanup_retry_delay,
+        ingress_cleanup_sweep_interval=ingress_cleanup_sweep_interval,
         tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
             "/"
         ),

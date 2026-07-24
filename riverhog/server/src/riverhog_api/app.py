@@ -111,6 +111,18 @@ def _process_archive_uploads(
     container.archive_copies.process_due(limit=1)
 
 
+def _process_ingress_cleanup(
+    container: ServiceContainer,
+    *,
+    startup_recovery: bool = False,
+) -> None:
+    if startup_recovery:
+        requeued = container.archive_uploads.requeue_interrupted_ingress_cleanup_for_startup()
+        if requeued:
+            _LOG.info("startup requeued interrupted ingress cleanup: count=%s", requeued)
+    container.archive_uploads.process_due_ingress_cleanup(limit=100)
+
+
 def _abort_incomplete_archive_multipart_uploads(
     container: ServiceContainer,
     *,
@@ -183,6 +195,35 @@ async def _run_archive_upload_reaper(
             _LOG.exception("archive upload reaper sweep failed")
 
 
+async def _run_ingress_cleanup_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    sweep_interval: timedelta,
+) -> None:
+    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    startup_recovery = True
+    while True:
+        try:
+            if startup_recovery:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            container = container_provider()
+            if container is None:
+                continue
+            current_startup_recovery = startup_recovery
+            startup_recovery = False
+            await asyncio.to_thread(
+                _process_ingress_cleanup,
+                container,
+                startup_recovery=current_startup_recovery,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("ingress cleanup reaper sweep failed")
+
+
 async def _run_archive_multipart_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
@@ -244,6 +285,7 @@ def create_app(
     container_provider: Callable[[], ServiceContainer] | None = None,
     upload_expiry_reaper_interval: float | None = None,
     archive_upload_reaper_interval: float | None = None,
+    ingress_cleanup_reaper_interval: float | None = None,
     archive_multipart_reaper_interval: float | None = None,
     retrieval_reaper_interval: float | None = None,
 ) -> FastAPI:
@@ -263,6 +305,11 @@ def create_app(
         timedelta(seconds=archive_upload_reaper_interval)
         if archive_upload_reaper_interval is not None
         else config.archive_upload_sweep_interval
+    )
+    ingress_cleanup_sweep_interval = (
+        timedelta(seconds=ingress_cleanup_reaper_interval)
+        if ingress_cleanup_reaper_interval is not None
+        else config.ingress_cleanup_sweep_interval
     )
     archive_multipart_sweep_interval = (
         timedelta(seconds=archive_multipart_reaper_interval)
@@ -303,6 +350,12 @@ def create_app(
                 operation_lock=archive_operation_lock,
             )
         )
+        ingress_cleanup_task = asyncio.create_task(
+            _run_ingress_cleanup_reaper(
+                get_or_create_container,
+                sweep_interval=ingress_cleanup_sweep_interval,
+            )
+        )
         archive_multipart_task = asyncio.create_task(
             _run_archive_multipart_reaper(
                 get_or_create_container,
@@ -322,12 +375,15 @@ def create_app(
         finally:
             upload_task.cancel()
             archive_task.cancel()
+            ingress_cleanup_task.cancel()
             archive_multipart_task.cancel()
             retrieval_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await ingress_cleanup_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_multipart_task
             with contextlib.suppress(asyncio.CancelledError):
@@ -362,10 +418,11 @@ def create_app(
         return JSONResponse(status_code=501, content=payload.model_dump())
 
     @app.get("/healthz", include_in_schema=False)
-    async def healthz() -> dict[str, str]:
+    async def healthz() -> dict[str, object]:
         return {
             "status": "ok",
             "instance_id": str(app.state.instance_id),
+            "ingress_cleanup": get_or_create_container().archive_uploads.ingress_cleanup_status(),
         }
 
     app.include_router(internal_router)

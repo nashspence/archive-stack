@@ -93,11 +93,14 @@ class CollectionUploadProgressState:
     phase: str
     files_uploaded: int
     files_total: int
+    files_hashed: int
+    files_registered: int
     uploaded_bytes: int
     bytes_total: int
     rate_bytes_per_second: int
     file_concurrency: int
     chunk_bytes: int
+    discovery_complete: bool = True
     notice: str = ""
 
 
@@ -134,6 +137,8 @@ class RichUploadProgressRenderer(UploadProgressRenderer):
                     phase="preparing",
                     files_uploaded=0,
                     files_total=0,
+                    files_hashed=0,
+                    files_registered=0,
                     uploaded_bytes=0,
                     bytes_total=0,
                     rate_bytes_per_second=0,
@@ -177,14 +182,32 @@ class RichUploadProgressRenderer(UploadProgressRenderer):
         if _attention_needed(state.phase):
             phase_text.stylize(ATTENTION_STYLE)
         table.add_row("State", phase_text)
-        table.add_row("Files", self._bar(state.files_uploaded, state.files_total))
-        table.add_row("", f"{state.files_uploaded}/{state.files_total} files")
-        table.add_row("Bytes", self._bar(state.uploaded_bytes, state.bytes_total))
+        if state.discovery_complete:
+            table.add_row("Files", self._bar(state.files_uploaded, state.files_total))
+            table.add_row("", f"{state.files_uploaded}/{state.files_total} files")
+            table.add_row("Bytes", self._bar(state.uploaded_bytes, state.bytes_total))
+            table.add_row(
+                "",
+                (
+                    f"{_format_bytes(state.uploaded_bytes)} / {_format_bytes(state.bytes_total)} "
+                    f"({_percent(state.uploaded_bytes, state.bytes_total):.1f}%)"
+                ),
+            )
+        else:
+            table.add_row(
+                "Files",
+                f"{state.files_uploaded}/{state.files_total} discovered; final total open",
+            )
+            table.add_row(
+                "Bytes",
+                f"{_format_bytes(state.uploaded_bytes)} / "
+                f"{_format_bytes(state.bytes_total)} discovered; final total open",
+            )
         table.add_row(
-            "",
+            "Pipeline",
             (
-                f"{_format_bytes(state.uploaded_bytes)} / {_format_bytes(state.bytes_total)} "
-                f"({_percent(state.uploaded_bytes, state.bytes_total):.1f}%)"
+                f"{state.files_total} discovered, {state.files_hashed} hashed, "
+                f"{state.files_registered} registered, {state.files_uploaded} uploaded"
             ),
         )
         if state.rate_bytes_per_second:
@@ -214,13 +237,26 @@ class RichUploadProgressRenderer(UploadProgressRenderer):
 
 
 def format_upload_progress_line(state: CollectionUploadProgressState) -> str:
+    if state.discovery_complete:
+        files = f"{state.files_uploaded}/{state.files_total} files"
+        bytes_value = (
+            f"{_format_bytes(state.uploaded_bytes)} / {_format_bytes(state.bytes_total)} "
+            f"({_percent(state.uploaded_bytes, state.bytes_total):.1f}%)"
+        )
+    else:
+        files = f"{state.files_uploaded}/{state.files_total} discovered files; final total open"
+        bytes_value = (
+            f"{_format_bytes(state.uploaded_bytes)} / {_format_bytes(state.bytes_total)} "
+            "discovered; final total open"
+        )
     pieces = [
         f"collection upload {state.collection_id}",
         state.phase,
-        f"{state.files_uploaded}/{state.files_total} files",
+        files,
+        bytes_value,
         (
-            f"{_format_bytes(state.uploaded_bytes)} / {_format_bytes(state.bytes_total)} "
-            f"({_percent(state.uploaded_bytes, state.bytes_total):.1f}%)"
+            f"pipeline={state.files_total} discovered/{state.files_hashed} hashed/"
+            f"{state.files_registered} registered/{state.files_uploaded} uploaded"
         ),
     ]
     if state.rate_bytes_per_second:
@@ -240,9 +276,12 @@ class CollectionUploadProgress:
         files_total: int,
         bytes_total: int,
         files_uploaded: int = 0,
+        files_hashed: int | None = None,
+        files_registered: int | None = None,
         uploaded_bytes: int = 0,
         file_concurrency: int = 1,
         chunk_bytes: int = 0,
+        discovery_complete: bool = True,
         renderer: UploadProgressRenderer | None = None,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.monotonic,
@@ -251,10 +290,13 @@ class CollectionUploadProgress:
         self.files_total = files_total
         self.bytes_total = bytes_total
         self.files_uploaded = files_uploaded
+        self.files_hashed = files_total if files_hashed is None else files_hashed
+        self.files_registered = files_total if files_registered is None else files_registered
         self.uploaded_bytes = uploaded_bytes
         self.file_concurrency = file_concurrency
         self.chunk_bytes = chunk_bytes
-        self.phase = "uploading"
+        self.discovery_complete = discovery_complete
+        self.phase = "uploading" if discovery_complete else "discovering/uploading"
         self.notice_text = ""
         self.renderer = renderer or PlainUploadProgressRenderer()
         self.interval_seconds = interval_seconds
@@ -276,6 +318,22 @@ class CollectionUploadProgress:
             self.files_total = max(files_total, self.files_uploaded)
             self.bytes_total = max(bytes_total, self.uploaded_bytes)
             self._render_locked(force=False)
+
+    def hashed_file(self) -> None:
+        with self.lock:
+            self.files_hashed = min(self.files_hashed + 1, max(self.files_total, 0))
+            self._render_locked(force=False)
+
+    def registered_file(self) -> None:
+        with self.lock:
+            self.files_registered = min(self.files_registered + 1, max(self.files_total, 0))
+            self._render_locked(force=False)
+
+    def finish_discovery(self) -> None:
+        with self.lock:
+            self.discovery_complete = True
+            self.phase = "uploading"
+            self._render_locked(force=True)
 
     def uploaded(self, delta: int) -> None:
         if delta <= 0:
@@ -311,11 +369,14 @@ class CollectionUploadProgress:
             phase=self.phase,
             files_uploaded=self.files_uploaded,
             files_total=self.files_total,
+            files_hashed=self.files_hashed,
+            files_registered=self.files_registered,
             uploaded_bytes=self.uploaded_bytes,
             bytes_total=self.bytes_total,
             rate_bytes_per_second=int(self.accepted_bytes_this_run / elapsed),
             file_concurrency=self.file_concurrency,
             chunk_bytes=self.chunk_bytes,
+            discovery_complete=self.discovery_complete,
             notice=self.notice_text,
         )
 
@@ -333,9 +394,12 @@ def make_collection_upload_progress(
     files_total: int,
     bytes_total: int,
     files_uploaded: int = 0,
+    files_hashed: int | None = None,
+    files_registered: int | None = None,
     uploaded_bytes: int = 0,
     file_concurrency: int = 1,
     chunk_bytes: int = 0,
+    discovery_complete: bool = True,
     json_mode: bool = False,
     interval_seconds: float = 5.0,
 ) -> CollectionUploadProgress:
@@ -352,9 +416,12 @@ def make_collection_upload_progress(
         files_total=files_total,
         bytes_total=bytes_total,
         files_uploaded=files_uploaded,
+        files_hashed=files_hashed,
+        files_registered=files_registered,
         uploaded_bytes=uploaded_bytes,
         file_concurrency=file_concurrency,
         chunk_bytes=chunk_bytes,
+        discovery_complete=discovery_complete,
         renderer=renderer,
         interval_seconds=interval_seconds,
     )

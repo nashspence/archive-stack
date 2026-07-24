@@ -219,11 +219,13 @@ def delete_collection(
     collection_id: str,
     request: DeleteCollectionRequest,
     container: ContainerDep,
-    _principal: CollectionDeleter,
+    principal: CollectionDeleter,
 ) -> CollectionDeletionResultOut:
     return CollectionDeletionResultOut.model_validate(
         container.collection_deletions.delete(
             collection_id,
             challenge=request.challenge,
+            initiator=principal,
+            event_context=request.event_context,
         )
     )

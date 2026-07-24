@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -39,11 +40,15 @@ from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
 )
-from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_core.services.lifecycle_events import (
+    SqlAlchemyLifecycleEventService,
+    event_context_json,
+)
 
 _PLAN_TTL = timedelta(minutes=15)
 _CHALLENGE_RE = re.compile(r"^delete-(\d+)-([0-9a-f]{64})$")
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
+_EXECUTION_KEY = "_execution"
 
 
 class SqlAlchemyCollectionDeletionService:
@@ -65,17 +70,25 @@ class SqlAlchemyCollectionDeletionService:
         with session_scope(self._session_factory) as session:
             active = session.get(CollectionDeletionRecord, normalized_id)
             if active is not None:
-                return cast(dict[str, object], json.loads(active.plan_json))
+                return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))
             expires = (utc_now() + _PLAN_TTL).replace(microsecond=0)
             plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)
             plan["challenge"] = None if plan["blockers"] else _plan_challenge(plan, expires)
             return plan
 
-    def delete(self, collection_id: str, *, challenge: str) -> dict[str, object]:
+    def delete(
+        self,
+        collection_id: str,
+        *,
+        challenge: str,
+        initiator: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         supplied_challenge = challenge.strip()
         if not supplied_challenge:
             raise BadRequest("collection deletion challenge is required")
+        normalized_context_json = event_context_json(event_context)
 
         with session_scope(self._session_factory) as session:
             collection = session.scalar(
@@ -110,6 +123,11 @@ class SqlAlchemyCollectionDeletionService:
                 blockers = cast(list[str], plan["blockers"])
                 if blockers:
                     raise Conflict("collection deletion is blocked: " + "; ".join(blockers))
+                plan[_EXECUTION_KEY] = {
+                    "app": initiator.app,
+                    "key_id": initiator.key_id,
+                    "event_context_json": normalized_context_json,
+                }
                 plan["challenge"] = supplied_challenge
                 plan["status"] = "deleting"
                 session.add(
@@ -214,6 +232,7 @@ class SqlAlchemyCollectionDeletionService:
                 session.delete(upload)
             collection = session.get(CollectionRecord, collection_id)
             if collection is not None:
+                execution = _execution(plan)
                 self._lifecycle_events.emit_collection(
                     type="collection.deleted",
                     collection_id=collection_id,
@@ -223,6 +242,20 @@ class SqlAlchemyCollectionDeletionService:
                         "remote_storage_bytes": cast(int, plan["remote_storage_bytes"]),
                     },
                     terminal=True,
+                    initiator=ApplicationPrincipal(
+                        app=str(execution["app"]),
+                        key_id=(
+                            str(execution["key_id"])
+                            if execution.get("key_id") is not None
+                            else None
+                        ),
+                        permissions=frozenset(),
+                    ),
+                    event_context_json=(
+                        str(execution["event_context_json"])
+                        if execution.get("event_context_json") is not None
+                        else None
+                    ),
                     session=session,
                 )
                 session.delete(collection)
@@ -333,6 +366,17 @@ def _build_plan(
             "minimum-storage duration, and billing timing can affect realized savings."
         ),
     }
+
+
+def _public_plan(plan: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in plan.items() if key != _EXECUTION_KEY}
+
+
+def _execution(plan: dict[str, object]) -> dict[str, object]:
+    execution = plan.get(_EXECUTION_KEY)
+    if not isinstance(execution, dict) or not str(execution.get("app") or ""):
+        raise Conflict("collection deletion has no authenticated initiator")
+    return cast(dict[str, object], execution)
 
 
 def _active_blockers(session: Session, collection_id: str) -> list[str]:

@@ -87,6 +87,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
 
 class DeleteCollectionRequest(RiverhogModel):
     challenge: str
+    event_context: dict[str, Any] | None = None
 
 
 class CollectionDeletionResultOut(RiverhogModel):

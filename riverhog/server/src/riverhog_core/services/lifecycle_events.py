@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionRecord,
@@ -140,6 +141,8 @@ class SqlAlchemyLifecycleEventService:
         collection_id: str,
         details: Mapping[str, Any] | None = None,
         terminal: bool = False,
+        initiator: ApplicationPrincipal | None = None,
+        event_context_json: str | None = None,
         session: Session | None = None,
     ) -> CloudEvent | None:
         if session is None:
@@ -149,20 +152,27 @@ class SqlAlchemyLifecycleEventService:
                     collection_id=collection_id,
                     details=details,
                     terminal=terminal,
+                    initiator=initiator,
+                    event_context_json=event_context_json,
                     session=current_session,
                 )
         upload = session.get(CollectionUploadRecord, collection_id)
         collection = session.get(CollectionRecord, collection_id)
-        if upload is not None:
+        if upload is None and collection is None:
+            return None
+        if initiator is not None:
+            owner_app = initiator.app
+            owner_key_id = initiator.key_id
+            context_json = event_context_json
+        elif upload is not None:
             owner_app = upload.initiated_by_app
             owner_key_id = upload.initiated_by_key_id
             context_json = upload.event_context_json
-        elif collection is not None:
+        else:
+            assert collection is not None
             owner_app = collection.created_by_app
             owner_key_id = collection.created_by_key_id
             context_json = None
-        else:
-            return None
         expires_at = terminal_context_expiry(self._config) if terminal else None
         if expires_at is not None and context_json is not None:
             self.expire_context(

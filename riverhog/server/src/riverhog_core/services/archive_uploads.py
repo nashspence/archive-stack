@@ -4,10 +4,11 @@ import base64
 import json
 import logging
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 from time_formats import format_utc_timestamp, utc_now
 
@@ -28,6 +29,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    IngressCleanupRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
@@ -63,8 +65,16 @@ class CollectionUploadFileEntry:
     bytes: int
     sha256: str
     target_path: str
+    ingress_upload_id: str
     ingress_secret_envelope: str
     ingress_state_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class IngressCleanupEntry:
+    target_path: str
+    collection_id: str
+    ingress_upload_id: str
 
 
 class SqlAlchemyArchiveUploadService:
@@ -144,6 +154,124 @@ class SqlAlchemyArchiveUploadService:
                     previous_error,
                 )
         return requeued
+
+    def requeue_interrupted_ingress_cleanup_for_startup(self) -> int:
+        if self._upload_store is None:
+            return 0
+        current_text = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            result = session.execute(
+                update(IngressCleanupRecord)
+                .where(IngressCleanupRecord.state == "deleting")
+                .values(
+                    state="pending",
+                    next_attempt_at=current_text,
+                    last_error="cleanup interrupted before completion",
+                )
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
+
+    def ingress_cleanup_status(self) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            counts = {
+                str(state): int(count)
+                for state, count in session.execute(
+                    select(IngressCleanupRecord.state, func.count())
+                    .group_by(IngressCleanupRecord.state)
+                )
+            }
+            oldest_created_at = session.scalar(select(func.min(IngressCleanupRecord.created_at)))
+        return {
+            "total": sum(counts.values()),
+            "pending": counts.get("pending", 0),
+            "deleting": counts.get("deleting", 0),
+            "failed": counts.get("failed", 0),
+            "oldest_created_at": oldest_created_at,
+        }
+
+    def process_due_ingress_cleanup(self, *, limit: int = 100) -> int:
+        if limit < 1 or self._upload_store is None:
+            return 0
+        current_text = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            records = list(
+                session.scalars(
+                    select(IngressCleanupRecord)
+                    .where(
+                        IngressCleanupRecord.state.in_(("pending", "failed")),
+                        IngressCleanupRecord.next_attempt_at <= current_text,
+                    )
+                    .order_by(
+                        IngressCleanupRecord.next_attempt_at,
+                        IngressCleanupRecord.target_path,
+                    )
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            entries = [
+                IngressCleanupEntry(
+                    target_path=record.target_path,
+                    collection_id=record.collection_id,
+                    ingress_upload_id=record.ingress_upload_id,
+                )
+                for record in records
+            ]
+            for record in records:
+                record.state = "deleting"
+                record.attempt_count = int(record.attempt_count or 0) + 1
+                record.last_attempt_at = current_text
+                record.last_error = None
+
+        if not entries:
+            return 0
+        with ThreadPoolExecutor(
+            max_workers=min(self._config.ingress_cleanup_concurrency, len(entries)),
+            thread_name_prefix="riverhog-ingress-cleanup",
+        ) as executor:
+            list(executor.map(self._process_ingress_cleanup_entry, entries))
+        return len(entries)
+
+    def _process_ingress_cleanup_entry(self, entry: IngressCleanupEntry) -> None:
+        upload_store = self._upload_store
+        if upload_store is None:
+            return
+        try:
+            with session_scope(self._session_factory) as session:
+                active_owner = session.scalar(
+                    select(CollectionUploadFileRecord.collection_id)
+                    .where(
+                        CollectionUploadFileRecord.ingress_upload_id == entry.ingress_upload_id
+                    )
+                    .limit(1)
+                )
+            if active_owner is not None:
+                raise RuntimeError(
+                    "ingress upload target is still owned by an active collection upload"
+                )
+            upload_store.delete_target(entry.target_path)
+        except Exception as exc:
+            retry_at = format_utc_timestamp(
+                utc_now() + self._config.ingress_cleanup_retry_delay
+            )
+            with session_scope(self._session_factory) as session:
+                record = session.get(IngressCleanupRecord, entry.target_path)
+                if record is not None:
+                    record.state = "failed"
+                    record.next_attempt_at = retry_at
+                    record.last_error = _error_text(exc)
+            _LOG.warning(
+                "ingress cleanup failed; retry scheduled: collection_id=%s retry_at=%s error=%s",
+                entry.collection_id,
+                retry_at,
+                _error_text(exc),
+            )
+            return
+
+        with session_scope(self._session_factory) as session:
+            record = session.get(IngressCleanupRecord, entry.target_path)
+            if record is not None:
+                session.delete(record)
 
     def publish_archive_catalog(self) -> int:
         return self._publish_archive_catalog()
@@ -273,6 +401,7 @@ class SqlAlchemyArchiveUploadService:
                     bytes=file_record.bytes,
                     sha256=file_record.sha256,
                     target_path=_collection_upload_target_path(file_record),
+                    ingress_upload_id=file_record.ingress_upload_id,
                     ingress_secret_envelope=file_record.ingress_secret_envelope,
                     ingress_state_json=file_record.ingress_state_json,
                 )
@@ -428,10 +557,6 @@ class SqlAlchemyArchiveUploadService:
                     "archive_store": archive_store_name,
                 },
             )
-            self._delete_collection_upload_targets(
-                collection_id=collection_id,
-                upload_files=upload_files,
-            )
             self._publish_archive_catalog()
         except Exception as exc:
             error = _error_text(exc)
@@ -458,32 +583,6 @@ class SqlAlchemyArchiveUploadService:
                     retryable=False,
                 )
             return
-
-    def _delete_collection_upload_targets(
-        self,
-        *,
-        collection_id: str,
-        upload_files: list[CollectionUploadFileEntry],
-    ) -> None:
-        for entry in upload_files:
-            self._delete_upload_target(
-                collection_id=collection_id,
-                target_path=entry.target_path,
-            )
-
-    def _delete_upload_target(self, *, collection_id: str, target_path: str) -> None:
-        upload_store = self._upload_store
-        if upload_store is None:
-            return
-        try:
-            upload_store.delete_target(target_path)
-        except Exception:
-            _LOG.warning(
-                "failed to delete collection upload target for %s: %s",
-                collection_id,
-                target_path,
-                exc_info=True,
-            )
 
     def _finalize_archived_collection(
         self,
@@ -563,6 +662,19 @@ class SqlAlchemyArchiveUploadService:
                 terminal=True,
                 session=session,
             )
+            cleanup_created_at = format_utc_timestamp(utc_now())
+            for entry in upload_files:
+                session.add(
+                    IngressCleanupRecord(
+                        target_path=entry.target_path,
+                        collection_id=collection_id,
+                        ingress_upload_id=entry.ingress_upload_id,
+                        state="pending",
+                        attempt_count=0,
+                        created_at=cleanup_created_at,
+                        next_attempt_at=cleanup_created_at,
+                    )
+                )
             session.delete(upload)
             record_archive_usage_snapshot(session, config=self._config)
 

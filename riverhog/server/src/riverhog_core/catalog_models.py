@@ -475,6 +475,25 @@ class CollectionUploadFileRecord(Base):
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
 
 
+class IngressCleanupRecord(Base):
+    __tablename__ = "ingress_cleanup"
+
+    target_path: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[str] = mapped_column(String)
+    ingress_upload_id: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String)
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_ingress_cleanup_due", "state", "next_attempt_at", "target_path"),
+        Index("ux_ingress_cleanup_upload_id", "ingress_upload_id", unique=True),
+    )
+
+
 class CollectionArchiveObjectUploadRecord(Base):
     __tablename__ = "collection_archive_object_uploads"
 

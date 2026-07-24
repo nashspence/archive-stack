@@ -5,7 +5,6 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-
 from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
     DEV_ARCHIVE_PASSPHRASE,
@@ -13,6 +12,7 @@ from riverhog_core.runtime_config import (
     RuntimeConfig,
     load_runtime_config,
 )
+
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -59,6 +59,20 @@ def test_load_runtime_config_parses_archive_multipart_safeguards(
 
     assert config.archive_multipart_max_age == timedelta(hours=96)
     assert config.archive_multipart_sweep_interval == timedelta(hours=2)
+
+
+def test_load_runtime_config_parses_ingress_cleanup_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY", "12")
+    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY", "7m")
+    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL", "15s")
+
+    config = load_runtime_config()
+
+    assert config.ingress_cleanup_concurrency == 12
+    assert config.ingress_cleanup_retry_delay == timedelta(minutes=7)
+    assert config.ingress_cleanup_sweep_interval == timedelta(seconds=15)
 
 
 def test_load_runtime_config_parses_lifecycle_event_settings(

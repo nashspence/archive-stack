@@ -74,6 +74,29 @@ def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
     ]
 
 
+def test_collection_deletion_carries_optional_event_context() -> None:
+    client = RecordingClient()
+
+    client.delete_collection(
+        "docs/20250102T030405Z",
+        challenge="delete-challenge",
+        event_context={"workflow": "direct-delete"},
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/v1/collections/docs/20250102T030405Z/delete",
+            {
+                "json": {
+                    "challenge": "delete-challenge",
+                    "event_context": {"workflow": "direct-delete"},
+                }
+            },
+        )
+    ]
+
+
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     client = RecordingClient()
     files = [("docs/20250102T030405Z", "invoice.pdf")]

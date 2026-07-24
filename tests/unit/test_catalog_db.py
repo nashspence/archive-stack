@@ -25,6 +25,7 @@ CURRENT_TABLES = {
     "collection_upload_files",
     "collection_uploads",
     "collections",
+    "ingress_cleanup",
     "lifecycle_events",
     "retrieval_cache_leases",
     "retrieval_cache_objects",
