@@ -80,6 +80,7 @@ UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
 UPLOAD_STORAGE_ROLLBACK_LIMIT = 3
 UPLOAD_LOG_LOCK = threading.Lock()
 UploadWaitMode = Literal["staged", "finalized"]
+UploadCompletionState = Literal["staged", "finalized", "failed", "timeout"]
 _API_CLIENT: ApiClient | None = None
 
 
@@ -927,22 +928,27 @@ def _finalized_collection_upload_payload(
     }
 
 
-def _wait_for_finalized_collection(
+def _wait_for_collection_state(
     api: ApiClient,
     collection_id: str,
     manifest: list[CollectionManifestEntry] | None,
     *,
+    wait_mode: UploadWaitMode,
     status: Callable[[str], None] | None = None,
-) -> tuple[dict[str, object], str]:
+) -> tuple[dict[str, object], UploadCompletionState]:
     poll_seconds = _upload_finalize_poll_seconds()
     timeout_seconds = _upload_finalize_timeout_seconds()
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
     last_status_log_at = 0.0
     last_payload: dict[str, object] | None = None
+    wait_label = "archive verification" if wait_mode == "finalized" else "server handoff"
+    success_state: UploadCompletionState = (
+        "finalized" if wait_mode == "finalized" else "staged"
+    )
 
     _report_upload_status(
         status,
-        "All files uploaded; waiting for archive verification",
+        f"All files uploaded; waiting for {wait_label}",
     )
     while True:
         now = time.monotonic()
@@ -951,7 +957,7 @@ def _wait_for_finalized_collection(
             collection = api.get_collection(collection_id)
             return (
                 _finalized_collection_upload_payload(collection_id, manifest, collection),
-                "finalized",
+                success_state,
             )
         except NotFound:
             try:
@@ -971,19 +977,27 @@ def _wait_for_finalized_collection(
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
                 _report_upload_status(
                     status,
-                    "Waiting for collection finalization: "
+                    f"Waiting for {wait_label}: "
                     f"{_upload_error_description(transient_error)} while polling; retrying",
                 )
                 last_status_log_at = now
         elif last_payload is not None:
             state = str(last_payload.get("state", "unknown"))
+            if wait_mode == "staged" and state == "archiving":
+                return last_payload, "staged"
             if state == "failed":
                 return last_payload, "failed"
+            if state in {"canceled", "expired"}:
+                raise RuntimeError(
+                    f"collection upload became {state} before {wait_label} completed"
+                )
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-                archive_status = _archive_wait_status(last_payload)
+                archive_status = (
+                    _archive_wait_status(last_payload) if wait_mode == "finalized" else ""
+                )
                 _report_upload_status(
                     status,
-                    "Waiting for collection finalization: "
+                    f"Waiting for {wait_label}: "
                     f"state={state}, "
                     f"{last_payload.get('files_uploaded', 0)}/"
                     f"{last_payload.get('files_total', 0)} files, "
@@ -995,21 +1009,23 @@ def _wait_for_finalized_collection(
         elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
             _report_upload_status(
                 status,
-                "Waiting for collection finalization: upload session not visible yet",
+                f"Waiting for {wait_label}: upload session not visible yet",
             )
             last_status_log_at = now
 
         if deadline is not None and now >= deadline:
             if last_payload is not None:
                 return last_payload, "timeout"
+            files_total = len(manifest) if manifest is not None else 0
+            bytes_total = sum(item["bytes"] for item in manifest or ())
             return (
                 {
                     "collection_id": collection_id,
-                    "state": "archiving",
+                    "state": "archiving" if wait_mode == "finalized" else "uploading",
                     "files": [],
-                    "files_total": 0,
+                    "files_total": files_total,
                     "files_uploaded": 0,
-                    "bytes_total": 0,
+                    "bytes_total": bytes_total,
                     "uploaded_bytes": 0,
                     "upload_state_expires_at": None,
                 },
@@ -1021,44 +1037,36 @@ def _wait_for_finalized_collection(
         time.sleep(sleep_seconds)
 
 
-def _staged_collection_upload_payload(
+def _wait_for_finalized_collection(
+    api: ApiClient,
+    collection_id: str,
+    manifest: list[CollectionManifestEntry] | None,
+    *,
+    status: Callable[[str], None] | None = None,
+) -> tuple[dict[str, object], UploadCompletionState]:
+    return _wait_for_collection_state(
+        api,
+        collection_id,
+        manifest,
+        wait_mode="finalized",
+        status=status,
+    )
+
+
+def _wait_for_staged_collection(
     api: ApiClient,
     collection_id: str,
     manifest: list[CollectionManifestEntry],
-) -> dict[str, object]:
-    try:
-        return api.get_collection_upload(collection_id)
-    except NotFound:
-        collection = api.get_collection(collection_id)
-        return _finalized_collection_upload_payload(collection_id, manifest, collection)
-    except Exception as exc:
-        if not _is_transient_upload_error(exc):
-            raise
-        bytes_total = sum(item["bytes"] for item in manifest)
-        return {
-            "collection_id": collection_id,
-            "state": "archiving",
-            "files_total": len(manifest),
-            "files_pending": 0,
-            "files_partial": 0,
-            "files_uploaded": len(manifest),
-            "bytes_total": bytes_total,
-            "uploaded_bytes": bytes_total,
-            "missing_bytes": 0,
-            "upload_state_expires_at": None,
-            "files": [
-                {
-                    "path": item["path"],
-                    "bytes": item["bytes"],
-                    "sha256": item["sha256"],
-                    "upload_state": "uploaded",
-                    "uploaded_bytes": item["bytes"],
-                    "upload_state_expires_at": None,
-                }
-                for item in manifest
-            ],
-            "collection": None,
-        }
+    *,
+    status: Callable[[str], None] | None = None,
+) -> tuple[dict[str, object], UploadCompletionState]:
+    return _wait_for_collection_state(
+        api,
+        collection_id,
+        manifest,
+        wait_mode="staged",
+        status=status,
+    )
 
 
 def _upload_collection_via_session(
@@ -1601,16 +1609,21 @@ def upload_cmd(
             else:
                 upload_progress.notice("Collection finalized", phase="finalized")
         else:
-            upload_progress.notice(
-                "All files uploaded; collection finalization will continue in the background",
-                phase="finalizing",
+            final_payload, completion_state = _wait_for_staged_collection(
+                api,
+                collection_id,
+                manifest,
+                status=lambda message: upload_progress.notice(message, phase="finalizing"),
             )
-            final_payload = _staged_collection_upload_payload(api, collection_id, manifest)
-            completion_state = "staged"
-            upload_progress.notice(
-                "Collection staged for background finalization",
-                phase="staged",
-            )
+            if completion_state == "timeout":
+                upload_progress.notice("Timed out waiting for server handoff", phase="timeout")
+            elif completion_state == "failed":
+                upload_progress.notice("Collection finalization failed", phase="failed")
+            else:
+                upload_progress.notice(
+                    "Collection staged for background finalization",
+                    phase="staged",
+                )
     emit(
         final_payload if json_mode else format_collection_upload(final_payload),
         json_mode=json_mode,

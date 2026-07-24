@@ -498,6 +498,82 @@ def test_upload_wait_mode_defaults_to_finalized(monkeypatch: pytest.MonkeyPatch)
     assert riverhog_main._normalize_upload_wait_mode("staged") == "staged"
 
 
+def test_staged_wait_requires_authoritative_server_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = [
+        {
+            "collection_id": COLLECTION_ID,
+            "state": "uploading",
+            "files_total": 2,
+            "files_uploaded": 1,
+            "bytes_total": 20,
+            "uploaded_bytes": 10,
+        },
+        {
+            "collection_id": COLLECTION_ID,
+            "state": "archiving",
+            "files_total": 2,
+            "files_uploaded": 2,
+            "bytes_total": 20,
+            "uploaded_bytes": 20,
+        },
+    ]
+    sleeps: list[float] = []
+    statuses: list[str] = []
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS", "0.01")
+    monkeypatch.setattr(riverhog_main.time, "sleep", sleeps.append)
+
+    class Api:
+        def get_collection(self, _collection_id: str) -> dict[str, object]:
+            raise riverhog_main.NotFound("not finalized")
+
+        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return payloads.pop(0)
+
+    payload, state = riverhog_main._wait_for_staged_collection(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        [
+            {"path": "a.bin", "bytes": 10, "sha256": "a" * 64},
+            {"path": "b.bin", "bytes": 10, "sha256": "b" * 64},
+        ],
+        status=statuses.append,
+    )
+
+    assert state == "staged"
+    assert payload["state"] == "archiving"
+    assert sleeps == [0.01]
+    assert statuses[0] == "All files uploaded; waiting for server handoff"
+
+
+def test_staged_wait_accepts_a_collection_that_already_finalized() -> None:
+    class Api:
+        def get_collection_upload(self, _collection_id: str) -> dict[str, object]:
+            raise riverhog_main.NotFound("upload finalized")
+
+        def get_collection(self, collection_id: str) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return {
+                "id": collection_id,
+                "files": 1,
+                "bytes": 10,
+                "archive_copies": [
+                    {"store": "b2", "state": "uploaded", "stored_bytes": 12}
+                ],
+            }
+
+    payload, state = riverhog_main._wait_for_staged_collection(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        [{"path": "a.bin", "bytes": 10, "sha256": "a" * 64}],
+    )
+
+    assert state == "staged"
+    assert payload["state"] == "finalized"
+
+
 def test_upload_chunk_size_defaults_to_tusd_s3_part_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
