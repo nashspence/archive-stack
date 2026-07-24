@@ -69,6 +69,12 @@ def sync_upload_state(
         and not target_confirmed
         and not _upload_target_exists(upload_store, target_path)
     ):
+        if force:
+            return _reset_upload_state(
+                current=current,
+                target_path=target_path,
+                upload_store=upload_store,
+            )
         raise ServiceUnavailable(
             "upload backend accepted all bytes but has not exposed the finalized target; retry"
         )

@@ -9,7 +9,7 @@ from riverhog_core.services.resumable_uploads import (
     create_or_resume_upload_state,
     sync_upload_state,
 )
-from riverhog_protocol.errors import NotFound, ServiceUnavailable
+from riverhog_protocol.errors import NotFound
 
 
 class _MissingUploadStore:
@@ -192,7 +192,7 @@ def test_forced_sync_requires_the_finalized_target_for_completed_state() -> None
     assert store.deleted == ["/.riverhog/recovery/fx-1/e1.enc"]
 
 
-def test_resume_waits_for_a_full_offset_target_to_become_visible() -> None:
+def test_resume_replaces_a_full_offset_without_a_finalized_target() -> None:
     store = _FinalizedTargetStore()
     current = UploadLifecycleState(
         tus_url="/uploads/fx-1/e1",
@@ -200,18 +200,21 @@ def test_resume_waits_for_a_full_offset_target_to_become_visible() -> None:
         upload_expires_at="2999-04-26T00:00:00Z",
     )
 
-    with pytest.raises(ServiceUnavailable, match="has not exposed the finalized target"):
-        create_or_resume_upload_state(
-            current=current,
-            target_path="/.riverhog/recovery/fx-1/e1.enc",
-            length=61,
-            upload_store=store,
-            ttl=timedelta(hours=1),
-        )
+    updated, tus_url = create_or_resume_upload_state(
+        current=current,
+        target_path="/.riverhog/recovery/fx-1/e1.enc",
+        length=61,
+        upload_store=store,
+        ttl=timedelta(hours=1),
+    )
 
-    assert store.canceled == []
-    assert store.deleted == []
-    assert store.created == []
+    assert tus_url == "/uploads/fx-1/e2"
+    assert updated.tus_url == tus_url
+    assert updated.uploaded_bytes == 0
+    assert updated.upload_expires_at is not None
+    assert store.canceled == ["/uploads/fx-1/e1"]
+    assert store.deleted == ["/.riverhog/recovery/fx-1/e1.enc"]
+    assert store.created == [("/.riverhog/recovery/fx-1/e1.enc", 61)]
 
 
 def test_finalized_target_verification_propagates_store_unavailability() -> None:
