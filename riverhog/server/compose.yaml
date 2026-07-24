@@ -107,6 +107,8 @@ services:
       - "-base-path"
       - "/files/"
       - "-behind-proxy"
+      - "-network-timeout"
+      - "${RIVERHOG_TUSD_NETWORK_TIMEOUT:-10m}"
       - "-s3-bucket"
       - "${RIVERHOG_INGRESS_BUCKET:-riverhog-ingress}"
       - "-s3-endpoint"

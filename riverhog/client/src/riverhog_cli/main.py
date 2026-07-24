@@ -325,8 +325,7 @@ def _upload_file_concurrency() -> int:
         ) from exc
     if value <= 0 or value > UPLOAD_FILE_CONCURRENCY_MAX:
         raise typer.BadParameter(
-            "RIVERHOG_UPLOAD_FILE_CONCURRENCY must be between 1 and "
-            f"{UPLOAD_FILE_CONCURRENCY_MAX}"
+            f"RIVERHOG_UPLOAD_FILE_CONCURRENCY must be between 1 and {UPLOAD_FILE_CONCURRENCY_MAX}"
         )
     return value
 
@@ -338,9 +337,7 @@ def _upload_file_window(file_concurrency: int) -> int:
     try:
         value = int(raw_value)
     except ValueError as exc:
-        raise typer.BadParameter(
-            "RIVERHOG_UPLOAD_FILE_WINDOW must be an integer"
-        ) from exc
+        raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_WINDOW must be an integer") from exc
     if value < file_concurrency or value > UPLOAD_FILE_WINDOW_MAX:
         raise typer.BadParameter(
             "RIVERHOG_UPLOAD_FILE_WINDOW must be between the configured file concurrency "
@@ -675,93 +672,114 @@ def _upload_collection_file(
     elif log_file:
         _log_upload(f"Uploading {path_value} ({_format_bytes(plaintext_length)})")
 
-    for part in iter_ingress_upload_parts(
-        source_path,
-        encryption,
-        ciphertext_offset=offset,
-        target_part_bytes=_upload_chunk_bytes(),
-    ):
-        chunk = part.ciphertext
-        retry_delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
-        last_retry_log_at = 0.0
-        retry_attempt = 0
-        while offset == part.ciphertext_offset:
-            try:
-                upload_result = api.append_upload_chunk(
-                    str(session["upload_url"]),
-                    offset=offset,
-                    checksum_algorithm=str(session["checksum_algorithm"]),
-                    content=chunk,
-                )
-            except (
-                httpx.TransportError,
-                httpx.HTTPStatusError,
-                Conflict,
-                ServiceUnavailable,
-            ) as exc:
-                if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
-                    raise
-                session = _create_or_resume_collection_file_upload(
-                    api,
-                    collection_id,
-                    path_value,
-                )
-                recovered_offset = int(session["offset"])
-                if recovered_offset == offset:
-                    if isinstance(exc, Conflict):
-                        raise RuntimeError(
-                            f"server rejected upload chunk for {path_value} at "
-                            f"{_format_bytes(offset)} without advancing the offset"
-                        ) from exc
-                    retry_attempt += 1
-                    now = time.monotonic()
-                    if (
-                        retry_attempt == 1
-                        or now - last_retry_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS
-                    ):
-                        _log_upload(
-                            f"Upload interrupted for {path_value} at "
-                            f"{_format_bytes(offset)}; {_upload_error_description(exc)}; "
-                            f"server offset unchanged; retrying in {retry_delay:.1f}s"
-                        )
-                        last_retry_log_at = now
-                    time.sleep(retry_delay)
-                    retry_delay = min(
-                        retry_delay * 2,
-                        UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
-                    )
-                    continue
-                if recovered_offset < offset:
-                    raise RuntimeError(
-                        f"server upload offset for {path_value} moved backward to "
-                        f"{recovered_offset}; expected at least {offset}"
-                    ) from exc
-                if recovered_offset > length:
-                    raise RuntimeError(
-                        f"server upload offset for {path_value} is {recovered_offset}, "
-                        f"past expected length {length}"
-                    ) from exc
-                if recovered_offset != offset + len(chunk):
-                    raise RuntimeError(
-                        f"server accepted a partial upload chunk for {path_value}: "
-                        f"{recovered_offset} bytes, expected {offset} or "
-                        f"{offset + len(chunk)}"
-                    ) from exc
-                _log_upload(
-                    f"Server accepted chunk for {path_value} before the response was lost; "
-                    f"continuing at {_format_bytes(recovered_offset)}"
-                )
-                if progress is not None:
-                    progress(part.plaintext_bytes)
-                offset = recovered_offset
-                break
+    def completed_plaintext(ciphertext_offset: int) -> int:
+        return plaintext_bytes_for_ciphertext_offset(
+            state=encryption_state,
+            plaintext_bytes=plaintext_length,
+            ciphertext_bytes=length,
+            ciphertext_offset=ciphertext_offset,
+        )
 
-            next_offset = int(upload_result["offset"])
-            if next_offset != offset + len(chunk):
-                raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
-            if progress is not None:
-                progress(part.plaintext_bytes)
-            offset = next_offset
+    while offset < length:
+        restart_at_recovered_offset = False
+        for part in iter_ingress_upload_parts(
+            source_path,
+            encryption,
+            ciphertext_offset=offset,
+            target_part_bytes=_upload_chunk_bytes(),
+        ):
+            chunk = part.ciphertext
+            retry_delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
+            last_retry_log_at = 0.0
+            retry_attempt = 0
+            while offset == part.ciphertext_offset:
+                try:
+                    upload_result = api.append_upload_chunk(
+                        str(session["upload_url"]),
+                        offset=offset,
+                        checksum_algorithm=str(session["checksum_algorithm"]),
+                        content=chunk,
+                    )
+                except (
+                    httpx.TransportError,
+                    httpx.HTTPStatusError,
+                    Conflict,
+                    ServiceUnavailable,
+                ) as exc:
+                    if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
+                        raise
+                    session = _create_or_resume_collection_file_upload(
+                        api,
+                        collection_id,
+                        path_value,
+                    )
+                    recovered_offset = int(session["offset"])
+                    if recovered_offset == offset:
+                        if isinstance(exc, Conflict):
+                            raise RuntimeError(
+                                f"server rejected upload chunk for {path_value} at "
+                                f"{_format_bytes(offset)} without advancing the offset"
+                            ) from exc
+                        retry_attempt += 1
+                        now = time.monotonic()
+                        if (
+                            retry_attempt == 1
+                            or now - last_retry_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS
+                        ):
+                            _log_upload(
+                                f"Upload interrupted for {path_value} at "
+                                f"{_format_bytes(offset)}; {_upload_error_description(exc)}; "
+                                f"server offset unchanged; retrying in {retry_delay:.1f}s"
+                            )
+                            last_retry_log_at = now
+                        time.sleep(retry_delay)
+                        retry_delay = min(
+                            retry_delay * 2,
+                            UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
+                        )
+                        continue
+                    if recovered_offset < offset:
+                        raise RuntimeError(
+                            f"server upload offset for {path_value} moved backward to "
+                            f"{recovered_offset}; expected at least {offset}"
+                        ) from exc
+                    if recovered_offset > length:
+                        raise RuntimeError(
+                            f"server upload offset for {path_value} is {recovered_offset}, "
+                            f"past expected length {length}"
+                        ) from exc
+                    completed_before = completed_plaintext(offset)
+                    completed_after = completed_plaintext(recovered_offset)
+                    if progress is not None and completed_after > completed_before:
+                        progress(completed_after - completed_before)
+                    chunk_end = offset + len(chunk)
+                    offset = recovered_offset
+                    if recovered_offset == chunk_end:
+                        _log_upload(
+                            f"Server accepted chunk for {path_value} before the response "
+                            f"was lost; continuing at {_format_bytes(recovered_offset)}"
+                        )
+                    else:
+                        _log_upload(
+                            f"Server retained part of the interrupted upload for "
+                            f"{path_value}; continuing at {_format_bytes(recovered_offset)}"
+                        )
+                        restart_at_recovered_offset = True
+                    break
+
+                next_offset = int(upload_result["offset"])
+                if next_offset != offset + len(chunk):
+                    raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
+                completed_before = completed_plaintext(offset)
+                completed_after = completed_plaintext(next_offset)
+                if progress is not None and completed_after > completed_before:
+                    progress(completed_after - completed_before)
+                offset = next_offset
+            if restart_at_recovered_offset:
+                break
+        if restart_at_recovered_offset:
+            continue
+        break
     if offset != length:
         raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
     if log_file:

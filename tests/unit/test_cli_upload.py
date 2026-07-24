@@ -244,6 +244,101 @@ def test_ingress_resume_survives_a_transport_chunk_size_change(tmp_path: Path) -
     assert b"".join(part.ciphertext for part in resumed_parts) == ciphertext[resume_offset:]
 
 
+def test_ingress_resume_accepts_an_offset_inside_an_encrypted_chunk(tmp_path: Path) -> None:
+    content = (b"byte-exact encrypted resume\n" * 20_000) + b"end"
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+    ciphertext = b"".join(
+        part.ciphertext
+        for part in iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=250_000,
+        )
+    )
+    resume_offset = 12_345
+
+    resumed = b"".join(
+        part.ciphertext
+        for part in iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=resume_offset,
+            target_part_bytes=250_000,
+        )
+    )
+
+    assert resumed == ciphertext[resume_offset:]
+    assert (
+        b"".join(
+            iter_decrypt_age_scrypt(
+                [ciphertext[:resume_offset], resumed],
+                str(descriptor["passphrase"]),
+            )
+        )
+        == content
+    )
+
+
+def test_upload_resumes_after_server_retains_a_partial_ciphertext_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = (b"server-retained encrypted prefix\n" * 10_000) + b"end"
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+    accepted = bytearray()
+    progress: list[int] = []
+    interrupted = False
+    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
+
+    class Api:
+        def create_or_resume_collection_file_upload(
+            self, _collection_id: str, _path: str
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/opaque",
+                "offset": len(accepted),
+                "length": descriptor["ciphertext_bytes"],
+                "checksum_algorithm": "sha256",
+                "encryption": descriptor,
+            }
+
+        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
+            nonlocal interrupted
+            assert kwargs["offset"] == len(accepted)
+            chunk = bytes(kwargs["content"])
+            if not interrupted:
+                interrupted = True
+                accepted.extend(chunk[:12_345])
+                raise httpx.ReadError("response lost after a partial request")
+            accepted.extend(chunk)
+            return {"offset": len(accepted), "expires_at": None}
+
+    riverhog_main._upload_collection_file(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        source,
+        {"path": "clip.bin", "bytes": len(content)},
+        progress=progress.append,
+    )
+
+    assert len(accepted) == descriptor["ciphertext_bytes"]
+    assert sum(progress) == len(content)
+    assert (
+        b"".join(
+            iter_decrypt_age_scrypt(
+                [bytes(accepted)],
+                str(descriptor["passphrase"]),
+            )
+        )
+        == content
+    )
+
+
 def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

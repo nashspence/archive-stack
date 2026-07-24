@@ -124,6 +124,7 @@ def test_checked_in_compose_streams_tusd_into_the_ingress_object_store() -> None
 
     assert '- "-s3-bucket"' in compose_text
     assert '- "-s3-endpoint"' in compose_text
+    assert '- "${RIVERHOG_TUSD_NETWORK_TIMEOUT:-10m}"' in compose_text
     assert '"pre-create,post-finish"' in compose_text
 
 

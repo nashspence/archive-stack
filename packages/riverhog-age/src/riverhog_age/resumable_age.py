@@ -102,7 +102,7 @@ def plaintext_bytes_for_ciphertext_offset(
     ciphertext_bytes: int,
     ciphertext_offset: int,
 ) -> int:
-    """Map an aligned age ciphertext offset to completed plaintext bytes."""
+    """Map an age ciphertext offset to fully completed plaintext bytes."""
 
     if ciphertext_offset <= 0:
         return 0
@@ -119,9 +119,7 @@ def plaintext_bytes_for_ciphertext_offset(
         return 0
     payload_offset = ciphertext_offset - prefix_bytes
     encrypted_chunk_bytes = CHUNK_SIZE + AEAD_TAG_SIZE
-    complete_chunks, remainder = divmod(payload_offset, encrypted_chunk_bytes)
-    if remainder:
-        raise ValueError("ciphertext offset is not aligned to an age chunk boundary")
+    complete_chunks = payload_offset // encrypted_chunk_bytes
     return min(complete_chunks * CHUNK_SIZE, plaintext_bytes)
 
 

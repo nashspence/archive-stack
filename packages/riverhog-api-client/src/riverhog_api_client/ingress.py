@@ -83,16 +83,8 @@ def iter_ingress_upload_parts(
                 payload_skip = skipped_ciphertext
                 if plan.includes_age_prefix:
                     prefix_bytes = len(session.age_prefix)
-                    if skipped_ciphertext < prefix_bytes:
-                        raise ValueError(
-                            "ingress upload offset is inside the age encryption prefix"
-                        )
-                    payload_skip -= prefix_bytes
-                skipped_chunks, remainder = divmod(payload_skip, CHUNK_SIZE + AEAD_TAG_SIZE)
-                if remainder:
-                    raise ValueError(
-                        "ingress upload offset is not aligned to an age chunk boundary"
-                    )
+                    payload_skip = max(0, skipped_ciphertext - prefix_bytes)
+                skipped_chunks = payload_skip // (CHUNK_SIZE + AEAD_TAG_SIZE)
                 skipped_plaintext = min(skipped_chunks * CHUNK_SIZE, plaintext_len)
                 encrypted = encrypted[skipped_ciphertext:]
                 part_offset = ciphertext_offset
