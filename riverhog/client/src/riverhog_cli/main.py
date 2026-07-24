@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -18,6 +19,7 @@ import typer
 from cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
+    format_app_key_rotated,
     format_app_keys,
     format_apps,
 )
@@ -44,10 +46,14 @@ from riverhog_cli.output import (
     format_archive_copy_retirement_result,
     format_collection_deletion_plan,
     format_collection_deletion_result,
+    format_collection_grant_set,
+    format_collection_grants,
     format_collection_summary,
     format_collection_upload,
     format_collection_upload_plan,
     format_collections,
+    format_download_quota,
+    format_download_quotas,
     format_file_selectors,
     format_find,
 )
@@ -58,6 +64,10 @@ collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
 application_app = typer.Typer(help="Application access.")
 app_key_app = typer.Typer(help="Application key management.")
+app_key_grant_app = typer.Typer(help="Per-key collection access grants.")
+app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
+app_key_app.add_typer(app_key_grant_app, name="grant")
+app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
@@ -117,6 +127,24 @@ def _root(ctx: typer.Context) -> None:
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
+_APP_KEY_GRANT_SORT_FIELDS = {"grant", "created_at"}
+_APP_KEY_QUOTA_SORT_FIELDS = {
+    "app",
+    "key_id",
+    "monthly_bytes",
+    "accounted_bytes",
+    "reserved_bytes",
+    "remaining_bytes",
+}
+_BYTE_SIZE_RE = re.compile(r"^(?P<count>\d+)(?P<unit>b|kib|mib|gib|tib)?$", re.IGNORECASE)
+_BYTE_SIZE_FACTORS = {
+    "": 1,
+    "b": 1,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+}
 
 
 def _list_order(sort: str, order: str, *, fields: set[str]) -> str:
@@ -129,6 +157,19 @@ def _list_order(sort: str, order: str, *, fields: set[str]) -> str:
     if normalized_order not in {"asc", "desc"}:
         raise typer.BadParameter("order must be asc or desc", param_hint="--order")
     return normalized_order
+
+
+def _monthly_quota_bytes(value: str) -> int | None:
+    candidate = value.strip().casefold()
+    if candidate == "unlimited":
+        return None
+    match = _BYTE_SIZE_RE.fullmatch(candidate)
+    if match is None:
+        raise typer.BadParameter(
+            "quota must be unlimited or a byte size such as 500GiB",
+            param_hint="LIMIT",
+        )
+    return int(match.group("count")) * _BYTE_SIZE_FACTORS[match.group("unit") or ""]
 
 
 @application_app.command("list")
@@ -179,6 +220,14 @@ def app_key_create_cmd(
             help="Permission to grant; repeat for more than one.",
         ),
     ],
+    collection_grant: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--collection-grant",
+            "--grant",
+            help="Collection access: *, slug:<slug>, or collection:<id>; repeat as needed.",
+        ),
+    ] = None,
     expires_in: Annotated[
         str | None,
         typer.Option("--expires-in", help="Optional key lifetime such as 30d"),
@@ -201,6 +250,7 @@ def app_key_create_cmd(
     payload = client().create_app_key(
         app_name,
         permissions=permission,
+        collection_grants=collection_grant or [],
         expires_in_seconds=expires_in_seconds,
     )
     emit(payload if json_mode else format_app_key_created(payload), json_mode=json_mode)
@@ -256,6 +306,151 @@ def app_key_revoke_cmd(
 
     payload = client().revoke_app_key(app_name, key_id)
     emit(payload if json_mode else format_app_key_revoked(payload), json_mode=json_mode)
+
+
+@app_key_app.command("rotate")
+def app_key_rotate_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Stable key id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Replace one key token while preserving its identity and policy."""
+
+    payload = client().rotate_app_key(app_name, key_id)
+    emit(payload if json_mode else format_app_key_rotated(payload), json_mode=json_mode)
+
+
+@app_key_grant_app.command("list")
+def app_key_grant_list_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "grant",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over grants"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching grant")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one grant per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List a key's exact collection grants."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_APP_KEY_GRANT_SORT_FIELDS)
+    payload = client().list_app_key_collection_grants(
+        app_name,
+        key_id,
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "grants"), json_mode=False)
+        return
+    emit(payload if json_mode else format_collection_grants(payload), json_mode=json_mode)
+
+
+@app_key_grant_app.command("set")
+def app_key_grant_set_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    grant: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--grant",
+            help="Replacement grant: *, slug:<slug>, or collection:<id>; repeat as needed.",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Replace collection grants; no --grant blocks all collection access."""
+
+    payload = client().replace_app_key_collection_grants(
+        app_name,
+        key_id,
+        collection_grants=grant or [],
+    )
+    emit(payload if json_mode else format_collection_grant_set(payload), json_mode=json_mode)
+
+
+@app_key_quota_app.command("show")
+def app_key_quota_show_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show the current key's remote-download quota and usage."""
+
+    payload = client().get_download_quota()
+    emit(payload if json_mode else format_download_quota(payload), json_mode=json_mode)
+
+
+@app_key_quota_app.command("set")
+def app_key_quota_set_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    limit: Annotated[
+        str,
+        typer.Argument(help="Monthly limit such as 500GiB, 0 to block, or unlimited"),
+    ],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Assign a monthly remote-download quota without resetting usage."""
+
+    payload = client().set_app_key_download_quota(
+        app_name,
+        key_id,
+        monthly_bytes=_monthly_quota_bytes(limit),
+    )
+    emit(payload if json_mode else format_download_quota(payload), json_mode=json_mode)
+
+
+@app_key_quota_app.command("list")
+def app_key_quota_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "app",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over app names and key ids"),
+    ] = None,
+    app_name: Annotated[
+        str | None,
+        typer.Option("--app", help="Filter by application name"),
+    ] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by key usability"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching quota")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one key id per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List per-key quotas and current-month accounting."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_APP_KEY_QUOTA_SORT_FIELDS)
+    payload = client().list_download_quotas(
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        app=app_name,
+        active=active,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "quotas"), json_mode=False)
+        return
+    emit(payload if json_mode else format_download_quotas(payload), json_mode=json_mode)
 
 
 def _response_upload_files(payload: dict[str, Any]) -> list[CollectionUploadFilePayload]:
@@ -942,9 +1137,7 @@ def _wait_for_collection_state(
     last_status_log_at = 0.0
     last_payload: dict[str, object] | None = None
     wait_label = "archive verification" if wait_mode == "finalized" else "server handoff"
-    success_state: UploadCompletionState = (
-        "finalized" if wait_mode == "finalized" else "staged"
-    )
+    success_state: UploadCompletionState = "finalized" if wait_mode == "finalized" else "staged"
 
     _report_upload_status(
         status,

@@ -275,6 +275,11 @@ class AppKeyRecord(Base):
     app: Mapped[str] = mapped_column(String)
     token_sha256: Mapped[str] = mapped_column(String(64))
     permissions_json: Mapped[str] = mapped_column(Text)
+    monthly_download_quota_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=True,
+    )
     created_at: Mapped[str] = mapped_column(String)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -283,6 +288,54 @@ class AppKeyRecord(Base):
     __table_args__ = (
         Index("ix_app_keys_app", "app", "id"),
         Index("ux_app_keys_token_sha256", "token_sha256", unique=True),
+    )
+
+
+class AppKeyCollectionGrantRecord(Base):
+    __tablename__ = "app_key_collection_grants"
+
+    key_id: Mapped[str] = mapped_column(String, primary_key=True)
+    grant: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),
+        Index("ix_app_key_collection_grants_grant", "grant", "key_id"),
+    )
+
+
+class KeyDownloadUsageRecord(Base):
+    __tablename__ = "key_download_usage"
+
+    key_id: Mapped[str] = mapped_column(String, primary_key=True)
+    month_started_at: Mapped[str] = mapped_column(String)
+    accounted_bytes: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),)
+
+
+class KeyDownloadReservationRecord(Base):
+    __tablename__ = "key_download_reservations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    key_id: Mapped[str] = mapped_column(String)
+    job_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    month_started_at: Mapped[str] = mapped_column(String)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[str] = mapped_column(String)
+    expires_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),
+        Index(
+            "ix_key_download_reservations_key_month",
+            "key_id",
+            "month_started_at",
+        ),
+        Index("ix_key_download_reservations_job", "job_id", "kind"),
+        Index("ix_key_download_reservations_expiry", "expires_at", "key_id"),
     )
 
 

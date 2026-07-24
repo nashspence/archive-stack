@@ -11,7 +11,10 @@ from riverhog_api.schemas.apps import (
     AppKeyListOut,
     AppKeyOut,
     AppListOut,
+    CollectionGrantListOut,
+    CollectionGrantSetOut,
     CreateAppKeyRequest,
+    ReplaceCollectionGrantsRequest,
 )
 
 router = APIRouter(tags=["apps"])
@@ -53,12 +56,76 @@ def create_app_key(
         container.app_keys.create(
             app=app,
             permissions=request.permissions,
+            collection_grants=request.collection_grants,
             grantor=principal,
             expires_in=(
                 timedelta(seconds=request.expires_in_seconds)
                 if request.expires_in_seconds is not None
                 else None
             ),
+        )
+    )
+
+
+@router.post("/apps/{app}/keys/{key_id}/rotate", response_model=AppKeyCreatedOut)
+def rotate_app_key(
+    app: str,
+    key_id: str,
+    container: ContainerDep,
+    principal: KeyManager,
+) -> AppKeyCreatedOut:
+    return AppKeyCreatedOut.model_validate(
+        container.app_keys.rotate(app=app, key_id=key_id, grantor=principal)
+    )
+
+
+@router.get(
+    "/apps/{app}/keys/{key_id}/collection-grants",
+    response_model=CollectionGrantListOut,
+)
+def list_app_key_collection_grants(
+    app: str,
+    key_id: str,
+    container: ContainerDep,
+    _principal: KeyManager,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    sort: str = Query("grant"),
+    order: str = Query("asc"),
+    q: str | None = Query(None),
+    all_items: bool = Query(False, alias="all"),
+) -> CollectionGrantListOut:
+    return CollectionGrantListOut.model_validate(
+        container.app_keys.list_collection_grants(
+            app=app,
+            key_id=key_id,
+            page=page,
+            per_page=per_page,
+            q=q,
+            sort=sort,
+            order=order,
+            all_items=all_items,
+        )
+    )
+
+
+@router.put(
+    "/apps/{app}/keys/{key_id}/collection-grants",
+    response_model=CollectionGrantSetOut,
+)
+def replace_app_key_collection_grants(
+    app: str,
+    key_id: str,
+    request: ReplaceCollectionGrantsRequest,
+    container: ContainerDep,
+    principal: KeyManager,
+) -> CollectionGrantSetOut:
+    return CollectionGrantSetOut.model_validate(
+        container.app_keys.replace_collection_grants(
+            app=app,
+            key_id=key_id,
+            collection_grants=request.collection_grants,
+            grantor=principal,
         )
     )
 

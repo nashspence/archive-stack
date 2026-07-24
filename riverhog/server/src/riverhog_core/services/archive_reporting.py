@@ -6,6 +6,7 @@ from sqlalchemy import case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
@@ -16,6 +17,7 @@ from riverhog_core.catalog_models import (
     CollectionUploadFileRecord,
     CollectionUploadRecord,
 )
+from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
@@ -45,15 +47,32 @@ class SqlAlchemyArchiveReportingService:
         self._session_factory = make_session_factory(config.database_url)
         self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(config)
 
-    def get_report(self, *, collection: str | None = None) -> ArchiveUsageReport:
+    def get_report(
+        self,
+        *,
+        collection: str | None = None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> ArchiveUsageReport:
         measured_at = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             collection_reports = tuple(
-                _collection_usage_reports(session, collection_filter=collection)
+                _collection_usage_reports(
+                    session,
+                    collection_filter=collection,
+                    principal=principal,
+                )
             )
-            totals = _archive_usage_totals(session, collection_filter=collection)
+            totals = _archive_usage_totals(
+                session,
+                collection_filter=collection,
+                principal=principal,
+            )
             history: tuple[ArchiveUsageSnapshot, ...] = ()
-            if collection is None:
+            if collection is None and (
+                principal is None
+                or principal.unrestricted_delegation
+                or "*" in principal.collection_grants
+            ):
                 _ensure_usage_snapshot(session, totals=totals)
                 session.flush()
                 history = tuple(
@@ -83,7 +102,7 @@ def record_archive_usage_snapshot(session: Session, *, config: RuntimeConfig) ->
     _ = config
     _ensure_usage_snapshot(
         session,
-        totals=_archive_usage_totals(session, collection_filter=None),
+        totals=_archive_usage_totals(session, collection_filter=None, principal=None),
     )
 
 
@@ -91,6 +110,7 @@ def _collection_usage_reports(
     session: Session,
     *,
     collection_filter: str | None,
+    principal: ApplicationPrincipal | None,
 ) -> list[ArchiveUsageCollection]:
     file_stats = (
         select(
@@ -131,6 +151,7 @@ def _collection_usage_reports(
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
         .outerjoin(archive_stats, archive_stats.c.collection_id == CollectionRecord.id)
         .order_by(CollectionRecord.id.asc())
+        .where(collection_access_filter(CollectionRecord.id, principal))
     )
     if collection_filter is not None:
         collection_query = collection_query.where(CollectionRecord.id == collection_filter)
@@ -180,6 +201,7 @@ def _collection_usage_reports(
         .where(
             _reportable_upload_expression(),
             ~accepted_collection,
+            collection_access_filter(CollectionUploadRecord.collection_id, principal),
         )
         .order_by(CollectionUploadRecord.collection_id.asc())
     )
@@ -207,6 +229,7 @@ def _archive_usage_totals(
     session: Session,
     *,
     collection_filter: str | None,
+    principal: ApplicationPrincipal | None,
 ) -> ArchiveUsageTotals:
     stored = (
         select(
@@ -228,17 +251,22 @@ def _archive_usage_totals(
         .group_by(CollectionArchiveCopyRecord.collection_id)
         .subquery()
     )
-    accepted = select(
-        CollectionRecord.id.label("collection_id"),
-        case((func.coalesce(stored.c.copies, 0) > 0, 1), else_=0).label("uploaded"),
-        func.coalesce(stored.c.stored_bytes, 0).label("measured_storage_bytes"),
-    ).outerjoin(stored, stored.c.collection_id == CollectionRecord.id)
+    accepted = (
+        select(
+            CollectionRecord.id.label("collection_id"),
+            case((func.coalesce(stored.c.copies, 0) > 0, 1), else_=0).label("uploaded"),
+            func.coalesce(stored.c.stored_bytes, 0).label("measured_storage_bytes"),
+        )
+        .outerjoin(stored, stored.c.collection_id == CollectionRecord.id)
+        .where(collection_access_filter(CollectionRecord.id, principal))
+    )
     pending = select(
         CollectionUploadRecord.collection_id.label("collection_id"),
         literal(0).label("uploaded"),
         literal(0).label("measured_storage_bytes"),
     ).where(
         _reportable_upload_expression(),
+        collection_access_filter(CollectionUploadRecord.collection_id, principal),
         ~select(CollectionRecord.id)
         .where(CollectionRecord.id == CollectionUploadRecord.collection_id)
         .exists(),

@@ -28,9 +28,23 @@ def format_app_keys(payload: Mapping[str, object]) -> str:
         page_line(payload, "keys"),
     ]
     for key in mapping_items(payload, "keys"):
+        details = ""
+        if "collection_grants" in key:
+            grants = _strings(key.get("collection_grants"))
+            details += f"  grants={','.join(grants) if grants else 'none'}"
+        if "monthly_download_quota_bytes" in key:
+            quota = key.get("monthly_download_quota_bytes")
+            details += (
+                "  quota=unlimited"
+                if quota is None
+                else f"  quota={quota}B"
+                if quota
+                else "  quota=blocked"
+            )
         lines.append(
             f"- {key.get('id', 'unknown')}  status={key.get('status', 'unknown')}  "
             f"permissions={','.join(_strings(key.get('permissions')))}  "
+            f"{details}  "
             f"created={key.get('created_at', 'unknown')}  "
             f"expires={key.get('expires_at') or 'never'}  "
             f"last_used={key.get('last_used_at') or 'never'}"
@@ -39,17 +53,33 @@ def format_app_keys(payload: Mapping[str, object]) -> str:
 
 
 def format_app_key_created(payload: Mapping[str, object]) -> str:
-    return "\n".join(
+    lines = [
+        "app key created",
+        f"app: {payload.get('app', 'unknown')}",
+        f"key: {payload.get('id', 'unknown')}",
+        "permissions: " + ",".join(_strings(payload.get("permissions"))),
+    ]
+    if "collection_grants" in payload:
+        grants = _strings(payload.get("collection_grants"))
+        lines.append("collection grants: " + (",".join(grants) if grants else "none"))
+    if "monthly_download_quota_bytes" in payload:
+        quota = payload.get("monthly_download_quota_bytes")
+        lines.append(
+            "monthly remote-download quota: "
+            + ("unlimited" if quota is None else f"{quota}B" if quota else "blocked")
+        )
+    lines.extend(
         [
-            "app key created",
-            f"app: {payload.get('app', 'unknown')}",
-            f"key: {payload.get('id', 'unknown')}",
-            "permissions: " + ",".join(_strings(payload.get("permissions"))),
             f"expires: {payload.get('expires_at') or 'never'}",
             f"token: {payload.get('token', '')}",
             "Save this token now; it will not be shown again.",
         ]
     )
+    return "\n".join(lines)
+
+
+def format_app_key_rotated(payload: Mapping[str, object]) -> str:
+    return format_app_key_created(payload).replace("app key created", "app key rotated", 1)
 
 
 def format_app_key_revoked(payload: Mapping[str, object]) -> str:
@@ -66,6 +96,7 @@ def format_app_key_revoked(payload: Mapping[str, object]) -> str:
 __all__ = [
     "format_app_key_created",
     "format_app_key_revoked",
+    "format_app_key_rotated",
     "format_app_keys",
     "format_apps",
 ]

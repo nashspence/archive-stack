@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
@@ -185,3 +186,18 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         ("docs/20250102T030405Z", 12, "uploaded"),
         ("pending/20250103T030405Z", 7, "uploading"),
     ]
+
+    restricted = SqlAlchemyArchiveReportingService(_config(path)).get_report(
+        principal=ApplicationPrincipal(
+            app="docs-reader",
+            key_id="docs-key",
+            permissions=frozenset({ARCHIVES_READ}),
+            collection_grants=frozenset({"slug:docs"}),
+        )
+    )
+    assert restricted.totals.collections == 1
+    assert restricted.totals.uploaded_collections == 1
+    assert [str(item.id) for item in restricted.collections] == [
+        "docs/20250102T030405Z"
+    ]
+    assert restricted.history == ()

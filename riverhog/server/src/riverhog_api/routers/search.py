@@ -14,7 +14,7 @@ router = APIRouter(tags=["search"])
 @router.get("/search", response_model=SearchResponse)
 def search(
     container: ContainerDep,
-    _principal: CatalogReader,
+    principal: CatalogReader,
     q: str | None = Query(None, min_length=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
@@ -36,6 +36,7 @@ def search(
         order=order,
         collection=collection,
         all_items=all_items,
+        principal=principal,
     )
     files = cast(list[dict[str, object]], payload["files"])
     return SearchResponse.model_validate(

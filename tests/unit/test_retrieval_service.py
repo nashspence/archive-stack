@@ -7,9 +7,15 @@ from pathlib import Path
 
 import pytest
 from riverhog_age import encrypt_age_scrypt
+from riverhog_core.app_permissions import (
+    KEYS_MANAGE,
+    RETRIEVAL_MANAGE,
+    ApplicationPrincipal,
+)
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
@@ -18,11 +24,14 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
+from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig
+from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_records import apply_archive_receipt
+from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
-from riverhog_protocol.errors import NotFound
+from riverhog_protocol.errors import DownloadAllowanceExceeded, NotFound
 
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
@@ -39,6 +48,13 @@ FILES = {
     "two.txt": b"second archived file\n",
 }
 SECOND_COLLECTION_ID = "more-docs/20260102T030406Z"
+BOOTSTRAP = ApplicationPrincipal(
+    app="bootstrap",
+    key_id=None,
+    permissions=frozenset({KEYS_MANAGE}),
+    collection_grants=frozenset({"*"}),
+    unrestricted_delegation=True,
+)
 
 
 class MemoryRetrievalCache:
@@ -97,7 +113,9 @@ class PreparedArchiveStore(MemoryArchiveStore):
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
+        _ = attribution
         plaintext = b"".join(
             super().iter_archive_object(collection_id=collection_id, object=object)
         )
@@ -193,6 +211,150 @@ def test_app_can_cancel_its_ready_retrieval_job(tmp_path: Path) -> None:
     assert canceled["state"] == "canceled"
     assert canceled["canceled_at"] is not None
     assert service.process_due(limit=1) == 0
+
+
+def test_retrieval_grants_and_job_ownership_follow_the_logical_key(tmp_path: Path) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        None,
+        proof_verifier=FixtureProofVerifier(),
+    )
+    principal = ApplicationPrincipal(
+        app="review",
+        key_id="key-one",
+        permissions=frozenset({RETRIEVAL_MANAGE}),
+        collection_grants=frozenset({f"collection:{COLLECTION_ID}"}),
+    )
+    selection = [(COLLECTION_ID, "one.txt")]
+    plan = service.plan(selection, principal=principal)
+    job = service.create(
+        app=principal.app,
+        key_id=principal.key_id,
+        files=selection,
+        plan_etag=str(plan["etag"]),
+        principal=principal,
+    )
+
+    assert (
+        service.get(
+            app="review",
+            key_id="key-one",
+            job_id=str(job["id"]),
+        )["state"]
+        == "ready"
+    )
+    with pytest.raises(NotFound):
+        service.get(app="review", key_id="key-two", job_id=str(job["id"]))
+    with pytest.raises(NotFound):
+        service.plan(
+            selection,
+            principal=ApplicationPrincipal(
+                app="other",
+                key_id="other-key",
+                permissions=frozenset({RETRIEVAL_MANAGE}),
+                collection_grants=frozenset({"slug:other"}),
+            ),
+        )
+
+
+def test_retrieval_reserves_key_quota_before_creating_or_preparing_a_job(
+    tmp_path: Path,
+) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    keys = SqlAlchemyAppKeyService(config)
+    created = keys.create(
+        app="review",
+        permissions=(RETRIEVAL_MANAGE,),
+        collection_grants=(f"collection:{COLLECTION_ID}",),
+        grantor=BOOTSTRAP,
+    )
+    principal = keys.authenticate(str(created["token"]))
+    assert principal is not None
+    allowance = SqlAlchemyDownloadAllowance(config)
+    store = MemoryArchiveStore(archive)
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        None,
+        download_allowance=allowance,
+        proof_verifier=FixtureProofVerifier(),
+    )
+    selection = [(COLLECTION_ID, "one.txt")]
+    plan = service.plan(selection, principal=principal)
+
+    with pytest.raises(DownloadAllowanceExceeded, match="0 bytes remaining"):
+        service.create(
+            app=principal.app,
+            key_id=principal.key_id,
+            files=selection,
+            plan_etag=str(plan["etag"]),
+            principal=principal,
+        )
+
+    assert store.prepared == []
+    expected_archive_bytes = sum(
+        int(current["stored_bytes"])
+        for current in plan["objects"]
+        if current["read_mode"] != "cache"
+    )
+    allowance.set_key_quota(
+        app=principal.app,
+        key_id=str(principal.key_id),
+        monthly_bytes=expected_archive_bytes,
+    )
+    job = service.create(
+        app=principal.app,
+        key_id=principal.key_id,
+        files=selection,
+        plan_etag=str(plan["etag"]),
+        principal=principal,
+    )
+    quota = allowance.get_key_quota(key_id=str(principal.key_id))
+    assert job["state"] == "ready"
+    assert quota["reserved_bytes"] == expected_archive_bytes
+    assert quota["remaining_bytes"] == 0
+
+
+def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add_all(
+            [
+                CatalogEventRecord(
+                    change="created",
+                    collection_id="hidden/20260102T030404Z",
+                    occurred_at="2026-07-18T00:00:00.000000Z",
+                    manifest_etag="a" * 64,
+                ),
+                CatalogEventRecord(
+                    change="created",
+                    collection_id=COLLECTION_ID,
+                    occurred_at="2026-07-18T00:00:01.000000Z",
+                    manifest_etag="b" * 64,
+                ),
+            ]
+        )
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        None,
+        proof_verifier=FixtureProofVerifier(),
+    )
+    principal = ApplicationPrincipal(
+        app="reader",
+        key_id="reader-key",
+        permissions=frozenset({RETRIEVAL_MANAGE}),
+        collection_grants=frozenset({f"collection:{COLLECTION_ID}"}),
+    )
+
+    first = service.change_list(after=0, limit=1, principal=principal)
+    second = service.change_list(after=int(first["cursor"]), limit=1, principal=principal)
+
+    assert first == {"cursor": 1, "changes": []}
+    assert second["cursor"] == 2
+    assert [change["collection_id"] for change in second["changes"]] == [COLLECTION_ID]
 
 
 def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path) -> None:

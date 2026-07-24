@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -221,6 +222,33 @@ def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) ->
         ("beta/20250102T000000Z", 1, 20),
         ("alpha/20250101T000000Z", 1, 10),
     ]
+
+
+def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    principal = ApplicationPrincipal(
+        app="reader",
+        key_id="reader-key",
+        permissions=frozenset({CATALOG_READ}),
+        collection_grants=frozenset({"collection:beta/20250102T000000Z"}),
+    )
+
+    page = _service(path).list(
+        page=1,
+        per_page=25,
+        q=None,
+        sort="id",
+        order="asc",
+        principal=principal,
+    )
+
+    assert page.total == 1
+    assert [str(item.id) for item in page.collections] == ["beta/20250102T000000Z"]
+    assert _service(path).get("beta/20250102T000000Z", principal=principal).bytes == 20
+    with pytest.raises(NotFound):
+        _service(path).get("alpha/20250101T000000Z", principal=principal)
 
 
 def test_same_slug_and_second_with_different_manifest_conflicts(

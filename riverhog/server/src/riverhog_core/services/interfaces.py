@@ -44,6 +44,7 @@ class CollectionService(Protocol):
         collection_id: str,
         file: dict[str, object],
     ) -> JsonObject: ...
+    def collection_id_for_upload_id(self, upload_id: str) -> str | None: ...
     def sync_finished_upload_id(self, upload_id: str) -> JsonObject | None: ...
     def complete_upload_session(self, collection_id: str) -> JsonObject: ...
     def cancel_upload_session(self, collection_id: str) -> JsonObject: ...
@@ -61,7 +62,12 @@ class CollectionService(Protocol):
     def get_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
     def cancel_file_upload(self, collection_id: str, path: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
-    def get(self, collection_id: str) -> CollectionSummary: ...
+    def get(
+        self,
+        collection_id: str,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> CollectionSummary: ...
     def list(
         self,
         *,
@@ -71,6 +77,7 @@ class CollectionService(Protocol):
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage: ...
 
 
@@ -87,14 +94,30 @@ class CollectionDeletionService(Protocol):
 
 
 class RetrievalService(Protocol):
-    def collection_manifest(self, collection_id: str) -> tuple[JsonObject, str]: ...
-    def resource_list(self) -> list[dict[str, str]]: ...
-    def change_list(self, *, after: int = 0, limit: int = 1000) -> JsonObject: ...
+    def collection_manifest(
+        self,
+        collection_id: str,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> tuple[JsonObject, str]: ...
+    def resource_list(
+        self,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> list[dict[str, str]]: ...
+    def change_list(
+        self,
+        *,
+        after: int = 0,
+        limit: int = 1000,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
     def plan(
         self,
         files: Sequence[tuple[str, str]],
         *,
         lease: timedelta | None = None,
+        principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def create(
         self,
@@ -105,10 +128,23 @@ class RetrievalService(Protocol):
         plan_etag: str,
         lease: timedelta | None = None,
         event_context: dict[str, object] | None = None,
+        principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
-    def get(self, *, app: str, job_id: str) -> JsonObject: ...
-    def acknowledge(self, *, app: str, job_id: str) -> JsonObject: ...
-    def cancel(self, *, app: str, job_id: str) -> JsonObject: ...
+    def get(self, *, app: str, job_id: str, key_id: str | None = None) -> JsonObject: ...
+    def acknowledge(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        key_id: str | None = None,
+    ) -> JsonObject: ...
+    def cancel(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        key_id: str | None = None,
+    ) -> JsonObject: ...
     def content_metadata(
         self,
         *,
@@ -116,6 +152,7 @@ class RetrievalService(Protocol):
         job_id: str,
         collection_id: str,
         path: str,
+        key_id: str | None = None,
     ) -> tuple[int, str]: ...
     def content(
         self,
@@ -124,6 +161,7 @@ class RetrievalService(Protocol):
         job_id: str,
         collection_id: str,
         path: str,
+        key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
     def object_content_metadata(
         self,
@@ -132,6 +170,7 @@ class RetrievalService(Protocol):
         job_id: str,
         collection_id: str,
         object_id: str,
+        key_id: str | None = None,
     ) -> tuple[int, str]: ...
     def object_content(
         self,
@@ -140,6 +179,7 @@ class RetrievalService(Protocol):
         job_id: str,
         collection_id: str,
         object_id: str,
+        key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
     def process_due(self, *, limit: int = 10) -> int: ...
     def sweep(self) -> int: ...
@@ -153,9 +193,37 @@ class AppKeyService(Protocol):
         app: str,
         permissions: Sequence[str],
         grantor: ApplicationPrincipal,
+        collection_grants: Sequence[str] = (),
         expires_in: timedelta | None = None,
     ) -> JsonObject: ...
+    def rotate(
+        self,
+        *,
+        app: str,
+        key_id: str,
+        grantor: ApplicationPrincipal,
+    ) -> JsonObject: ...
     def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
+    def replace_collection_grants(
+        self,
+        *,
+        app: str,
+        key_id: str,
+        collection_grants: Sequence[str],
+        grantor: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def list_collection_grants(
+        self,
+        *,
+        app: str,
+        key_id: str,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        all_items: bool = False,
+    ) -> JsonObject: ...
     def list_apps(
         self,
         *,
@@ -202,6 +270,7 @@ class SearchService(Protocol):
         order: str,
         collection: str | None = None,
         all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
 
 
@@ -237,4 +306,9 @@ class ArchiveCopyRetirementService(Protocol):
 
 
 class ArchiveReportingService(Protocol):
-    def get_report(self, *, collection: str | None = None) -> ArchiveUsageReport: ...
+    def get_report(
+        self,
+        *,
+        collection: str | None = None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> ArchiveUsageReport: ...

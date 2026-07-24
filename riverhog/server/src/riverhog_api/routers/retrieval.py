@@ -27,7 +27,7 @@ def _files(request: RetrievalPlanRequest) -> list[tuple[str, str]]:
 @router.post("/retrieval-plans", response_model=RetrievalPlanOut)
 def plan_retrieval(
     request: RetrievalPlanRequest,
-    _principal: RetrievalManager,
+    principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalPlanOut:
     payload = container.retrieval.plan(
@@ -35,6 +35,7 @@ def plan_retrieval(
         lease=(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
+        principal=principal,
     )
     return RetrievalPlanOut.model_validate(payload)
 
@@ -56,6 +57,7 @@ def create_retrieval_job(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
         event_context=request.event_context,
+        principal=principal,
     )
     return RetrievalJobOut.model_validate(payload)
 
@@ -66,7 +68,13 @@ def get_retrieval_job(
     principal: RetrievalManager,
     container: ContainerDep,
 ) -> RetrievalJobOut:
-    return RetrievalJobOut.model_validate(container.retrieval.get(app=principal.app, job_id=job_id))
+    return RetrievalJobOut.model_validate(
+        container.retrieval.get(
+            app=principal.app,
+            key_id=principal.key_id,
+            job_id=job_id,
+        )
+    )
 
 
 @router.delete("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)
@@ -76,7 +84,7 @@ def cancel_retrieval_job(
     container: ContainerDep,
 ) -> RetrievalJobOut:
     return RetrievalJobOut.model_validate(
-        container.retrieval.cancel(app=principal.app, job_id=job_id)
+        container.retrieval.cancel(app=principal.app, key_id=principal.key_id, job_id=job_id)
     )
 
 
@@ -87,7 +95,11 @@ def acknowledge_retrieval_job(
     container: ContainerDep,
 ) -> RetrievalJobOut:
     return RetrievalJobOut.model_validate(
-        container.retrieval.acknowledge(app=principal.app, job_id=job_id)
+        container.retrieval.acknowledge(
+            app=principal.app,
+            key_id=principal.key_id,
+            job_id=job_id,
+        )
     )
 
 
@@ -113,6 +125,7 @@ def get_retrieval_object_content(
         job_id=job_id,
         collection_id=collection_id,
         object_id=object_id,
+        key_id=principal.key_id,
     )
     etag = f'"{sha256}"'
     headers = {
@@ -129,6 +142,7 @@ def get_retrieval_object_content(
         job_id=job_id,
         collection_id=collection_id,
         object_id=object_id,
+        key_id=principal.key_id,
     )
     if returned_bytes != total_bytes or returned_sha256 != sha256:
         raise RuntimeError("retrieval object content metadata changed")
@@ -159,6 +173,7 @@ def get_retrieval_content(
         job_id=job_id,
         collection_id=collection_id,
         path=path,
+        key_id=principal.key_id,
     )
     etag = f'"{sha256}"'
     headers = {
@@ -181,6 +196,7 @@ def get_retrieval_content(
         job_id=job_id,
         collection_id=collection_id,
         path=path,
+        key_id=principal.key_id,
     )
     if returned_bytes != total_bytes or returned_sha256 != sha256:
         raise RuntimeError("retrieval content metadata changed")

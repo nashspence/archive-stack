@@ -33,6 +33,11 @@ from riverhog_core.catalog_models import (
     CollectionUploadFileRecord,
     CollectionUploadRecord,
 )
+from riverhog_core.collection_access import (
+    collection_access_filter,
+    require_collection_access,
+    require_slug_access,
+)
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
@@ -133,6 +138,10 @@ class SqlAlchemyCollectionService:
             if normalized_upload_timestamp is not None
             else None
         )
+        if requested_collection_id is None:
+            require_slug_access(initiator, normalized_slug)
+        else:
+            require_collection_access(initiator, requested_collection_id)
         normalized_files = _normalize_upload_files(files)
 
         with session_scope(self._session_factory) as session:
@@ -246,6 +255,10 @@ class SqlAlchemyCollectionService:
             if normalized_upload_timestamp is not None
             else None
         )
+        if requested_collection_id is None:
+            require_slug_access(initiator, normalized_slug)
+        else:
+            require_collection_access(initiator, requested_collection_id)
 
         with session_scope(self._session_factory) as session:
             if requested_collection_id is not None:
@@ -423,6 +436,14 @@ class SqlAlchemyCollectionService:
                 details=staged_event_details,
             )
         return payload
+
+    def collection_id_for_upload_id(self, upload_id: str) -> str | None:
+        with session_scope(self._session_factory) as session:
+            return session.scalar(
+                select(CollectionUploadFileRecord.collection_id).where(
+                    CollectionUploadFileRecord.ingress_upload_id == upload_id
+                )
+            )
 
     def _register_upload_session_file_record(
         self,
@@ -833,13 +854,21 @@ class SqlAlchemyCollectionService:
                     session_idle_ttl=self._upload_session_idle_ttl,
                 )
 
-    def get(self, collection_id: str) -> CollectionSummary:
+    def get(
+        self,
+        collection_id: str,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> CollectionSummary:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
 
         with session_scope(self._session_factory) as session:
             stmt, _ = _collection_summary_query()
             row = session.execute(
-                stmt.where(CollectionRecord.id == normalized_collection_id)
+                stmt.where(
+                    CollectionRecord.id == normalized_collection_id,
+                    collection_access_filter(CollectionRecord.id, principal),
+                )
             ).one_or_none()
             if row is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
@@ -860,6 +889,7 @@ class SqlAlchemyCollectionService:
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage:
         if page < 1:
             raise BadRequest("page must be at least 1")
@@ -872,6 +902,7 @@ class SqlAlchemyCollectionService:
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
             filters: list[ColumnElement[bool]] = []
+            filters.append(collection_access_filter(CollectionRecord.id, principal))
             if needle is not None:
                 filters.append(
                     func.lower(CollectionRecord.id).like(

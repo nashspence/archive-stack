@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 
 from riverhog_core.archive_objects import CollectionArchive
+from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
 
@@ -216,6 +217,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]: ...
 
     def iter_stored_archive_object(
@@ -223,6 +225,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]: ...
 
     def cleanup_archive_objects_read(

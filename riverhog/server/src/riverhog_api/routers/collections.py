@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request, Response
+from riverhog_core.collection_access import require_collection_access
 
 from riverhog_api.auth import CatalogReader, CollectionDeleter, CollectionUploader
 from riverhog_api.deps import ContainerDep
@@ -30,7 +31,7 @@ router = APIRouter(tags=["collections"])
 @router.get("/collections", response_model=ListCollectionsResponse)
 def list_collections(
     container: ContainerDep,
-    _principal: CatalogReader,
+    principal: CatalogReader,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
@@ -45,6 +46,7 @@ def list_collections(
         sort=sort,
         order=order,
         all_items=all_items,
+        principal=principal,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 
@@ -92,8 +94,9 @@ def register_collection_upload_session_file(
     collection_id: str,
     request: RegisterCollectionUploadSessionFileRequest,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionFileRegistrationOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.register_upload_session_file(
         collection_id,
         request.model_dump(),
@@ -111,8 +114,9 @@ def create_or_resume_registered_collection_file_upload(
     req: Request,
     response: Response,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionFileUploadOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.create_or_resume_registered_file_upload(
         collection_id,
         request.model_dump(),
@@ -134,8 +138,9 @@ def create_or_resume_registered_collection_file_upload(
 def complete_collection_upload_session(
     collection_id: str,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.complete_upload_session(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
@@ -147,8 +152,9 @@ def complete_collection_upload_session(
 def cancel_collection_upload_session(
     collection_id: str,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.cancel_upload_session(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
@@ -157,8 +163,9 @@ def cancel_collection_upload_session(
 def get_collection_upload(
     collection_id: str,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionUploadSessionOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.get_upload(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
@@ -173,8 +180,9 @@ def create_or_resume_collection_file_upload(
     request: Request,
     response: Response,
     container: ContainerDep,
-    _principal: CollectionUploader,
+    principal: CollectionUploader,
 ) -> CollectionFileUploadSessionOut:
+    require_collection_access(principal, collection_id)
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
     payload["upload_url"] = public_tusd_upload_url(
         str(payload["upload_url"]),
@@ -190,10 +198,10 @@ def create_or_resume_collection_file_upload(
 def get_collection(
     collection_id: str,
     container: ContainerDep,
-    _principal: CatalogReader,
+    principal: CatalogReader,
 ) -> CollectionSummaryOut:
     return CollectionSummaryOut.model_validate(
-        map_collection(container.collections.get(collection_id))
+        map_collection(container.collections.get(collection_id, principal=principal))
     )
 
 
@@ -204,8 +212,9 @@ def get_collection(
 def plan_collection_deletion(
     collection_id: str,
     container: ContainerDep,
-    _principal: CollectionDeleter,
+    principal: CollectionDeleter,
 ) -> CollectionDeletionPlanOut:
+    require_collection_access(principal, collection_id)
     return CollectionDeletionPlanOut.model_validate(
         container.collection_deletions.plan(collection_id)
     )
@@ -221,6 +230,7 @@ def delete_collection(
     container: ContainerDep,
     principal: CollectionDeleter,
 ) -> CollectionDeletionResultOut:
+    require_collection_access(principal, collection_id)
     return CollectionDeletionResultOut.model_validate(
         container.collection_deletions.delete(
             collection_id,

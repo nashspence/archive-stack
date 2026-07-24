@@ -9,6 +9,7 @@ from sqlalchemy import inspect, text
 from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
+    "app_key_collection_grants",
     "app_keys",
     "archive_copy_jobs",
     "archive_copy_retirements",
@@ -26,6 +27,8 @@ CURRENT_TABLES = {
     "collection_uploads",
     "collections",
     "ingress_cleanup",
+    "key_download_reservations",
+    "key_download_usage",
     "lifecycle_events",
     "retrieval_cache_leases",
     "retrieval_cache_objects",
@@ -75,6 +78,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "app",
         "token_sha256",
         "permissions_json",
+        "monthly_download_quota_bytes",
         "created_at",
         "expires_at",
         "revoked_at",

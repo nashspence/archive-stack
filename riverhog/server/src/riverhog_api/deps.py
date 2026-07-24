@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import Depends
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db
+from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
@@ -52,6 +53,7 @@ class ServiceContainer:
     archive_reporting: ArchiveReportingService
     retrieval: RetrievalService
     lifecycle_events: LifecycleEventService
+    download_quotas: DownloadAllowance
 
 
 @lru_cache(maxsize=1)
@@ -108,9 +110,11 @@ def default_container() -> ServiceContainer:
             config,
             archive_stores,
             retrieval_cache,
+            download_allowance=download_allowance,
             proof_verifier=proof_verifier,
         ),
         lifecycle_events=SqlAlchemyLifecycleEventService(config),
+        download_quotas=download_allowance,
     )
 
 

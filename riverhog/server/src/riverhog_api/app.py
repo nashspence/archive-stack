@@ -22,6 +22,7 @@ from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.events import router as events_router
 from riverhog_api.routers.internal import router as internal_router
+from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
@@ -431,6 +432,7 @@ def create_app(
     app.include_router(search_router, prefix="/v1")
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")
+    app.include_router(quotas_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)
     return app

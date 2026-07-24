@@ -14,7 +14,10 @@ def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
         "/v1/archive/copies",
         "/v1/apps",
         "/v1/apps/{app}/keys",
+        "/v1/apps/{app}/keys/{key_id}/collection-grants",
+        "/v1/apps/{app}/keys/{key_id}/download-quota",
         "/v1/apps/{app}/keys/{key_id}/revoke",
+        "/v1/apps/{app}/keys/{key_id}/rotate",
         "/v1/catalog/collections/{collection_id}/manifest",
         "/v1/collections",
         "/v1/collections/{collection_id}",
@@ -26,6 +29,8 @@ def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
         "/v1/retrieval-jobs/{job_id}/content",
         "/v1/retrieval-jobs/{job_id}/objects/{object_id}/content",
         "/v1/retrieval-jobs/{job_id}/ack",
+        "/v1/download-quota",
+        "/v1/download-quotas",
         "/v1/search",
     }.issubset(paths)
     assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]

@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_objects import (
     CollectionArchiveDataObject,
     CollectionArchiveFile,
@@ -36,8 +37,10 @@ from riverhog_core.catalog_models import (
     RetrievalJobObjectRecord,
     RetrievalJobRecord,
 )
+from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
+from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
@@ -56,17 +59,25 @@ class SqlAlchemyRetrievalService:
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
         retrieval_cache: RetrievalCache | None,
+        download_allowance: DownloadAllowance | None = None,
         *,
         proof_verifier: ProofVerifier | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
         self._cache = retrieval_cache
+        self._download_allowance = download_allowance
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._session_factory = make_session_factory(config.database_url)
         self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
-    def collection_manifest(self, collection_id: str) -> tuple[dict[str, object], str]:
+    def collection_manifest(
+        self,
+        collection_id: str,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> tuple[dict[str, object], str]:
+        require_collection_access(principal, collection_id)
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
@@ -86,38 +97,62 @@ class SqlAlchemyRetrievalService:
                 raise InvalidState("portable collection manifest does not match its catalog ETag")
             return payload, etag
 
-    def resource_list(self) -> list[dict[str, str]]:
+    def resource_list(
+        self,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> list[dict[str, str]]:
         with session_scope(self._session_factory) as session:
             rows = session.execute(
-                select(CollectionRecord.id, CollectionRecord.manifest_etag).order_by(
-                    CollectionRecord.id
-                )
+                select(CollectionRecord.id, CollectionRecord.manifest_etag)
+                .where(collection_access_filter(CollectionRecord.id, principal))
+                .order_by(CollectionRecord.id)
             ).all()
             return [{"collection_id": str(row.id), "etag": str(row.manifest_etag)} for row in rows]
 
-    def change_list(self, *, after: int = 0, limit: int = 1000) -> dict[str, object]:
+    def change_list(
+        self,
+        *,
+        after: int = 0,
+        limit: int = 1000,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
         if after < 0:
             raise BadRequest("catalog cursor must be non-negative")
         if limit < 1 or limit > 10_000:
             raise BadRequest("catalog change limit must be between 1 and 10000")
         with session_scope(self._session_factory) as session:
-            rows = list(
-                session.scalars(
-                    select(CatalogEventRecord)
-                    .where(CatalogEventRecord.sequence > after)
-                    .order_by(CatalogEventRecord.sequence)
-                    .limit(limit)
+            scanned = (
+                select(CatalogEventRecord)
+                .where(CatalogEventRecord.sequence > after)
+                .order_by(CatalogEventRecord.sequence)
+                .limit(limit)
+                .subquery()
+            )
+            cursor = int(
+                session.scalar(
+                    select(scanned.c.sequence).order_by(scanned.c.sequence.desc()).limit(1)
                 )
+                or after
+            )
+            rows = (
+                session.execute(
+                    select(scanned)
+                    .where(collection_access_filter(scanned.c.collection_id, principal))
+                    .order_by(scanned.c.sequence)
+                )
+                .mappings()
+                .all()
             )
             return {
-                "cursor": rows[-1].sequence if rows else after,
+                "cursor": cursor,
                 "changes": [
                     {
-                        "sequence": row.sequence,
-                        "change": row.change,
-                        "collection_id": row.collection_id,
-                        "occurred_at": row.occurred_at,
-                        "etag": row.manifest_etag,
+                        "sequence": row["sequence"],
+                        "change": row["change"],
+                        "collection_id": row["collection_id"],
+                        "occurred_at": row["occurred_at"],
+                        "etag": row["manifest_etag"],
                     }
                     for row in rows
                 ],
@@ -128,8 +163,11 @@ class SqlAlchemyRetrievalService:
         files: Sequence[tuple[str, str]],
         *,
         lease: timedelta | None = None,
+        principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
+        for collection_id, _path in normalized:
+            require_collection_access(principal, collection_id)
         requested_lease = lease or self._config.retrieval_default_lease
         if requested_lease.total_seconds() <= 0:
             raise BadRequest("retrieval lease must be positive")
@@ -152,9 +190,13 @@ class SqlAlchemyRetrievalService:
         plan_etag: str,
         lease: timedelta | None = None,
         event_context: dict[str, object] | None = None,
+        principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
-        plan = self.plan(normalized, lease=lease)
+        if principal is not None:
+            app = principal.app
+            key_id = principal.key_id
+        plan = self.plan(normalized, lease=lease, principal=principal)
         if not plan_etag or plan_etag != plan["etag"]:
             raise Conflict("retrieval plan changed; request a fresh plan")
         job_id = uuid.uuid4().hex
@@ -166,91 +208,112 @@ class SqlAlchemyRetrievalService:
         requested = any(current["read_mode"] == "restore_required" for current in planned_objects)
         state = "requested" if requested else "ready"
         expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
-        with session_scope(self._session_factory) as session:
-            for collection_id in sorted({collection_id for collection_id, _path in normalized}):
-                collection = session.scalar(
-                    select(CollectionRecord)
-                    .where(CollectionRecord.id == collection_id)
-                    .with_for_update()
-                )
-                if collection is None:
-                    raise NotFound(f"collection not found: {collection_id}")
-                if session.get(CollectionDeletionRecord, collection_id) is not None:
-                    raise Conflict(f"collection deletion is active: {collection_id}")
-            record = RetrievalJobRecord(
-                id=job_id,
-                app=app,
-                initiated_by_key_id=key_id,
-                event_context_json=event_context_json(event_context),
-                state=state,
-                plan_etag=str(plan["etag"]),
-                constraints_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
-                created_at=now_text,
-                requested_at=now_text if requested else None,
-                ready_at=None if requested else now_text,
-                expires_at=None if requested else expires_at,
-                next_poll_at=now_text if requested else None,
+        remote_bytes = sum(
+            int(str(current["stored_bytes"]))
+            for current in planned_objects
+            if current["read_mode"] != "cache"
+        )
+        if key_id is not None and self._download_allowance is not None:
+            self._download_allowance.reserve_retrieval(
+                key_id=key_id,
+                job_id=job_id,
+                expected_bytes=remote_bytes,
+                expires_at=format_utc_timestamp(
+                    now
+                    + self._config.retrieval_estimated_latency
+                    + self._config.retrieval_max_lease
+                ),
             )
-            session.add(record)
-            for order, current in enumerate(planned_files):
-                record.files.append(
-                    RetrievalJobFileRecord(
-                        job_id=job_id,
-                        collection_id=str(current["collection_id"]),
-                        path=str(current["path"]),
-                        file_order=order,
+        try:
+            with session_scope(self._session_factory) as session:
+                for collection_id in sorted({collection_id for collection_id, _path in normalized}):
+                    collection = session.scalar(
+                        select(CollectionRecord)
+                        .where(CollectionRecord.id == collection_id)
+                        .with_for_update()
                     )
+                    if collection is None:
+                        raise NotFound(f"collection not found: {collection_id}")
+                    if session.get(CollectionDeletionRecord, collection_id) is not None:
+                        raise Conflict(f"collection deletion is active: {collection_id}")
+                record = RetrievalJobRecord(
+                    id=job_id,
+                    app=app,
+                    initiated_by_key_id=key_id,
+                    event_context_json=event_context_json(event_context),
+                    state=state,
+                    plan_etag=str(plan["etag"]),
+                    constraints_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                    created_at=now_text,
+                    requested_at=now_text if requested else None,
+                    ready_at=None if requested else now_text,
+                    expires_at=None if requested else expires_at,
+                    next_poll_at=now_text if requested else None,
                 )
-            for order, current in enumerate(planned_objects):
-                record.objects.append(
-                    RetrievalJobObjectRecord(
-                        job_id=job_id,
-                        collection_id=str(current["collection_id"]),
-                        source_store=str(current["source_store"]),
-                        object_id=str(current["object_id"]),
-                        object_order=order,
-                        read_mode=str(current["read_mode"]),
+                session.add(record)
+                for order, current in enumerate(planned_files):
+                    record.files.append(
+                        RetrievalJobFileRecord(
+                            job_id=job_id,
+                            collection_id=str(current["collection_id"]),
+                            path=str(current["path"]),
+                            file_order=order,
+                        )
                     )
-                )
-                if current["read_mode"] == "cache":
-                    self._lease_cached_object(
-                        session,
-                        owner=_job_owner(job_id),
-                        source_store=str(current["source_store"]),
-                        collection_id=str(current["collection_id"]),
-                        object_id=str(current["object_id"]),
-                        expires_at=expires_at,
+                for order, current in enumerate(planned_objects):
+                    record.objects.append(
+                        RetrievalJobObjectRecord(
+                            job_id=job_id,
+                            collection_id=str(current["collection_id"]),
+                            source_store=str(current["source_store"]),
+                            object_id=str(current["object_id"]),
+                            object_order=order,
+                            read_mode=str(current["read_mode"]),
+                        )
                     )
-            self._lifecycle_events.emit_retrieval(
-                type="retrieval.requested",
-                job=record,
-                details={
-                    "files": len(planned_files),
-                    "objects": len(planned_objects),
-                    "restore_required": requested,
-                },
-                session=session,
-            )
-            if not requested:
+                    if current["read_mode"] == "cache":
+                        self._lease_cached_object(
+                            session,
+                            owner=_job_owner(job_id),
+                            source_store=str(current["source_store"]),
+                            collection_id=str(current["collection_id"]),
+                            object_id=str(current["object_id"]),
+                            expires_at=expires_at,
+                        )
                 self._lifecycle_events.emit_retrieval(
-                    type="retrieval.ready",
+                    type="retrieval.requested",
                     job=record,
-                    details={"expires_at": expires_at},
+                    details={
+                        "files": len(planned_files),
+                        "objects": len(planned_objects),
+                        "restore_required": requested,
+                    },
                     session=session,
                 )
+                if not requested:
+                    self._lifecycle_events.emit_retrieval(
+                        type="retrieval.ready",
+                        job=record,
+                        details={"expires_at": expires_at},
+                        session=session,
+                    )
+        except Exception:
+            if key_id is not None and self._download_allowance is not None:
+                self._download_allowance.release_retrieval(job_id=job_id)
+            raise
         if requested:
             self._request_job_objects(job_id)
-        return self.get(app=app, job_id=job_id)
+        return self.get(app=app, key_id=key_id, job_id=job_id)
 
-    def get(self, *, app: str, job_id: str) -> dict[str, object]:
+    def get(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            record = self._require_job(session, app=app, job_id=job_id)
+            record = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             self._expire_job_if_due(session, record)
             return _job_payload(record)
 
-    def acknowledge(self, *, app: str, job_id: str) -> dict[str, object]:
+    def acknowledge(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            record = self._require_job(session, app=app, job_id=job_id)
+            record = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             if record.state not in {"ready", "completed"}:
                 raise InvalidState("only a ready retrieval job can be acknowledged")
             if record.state != "completed":
@@ -267,11 +330,14 @@ class SqlAlchemyRetrievalService:
                     terminal=True,
                     session=session,
                 )
-            return _job_payload(record)
+            payload = _job_payload(record)
+        if self._download_allowance is not None:
+            self._download_allowance.release_retrieval(job_id=job_id)
+        return payload
 
-    def cancel(self, *, app: str, job_id: str) -> dict[str, object]:
+    def cancel(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            record = self._require_job(session, app=app, job_id=job_id)
+            record = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             self._expire_job_if_due(session, record)
             if record.state in {"completed", "expired"}:
                 raise InvalidState(f"retrieval job is already {record.state}")
@@ -290,7 +356,10 @@ class SqlAlchemyRetrievalService:
                     terminal=True,
                     session=session,
                 )
-            return _job_payload(record)
+            payload = _job_payload(record)
+        if self._download_allowance is not None:
+            self._download_allowance.release_retrieval(job_id=job_id)
+        return payload
 
     def content(
         self,
@@ -299,9 +368,10 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: str,
         path: str,
+        key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]:
         with session_scope(self._session_factory) as session:
-            job = self._require_job(session, app=app, job_id=job_id)
+            job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             self._expire_job_if_due(session, job)
             if job.state != "ready":
                 raise InvalidState("retrieval job is not ready")
@@ -350,6 +420,7 @@ class SqlAlchemyRetrievalService:
                     )
                 )
             }
+            attribution = _download_attribution(job)
 
         identities = {row.object_id: _object_identity(row) for row in object_rows}
 
@@ -360,6 +431,7 @@ class SqlAlchemyRetrievalService:
                 collection_id=collection_id,
                 identity=identity,
                 cached=cache_rows.get(object_id),
+                attribution=attribution,
             )
 
         manifest_identity = identities.get("manifest")
@@ -389,9 +461,10 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: str,
         path: str,
+        key_id: str | None = None,
     ) -> tuple[int, str]:
         with session_scope(self._session_factory) as session:
-            job = self._require_job(session, app=app, job_id=job_id)
+            job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             self._expire_job_if_due(session, job)
             if job.state != "ready":
                 raise InvalidState("retrieval job is not ready")
@@ -409,17 +482,21 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: str,
         object_id: str,
+        key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]:
         with session_scope(self._session_factory) as session:
             object_record, cache_record = self._require_job_data_object(
                 session,
                 app=app,
+                key_id=key_id,
                 job_id=job_id,
                 collection_id=collection_id,
                 object_id=object_id,
             )
             source_store = object_record.store
             identity = _object_identity(object_record)
+            job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
+            attribution = _download_attribution(job)
         current = CollectionArchiveDataObject(
             object_id=identity.object_id,
             kind=identity.kind,
@@ -433,6 +510,7 @@ class SqlAlchemyRetrievalService:
             collection_id=collection_id,
             identity=identity,
             cached=cache_record,
+            attribution=attribution,
         )
         return (
             iter_verified_object_chunks(current, chunks),
@@ -447,11 +525,13 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: str,
         object_id: str,
+        key_id: str | None = None,
     ) -> tuple[int, str]:
         with session_scope(self._session_factory) as session:
             object_record, _cache_record = self._require_job_data_object(
                 session,
                 app=app,
+                key_id=key_id,
                 job_id=job_id,
                 collection_id=collection_id,
                 object_id=object_id,
@@ -501,6 +581,7 @@ class SqlAlchemyRetrievalService:
                         RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
                     )
                 )
+                _release_job_reservation(session, job.id)
             session.execute(
                 delete(RetrievalCacheLeaseRecord).where(
                     RetrievalCacheLeaseRecord.expires_at <= now_text
@@ -666,8 +747,9 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: str,
         object_id: str,
+        key_id: str | None = None,
     ) -> tuple[CollectionArchiveObjectRecord, RetrievalCacheObjectRecord | None]:
-        job = self._require_job(session, app=app, job_id=job_id)
+        job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
         self._expire_job_if_due(session, job)
         if job.state != "ready":
             raise InvalidState("retrieval job is not ready")
@@ -699,6 +781,7 @@ class SqlAlchemyRetrievalService:
         collection_id: str,
         identity: ArchiveObjectIdentity,
         cached: RetrievalCacheObjectRecord | None,
+        attribution: DownloadAttribution | None,
     ) -> Iterable[bytes]:
         if cached is not None:
             if self._cache is None:
@@ -715,6 +798,7 @@ class SqlAlchemyRetrievalService:
         return self._archive_stores.require(source_store).iter_archive_object(
             collection_id=collection_id,
             object=identity,
+            attribution=attribution,
         )
 
     def _request_job_objects(self, job_id: str) -> None:
@@ -745,6 +829,7 @@ class SqlAlchemyRetrievalService:
             groups = self._missing_groups(session, job)
             requested_at = job.requested_at or job.created_at
             plan = json.loads(job.constraints_json)
+            attribution = _download_attribution(job)
             lease_seconds = int(plan["lease_seconds"])
             pending_expires_at = format_utc_timestamp(
                 utc_now()
@@ -796,6 +881,7 @@ class SqlAlchemyRetrievalService:
                         content=store.iter_stored_archive_object(
                             collection_id=collection_id,
                             object=object_identity,
+                            attribution=attribution,
                         ),
                         content_length=object_identity.stored_bytes,
                     )
@@ -925,9 +1011,19 @@ class SqlAlchemyRetrievalService:
         )
 
     @staticmethod
-    def _require_job(session: Session, *, app: str, job_id: str) -> RetrievalJobRecord:
+    def _require_job(
+        session: Session,
+        *,
+        app: str,
+        job_id: str,
+        key_id: str | None = None,
+    ) -> RetrievalJobRecord:
         record = session.get(RetrievalJobRecord, job_id)
-        if record is None or record.app != app:
+        if (
+            record is None
+            or record.app != app
+            or (key_id is not None and record.initiated_by_key_id != key_id)
+        ):
             raise NotFound(f"retrieval job not found: {job_id}")
         return record
 
@@ -949,6 +1045,7 @@ class SqlAlchemyRetrievalService:
                     RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
                 )
             )
+            _release_job_reservation(session, job.id)
 
 
 def _canonical_json(payload: object) -> bytes:
@@ -984,6 +1081,23 @@ def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentit
 
 def _job_owner(job_id: str) -> str:
     return f"job:{job_id}"
+
+
+def _download_attribution(job: RetrievalJobRecord) -> DownloadAttribution | None:
+    if job.initiated_by_key_id is None:
+        return None
+    return DownloadAttribution(key_id=job.initiated_by_key_id, job_id=job.id)
+
+
+def _release_job_reservation(session: Session, job_id: str) -> None:
+    from riverhog_core.catalog_models import KeyDownloadReservationRecord
+
+    session.execute(
+        delete(KeyDownloadReservationRecord).where(
+            KeyDownloadReservationRecord.job_id == job_id,
+            KeyDownloadReservationRecord.kind == "job",
+        )
+    )
 
 
 def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:

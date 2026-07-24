@@ -198,6 +198,7 @@ def test_client_manages_application_keys_with_explicit_permissions() -> None:
             {
                 "json": {
                     "permissions": ["catalog:read", "retrieval:manage"],
+                    "collection_grants": [],
                     "expires_in_seconds": 3600,
                 }
             },

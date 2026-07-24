@@ -27,7 +27,7 @@ def _xml(root: Element) -> Response:
 @router.get("/.well-known/resourcesync")
 def well_known_resourcesync(
     request: Request,
-    _principal: CatalogReader,
+    principal: CatalogReader,
 ) -> Response:
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
     url = SubElement(root, "url")
@@ -56,11 +56,11 @@ def resourcesync_capability_list(
 @router.get("/resourcesync/resourcelist.xml")
 def resourcesync_resource_list(
     request: Request,
-    _principal: CatalogReader,
+    principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
-    for resource in container.retrieval.resource_list():
+    for resource in container.retrieval.resource_list(principal=principal):
         url = SubElement(root, "url")
         collection_id = resource["collection_id"]
         SubElement(url, "loc").text = _url(
@@ -74,11 +74,11 @@ def resourcesync_resource_list(
 @router.get("/resourcesync/changelist.xml")
 def resourcesync_change_list(
     request: Request,
-    _principal: CatalogReader,
+    principal: CatalogReader,
     container: ContainerDep,
     after: int = Query(0, ge=0),
 ) -> Response:
-    payload = container.retrieval.change_list(after=after)
+    payload = container.retrieval.change_list(after=after, principal=principal)
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
     root.set("data-cursor", str(payload["cursor"]))
     for change in cast(list[dict[str, object]], payload["changes"]):
@@ -102,10 +102,13 @@ def resourcesync_change_list(
 @router.get("/v1/catalog/collections/{collection_id:path}/manifest")
 def collection_portable_manifest(
     collection_id: str,
-    _principal: CatalogReader,
+    principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:
-    payload, etag = container.retrieval.collection_manifest(collection_id)
+    payload, etag = container.retrieval.collection_manifest(
+        collection_id,
+        principal=principal,
+    )
     import json
 
     return Response(

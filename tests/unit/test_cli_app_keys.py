@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from typer.testing import CliRunner
-
 import riverhog_cli.main
 from riverhog_cli.main import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -49,10 +48,12 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             app_name: str,
             *,
             permissions: list[str],
+            collection_grants: list[str],
             expires_in_seconds: int | None,
         ) -> dict[str, object]:
             assert app_name == "local"
             assert permissions == ["catalog:read", "retrieval:manage"]
+            assert collection_grants == []
             assert expires_in_seconds == 2_592_000
             return {
                 "id": "0123456789abcdef",
@@ -112,3 +113,124 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == "0123456789abcdef\n"
+
+
+def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
+    class FakeClient:
+        def list_app_key_collection_grants(
+            self,
+            app_name: str,
+            key_id: str,
+            **kwargs: Any,
+        ) -> dict[str, object]:
+            assert (app_name, key_id) == ("local", "key-one")
+            assert kwargs == {
+                "page": 1,
+                "per_page": 25,
+                "q": "photos",
+                "sort": "grant",
+                "order": "asc",
+                "all_items": True,
+            }
+            return {
+                "app": "local",
+                "key_id": "key-one",
+                "page": 1,
+                "per_page": 1,
+                "total": 1,
+                "pages": 1,
+                "grants": [{"id": "slug:photos"}],
+            }
+
+        def list_download_quotas(self, **kwargs: Any) -> dict[str, object]:
+            assert kwargs == {
+                "page": 1,
+                "per_page": 25,
+                "q": "review",
+                "sort": "remaining_bytes",
+                "order": "desc",
+                "app": "local",
+                "active": True,
+                "all_items": True,
+            }
+            return {
+                "page": 1,
+                "per_page": 1,
+                "total": 1,
+                "pages": 1,
+                "quotas": [{"id": "key-one"}],
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    grants = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "grant",
+            "list",
+            "local",
+            "key-one",
+            "--query",
+            "photos",
+            "--all",
+            "--ids",
+        ],
+    )
+    quotas = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "quota",
+            "list",
+            "--query",
+            "review",
+            "--app",
+            "local",
+            "--active",
+            "--sort",
+            "remaining_bytes",
+            "--order",
+            "desc",
+            "--all",
+            "--ids",
+        ],
+    )
+
+    assert grants.exit_code == 0
+    assert grants.stdout == "slug:photos\n"
+    assert quotas.exit_code == 0
+    assert quotas.stdout == "key-one\n"
+
+
+def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monkeypatch) -> None:
+    assigned: list[int | None] = []
+
+    class FakeClient:
+        def set_app_key_download_quota(
+            self,
+            app_name: str,
+            key_id: str,
+            *,
+            monthly_bytes: int | None,
+        ) -> dict[str, object]:
+            assert (app_name, key_id) == ("local", "key-one")
+            assigned.append(monthly_bytes)
+            return {"monthly_bytes": monthly_bytes}
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    finite = runner.invoke(
+        app,
+        ["app", "key", "quota", "set", "local", "key-one", "500GiB", "--json"],
+    )
+    unlimited = runner.invoke(
+        app,
+        ["app", "key", "quota", "set", "local", "key-one", "unlimited", "--json"],
+    )
+
+    assert finite.exit_code == 0
+    assert unlimited.exit_code == 0
+    assert assigned == [500 * 1024**3, None]

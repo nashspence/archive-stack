@@ -13,11 +13,16 @@ from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_UPLOAD,
     KEYS_MANAGE,
+    QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
     ApplicationPrincipal,
 )
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import AppKeyRecord
+from riverhog_core.catalog_models import (
+    AppKeyRecord,
+    KeyDownloadReservationRecord,
+    RetrievalJobRecord,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_protocol.errors import BadRequest, Forbidden
@@ -27,7 +32,7 @@ from tests.unit.db_helpers import sqlite_url
 BOOTSTRAP = ApplicationPrincipal(
     app="bootstrap",
     key_id=None,
-    permissions=frozenset({KEYS_MANAGE}),
+    permissions=frozenset({KEYS_MANAGE, QUOTAS_MANAGE}),
     unrestricted_delegation=True,
 )
 
@@ -45,11 +50,13 @@ def create_key(
     permissions: tuple[str, ...] = (CATALOG_READ,),
     grantor: ApplicationPrincipal = BOOTSTRAP,
     expires_in: timedelta | None = None,
+    collection_grants: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return service.create(
         app=app,
         permissions=permissions,
         grantor=grantor,
+        collection_grants=collection_grants,
         expires_in=expires_in,
     )
 
@@ -134,15 +141,18 @@ def test_key_delegation_cannot_exceed_the_grantor(tmp_path: Path) -> None:
         app="manager",
         key_id="manager-key",
         permissions=frozenset({KEYS_MANAGE, CATALOG_READ}),
+        collection_grants=frozenset({"slug:docs"}),
     )
 
     delegated = create_key(
         service,
         app="reader",
         permissions=(CATALOG_READ,),
+        collection_grants=("collection:docs/20260102T030405Z",),
         grantor=manager,
     )
     assert delegated["permissions"] == [CATALOG_READ]
+    assert delegated["collection_grants"] == ["collection:docs/20260102T030405Z"]
     with pytest.raises(Forbidden, match="cannot grant"):
         create_key(
             service,
@@ -150,6 +160,159 @@ def test_key_delegation_cannot_exceed_the_grantor(tmp_path: Path) -> None:
             permissions=(COLLECTIONS_UPLOAD,),
             grantor=manager,
         )
+    with pytest.raises(Forbidden, match="collection access"):
+        create_key(
+            service,
+            app="other-reader",
+            permissions=(CATALOG_READ,),
+            collection_grants=("slug:other",),
+            grantor=manager,
+        )
+
+
+def test_rotation_preserves_logical_key_policy_and_grant_lists_are_pipeable(
+    tmp_path: Path,
+) -> None:
+    service, config = app_keys(tmp_path)
+    created = create_key(
+        service,
+        app="review",
+        permissions=(CATALOG_READ, RETRIEVAL_MANAGE),
+        collection_grants=(
+            "collection:docs/20260102T030405Z",
+            "slug:photos",
+        ),
+    )
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        record = session.get(AppKeyRecord, str(created["id"]))
+        assert record is not None
+        record.monthly_download_quota_bytes = 123
+
+    rotated = service.rotate(
+        app="review",
+        key_id=str(created["id"]),
+        grantor=BOOTSTRAP,
+    )
+
+    assert rotated["id"] == created["id"]
+    assert rotated["collection_grants"] == [
+        "collection:docs/20260102T030405Z",
+        "slug:photos",
+    ]
+    assert rotated["monthly_download_quota_bytes"] == 123
+    assert service.authenticate(str(created["token"])) is None
+    principal = service.authenticate(str(rotated["token"]))
+    assert principal is not None
+    assert principal.allows_collection("docs/20260102T030405Z")
+    assert principal.allows_collection("photos/20261231T235959Z")
+
+    grants = service.list_collection_grants(
+        app="review",
+        key_id=str(created["id"]),
+        page=1,
+        per_page=25,
+        q="photos",
+        sort="grant",
+        order="asc",
+        all_items=True,
+    )
+    assert grants["total"] == 1
+    assert grants["grants"] == [{"id": "slug:photos", "created_at": created["created_at"]}]
+
+
+def test_delegated_rotation_cannot_reveal_authority_or_quota_control(
+    tmp_path: Path,
+) -> None:
+    service, config = app_keys(tmp_path)
+    target = create_key(
+        service,
+        app="target",
+        permissions=(CATALOG_READ, RETRIEVAL_MANAGE),
+        collection_grants=("slug:photos",),
+    )
+    narrow_manager = ApplicationPrincipal(
+        app="manager",
+        key_id="manager-key",
+        permissions=frozenset({KEYS_MANAGE, CATALOG_READ}),
+        collection_grants=frozenset({"slug:docs"}),
+    )
+
+    with pytest.raises(Forbidden, match="authority it does not hold"):
+        service.rotate(
+            app="target",
+            key_id=str(target["id"]),
+            grantor=narrow_manager,
+        )
+
+    capable_manager = ApplicationPrincipal(
+        app="manager",
+        key_id="manager-key",
+        permissions=frozenset({KEYS_MANAGE, CATALOG_READ, RETRIEVAL_MANAGE}),
+        collection_grants=frozenset({"slug:photos"}),
+    )
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        record = session.get(AppKeyRecord, str(target["id"]))
+        assert record is not None
+        record.monthly_download_quota_bytes = 1
+
+    with pytest.raises(Forbidden, match="quotas:manage"):
+        service.rotate(
+            app="target",
+            key_id=str(target["id"]),
+            grantor=capable_manager,
+        )
+
+
+def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
+    tmp_path: Path,
+) -> None:
+    service, config = app_keys(tmp_path)
+    created = create_key(
+        service,
+        app="review",
+        permissions=(RETRIEVAL_MANAGE,),
+        collection_grants=("slug:photos",),
+    )
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        session.add(
+            RetrievalJobRecord(
+                id="job-one",
+                app="review",
+                initiated_by_key_id=str(created["id"]),
+                event_context_json=None,
+                state="requested",
+                plan_etag="a" * 64,
+                constraints_json="{}",
+                created_at=str(created["created_at"]),
+                requested_at=str(created["created_at"]),
+                ready_at=None,
+                expires_at=None,
+                next_poll_at=str(created["created_at"]),
+            )
+        )
+        session.add(
+            KeyDownloadReservationRecord(
+                id="job:job-one",
+                key_id=str(created["id"]),
+                job_id="job-one",
+                kind="job",
+                month_started_at="2026-07-01T00:00:00.000000Z",
+                reserved_bytes=100,
+                created_at=str(created["created_at"]),
+                expires_at="2026-08-01T00:00:00.000000Z",
+            )
+        )
+
+    service.revoke(app="review", key_id=str(created["id"]))
+
+    with session_scope(factory) as session:
+        job = session.get(RetrievalJobRecord, "job-one")
+        assert job is not None
+        assert job.state == "canceled"
+        assert session.get(KeyDownloadReservationRecord, "job:job-one") is None
 
 
 def test_app_list_aggregates_and_filters_in_the_database(tmp_path: Path) -> None:

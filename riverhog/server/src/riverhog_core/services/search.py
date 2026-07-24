@@ -8,8 +8,10 @@ from riverhog_protocol.paths import PathNormalizationError, normalize_collection
 from sqlalchemy import asc, desc, func, literal, select
 from sqlalchemy.sql.elements import ColumnElement
 
+from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord
+from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
 
 _SORT_FIELDS = {"logical_path", "collection_id", "collection_path", "bytes"}
@@ -63,6 +65,7 @@ class SqlAlchemySearchService:
         order: str,
         collection: str | None = None,
         all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
@@ -79,11 +82,14 @@ class SqlAlchemySearchService:
                 normalized_collection = normalize_collection_id(collection)
             except PathNormalizationError as exc:
                 raise BadRequest(str(exc)) from exc
+            require_collection_access(principal, normalized_collection)
 
         logical_path_expr = (
             CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
         )
-        filters: list[ColumnElement[bool]] = []
+        filters: list[ColumnElement[bool]] = [
+            collection_access_filter(CollectionFileRecord.collection_id, principal)
+        ]
         query = q.strip() if q is not None else None
         if query:
             filters.append(

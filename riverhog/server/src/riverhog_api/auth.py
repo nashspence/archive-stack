@@ -15,6 +15,7 @@ from riverhog_core.app_permissions import (
     COLLECTIONS_UPLOAD,
     EVENTS_READ,
     KEYS_MANAGE,
+    QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
     ApplicationPrincipal,
 )
@@ -37,7 +38,8 @@ def authenticate_token(token: str, container: ServiceContainer) -> ApplicationPr
         return ApplicationPrincipal(
             app="bootstrap",
             key_id=None,
-            permissions=frozenset({KEYS_MANAGE}),
+            permissions=frozenset({KEYS_MANAGE, QUOTAS_MANAGE}),
+            collection_grants=frozenset({"*"}),
             unrestricted_delegation=True,
         )
     return container.app_keys.authenticate(supplied)
@@ -113,6 +115,10 @@ KeyManager = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(KEYS_MANAGE))),
 ]
+QuotaManager = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(QUOTAS_MANAGE))),
+]
 EventsReader = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(EVENTS_READ))),
@@ -128,6 +134,7 @@ __all__ = [
     "CollectionUploader",
     "EventsReader",
     "KeyManager",
+    "QuotaManager",
     "RetrievalManager",
     "authenticate_authorization_header",
     "authenticate_token",

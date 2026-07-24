@@ -5,14 +5,26 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
+from riverhog_core.app_permissions import KEYS_MANAGE, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.catalog_db import Base, create_catalog_engine, initialize_db
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_protocol.errors import DownloadAllowanceExceeded
+from time_formats import format_utc_timestamp, utc_now
 
 pytestmark = pytest.mark.integration
+
+BOOTSTRAP = ApplicationPrincipal(
+    app="bootstrap",
+    key_id=None,
+    permissions=frozenset({KEYS_MANAGE}),
+    collection_grants=frozenset({"*"}),
+    unrestricted_delegation=True,
+)
 
 
 @pytest.fixture
@@ -77,3 +89,46 @@ def test_postgres_serializes_reservations_across_service_instances(
     status = services[1].get_statuses()[0]
     assert status.accounted_bytes == 60
     assert status.reserved_bytes == 0
+
+
+def test_postgres_serializes_key_quota_reservations_across_service_instances(
+    database_url: str,
+) -> None:
+    config = _config(database_url)
+    key = SqlAlchemyAppKeyService(config).create(
+        app="review",
+        permissions=(RETRIEVAL_MANAGE,),
+        collection_grants=("*",),
+        grantor=BOOTSTRAP,
+    )
+    key_id = str(key["id"])
+    services = (
+        SqlAlchemyDownloadAllowance(config),
+        SqlAlchemyDownloadAllowance(config),
+    )
+    services[0].set_key_quota(app="review", key_id=key_id, monthly_bytes=100)
+    barrier = threading.Barrier(2)
+    expires_at = format_utc_timestamp(utc_now() + timedelta(days=1))
+
+    def reserve(item: tuple[int, SqlAlchemyDownloadAllowance]) -> bool:
+        index, service = item
+        barrier.wait()
+        try:
+            service.reserve_retrieval(
+                key_id=key_id,
+                job_id=f"job-{index}",
+                expected_bytes=60,
+                expires_at=expires_at,
+            )
+            return True
+        except DownloadAllowanceExceeded:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        accepted = list(executor.map(reserve, enumerate(services)))
+
+    assert accepted.count(True) == 1
+    status = services[0].get_key_quota(key_id=key_id)
+    assert status["accounted_bytes"] == 0
+    assert status["reserved_bytes"] == 60
+    assert status["remaining_bytes"] == 40

@@ -27,6 +27,7 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
+from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import apply_archive_receipt
 
@@ -290,7 +291,9 @@ class MemoryArchiveStore:
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
+        _ = attribution
         assert collection_id == COLLECTION_ID
         assert self.archive is not None
         self.read.append(object.object_id)
@@ -306,8 +309,13 @@ class MemoryArchiveStore:
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
-        yield from self.iter_archive_object(collection_id=collection_id, object=object)
+        yield from self.iter_archive_object(
+            collection_id=collection_id,
+            object=object,
+            attribution=attribution,
+        )
 
     def cleanup_archive_objects_read(
         self,

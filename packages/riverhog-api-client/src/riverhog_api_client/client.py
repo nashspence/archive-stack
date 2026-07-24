@@ -585,9 +585,13 @@ class ApiClient(_HttpApiClient):
         app: str,
         *,
         permissions: Sequence[str],
+        collection_grants: Sequence[str] = (),
         expires_in_seconds: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"permissions": list(permissions)}
+        payload: dict[str, Any] = {
+            "permissions": list(permissions),
+            "collection_grants": list(collection_grants),
+        }
         if expires_in_seconds is not None:
             payload["expires_in_seconds"] = expires_in_seconds
         return self._json(
@@ -631,6 +635,97 @@ class ApiClient(_HttpApiClient):
             "POST",
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/revoke",
         )
+
+    def rotate_app_key(self, app: str, key_id: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/rotate",
+        )
+
+    def list_app_key_collection_grants(
+        self,
+        app: str,
+        key_id: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "grant",
+        order: str = "asc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if all_items:
+            params["all"] = True
+        return self._json(
+            "GET",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/collection-grants",
+            params=params,
+        )
+
+    def replace_app_key_collection_grants(
+        self,
+        app: str,
+        key_id: str,
+        *,
+        collection_grants: Sequence[str],
+    ) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/collection-grants",
+            json={"collection_grants": list(collection_grants)},
+        )
+
+    def get_download_quota(self) -> dict[str, Any]:
+        return self._json("GET", "/v1/download-quota")
+
+    def set_app_key_download_quota(
+        self,
+        app: str,
+        key_id: str,
+        *,
+        monthly_bytes: int | None,
+    ) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/download-quota",
+            json={"monthly_bytes": monthly_bytes},
+        )
+
+    def list_download_quotas(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "app",
+        order: str = "asc",
+        app: str | None = None,
+        active: bool | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if app:
+            params["app"] = app
+        if active is not None:
+            params["active"] = str(active).lower()
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/download-quotas", params=params)
 
     def create_or_resume_archive_copy(
         self,

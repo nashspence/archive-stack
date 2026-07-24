@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
 from riverhog_core.runtime_config import RuntimeConfig
@@ -100,3 +101,27 @@ def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:
         "tax/invoice.pdf",
         "tax/receipt.pdf",
     ]
+
+
+def test_search_applies_slug_grants_in_the_database(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    principal = ApplicationPrincipal(
+        app="reader",
+        key_id="reader-key",
+        permissions=frozenset({CATALOG_READ}),
+        collection_grants=frozenset({"slug:other"}),
+    )
+
+    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
+        q=None,
+        page=1,
+        per_page=25,
+        sort="logical_path",
+        order="asc",
+        principal=principal,
+    )
+
+    assert payload["total"] == 0
+    assert payload["files"] == []

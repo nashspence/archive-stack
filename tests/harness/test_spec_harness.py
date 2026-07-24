@@ -7,9 +7,8 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from starlette.requests import Request
-
 from riverhog_api.routers.resourcesync import resourcesync_resource_list
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
@@ -18,6 +17,8 @@ from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingS
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
+from starlette.requests import Request
+
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -95,7 +96,12 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
     archive = harness.archive_reporting.get_report()
     resources = resourcesync_resource_list(
         _request(),
-        "local",
+        ApplicationPrincipal(
+            app="local",
+            key_id="local-key",
+            permissions=frozenset({CATALOG_READ}),
+            collection_grants=frozenset({"*"}),
+        ),
         SimpleNamespace(retrieval=harness.retrieval),
     )
 

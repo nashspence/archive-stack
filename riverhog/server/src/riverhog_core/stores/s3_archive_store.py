@@ -51,7 +51,7 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
-from riverhog_core.ports.download_allowance import DownloadAllowance
+from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.stores.s3_support import create_archive_s3_client, delete_exact_object
@@ -1659,11 +1659,13 @@ class S3ArchiveStore:
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
         return iter_decrypt_age_scrypt(
             self.iter_stored_archive_object(
                 collection_id=collection_id,
                 object=object,
+                attribution=attribution,
             ),
             self._config.archive_passphrase,
         )
@@ -1673,6 +1675,7 @@ class S3ArchiveStore:
         *,
         collection_id: str,
         object: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
         object_path = object.object_path
         head = self._head_object(object_key=object_path)
@@ -1698,6 +1701,7 @@ class S3ArchiveStore:
             store=self._store.name,
             expected_bytes=object.stored_bytes,
             content=content,
+            attribution=attribution,
         )
 
     def _iter_s3_stored_object(self, object_path: str) -> Iterator[bytes]:

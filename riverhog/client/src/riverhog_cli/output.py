@@ -171,6 +171,72 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _quota_limit(value: object) -> str:
+    if value is None:
+        return "unlimited"
+    try:
+        current = int(str(value))
+    except (TypeError, ValueError):
+        return "unknown"
+    return "blocked" if current == 0 else _bytes(current)
+
+
+def format_collection_grants(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"app: {payload.get('app', 'unknown')}",
+        f"key: {payload.get('key_id', 'unknown')}",
+        _page_line(payload, "grants"),
+    ]
+    lines.extend(f"- {grant.get('id', 'unknown')}" for grant in _items(payload, "grants"))
+    return "\n".join(lines)
+
+
+def format_collection_grant_set(payload: Mapping[str, object]) -> str:
+    grants = payload.get("collection_grants")
+    values = (
+        [str(item) for item in grants]
+        if isinstance(grants, Sequence) and not isinstance(grants, (str, bytes))
+        else []
+    )
+    return "\n".join(
+        [
+            "collection grants replaced",
+            f"app: {payload.get('app', 'unknown')}",
+            f"key: {payload.get('key_id', 'unknown')}",
+            "grants: " + (", ".join(values) if values else "none (collection access blocked)"),
+        ]
+    )
+
+
+def format_download_quota(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"app: {payload.get('app', 'unknown')}",
+            f"key: {payload.get('key_id', 'unknown')} ({payload.get('key_status', 'unknown')})",
+            f"monthly remote-download quota: {_quota_limit(payload.get('monthly_bytes'))}",
+            f"accounted: {_bytes(payload.get('accounted_bytes'))}",
+            f"reserved: {_bytes(payload.get('reserved_bytes'))}",
+            f"remaining: {_quota_limit(payload.get('remaining_bytes'))}",
+            f"resets: {payload.get('resets_at', 'unknown')}",
+        ]
+    )
+
+
+def format_download_quotas(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "quotas")]
+    for quota in _items(payload, "quotas"):
+        lines.append(
+            f"- {quota.get('app', 'unknown')}/{quota.get('key_id', 'unknown')}  "
+            f"status={quota.get('key_status', 'unknown')}  "
+            f"quota={_quota_limit(quota.get('monthly_bytes'))}  "
+            f"used={_bytes(quota.get('accounted_bytes'))}  "
+            f"reserved={_bytes(quota.get('reserved_bytes'))}  "
+            f"remaining={_quota_limit(quota.get('remaining_bytes'))}  "
+            f"resets={quota.get('resets_at', 'unknown')}"
+        )
+    return "\n".join(lines)
+
+
 def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
     collection_id = payload.get("collection_id")
     identity = str(collection_id) if collection_id else "server-assigned"

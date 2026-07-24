@@ -17,11 +17,13 @@ ETAG = "a" * 64
 
 
 class RetrievalStub:
-    def resource_list(self):
+    def resource_list(self, *, principal: object):
+        assert principal == "app"
         return [{"collection_id": COLLECTION_ID, "etag": ETAG}]
 
-    def change_list(self, *, after: int):
+    def change_list(self, *, after: int, principal: object):
         assert after == 2
+        assert principal == "app"
         return {
             "cursor": 3,
             "changes": [
@@ -34,8 +36,9 @@ class RetrievalStub:
             ],
         }
 
-    def collection_manifest(self, collection_id: str):
+    def collection_manifest(self, collection_id: str, *, principal: object):
         assert collection_id == COLLECTION_ID
+        assert principal == "app"
         return (
             {
                 "format": "riverhog-collection/v1",

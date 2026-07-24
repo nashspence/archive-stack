@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from riverhog_core.collection_access import require_collection_access
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
 from riverhog_api.deps import ContainerDep
@@ -22,8 +23,9 @@ router = APIRouter(tags=["archive"])
 def create_archive_copy(
     request: CreateArchiveCopyRequest,
     container: ContainerDep,
-    _principal: ArchiveManager,
+    principal: ArchiveManager,
 ) -> ArchiveCopyJobOut:
+    require_collection_access(principal, request.collection_id)
     return ArchiveCopyJobOut.model_validate(
         container.archive_copies.create_or_resume(
             request.collection_id,
@@ -40,8 +42,9 @@ def create_archive_copy(
 def plan_archive_copy_retirement(
     request: ArchiveCopyRetirementRequest,
     container: ContainerDep,
-    _principal: ArchiveManager,
+    principal: ArchiveManager,
 ) -> ArchiveCopyRetirementPlanOut:
+    require_collection_access(principal, request.collection_id)
     return ArchiveCopyRetirementPlanOut.model_validate(
         container.archive_copy_retirements.plan(
             request.collection_id,
@@ -57,8 +60,9 @@ def plan_archive_copy_retirement(
 def retire_archive_copy(
     request: RetireArchiveCopyRequest,
     container: ContainerDep,
-    _principal: ArchiveManager,
+    principal: ArchiveManager,
 ) -> ArchiveCopyRetirementResultOut:
+    require_collection_access(principal, request.collection_id)
     return ArchiveCopyRetirementResultOut.model_validate(
         container.archive_copy_retirements.retire(
             request.collection_id,
@@ -71,10 +75,13 @@ def retire_archive_copy(
 @router.get("/archive", response_model=ArchiveUsageReportOut)
 def get_archive_report(
     container: ContainerDep,
-    _principal: ArchiveReader,
+    principal: ArchiveReader,
     collection: str | None = Query(None),
 ) -> ArchiveUsageReportOut:
+    if collection is not None:
+        require_collection_access(principal, collection)
     payload = container.archive_reporting.get_report(
         collection=collection,
+        principal=principal,
     )
     return ArchiveUsageReportOut.model_validate(map_archive_usage_report(payload))
