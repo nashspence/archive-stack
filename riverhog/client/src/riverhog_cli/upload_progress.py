@@ -336,11 +336,14 @@ class CollectionUploadProgress:
             self._render_locked(force=True)
 
     def uploaded(self, delta: int) -> None:
-        if delta <= 0:
+        if delta == 0:
             return
         with self.lock:
-            self.accepted_bytes_this_run += delta
-            self.uploaded_bytes = min(self.uploaded_bytes + delta, max(self.bytes_total, 0))
+            self.accepted_bytes_this_run = max(0, self.accepted_bytes_this_run + delta)
+            self.uploaded_bytes = min(
+                max(0, self.uploaded_bytes + delta),
+                max(self.bytes_total, 0),
+            )
             self._render_locked(force=False)
 
     def resumed(self, delta: int) -> None:

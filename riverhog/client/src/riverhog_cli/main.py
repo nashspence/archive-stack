@@ -24,7 +24,10 @@ from cli_support.application_keys import (
 from cli_support.output import emit, format_list_ids
 from riverhog_age import plaintext_bytes_for_ciphertext_offset
 from riverhog_api_client.client import ApiClient
-from riverhog_api_client.ingress import iter_ingress_upload_parts
+from riverhog_api_client.ingress import (
+    DEFAULT_INGRESS_PART_BYTES,
+    iter_ingress_upload_parts,
+)
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -33,7 +36,6 @@ from riverhog_protocol.paths import (
     normalize_upload_timestamp,
 )
 from time_formats import parse_duration, utc_timestamp_now
-from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
 from riverhog_cli.local import local_app
 from riverhog_cli.output import (
@@ -63,7 +65,7 @@ app.add_typer(application_app, name="app")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_CHUNK_BYTES = DEFAULT_TUS_UPLOAD_CHUNK_MIB * 1024 * 1024
+UPLOAD_CHUNK_BYTES = DEFAULT_INGRESS_PART_BYTES
 UPLOAD_FILE_CONCURRENCY = 8
 UPLOAD_FILE_CONCURRENCY_MAX = 64
 UPLOAD_FILE_WINDOW_MAX = 256
@@ -738,11 +740,6 @@ def _upload_collection_file(
                             UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
                         )
                         continue
-                    if recovered_offset < offset:
-                        raise RuntimeError(
-                            f"server upload offset for {path_value} moved backward to "
-                            f"{recovered_offset}; expected at least {offset}"
-                        ) from exc
                     if recovered_offset > length:
                         raise RuntimeError(
                             f"server upload offset for {path_value} is {recovered_offset}, "
@@ -750,15 +747,22 @@ def _upload_collection_file(
                         ) from exc
                     completed_before = completed_plaintext(offset)
                     completed_after = completed_plaintext(recovered_offset)
-                    if progress is not None and completed_after > completed_before:
+                    if progress is not None and completed_after != completed_before:
                         progress(completed_after - completed_before)
                     chunk_end = offset + len(chunk)
+                    previous_offset = offset
                     offset = recovered_offset
                     if recovered_offset == chunk_end:
                         _log_upload(
                             f"Server accepted chunk for {path_value} before the response "
                             f"was lost; continuing at {_format_bytes(recovered_offset)}"
                         )
+                    elif recovered_offset < previous_offset:
+                        _log_upload(
+                            f"Upload storage rolled {path_value} back to its authoritative "
+                            f"offset {_format_bytes(recovered_offset)}; resending from there"
+                        )
+                        restart_at_recovered_offset = True
                     else:
                         _log_upload(
                             f"Server retained part of the interrupted upload for "

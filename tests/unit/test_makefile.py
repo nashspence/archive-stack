@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from riverhog_api_client.ingress import DEFAULT_INGRESS_PART_BYTES
 from riverhog_core.runtime_config import load_runtime_config
 from yaml.nodes import MappingNode, Node, SequenceNode
 
@@ -125,6 +126,10 @@ def test_checked_in_compose_streams_tusd_into_the_ingress_object_store() -> None
     assert '- "-s3-bucket"' in compose_text
     assert '- "-s3-endpoint"' in compose_text
     assert '- "${RIVERHOG_TUSD_NETWORK_TIMEOUT:-10m}"' in compose_text
+    assert (
+        f'- "${{RIVERHOG_UPLOAD_CHUNK_BYTES:-{DEFAULT_INGRESS_PART_BYTES}}}"'
+        in compose_text
+    )
     assert '"pre-create,post-finish"' in compose_text
 
 

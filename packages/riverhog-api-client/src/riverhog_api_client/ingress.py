@@ -5,8 +5,16 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from riverhog_age import AEAD_TAG_SIZE, CHUNK_SIZE, ResumableAgeScryptSession, UploadState
+from riverhog_age import (
+    AEAD_TAG_SIZE,
+    CHUNK_SIZE,
+    ResumableAgeScryptSession,
+    UploadState,
+    plaintext_bytes_for_ciphertext_offset,
+)
 from riverhog_protocol.ingress import INGRESS_ENCRYPTION_FORMAT
+
+DEFAULT_INGRESS_PART_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,14 +43,13 @@ def iter_ingress_upload_parts(
         raise ValueError("ingress encryption lengths are invalid")
     if source_path.stat().st_size != plaintext_bytes:
         raise ValueError("ingress upload source length changed")
+    if target_part_bytes <= 0:
+        raise ValueError("ingress upload part size must be positive")
     session = ResumableAgeScryptSession.from_state(
         str(descriptor["passphrase"]),
         UploadState.from_json_bytes(json.dumps(dict(state_value))),
     )
-    chunks_per_part = max(
-        1,
-        (target_part_bytes - len(session.age_prefix)) // (CHUNK_SIZE + AEAD_TAG_SIZE),
-    )
+    chunks_per_part = max(1, min(64, target_part_bytes // (CHUNK_SIZE + AEAD_TAG_SIZE)))
     plans = session.s3_part_plans(
         plaintext_bytes,
         chunks_per_part=chunks_per_part,
@@ -63,6 +70,17 @@ def iter_ingress_upload_parts(
     if start_index is None:
         raise ValueError("ingress upload offset is not covered by the encryption plan")
 
+    def completed_plaintext(offset: int) -> int:
+        return plaintext_bytes_for_ciphertext_offset(
+            state=state_value,
+            plaintext_bytes=plaintext_bytes,
+            ciphertext_bytes=ciphertext_bytes,
+            ciphertext_offset=offset,
+        )
+
+    next_offset = ciphertext_offset
+    request_bytes = target_part_bytes - (next_offset % target_part_bytes)
+    pending = bytearray()
     with source_path.open("rb") as source:
         for plan in plans[start_index:]:
 
@@ -75,24 +93,35 @@ def iter_ingress_upload_parts(
                 provider,
                 plaintext_size=plaintext_bytes,
             )
-            part_offset = plan.ciphertext_start
-            plaintext_start = plan.plaintext_start
-            plaintext_len = plan.plaintext_len
             if plan is plans[start_index] and ciphertext_offset > plan.ciphertext_start:
                 skipped_ciphertext = ciphertext_offset - plan.ciphertext_start
-                payload_skip = skipped_ciphertext
-                if plan.includes_age_prefix:
-                    prefix_bytes = len(session.age_prefix)
-                    payload_skip = max(0, skipped_ciphertext - prefix_bytes)
-                skipped_chunks = payload_skip // (CHUNK_SIZE + AEAD_TAG_SIZE)
-                skipped_plaintext = min(skipped_chunks * CHUNK_SIZE, plaintext_len)
                 encrypted = encrypted[skipped_ciphertext:]
-                part_offset = ciphertext_offset
-                plaintext_start += skipped_plaintext
-                plaintext_len -= skipped_plaintext
-            yield IngressUploadPart(
-                ciphertext_offset=part_offset,
-                ciphertext=encrypted,
-                plaintext_start=plaintext_start,
-                plaintext_bytes=plaintext_len,
-            )
+            cursor = 0
+            while cursor < len(encrypted):
+                take = min(request_bytes - len(pending), len(encrypted) - cursor)
+                pending.extend(encrypted[cursor : cursor + take])
+                cursor += take
+                if len(pending) != request_bytes:
+                    continue
+                part_end = next_offset + len(pending)
+                plaintext_start = completed_plaintext(next_offset)
+                plaintext_end = completed_plaintext(part_end)
+                yield IngressUploadPart(
+                    ciphertext_offset=next_offset,
+                    ciphertext=bytes(pending),
+                    plaintext_start=plaintext_start,
+                    plaintext_bytes=plaintext_end - plaintext_start,
+                )
+                next_offset = part_end
+                request_bytes = target_part_bytes
+                pending.clear()
+    if pending:
+        part_end = next_offset + len(pending)
+        plaintext_start = completed_plaintext(next_offset)
+        plaintext_end = completed_plaintext(part_end)
+        yield IngressUploadPart(
+            ciphertext_offset=next_offset,
+            ciphertext=bytes(pending),
+            plaintext_start=plaintext_start,
+            plaintext_bytes=plaintext_end - plaintext_start,
+        )

@@ -144,6 +144,7 @@ def test_upload_streams_client_encrypted_bytes_and_reports_plaintext_progress(
 
     ciphertext = b"".join(uploaded)
     assert len(ciphertext) == descriptor["ciphertext_bytes"]
+    assert all(len(chunk) == 70_000 for chunk in uploaded[:-1])
     assert sum(progress) == len(content)
     assert b"".join(iter_decrypt_age_scrypt([ciphertext], str(descriptor["passphrase"]))) == content
 
@@ -260,16 +261,17 @@ def test_ingress_resume_accepts_an_offset_inside_an_encrypted_chunk(tmp_path: Pa
     )
     resume_offset = 12_345
 
-    resumed = b"".join(
-        part.ciphertext
-        for part in iter_ingress_upload_parts(
+    resumed_parts = list(
+        iter_ingress_upload_parts(
             source,
             descriptor,
             ciphertext_offset=resume_offset,
             target_part_bytes=250_000,
         )
     )
+    resumed = b"".join(part.ciphertext for part in resumed_parts)
 
+    assert len(resumed_parts[0].ciphertext) == 250_000 - resume_offset
     assert resumed == ciphertext[resume_offset:]
     assert (
         b"".join(
@@ -339,6 +341,67 @@ def test_upload_resumes_after_server_retains_a_partial_ciphertext_chunk(
     )
 
 
+def test_upload_resends_from_an_authoritative_storage_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    content = (b"authoritative storage rollback\n" * 10_000) + b"end"
+    source = tmp_path / "clip.bin"
+    source.write_bytes(content)
+    descriptor = _descriptor(tmp_path, content=content)
+    ciphertext = b"".join(
+        part.ciphertext
+        for part in iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=70_000,
+        )
+    )
+    accepted = bytearray(ciphertext[:70_000])
+    progress: list[int] = []
+    resumed: list[int] = []
+    successful_patches = 0
+    rolled_back = False
+    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
+
+    class Api:
+        def create_or_resume_collection_file_upload(
+            self, _collection_id: str, _path: str
+        ) -> dict[str, object]:
+            return {
+                "upload_url": "https://uploads.test/opaque",
+                "offset": len(accepted),
+                "length": descriptor["ciphertext_bytes"],
+                "checksum_algorithm": "sha256",
+                "encryption": descriptor,
+            }
+
+        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
+            nonlocal rolled_back, successful_patches
+            assert kwargs["offset"] == len(accepted)
+            if successful_patches == 1 and not rolled_back:
+                rolled_back = True
+                del accepted[105_000:]
+                raise riverhog_main.Conflict("authoritative offset changed")
+            accepted.extend(bytes(kwargs["content"]))
+            successful_patches += 1
+            return {"offset": len(accepted), "expires_at": None}
+
+    riverhog_main._upload_collection_file(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        source,
+        {"path": "clip.bin", "bytes": len(content)},
+        progress=progress.append,
+        resumed=resumed.append,
+    )
+
+    assert rolled_back
+    assert bytes(accepted) == ciphertext
+    assert sum(resumed) + sum(progress) == len(content)
+
+
 def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -389,12 +452,28 @@ def test_upload_wait_mode_defaults_to_finalized(monkeypatch: pytest.MonkeyPatch)
     assert riverhog_main._normalize_upload_wait_mode("staged") == "staged"
 
 
-def test_upload_chunk_size_defaults_to_shared_tus_setting(
+def test_upload_chunk_size_defaults_to_tusd_s3_part_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RIVERHOG_UPLOAD_CHUNK_BYTES", raising=False)
 
-    assert riverhog_main._upload_chunk_bytes() == 64 * 1024 * 1024
+    assert riverhog_main._upload_chunk_bytes() == 50 * 1024 * 1024
+
+
+def test_upload_progress_tracks_authoritative_storage_rollback() -> None:
+    progress = CollectionUploadProgress(
+        collection_id=COLLECTION_ID,
+        files_total=1,
+        bytes_total=200,
+        uploaded_bytes=70,
+        interval_seconds=3600,
+    )
+
+    progress.uploaded(50)
+    progress.uploaded(-15)
+
+    assert progress.uploaded_bytes == 105
+    assert progress.accepted_bytes_this_run == 35
 
 
 @pytest.mark.parametrize(("concurrency", "expected_overlap"), [(1, 1), (2, 2)])
