@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
+from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
@@ -11,6 +11,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
 )
@@ -30,8 +31,16 @@ def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
+            CollectionSlugRecord(
+                id="docs",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
             CollectionRecord(
                 id="docs/20250102T030405Z",
+                slug="docs",
                 manifest_etag="0" * 64,
             )
         )
@@ -152,8 +161,16 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
+            CollectionSlugRecord(
+                id="pending",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
             CollectionUploadRecord(
                 collection_id="pending/20250103T030405Z",
+                slug="pending",
                 archive_store="deep",
                 state="archiving",
             )
@@ -191,8 +208,7 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         principal=ApplicationPrincipal(
             app="docs-reader",
             key_id="docs-key",
-            permissions=frozenset({ARCHIVES_READ}),
-            collection_grants=frozenset({"slug:docs"}),
+            access=frozenset({ApplicationAccess(ARCHIVES_READ, "slug:docs")}),
         )
     )
     assert restricted.totals.collections == 1

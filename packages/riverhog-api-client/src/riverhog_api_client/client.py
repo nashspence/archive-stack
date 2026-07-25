@@ -584,13 +584,11 @@ class ApiClient(_HttpApiClient):
         self,
         app: str,
         *,
-        permissions: Sequence[str],
-        collection_grants: Sequence[str] = (),
+        access: Sequence[Mapping[str, str]],
         expires_in_seconds: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "permissions": list(permissions),
-            "collection_grants": list(collection_grants),
+            "access": [dict(current) for current in access],
         }
         if expires_in_seconds is not None:
             payload["expires_in_seconds"] = expires_in_seconds
@@ -642,7 +640,7 @@ class ApiClient(_HttpApiClient):
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/rotate",
         )
 
-    def list_app_key_collection_grants(
+    def list_app_key_access(
         self,
         app: str,
         key_id: str,
@@ -650,7 +648,7 @@ class ApiClient(_HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "grant",
+        sort: str = "permission",
         order: str = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -666,22 +664,50 @@ class ApiClient(_HttpApiClient):
             params["all"] = True
         return self._json(
             "GET",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/collection-grants",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
             params=params,
         )
 
-    def replace_app_key_collection_grants(
+    def replace_app_key_access(
         self,
         app: str,
         key_id: str,
         *,
-        collection_grants: Sequence[str],
+        access: Sequence[Mapping[str, str]],
     ) -> dict[str, Any]:
         return self._json(
             "PUT",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/collection-grants",
-            json={"collection_grants": list(collection_grants)},
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            json={"access": [dict(current) for current in access]},
         )
+
+    def create_slug(self, slug: str) -> dict[str, Any]:
+        return self._json("POST", "/v1/slugs", json={"id": slug})
+
+    def get_slug(self, slug: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/slugs/{quote(slug, safe='')}")
+
+    def list_slugs(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "id",
+        order: str = "asc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/slugs", params=params)
 
     def get_download_quota(self) -> dict[str, Any]:
         return self._json("GET", "/v1/download-quota")

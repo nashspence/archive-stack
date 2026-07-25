@@ -41,13 +41,13 @@ from time_formats import parse_duration, utc_timestamp_now
 
 from riverhog_cli.local import local_app
 from riverhog_cli.output import (
+    format_app_access,
+    format_app_access_set,
     format_archive_copy_job,
     format_archive_copy_retirement_plan,
     format_archive_copy_retirement_result,
     format_collection_deletion_plan,
     format_collection_deletion_result,
-    format_collection_grant_set,
-    format_collection_grants,
     format_collection_summary,
     format_collection_upload,
     format_collection_upload_plan,
@@ -56,6 +56,8 @@ from riverhog_cli.output import (
     format_download_quotas,
     format_file_selectors,
     format_find,
+    format_slug,
+    format_slugs,
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
 
@@ -64,14 +66,16 @@ collection_app = typer.Typer(help="Collection catalog and upload operations.")
 archive_app = typer.Typer(help="Archive-store operations.")
 application_app = typer.Typer(help="Application access.")
 app_key_app = typer.Typer(help="Application key management.")
-app_key_grant_app = typer.Typer(help="Per-key collection access grants.")
+app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
-app_key_app.add_typer(app_key_grant_app, name="grant")
+slug_app = typer.Typer(help="Collection slug catalog.")
+app_key_app.add_typer(app_key_access_app, name="access")
 app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 app.add_typer(archive_app, name="archive")
 app.add_typer(application_app, name="app")
+app.add_typer(slug_app, name="slug")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -127,7 +131,8 @@ def _root(ctx: typer.Context) -> None:
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
-_APP_KEY_GRANT_SORT_FIELDS = {"grant", "created_at"}
+_APP_KEY_ACCESS_SORT_FIELDS = {"permission", "resource", "created_at"}
+_SLUG_SORT_FIELDS = {"id", "created_at", "collections", "uploads"}
 _APP_KEY_QUOTA_SORT_FIELDS = {
     "app",
     "key_id",
@@ -172,6 +177,15 @@ def _monthly_quota_bytes(value: str) -> int | None:
     return int(match.group("count")) * _BYTE_SIZE_FACTORS[match.group("unit") or ""]
 
 
+def _access(value: str) -> dict[str, str]:
+    permission, separator, resource = value.strip().partition("=")
+    if not permission:
+        raise typer.BadParameter("access requires a permission", param_hint="--allow")
+    if separator and not resource:
+        raise typer.BadParameter("access resource must not be empty", param_hint="--allow")
+    return {"permission": permission, "resource": resource if separator else "*"}
+
+
 @application_app.command("list")
 def app_list_cmd(
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
@@ -210,24 +224,71 @@ def app_list_cmd(
     emit(payload if json_mode else format_apps(payload), json_mode=json_mode)
 
 
+@slug_app.command("create")
+def slug_create_cmd(
+    slug: Annotated[str, typer.Argument(help="Canonical slug id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Create a slug and grant this key upload access to it."""
+
+    payload = client().create_slug(slug)
+    emit(payload if json_mode else format_slug(payload), json_mode=json_mode)
+
+
+@slug_app.command("show")
+def slug_show_cmd(
+    slug: Annotated[str, typer.Argument(help="Slug id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one catalog-visible slug."""
+
+    payload = client().get_slug(slug)
+    emit(payload if json_mode else format_slug(payload), json_mode=json_mode)
+
+
+@slug_app.command("list")
+def slug_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over slug ids"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching slug")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one slug id per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List catalog-visible slugs."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_SLUG_SORT_FIELDS)
+    payload = client().list_slugs(
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "slugs"), json_mode=False)
+        return
+    emit(payload if json_mode else format_slugs(payload), json_mode=json_mode)
+
+
 @app_key_app.command("create")
 def app_key_create_cmd(
     app_name: Annotated[str, typer.Argument(help="Application name")],
-    permission: Annotated[
+    allow: Annotated[
         list[str],
         typer.Option(
-            "--permission",
-            help="Permission to grant; repeat for more than one.",
+            "--allow",
+            help="PERMISSION or PERMISSION=RESOURCE; repeat for more than one.",
         ),
     ],
-    collection_grant: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--collection-grant",
-            "--grant",
-            help="Collection access: *, slug:<slug>, or collection:<id>; repeat as needed.",
-        ),
-    ] = None,
     expires_in: Annotated[
         str | None,
         typer.Option("--expires-in", help="Optional key lifetime such as 30d"),
@@ -249,8 +310,7 @@ def app_key_create_cmd(
             )
     payload = client().create_app_key(
         app_name,
-        permissions=permission,
-        collection_grants=collection_grant or [],
+        access=[_access(current) for current in allow],
         expires_in_seconds=expires_in_seconds,
     )
     emit(payload if json_mode else format_app_key_created(payload), json_mode=json_mode)
@@ -320,28 +380,28 @@ def app_key_rotate_cmd(
     emit(payload if json_mode else format_app_key_rotated(payload), json_mode=json_mode)
 
 
-@app_key_grant_app.command("list")
-def app_key_grant_list_cmd(
+@app_key_access_app.command("list")
+def app_key_access_list_cmd(
     app_name: Annotated[str, typer.Argument(help="Application name")],
     key_id: Annotated[str, typer.Argument(help="Key id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "grant",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "permission",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Substring match over grants"),
+        typer.Option("--query", "-q", help="Substring match over permissions and resources"),
     ] = None,
     all_items: Annotated[bool, typer.Option("--all", help="Return every matching grant")] = False,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one grant per line")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one access binding per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List a key's exact collection grants."""
+    """List a key's exact permission and resource bindings."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    normalized_order = _list_order(sort, order, fields=_APP_KEY_GRANT_SORT_FIELDS)
-    payload = client().list_app_key_collection_grants(
+    normalized_order = _list_order(sort, order, fields=_APP_KEY_ACCESS_SORT_FIELDS)
+    payload = client().list_app_key_access(
         app_name,
         key_id,
         page=page,
@@ -352,32 +412,32 @@ def app_key_grant_list_cmd(
         all_items=all_items,
     )
     if ids:
-        emit(format_list_ids(payload, "grants"), json_mode=False)
+        emit(format_list_ids(payload, "access"), json_mode=False)
         return
-    emit(payload if json_mode else format_collection_grants(payload), json_mode=json_mode)
+    emit(payload if json_mode else format_app_access(payload), json_mode=json_mode)
 
 
-@app_key_grant_app.command("set")
-def app_key_grant_set_cmd(
+@app_key_access_app.command("set")
+def app_key_access_set_cmd(
     app_name: Annotated[str, typer.Argument(help="Application name")],
     key_id: Annotated[str, typer.Argument(help="Key id")],
-    grant: Annotated[
-        list[str] | None,
+    allow: Annotated[
+        list[str],
         typer.Option(
-            "--grant",
-            help="Replacement grant: *, slug:<slug>, or collection:<id>; repeat as needed.",
+            "--allow",
+            help="Replacement PERMISSION or PERMISSION=RESOURCE; repeat as needed.",
         ),
-    ] = None,
+    ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Replace collection grants; no --grant blocks all collection access."""
+    """Replace every permission and resource binding for a key."""
 
-    payload = client().replace_app_key_collection_grants(
+    payload = client().replace_app_key_access(
         app_name,
         key_id,
-        collection_grants=grant or [],
+        access=[_access(current) for current in allow],
     )
-    emit(payload if json_mode else format_collection_grant_set(payload), json_mode=json_mode)
+    emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
 
 
 @app_key_quota_app.command("show")

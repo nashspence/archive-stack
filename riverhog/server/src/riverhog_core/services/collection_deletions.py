@@ -249,7 +249,7 @@ class SqlAlchemyCollectionDeletionService:
                             if execution.get("key_id") is not None
                             else None
                         ),
-                        permissions=frozenset(),
+                        access=frozenset(),
                     ),
                     event_context_json=(
                         str(execution["event_context_json"])

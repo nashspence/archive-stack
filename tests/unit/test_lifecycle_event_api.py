@@ -11,6 +11,7 @@ from riverhog_api.routers.events import router as events_router
 from riverhog_core.app_permissions import (
     EVENTS_READ,
     EVENTS_READ_ALL,
+    ApplicationAccess,
     ApplicationPrincipal,
 )
 from riverhog_core.catalog_db import initialize_db
@@ -31,16 +32,18 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
     grantor = ApplicationPrincipal(
         app="bootstrap",
         key_id=None,
-        permissions=frozenset(),
+        access=frozenset(),
         unrestricted_delegation=True,
     )
     alpha_token = str(
-        app_keys.create(app="alpha", permissions=[EVENTS_READ], grantor=grantor)["token"]
+        app_keys.create(
+            app="alpha", access=[ApplicationAccess(EVENTS_READ)], grantor=grantor
+        )["token"]
     )
     operator_token = str(
         app_keys.create(
             app="operator",
-            permissions=[EVENTS_READ_ALL],
+            access=[ApplicationAccess(EVENTS_READ_ALL)],
             grantor=grantor,
         )["token"]
     )

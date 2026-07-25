@@ -6,7 +6,7 @@ from sqlalchemy import case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
@@ -71,7 +71,7 @@ class SqlAlchemyArchiveReportingService:
             if collection is None and (
                 principal is None
                 or principal.unrestricted_delegation
-                or "*" in principal.collection_grants
+                or principal.allows(ARCHIVES_READ, "*")
             ):
                 _ensure_usage_snapshot(session, totals=totals)
                 session.flush()
@@ -151,7 +151,7 @@ def _collection_usage_reports(
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id)
         .outerjoin(archive_stats, archive_stats.c.collection_id == CollectionRecord.id)
         .order_by(CollectionRecord.id.asc())
-        .where(collection_access_filter(CollectionRecord.id, principal))
+        .where(collection_access_filter(CollectionRecord.id, principal, ARCHIVES_READ))
     )
     if collection_filter is not None:
         collection_query = collection_query.where(CollectionRecord.id == collection_filter)
@@ -201,7 +201,9 @@ def _collection_usage_reports(
         .where(
             _reportable_upload_expression(),
             ~accepted_collection,
-            collection_access_filter(CollectionUploadRecord.collection_id, principal),
+            collection_access_filter(
+                CollectionUploadRecord.collection_id, principal, ARCHIVES_READ
+            ),
         )
         .order_by(CollectionUploadRecord.collection_id.asc())
     )
@@ -258,7 +260,7 @@ def _archive_usage_totals(
             func.coalesce(stored.c.stored_bytes, 0).label("measured_storage_bytes"),
         )
         .outerjoin(stored, stored.c.collection_id == CollectionRecord.id)
-        .where(collection_access_filter(CollectionRecord.id, principal))
+        .where(collection_access_filter(CollectionRecord.id, principal, ARCHIVES_READ))
     )
     pending = select(
         CollectionUploadRecord.collection_id.label("collection_id"),
@@ -266,7 +268,7 @@ def _archive_usage_totals(
         literal(0).label("measured_storage_bytes"),
     ).where(
         _reportable_upload_expression(),
-        collection_access_filter(CollectionUploadRecord.collection_id, principal),
+        collection_access_filter(CollectionUploadRecord.collection_id, principal, ARCHIVES_READ),
         ~select(CollectionRecord.id)
         .where(CollectionRecord.id == CollectionUploadRecord.collection_id)
         .exists(),

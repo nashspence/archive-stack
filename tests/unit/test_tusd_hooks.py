@@ -11,6 +11,7 @@ from riverhog_api.routers.internal import authorize_tusd_data_plane, handle_tusd
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_UPLOAD,
+    ApplicationAccess,
     ApplicationPrincipal,
 )
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
@@ -65,13 +66,12 @@ def _hook_payload(kind: str, upload_id: str) -> dict[str, object]:
 
 def _container_with_permissions(
     *permissions: str,
-    collection_grants: frozenset[str] = frozenset({"*"}),
+    resource: str = "*",
 ) -> SimpleNamespace:
     principal = ApplicationPrincipal(
         app="uploader",
         key_id="key",
-        permissions=frozenset(permissions),
-        collection_grants=collection_grants,
+        access=frozenset(ApplicationAccess(permission, resource) for permission in permissions),
     )
 
     class Keys:
@@ -135,7 +135,7 @@ def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(
     assert calls == [upload_id]
 
 
-def test_post_finish_application_token_requires_the_collection_grant(
+def test_post_finish_application_token_requires_upload_access_for_the_slug(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
@@ -151,7 +151,7 @@ def test_post_finish_application_token_requires_the_collection_grant(
 
     container = _container_with_permissions(
         COLLECTIONS_UPLOAD,
-        collection_grants=frozenset({"slug:other"}),
+        resource="slug:other",
     )
     container.collections = Collections()
     monkeypatch.setattr("riverhog_api.routers.internal.default_container", lambda: container)
@@ -174,7 +174,7 @@ def test_tusd_metadata_contains_only_the_opaque_upload_id() -> None:
     assert base64.b64decode(encoded).decode("ascii") == tusd_upload_id_for_target_path(target_path)
 
 
-def test_tusd_data_plane_auth_requires_upload_permission_and_collection_grant() -> None:
+def test_tusd_data_plane_auth_requires_upload_access_for_the_slug() -> None:
     upload_id = ".riverhog/uploads/by-target/" + "c" * 64
     request = _request(
         method="GET",
@@ -187,7 +187,7 @@ def test_tusd_data_plane_auth_requires_upload_permission_and_collection_grant() 
 
     allowed = _container_with_permissions(
         COLLECTIONS_UPLOAD,
-        collection_grants=frozenset({"slug:example"}),
+        resource="slug:example",
     )
     allowed.collections = SimpleNamespace(
         collection_id_for_upload_id=lambda value: (
@@ -210,7 +210,7 @@ def test_tusd_data_plane_auth_requires_upload_permission_and_collection_grant() 
 
     wrong_collection = _container_with_permissions(
         COLLECTIONS_UPLOAD,
-        collection_grants=frozenset({"slug:other"}),
+        resource="slug:other",
     )
     wrong_collection.collections = allowed.collections
     forbidden = authorize_tusd_data_plane(request, wrong_collection)

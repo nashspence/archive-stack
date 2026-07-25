@@ -6,13 +6,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
     CollectionUploadFileRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
@@ -131,6 +132,17 @@ def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyColl
     )
 
 
+def _seed_slug(path: Path, slug: str) -> None:
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        session.add(
+            CollectionSlugRecord(
+                id=slug,
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+
+
 def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyRecord:
     collection_id = "alpha/20250101T000000Z"
     verified_at = "2026-07-14T00:00:00Z"
@@ -175,11 +187,27 @@ def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyReco
 def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
+        session.add_all(
+            [
+                CollectionSlugRecord(
+                    id=slug,
+                    created_by_app="fixture",
+                    created_at="2026-01-01T00:00:00.000000Z",
+                )
+                for slug in ("alpha", "beta")
+            ]
+        )
         for collection_id, size in (
             ("alpha/20250101T000000Z", 10),
             ("beta/20250102T000000Z", 20),
         ):
-            session.add(CollectionRecord(id=collection_id, manifest_etag="0" * 64))
+            session.add(
+                CollectionRecord(
+                    id=collection_id,
+                    slug=collection_id.split("/", 1)[0],
+                    manifest_etag="0" * 64,
+                )
+            )
             session.add(
                 CollectionFileRecord(
                     collection_id=collection_id,
@@ -231,8 +259,9 @@ def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> 
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        permissions=frozenset({CATALOG_READ}),
-        collection_grants=frozenset({"collection:beta/20250102T000000Z"}),
+        access=frozenset(
+            {ApplicationAccess(CATALOG_READ, "collection:beta/20250102T000000Z")}
+        ),
     )
 
     page = _service(path).list(
@@ -257,6 +286,7 @@ def test_same_slug_and_second_with_different_manifest_conflicts(
 ) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
+    _seed_slug(path, "photos")
     service = _service(path)
     monkeypatch.setattr(
         collections,
@@ -277,11 +307,23 @@ def test_same_slug_and_second_with_different_manifest_conflicts(
         )
 
 
+def test_collection_upload_requires_a_registered_slug(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+
+    with pytest.raises(NotFound, match="collection slug not found: photos"):
+        _service(path).create_or_resume_upload_session(
+            upload_slug="photos",
+            upload_timestamp="20250103T000000Z",
+        )
+
+
 def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
+    _seed_slug(path, "encrypted")
     upload_store = UploadStoreStub()
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
@@ -317,6 +359,7 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
 def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
+    _seed_slug(path, "repeat")
     service = _service(path)
     upload_ids: list[str] = []
 
@@ -345,6 +388,7 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     file_count = 8
     worker_count = 4
     upload_store = ConcurrentCancelUploadStore(worker_count)
+    _seed_slug(path, "cancel-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
         upload_slug="cancel-me",
@@ -375,6 +419,7 @@ def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     file_count = 8
     worker_count = 4
     upload_store = ConcurrentVerifyUploadStore(worker_count)
+    _seed_slug(path, "verify-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
         upload_slug="verify-me",
@@ -412,6 +457,7 @@ def test_collection_upload_completion_persists_missing_target_state(tmp_path: Pa
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     upload_store = MissingTargetUploadStore()
+    _seed_slug(path, "missing-target")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
         upload_slug="missing-target",

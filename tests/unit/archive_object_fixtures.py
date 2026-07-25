@@ -17,6 +17,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
 )
 from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import (
@@ -129,7 +130,19 @@ def seed_archive_copy(
             current.collection_id,
             ((file.path, file.bytes, file.sha256) for file in current.files),
         )
-        collection = CollectionRecord(id=current.collection_id, manifest_etag=manifest_etag)
+        slug = current.collection_id.split("/", 1)[0]
+        session.add(
+            CollectionSlugRecord(
+                id=slug,
+                created_by_app="fixture",
+                created_at=UPLOADED_AT,
+            )
+        )
+        collection = CollectionRecord(
+            id=current.collection_id,
+            slug=slug,
+            manifest_etag=manifest_etag,
+        )
         session.add(collection)
         for file in current.files:
             session.add(

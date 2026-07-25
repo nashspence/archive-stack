@@ -164,13 +164,16 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
     assert callable(client.create_app_key)
 
 
-def test_client_manages_application_keys_with_explicit_permissions() -> None:
+def test_client_manages_application_keys_with_explicit_access() -> None:
     client = RecordingClient()
 
     client.list_apps(q="local", active=True, all_items=True)
     client.create_app_key(
         "local",
-        permissions=["catalog:read", "retrieval:manage"],
+        access=[
+            {"permission": "catalog:read", "resource": "slug:photos"},
+            {"permission": "retrieval:manage", "resource": "slug:photos"},
+        ],
         expires_in_seconds=3600,
     )
     client.list_app_keys("local", active=False, all_items=True)
@@ -197,8 +200,10 @@ def test_client_manages_application_keys_with_explicit_permissions() -> None:
             "/v1/apps/local/keys",
             {
                 "json": {
-                    "permissions": ["catalog:read", "retrieval:manage"],
-                    "collection_grants": [],
+                    "access": [
+                        {"permission": "catalog:read", "resource": "slug:photos"},
+                        {"permission": "retrieval:manage", "resource": "slug:photos"},
+                    ],
                     "expires_in_seconds": 3600,
                 }
             },
@@ -221,6 +226,31 @@ def test_client_manages_application_keys_with_explicit_permissions() -> None:
             "POST",
             "/v1/apps/local/keys/0123456789abcdef/revoke",
             {},
+        ),
+    ]
+
+
+def test_client_manages_explicit_slugs() -> None:
+    client = RecordingClient()
+    client.create_slug("photos")
+    client.get_slug("photos")
+    client.list_slugs(q="photo", all_items=True)
+    assert client.calls == [
+        ("POST", "/v1/slugs", {"json": {"id": "photos"}}),
+        ("GET", "/v1/slugs/photos", {}),
+        (
+            "GET",
+            "/v1/slugs",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "id",
+                    "order": "asc",
+                    "q": "photo",
+                    "all": True,
+                }
+            },
         ),
     ]
 

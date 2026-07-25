@@ -6,10 +6,23 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from riverhog_core.catalog_db import Base
 
 
+class CollectionSlugRecord(Base):
+    __tablename__ = "collection_slugs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_by_app: Mapped[str] = mapped_column(String)
+    created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+
+    collections: Mapped[list[CollectionRecord]] = relationship(back_populates="slug_record")
+    uploads: Mapped[list[CollectionUploadRecord]] = relationship(back_populates="slug_record")
+
+
 class CollectionRecord(Base):
     __tablename__ = "collections"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    slug: Mapped[str] = mapped_column(String)
     manifest_etag: Mapped[str] = mapped_column(String(64))
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
@@ -23,6 +36,12 @@ class CollectionRecord(Base):
         back_populates="collection",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    slug_record: Mapped[CollectionSlugRecord] = relationship(back_populates="collections")
+
+    __table_args__ = (
+        ForeignKeyConstraint(["slug"], ["collection_slugs.id"], ondelete="RESTRICT"),
+        Index("ix_collections_slug", "slug", "id"),
     )
 
 
@@ -274,7 +293,6 @@ class AppKeyRecord(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     app: Mapped[str] = mapped_column(String)
     token_sha256: Mapped[str] = mapped_column(String(64))
-    permissions_json: Mapped[str] = mapped_column(Text)
     monthly_download_quota_bytes: Mapped[int | None] = mapped_column(
         BigInteger,
         default=0,
@@ -291,16 +309,18 @@ class AppKeyRecord(Base):
     )
 
 
-class AppKeyCollectionGrantRecord(Base):
-    __tablename__ = "app_key_collection_grants"
+class AppKeyAccessGrantRecord(Base):
+    __tablename__ = "app_key_access_grants"
 
     key_id: Mapped[str] = mapped_column(String, primary_key=True)
-    grant: Mapped[str] = mapped_column(String, primary_key=True)
+    permission: Mapped[str] = mapped_column(String, primary_key=True)
+    resource: Mapped[str] = mapped_column(String, primary_key=True)
     created_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
         ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),
-        Index("ix_app_key_collection_grants_grant", "grant", "key_id"),
+        Index("ix_app_key_access_grants_permission", "permission", "resource", "key_id"),
+        Index("ix_app_key_access_grants_resource", "resource", "permission", "key_id"),
     )
 
 
@@ -469,6 +489,7 @@ class CollectionUploadRecord(Base):
     __tablename__ = "collection_uploads"
 
     collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    slug: Mapped[str] = mapped_column(String)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -496,6 +517,12 @@ class CollectionUploadRecord(Base):
     archive_objects: Mapped[list[CollectionArchiveObjectUploadRecord]] = relationship(
         back_populates="upload",
         cascade="all, delete-orphan",
+    )
+    slug_record: Mapped[CollectionSlugRecord] = relationship(back_populates="uploads")
+
+    __table_args__ = (
+        ForeignKeyConstraint(["slug"], ["collection_slugs.id"], ondelete="RESTRICT"),
+        Index("ix_collection_uploads_slug", "slug", "collection_id"),
     )
 
 

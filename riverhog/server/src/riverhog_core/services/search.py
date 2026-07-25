@@ -8,7 +8,7 @@ from riverhog_protocol.paths import PathNormalizationError, normalize_collection
 from sqlalchemy import asc, desc, func, literal, select
 from sqlalchemy.sql.elements import ColumnElement
 
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
@@ -82,13 +82,13 @@ class SqlAlchemySearchService:
                 normalized_collection = normalize_collection_id(collection)
             except PathNormalizationError as exc:
                 raise BadRequest(str(exc)) from exc
-            require_collection_access(principal, normalized_collection)
+            require_collection_access(principal, CATALOG_READ, normalized_collection)
 
         logical_path_expr = (
             CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
         )
         filters: list[ColumnElement[bool]] = [
-            collection_access_filter(CollectionFileRecord.collection_id, principal)
+            collection_access_filter(CollectionFileRecord.collection_id, principal, CATALOG_READ)
         ]
         query = q.strip() if q is not None else None
         if query:

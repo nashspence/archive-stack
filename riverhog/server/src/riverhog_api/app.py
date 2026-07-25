@@ -26,6 +26,7 @@ from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
+from riverhog_api.routers.slugs import router as slugs_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 
 _LOG = logging.getLogger(__name__)
@@ -430,6 +431,7 @@ def create_app(
     app.include_router(collections_router, prefix="/v1")
     app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")
+    app.include_router(slugs_router, prefix="/v1")
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")
     app.include_router(quotas_router, prefix="/v1")

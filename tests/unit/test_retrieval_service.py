@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from riverhog_age import encrypt_age_scrypt
 from riverhog_core.app_permissions import (
+    CATALOG_READ,
     KEYS_MANAGE,
     RETRIEVAL_MANAGE,
+    ApplicationAccess,
     ApplicationPrincipal,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -19,6 +21,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
@@ -51,8 +54,7 @@ SECOND_COLLECTION_ID = "more-docs/20260102T030406Z"
 BOOTSTRAP = ApplicationPrincipal(
     app="bootstrap",
     key_id=None,
-    permissions=frozenset({KEYS_MANAGE}),
-    collection_grants=frozenset({"*"}),
+    access=frozenset({ApplicationAccess(KEYS_MANAGE)}),
     unrestricted_delegation=True,
 )
 
@@ -101,6 +103,38 @@ class MemoryRetrievalCache:
     def delete(self, *, object_path: str, version_id: str | None) -> None:
         self.deleted.append((object_path, version_id))
         del self.objects[(object_path, version_id)]
+
+
+class RecordingDownloadAllowance:
+    def __init__(self) -> None:
+        self.reservations: list[tuple[str, int]] = []
+        self.tracked: list[tuple[str, int, DownloadAttribution | None]] = []
+        self.released: list[str] = []
+
+    def reserve_retrieval(
+        self,
+        *,
+        key_id: str,
+        job_id: str,
+        expected_bytes: int,
+        expires_at: str,
+    ) -> None:
+        _ = (key_id, expires_at)
+        self.reservations.append((job_id, expected_bytes))
+
+    def release_retrieval(self, *, job_id: str) -> None:
+        self.released.append(job_id)
+
+    def track(
+        self,
+        *,
+        store: str,
+        expected_bytes: int,
+        content: Iterator[bytes],
+        attribution: DownloadAttribution | None = None,
+    ) -> Iterator[bytes]:
+        self.tracked.append((store, expected_bytes, attribution))
+        return content
 
 
 class PreparedArchiveStore(MemoryArchiveStore):
@@ -224,8 +258,9 @@ def test_retrieval_grants_and_job_ownership_follow_the_logical_key(tmp_path: Pat
     principal = ApplicationPrincipal(
         app="review",
         key_id="key-one",
-        permissions=frozenset({RETRIEVAL_MANAGE}),
-        collection_grants=frozenset({f"collection:{COLLECTION_ID}"}),
+        access=frozenset(
+            {ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}
+        ),
     )
     selection = [(COLLECTION_ID, "one.txt")]
     plan = service.plan(selection, principal=principal)
@@ -253,8 +288,7 @@ def test_retrieval_grants_and_job_ownership_follow_the_logical_key(tmp_path: Pat
             principal=ApplicationPrincipal(
                 app="other",
                 key_id="other-key",
-                permissions=frozenset({RETRIEVAL_MANAGE}),
-                collection_grants=frozenset({"slug:other"}),
+                access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, "slug:other")}),
             ),
         )
 
@@ -266,8 +300,9 @@ def test_retrieval_reserves_key_quota_before_creating_or_preparing_a_job(
     keys = SqlAlchemyAppKeyService(config)
     created = keys.create(
         app="review",
-        permissions=(RETRIEVAL_MANAGE,),
-        collection_grants=(f"collection:{COLLECTION_ID}",),
+        access=(
+            ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}"),
+        ),
         grantor=BOOTSTRAP,
     )
     principal = keys.authenticate(str(created["token"]))
@@ -345,8 +380,9 @@ def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) ->
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        permissions=frozenset({RETRIEVAL_MANAGE}),
-        collection_grants=frozenset({f"collection:{COLLECTION_ID}"}),
+        access=frozenset(
+            {ApplicationAccess(CATALOG_READ, f"collection:{COLLECTION_ID}")}
+        ),
     )
 
     first = service.change_list(after=0, limit=1, principal=principal)
@@ -373,37 +409,101 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     )
     store = PreparedArchiveStore(archive, passphrase=config.archive_passphrase)
     cache = MemoryRetrievalCache()
+    principal = ApplicationPrincipal(
+        app="local",
+        key_id="local-key",
+        access=frozenset(
+            {ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}
+        ),
+    )
+    allowance = RecordingDownloadAllowance()
     service = SqlAlchemyRetrievalService(
         config,
         ArchiveStoreRegistry({"deep": as_archive_store(store)}),
         cache,  # type: ignore[arg-type]
+        download_allowance=allowance,  # type: ignore[arg-type]
         proof_verifier=FixtureProofVerifier(),
     )
     selection = [(COLLECTION_ID, "one.txt")]
-    plan = service.plan(selection)
+    plan = service.plan(selection, principal=principal)
+    expected_remote_bytes = sum(
+        int(current["stored_bytes"])
+        * (2 if current["read_mode"] == "restore_required" else 1)
+        for current in plan["objects"]
+    )
     job = service.create(
-        app="local",
+        app=principal.app,
+        key_id=principal.key_id,
         files=selection,
         plan_etag=str(plan["etag"]),
+        principal=principal,
     )
 
     assert job["state"] == "requested"
+    assert allowance.reservations == [(job["id"], expected_remote_bytes)]
     assert store.prepared == [("data-000000",)]
     assert service.process_due(limit=1) == 1
-    job = service.get(app="local", job_id=str(job["id"]))
+    job = service.get(
+        app=principal.app,
+        key_id=principal.key_id,
+        job_id=str(job["id"]),
+    )
     chunks, _size, _sha256 = service.content(
-        app="local",
+        app=principal.app,
+        key_id=principal.key_id,
         job_id=str(job["id"]),
         collection_id=COLLECTION_ID,
         path="one.txt",
     )
     assert job["state"] == "ready"
     assert b"".join(chunks) == FILES["one.txt"]
+    assert {store for store, _bytes, _attribution in allowance.tracked} == {
+        "retrieval-cache"
+    }
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.query(RetrievalCacheObjectRecord).count() == 1
         assert session.query(RetrievalCacheLeaseRecord).count() == 1
 
-    service.acknowledge(app="local", job_id=str(job["id"]))
+    cached_principal = ApplicationPrincipal(
+        app="cached-reader",
+        key_id="cached-key",
+        access=principal.access,
+    )
+    cached_plan = service.plan(selection, principal=cached_principal)
+    assert "restore_required" not in {
+        str(current["read_mode"]) for current in cached_plan["objects"]
+    }
+    cached_expected_bytes = sum(
+        int(current["stored_bytes"]) for current in cached_plan["objects"]
+    )
+    cached_job = service.create(
+        app=cached_principal.app,
+        key_id=cached_principal.key_id,
+        files=selection,
+        plan_etag=str(cached_plan["etag"]),
+        principal=cached_principal,
+    )
+    assert allowance.reservations[-1] == (cached_job["id"], cached_expected_bytes)
+    cached_chunks, _cached_size, _cached_sha256 = service.content(
+        app=cached_principal.app,
+        key_id=cached_principal.key_id,
+        job_id=str(cached_job["id"]),
+        collection_id=COLLECTION_ID,
+        path="one.txt",
+    )
+    assert b"".join(cached_chunks) == FILES["one.txt"]
+    service.acknowledge(
+        app=cached_principal.app,
+        key_id=cached_principal.key_id,
+        job_id=str(cached_job["id"]),
+    )
+
+    service.acknowledge(
+        app=principal.app,
+        key_id=principal.key_id,
+        job_id=str(job["id"]),
+    )
+    assert set(allowance.released) == {str(job["id"]), str(cached_job["id"])}
     assert service.sweep() == 1
     assert len(cache.deleted) == 1
 
@@ -419,7 +519,20 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
             SECOND_COLLECTION_ID,
             ((file.path, file.bytes, file.sha256) for file in second_archive.files),
         )
-        session.add(CollectionRecord(id=SECOND_COLLECTION_ID, manifest_etag=manifest_etag))
+        session.add(
+            CollectionSlugRecord(
+                id="more-docs",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionRecord(
+                id=SECOND_COLLECTION_ID,
+                slug="more-docs",
+                manifest_etag=manifest_etag,
+            )
+        )
         for file in second_archive.files:
             session.add(
                 CollectionFileRecord(

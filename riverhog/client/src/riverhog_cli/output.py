@@ -181,31 +181,59 @@ def _quota_limit(value: object) -> str:
     return "blocked" if current == 0 else _bytes(current)
 
 
-def format_collection_grants(payload: Mapping[str, object]) -> str:
+def format_app_access(payload: Mapping[str, object]) -> str:
     lines = [
         f"app: {payload.get('app', 'unknown')}",
         f"key: {payload.get('key_id', 'unknown')}",
-        _page_line(payload, "grants"),
+        _page_line(payload, "access"),
     ]
-    lines.extend(f"- {grant.get('id', 'unknown')}" for grant in _items(payload, "grants"))
+    lines.extend(
+        f"- {grant.get('permission', 'unknown')}  resource={grant.get('resource', 'unknown')}"
+        for grant in _items(payload, "access")
+    )
     return "\n".join(lines)
 
 
-def format_collection_grant_set(payload: Mapping[str, object]) -> str:
-    grants = payload.get("collection_grants")
-    values = (
-        [str(item) for item in grants]
-        if isinstance(grants, Sequence) and not isinstance(grants, (str, bytes))
-        else []
-    )
+def format_app_access_set(payload: Mapping[str, object]) -> str:
+    values = [
+        (
+            str(item.get("permission", "unknown"))
+            if item.get("resource") == "*"
+            else f"{item.get('permission', 'unknown')}={item.get('resource', 'unknown')}"
+        )
+        for item in _items(payload, "access")
+    ]
     return "\n".join(
         [
-            "collection grants replaced",
+            "application access replaced",
             f"app: {payload.get('app', 'unknown')}",
             f"key: {payload.get('key_id', 'unknown')}",
-            "grants: " + (", ".join(values) if values else "none (collection access blocked)"),
+            "access: " + ", ".join(values),
         ]
     )
+
+
+def format_slug(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"slug: {payload.get('id', 'unknown')}",
+            f"created by: {payload.get('created_by_app', 'unknown')}/"
+            f"{payload.get('created_by_key_id') or 'bootstrap'}",
+            f"created: {payload.get('created_at', 'unknown')}",
+            f"collections: {payload.get('collections', 0)}",
+            f"uploads: {payload.get('uploads', 0)}",
+        ]
+    )
+
+
+def format_slugs(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "slugs")]
+    for slug in _items(payload, "slugs"):
+        lines.append(
+            f"- {slug.get('id', 'unknown')}  collections={slug.get('collections', 0)}  "
+            f"uploads={slug.get('uploads', 0)}  created={slug.get('created_at', 'unknown')}"
+        )
+    return "\n".join(lines)
 
 
 def format_download_quota(payload: Mapping[str, object]) -> str:

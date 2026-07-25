@@ -31,10 +31,12 @@ from riverhog_core.services.interfaces import (
     LifecycleEventService,
     RetrievalService,
     SearchService,
+    SlugService,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
+from riverhog_core.services.slugs import SqlAlchemySlugService
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.stores.s3_support import ensure_bucket_exists
@@ -44,6 +46,7 @@ from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 @dataclass(slots=True)
 class ServiceContainer:
     app_keys: AppKeyService
+    slugs: SlugService
     collections: CollectionService
     collection_deletions: CollectionDeletionService
     search: SearchService
@@ -79,6 +82,7 @@ def default_container() -> ServiceContainer:
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config),
+        slugs=SqlAlchemySlugService(config),
         collections=SqlAlchemyCollectionService(config, upload_store),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,

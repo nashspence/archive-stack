@@ -18,7 +18,8 @@ from riverhog_core.app_permissions import (
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
 )
-from riverhog_core.catalog_db import initialize_db
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_models import CollectionRecord, CollectionSlugRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
@@ -34,6 +35,22 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
     monkeypatch.setenv("RIVERHOG_BOOTSTRAP_TOKEN", "bootstrap-token")
     config = RuntimeConfig(database_url=sqlite_url(tmp_path / "catalog.sqlite3"))
     initialize_db(config.database_url)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add(
+            CollectionSlugRecord(
+                id="docs",
+                created_by_app="bootstrap",
+                created_by_key_id=None,
+                created_at="2026-07-24T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionRecord(
+                id="docs/20260724T000000Z",
+                slug="docs",
+                manifest_etag="0" * 64,
+            )
+        )
     service = SqlAlchemyAppKeyService(config)
     download_quotas = SqlAlchemyDownloadAllowance(config)
     container = SimpleNamespace(app_keys=service, download_quotas=download_quotas)
@@ -61,14 +78,17 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             assert (
                 await client.post(
                     "/v1/apps/manager/keys",
-                    json={"permissions": [KEYS_MANAGE, CATALOG_READ, RETRIEVAL_MANAGE]},
+                    json={"access": [{"permission": KEYS_MANAGE}]},
                 )
             ).status_code == 401
             created_response = await client.post(
                 "/v1/apps/manager/keys",
                 json={
-                    "permissions": [KEYS_MANAGE, CATALOG_READ, RETRIEVAL_MANAGE],
-                    "collection_grants": ["slug:docs"],
+                    "access": [
+                        {"permission": KEYS_MANAGE},
+                        {"permission": CATALOG_READ, "resource": "slug:docs"},
+                        {"permission": RETRIEVAL_MANAGE, "resource": "slug:docs"},
+                    ],
                 },
                 headers=bootstrap_headers,
             )
@@ -83,30 +103,43 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             delegated = await client.post(
                 "/v1/apps/reader/keys",
                 json={
-                    "permissions": [CATALOG_READ, RETRIEVAL_MANAGE],
-                    "collection_grants": ["collection:docs/20260724T000000Z"],
+                    "access": [
+                        {
+                            "permission": CATALOG_READ,
+                            "resource": "collection:docs/20260724T000000Z",
+                        },
+                        {
+                            "permission": RETRIEVAL_MANAGE,
+                            "resource": "collection:docs/20260724T000000Z",
+                        },
+                    ],
                 },
                 headers=manager_headers,
             )
             assert delegated.status_code == 200
             delegated_key = delegated.json()
             reader_token = delegated_key["token"]
-            assert delegated_key["permissions"] == [CATALOG_READ, RETRIEVAL_MANAGE]
-            assert delegated_key["collection_grants"] == [
-                "collection:docs/20260724T000000Z"
+            assert delegated_key["access"] == [
+                {
+                    "permission": CATALOG_READ,
+                    "resource": "collection:docs/20260724T000000Z",
+                },
+                {
+                    "permission": RETRIEVAL_MANAGE,
+                    "resource": "collection:docs/20260724T000000Z",
+                },
             ]
             outside_grant = await client.post(
                 "/v1/apps/reader/keys",
                 json={
-                    "permissions": [CATALOG_READ],
-                    "collection_grants": ["slug:other"],
+                    "access": [{"permission": CATALOG_READ, "resource": "slug:other"}],
                 },
                 headers=manager_headers,
             )
             assert outside_grant.status_code == 403
             forbidden = await client.post(
                 "/v1/apps/uploader/keys",
-                json={"permissions": [COLLECTIONS_UPLOAD]},
+                json={"access": [{"permission": COLLECTIONS_UPLOAD}]},
                 headers=manager_headers,
             )
             assert forbidden.status_code == 403
@@ -126,7 +159,7 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             quota_manager = (
                 await client.post(
                     "/v1/apps/quota-operator/keys",
-                    json={"permissions": [QUOTAS_MANAGE]},
+                    json={"access": [{"permission": QUOTAS_MANAGE}]},
                     headers=bootstrap_headers,
                 )
             ).json()
@@ -147,14 +180,14 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             assert quotas["total"] == 1
             assert quotas["quotas"][0]["key_id"] == delegated_key["id"]
 
-            grants = (
+            access = (
                 await client.get(
-                    f"/v1/apps/reader/keys/{delegated_key['id']}/collection-grants?all=true",
+                    f"/v1/apps/reader/keys/{delegated_key['id']}/access?all=true",
                     headers=manager_headers,
                 )
             ).json()
-            assert grants["total"] == 1
-            assert grants["grants"][0]["id"] == "collection:docs/20260724T000000Z"
+            assert access["total"] == 2
+            assert access["access"][0]["permission"] == CATALOG_READ
 
             listed = (
                 await client.get(

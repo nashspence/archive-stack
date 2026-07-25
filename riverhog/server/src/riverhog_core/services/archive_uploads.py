@@ -608,6 +608,7 @@ class SqlAlchemyArchiveUploadService:
             if collection is None:
                 collection = CollectionRecord(
                     id=collection_id,
+                    slug=upload.slug,
                     manifest_etag=manifest_etag,
                     ingest_source=upload.ingest_source,
                     created_by_app=upload.initiated_by_app,

@@ -8,7 +8,12 @@ from dataclasses import replace
 from datetime import timedelta
 
 import pytest
-from riverhog_core.app_permissions import KEYS_MANAGE, RETRIEVAL_MANAGE, ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    KEYS_MANAGE,
+    RETRIEVAL_MANAGE,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 from riverhog_core.catalog_db import Base, create_catalog_engine, initialize_db
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
@@ -21,8 +26,7 @@ pytestmark = pytest.mark.integration
 BOOTSTRAP = ApplicationPrincipal(
     app="bootstrap",
     key_id=None,
-    permissions=frozenset({KEYS_MANAGE}),
-    collection_grants=frozenset({"*"}),
+    access=frozenset({ApplicationAccess(KEYS_MANAGE)}),
     unrestricted_delegation=True,
 )
 
@@ -97,8 +101,7 @@ def test_postgres_serializes_key_quota_reservations_across_service_instances(
     config = _config(database_url)
     key = SqlAlchemyAppKeyService(config).create(
         app="review",
-        permissions=(RETRIEVAL_MANAGE,),
-        collection_grants=("*",),
+        access=(ApplicationAccess(RETRIEVAL_MANAGE),),
         grantor=BOOTSTRAP,
     )
     key_id = str(key["id"])

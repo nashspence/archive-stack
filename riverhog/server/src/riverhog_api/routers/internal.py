@@ -68,7 +68,9 @@ def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Resp
         return Response(status_code=403)
     upload_id = original_path.removeprefix("/files/")
     collection_id = container.collections.collection_id_for_upload_id(upload_id)
-    if collection_id is None or not principal.allows_collection(collection_id):
+    if collection_id is None or not principal.allows_collection(
+        COLLECTIONS_UPLOAD, collection_id
+    ):
         return Response(status_code=403)
     return Response(status_code=204)
 
@@ -118,7 +120,9 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         assert container is not None
         assert principal is not None
         collection_id = container.collections.collection_id_for_upload_id(upload_id)
-        if collection_id is None or not principal.allows_collection(collection_id):
+        if collection_id is None or not principal.allows_collection(
+            COLLECTIONS_UPLOAD, collection_id
+        ):
             return _json_response({"RejectUpload": True}, status_code=403)
 
     try:

@@ -23,6 +23,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
     RetrievalJobRecord,
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
@@ -43,7 +44,7 @@ CONTENT = b"archived document"
 DELETER = ApplicationPrincipal(
     app="riverhog-client",
     key_id="client-key",
-    permissions=frozenset(),
+    access=frozenset(),
 )
 
 
@@ -107,7 +108,16 @@ def database_url() -> Iterator[str]:
 def _seed(database_url: str) -> None:
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        session.add(CollectionRecord(id=COLLECTION_ID, manifest_etag="0" * 64))
+        session.add(
+            CollectionSlugRecord(
+                id="docs",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionRecord(id=COLLECTION_ID, slug="docs", manifest_etag="0" * 64)
+        )
         session.add(
             CollectionFileRecord(
                 collection_id=COLLECTION_ID,

@@ -83,7 +83,7 @@ def _assert_schema_matches_models(engine: Engine) -> None:
 def initialize_db(database_url: str) -> None:
     """Create the current catalog schema."""
     from riverhog_core.catalog_models import (  # noqa: PLC0415
-        AppKeyCollectionGrantRecord,
+        AppKeyAccessGrantRecord,
         AppKeyRecord,
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
@@ -98,6 +98,7 @@ def initialize_db(database_url: str) -> None:
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
+        CollectionSlugRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         IngressCleanupRecord,
@@ -113,7 +114,7 @@ def initialize_db(database_url: str) -> None:
 
     _ = (
         AppKeyRecord,
-        AppKeyCollectionGrantRecord,
+        AppKeyAccessGrantRecord,
         ArchiveCopyJobRecord,
         ArchiveCopyRetirementRecord,
         ArchiveDownloadReservationRecord,
@@ -127,6 +128,7 @@ def initialize_db(database_url: str) -> None:
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
+        CollectionSlugRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         IngressCleanupRecord,

@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_objects import (
     CollectionArchiveDataObject,
     CollectionArchiveFile,
@@ -77,7 +77,7 @@ class SqlAlchemyRetrievalService:
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[dict[str, object], str]:
-        require_collection_access(principal, collection_id)
+        require_collection_access(principal, CATALOG_READ, collection_id)
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
@@ -105,7 +105,7 @@ class SqlAlchemyRetrievalService:
         with session_scope(self._session_factory) as session:
             rows = session.execute(
                 select(CollectionRecord.id, CollectionRecord.manifest_etag)
-                .where(collection_access_filter(CollectionRecord.id, principal))
+                .where(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
                 .order_by(CollectionRecord.id)
             ).all()
             return [{"collection_id": str(row.id), "etag": str(row.manifest_etag)} for row in rows]
@@ -138,7 +138,9 @@ class SqlAlchemyRetrievalService:
             rows = (
                 session.execute(
                     select(scanned)
-                    .where(collection_access_filter(scanned.c.collection_id, principal))
+                    .where(
+                        collection_access_filter(scanned.c.collection_id, principal, CATALOG_READ)
+                    )
                     .order_by(scanned.c.sequence)
                 )
                 .mappings()
@@ -167,7 +169,7 @@ class SqlAlchemyRetrievalService:
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
         for collection_id, _path in normalized:
-            require_collection_access(principal, collection_id)
+            require_collection_access(principal, RETRIEVAL_MANAGE, collection_id)
         requested_lease = lease or self._config.retrieval_default_lease
         if requested_lease.total_seconds() <= 0:
             raise BadRequest("retrieval lease must be positive")
@@ -210,8 +212,8 @@ class SqlAlchemyRetrievalService:
         expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
         remote_bytes = sum(
             int(str(current["stored_bytes"]))
+            * (2 if current["read_mode"] == "restore_required" else 1)
             for current in planned_objects
-            if current["read_mode"] != "cache"
         )
         if key_id is not None and self._download_allowance is not None:
             self._download_allowance.reserve_retrieval(
@@ -786,13 +788,21 @@ class SqlAlchemyRetrievalService:
         if cached is not None:
             if self._cache is None:
                 raise RuntimeError("retrieval cache is unavailable")
-            return iter_decrypt_age_scrypt(
-                self._cache.iter_object(
-                    object_path=cached.object_path,
-                    version_id=cached.version_id,
+            encrypted = self._cache.iter_object(
+                object_path=cached.object_path,
+                version_id=cached.version_id,
+                expected_bytes=cached.stored_bytes,
+                expected_sha256=cached.stored_sha256,
+            )
+            if self._download_allowance is not None and attribution is not None:
+                encrypted = self._download_allowance.track(
+                    store="retrieval-cache",
                     expected_bytes=cached.stored_bytes,
-                    expected_sha256=cached.stored_sha256,
-                ),
+                    content=encrypted,
+                    attribution=attribution,
+                )
+            return iter_decrypt_age_scrypt(
+                encrypted,
                 self._config.archive_passphrase,
             )
         return self._archive_stores.require(source_store).iter_archive_object(

@@ -23,19 +23,19 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 from time_formats import parse_utc_timestamp, utc_now, utc_timestamp_now
 
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, COLLECTIONS_UPLOAD, ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionSlugRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
 )
 from riverhog_core.collection_access import (
     collection_access_filter,
-    require_collection_access,
     require_slug_access,
 )
 from riverhog_core.domain.enums import ArchiveState
@@ -138,13 +138,11 @@ class SqlAlchemyCollectionService:
             if normalized_upload_timestamp is not None
             else None
         )
-        if requested_collection_id is None:
-            require_slug_access(initiator, normalized_slug)
-        else:
-            require_collection_access(initiator, requested_collection_id)
+        require_slug_access(initiator, COLLECTIONS_UPLOAD, normalized_slug)
         normalized_files = _normalize_upload_files(files)
 
         with session_scope(self._session_factory) as session:
+            _require_slug(session, normalized_slug)
             collection = _find_matching_collection(
                 session,
                 upload_slug=normalized_slug,
@@ -180,6 +178,7 @@ class SqlAlchemyCollectionService:
                 _ensure_collection_id_unused(session, normalized_collection_id)
                 upload = CollectionUploadRecord(
                     collection_id=normalized_collection_id,
+                    slug=normalized_slug,
                     ingest_source=ingest_source,
                     initiated_by_app=initiator_app,
                     initiated_by_key_id=initiator_key_id,
@@ -255,12 +254,10 @@ class SqlAlchemyCollectionService:
             if normalized_upload_timestamp is not None
             else None
         )
-        if requested_collection_id is None:
-            require_slug_access(initiator, normalized_slug)
-        else:
-            require_collection_access(initiator, requested_collection_id)
+        require_slug_access(initiator, COLLECTIONS_UPLOAD, normalized_slug)
 
         with session_scope(self._session_factory) as session:
+            _require_slug(session, normalized_slug)
             if requested_collection_id is not None:
                 collection = session.get(CollectionRecord, requested_collection_id)
                 if collection is not None:
@@ -314,6 +311,7 @@ class SqlAlchemyCollectionService:
             now = utc_timestamp_now()
             upload = CollectionUploadRecord(
                 collection_id=normalized_collection_id,
+                slug=normalized_slug,
                 ingest_source=ingest_source,
                 initiated_by_app=initiator_app,
                 initiated_by_key_id=initiator_key_id,
@@ -867,7 +865,7 @@ class SqlAlchemyCollectionService:
             row = session.execute(
                 stmt.where(
                     CollectionRecord.id == normalized_collection_id,
-                    collection_access_filter(CollectionRecord.id, principal),
+                    collection_access_filter(CollectionRecord.id, principal, CATALOG_READ),
                 )
             ).one_or_none()
             if row is None:
@@ -902,7 +900,7 @@ class SqlAlchemyCollectionService:
         needle = q.casefold() if q else None
         with session_scope(self._session_factory) as session:
             filters: list[ColumnElement[bool]] = []
-            filters.append(collection_access_filter(CollectionRecord.id, principal))
+            filters.append(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
             if needle is not None:
                 filters.append(
                     func.lower(CollectionRecord.id).like(
@@ -1101,7 +1099,7 @@ def _find_matching_collection(
         .options(selectinload(CollectionRecord.archive_copies))
         .join(stats, stats.c.collection_id == CollectionRecord.id)
         .where(
-            CollectionRecord.id.like(_like_prefix(f"{upload_slug}/"), escape="\\"),
+            CollectionRecord.slug == upload_slug,
             stats.c.files_total == len(files),
             stats.c.files_matching == len(files),
         )
@@ -1142,10 +1140,7 @@ def _find_matching_upload(
                 CollectionUploadRecord.state.is_(None),
                 ~CollectionUploadRecord.state.in_(("open", "canceled", "expired")),
             ),
-            CollectionUploadRecord.collection_id.like(
-                _like_prefix(f"{upload_slug}/"),
-                escape="\\",
-            ),
+            CollectionUploadRecord.slug == upload_slug,
             stats.c.files_total == len(files),
             stats.c.files_matching == len(files),
         )
@@ -1171,14 +1166,18 @@ def _find_open_upload_session(
         .options(selectinload(CollectionUploadRecord.files))
         .where(
             CollectionUploadRecord.state == "open",
-            CollectionUploadRecord.collection_id.like(
-                _like_prefix(f"{upload_slug}/"),
-                escape="\\",
-            ),
+            CollectionUploadRecord.slug == upload_slug,
         )
         .order_by(CollectionUploadRecord.collection_id.asc())
         .limit(1)
     )
+
+
+def _require_slug(session: Session, slug: str) -> CollectionSlugRecord:
+    record = session.get(CollectionSlugRecord, slug)
+    if record is None:
+        raise NotFound(f"collection slug not found: {slug}")
+    return record
 
 
 def _collection_manifest_match_stats(

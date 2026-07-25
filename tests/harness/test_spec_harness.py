@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 from riverhog_api.routers.resourcesync import resourcesync_resource_list
-from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
@@ -99,8 +99,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
         ApplicationPrincipal(
             app="local",
             key_id="local-key",
-            permissions=frozenset({CATALOG_READ}),
-            collection_grants=frozenset({"*"}),
+            access=frozenset({ApplicationAccess(CATALOG_READ)}),
         ),
         SimpleNamespace(retrieval=harness.retrieval),
     )

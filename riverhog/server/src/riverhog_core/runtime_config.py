@@ -131,6 +131,16 @@ class ArchiveStoreConfig:
     download_safety_buffer_bytes: int = 0
 
 
+def _download_source(store: ArchiveStoreConfig) -> tuple[str, ...]:
+    if store.cloudfront_base_url is not None:
+        return ("cloudfront", store.cloudfront_base_url.rstrip("/").casefold())
+    return (
+        store.backend.casefold(),
+        store.endpoint_url.rstrip("/").casefold(),
+        store.bucket.casefold(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RetrievalCacheConfig:
     endpoint_url: str
@@ -324,6 +334,24 @@ class RuntimeConfig:
                         "without credentials, query, or fragment"
                     )
             normalized_archive_stores[name] = store
+        metered_sources: dict[tuple[str, ...], list[str]] = {}
+        for name, store in normalized_archive_stores.items():
+            metered_sources.setdefault(_download_source(store), []).append(name)
+        duplicate_metered_sources = [
+            names
+            for names in metered_sources.values()
+            if len(names) > 1
+            and any(
+                normalized_archive_stores[name].monthly_download_allowance_bytes is not None
+                for name in names
+            )
+        ]
+        if duplicate_metered_sources:
+            aliases = ", ".join(sorted(duplicate_metered_sources[0]))
+            raise ValueError(
+                "a metered archive download source must have one store name; "
+                f"duplicate aliases: {aliases}"
+            )
         if archive_write_store not in normalized_archive_stores:
             raise ValueError(f"archive write store is not configured: {archive_write_store}")
         object.__setattr__(self, "archive_write_store", archive_write_store)

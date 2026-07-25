@@ -6,7 +6,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from riverhog_core.app_permissions import KEYS_MANAGE, RETRIEVAL_MANAGE, ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    KEYS_MANAGE,
+    RETRIEVAL_MANAGE,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 from riverhog_core.catalog_db import initialize_db
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
@@ -19,8 +24,7 @@ from tests.unit.db_helpers import sqlite_url
 BOOTSTRAP = ApplicationPrincipal(
     app="bootstrap",
     key_id=None,
-    permissions=frozenset({KEYS_MANAGE}),
-    collection_grants=frozenset({"*"}),
+    access=frozenset({ApplicationAccess(KEYS_MANAGE)}),
     unrestricted_delegation=True,
 )
 
@@ -63,8 +67,7 @@ def _service(
 def _key(config: RuntimeConfig, *, app: str) -> dict[str, object]:
     return SqlAlchemyAppKeyService(config).create(
         app=app,
-        permissions=(RETRIEVAL_MANAGE,),
-        collection_grants=("*",),
+        access=(ApplicationAccess(RETRIEVAL_MANAGE),),
         grantor=BOOTSTRAP,
     )
 
@@ -286,6 +289,60 @@ def test_key_quota_starts_blocked_then_reserves_and_accounts_actual_remote_bytes
     retried = service.get_key_quota(key_id=key_id)
     assert retried["accounted_bytes"] == 12
     assert retried["remaining_bytes"] == 8
+
+
+def test_store_allowance_and_key_quota_reject_without_consuming_each_other(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
+    config = _config(tmp_path / "catalog.sqlite3")
+    initialize_db(config.database_url)
+    key = _key(config, app="review")
+    key_id = str(key["id"])
+    service = SqlAlchemyDownloadAllowance(config, clock=clock)
+    service.set_key_quota(app="review", key_id=key_id, monthly_bytes=200)
+    service.reserve_retrieval(
+        key_id=key_id,
+        job_id="store-blocked",
+        expected_bytes=100,
+        expires_at="2026-07-20T00:00:00.000000Z",
+    )
+
+    with pytest.raises(DownloadAllowanceExceeded, match="archive store deep"):
+        service.track(
+            store="deep",
+            expected_bytes=100,
+            content=iter((b"x" * 100,)),
+            attribution=DownloadAttribution(key_id=key_id, job_id="store-blocked"),
+        )
+
+    assert service.get_statuses()[0].reserved_bytes == 0
+    key_status = service.get_key_quota(key_id=key_id)
+    assert key_status["accounted_bytes"] == 0
+    assert key_status["reserved_bytes"] == 100
+
+
+def test_key_quota_rejection_releases_the_store_allowance_reservation(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
+    config = _config(tmp_path / "catalog.sqlite3")
+    initialize_db(config.database_url)
+    key = _key(config, app="review")
+    key_id = str(key["id"])
+    service = SqlAlchemyDownloadAllowance(config, clock=clock)
+
+    with pytest.raises(DownloadAllowanceExceeded, match="application key"):
+        service.track(
+            store="deep",
+            expected_bytes=10,
+            content=iter((b"x" * 10,)),
+            attribution=DownloadAttribution(key_id=key_id, job_id="key-blocked"),
+        )
+
+    store_status = service.get_statuses()[0]
+    assert store_status.accounted_bytes == 0
+    assert store_status.reserved_bytes == 0
 
 
 def test_key_quota_release_and_database_list_projection(tmp_path: Path) -> None:

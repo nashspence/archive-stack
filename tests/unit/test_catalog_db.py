@@ -9,7 +9,7 @@ from sqlalchemy import inspect, text
 from tests.unit.db_helpers import sqlite_url
 
 CURRENT_TABLES = {
-    "app_key_collection_grants",
+    "app_key_access_grants",
     "app_keys",
     "archive_copy_jobs",
     "archive_copy_retirements",
@@ -23,6 +23,7 @@ CURRENT_TABLES = {
     "collection_archive_objects",
     "collection_deletions",
     "collection_files",
+    "collection_slugs",
     "collection_upload_files",
     "collection_uploads",
     "collections",
@@ -77,7 +78,6 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "id",
         "app",
         "token_sha256",
-        "permissions_json",
         "monthly_download_quota_bytes",
         "created_at",
         "expires_at",
@@ -99,6 +99,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "file_order",
     }
     collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
+    assert collection_columns["slug"]["nullable"] is False
     assert collection_columns["manifest_etag"]["nullable"] is False
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")

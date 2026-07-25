@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from riverhog_core.app_permissions import ARCHIVES_MANAGE, ARCHIVES_READ
 from riverhog_core.collection_access import require_collection_access
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
@@ -25,7 +26,7 @@ def create_archive_copy(
     container: ContainerDep,
     principal: ArchiveManager,
 ) -> ArchiveCopyJobOut:
-    require_collection_access(principal, request.collection_id)
+    require_collection_access(principal, ARCHIVES_MANAGE, request.collection_id)
     return ArchiveCopyJobOut.model_validate(
         container.archive_copies.create_or_resume(
             request.collection_id,
@@ -44,7 +45,7 @@ def plan_archive_copy_retirement(
     container: ContainerDep,
     principal: ArchiveManager,
 ) -> ArchiveCopyRetirementPlanOut:
-    require_collection_access(principal, request.collection_id)
+    require_collection_access(principal, ARCHIVES_MANAGE, request.collection_id)
     return ArchiveCopyRetirementPlanOut.model_validate(
         container.archive_copy_retirements.plan(
             request.collection_id,
@@ -62,7 +63,7 @@ def retire_archive_copy(
     container: ContainerDep,
     principal: ArchiveManager,
 ) -> ArchiveCopyRetirementResultOut:
-    require_collection_access(principal, request.collection_id)
+    require_collection_access(principal, ARCHIVES_MANAGE, request.collection_id)
     return ArchiveCopyRetirementResultOut.model_validate(
         container.archive_copy_retirements.retire(
             request.collection_id,
@@ -79,7 +80,7 @@ def get_archive_report(
     collection: str | None = Query(None),
 ) -> ArchiveUsageReportOut:
     if collection is not None:
-        require_collection_access(principal, collection)
+        require_collection_access(principal, ARCHIVES_READ, collection)
     payload = container.archive_reporting.get_report(
         collection=collection,
         principal=principal,

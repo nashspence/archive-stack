@@ -23,7 +23,7 @@ FILES = {"one.txt": b"first file\n", "two.txt": b"second file\n"}
 DELETER = ApplicationPrincipal(
     app="riverhog-client",
     key_id="client-key",
-    permissions=frozenset(),
+    access=frozenset(),
 )
 
 
@@ -119,7 +119,7 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
     retrying_app = ApplicationPrincipal(
         app="jeb",
         key_id="jeb-key",
-        permissions=frozenset(),
+        access=frozenset(),
     )
     result = service.delete(
         COLLECTION_ID,

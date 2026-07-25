@@ -7,9 +7,9 @@ stores hold encrypted bytes.
 
 ## Ingress and custody
 
-A collection is the deletion unit. Its immutable name contains its second-precision creation
-time and slug. Each file has an immutable relative path, size, SHA-256 digest, and optional
-portable metadata supplied by the client.
+A collection is the deletion unit. Its immutable name is `<slug>/<second-precision time>`;
+the slug must already exist in Riverhog's explicit slug registry. Each file has an immutable
+relative path, size, SHA-256 digest, and optional portable metadata supplied by the client.
 
 Authenticated preflight creates a random per-file ingress secret and returns it to that
 client once as part of the upload descriptor. The secret is envelope-encrypted in the
@@ -43,11 +43,13 @@ Riverhog publishes portable collection manifests and current collection changes 
 narrow ResourceSync profile. Applications keep their own desired state and data;
 Riverhog does not track whether an application has materialized a file.
 
-Every application key carries explicit permissions. Authentication establishes a named
-application principal; permissions, rather than a client class, control catalog, retrieval,
-upload, deletion, archive, and key-management operations. The bootstrap credential can
-only issue application keys. Riverhog's guarded deletion and download policies remain in
-force after authorization.
+Every application key carries explicit action-and-resource bindings. Authentication
+establishes a named application principal; independent bindings control catalog, retrieval,
+upload, deletion, archive, slug, quota, and key-management operations. Creating a slug is
+separate from uploading to it and grants the creating key only upload access to that slug.
+The bootstrap credential can issue application keys and assign their download quotas but
+has no operational collection authority. Riverhog's guarded deletion and download policies
+remain in force after authorization.
 
 An application submits exact immutable file references from a retrieval plan. Riverhog
 chooses a complete archive copy and creates an application-owned retrieval job. Immediately
@@ -108,6 +110,7 @@ presentation.
 ## Core terms
 
 - **Collection:** the immutable logical namespace and deletion unit.
+- **Slug:** an explicit stable namespace that must exist before a collection can be uploaded.
 - **Archive object:** one independently encrypted pack, file, segment, manifest, or proof.
 - **Archive store:** a named durable object-store destination with defined read behavior.
 - **Archive copy:** one verified object set for a collection in one archive store.

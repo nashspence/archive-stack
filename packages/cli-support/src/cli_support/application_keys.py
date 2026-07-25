@@ -11,6 +11,19 @@ def _strings(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
+def _access(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        permission = str(item.get("permission", "unknown"))
+        resource = str(item.get("resource", "*"))
+        values.append(permission if resource == "*" else f"{permission}={resource}")
+    return values
+
+
 def format_apps(payload: Mapping[str, object]) -> str:
     lines = [page_line(payload, "apps")]
     for application in mapping_items(payload, "apps"):
@@ -29,9 +42,6 @@ def format_app_keys(payload: Mapping[str, object]) -> str:
     ]
     for key in mapping_items(payload, "keys"):
         details = ""
-        if "collection_grants" in key:
-            grants = _strings(key.get("collection_grants"))
-            details += f"  grants={','.join(grants) if grants else 'none'}"
         if "monthly_download_quota_bytes" in key:
             quota = key.get("monthly_download_quota_bytes")
             details += (
@@ -41,9 +51,14 @@ def format_app_keys(payload: Mapping[str, object]) -> str:
                 if quota
                 else "  quota=blocked"
             )
+        authority = (
+            f"access={','.join(_access(key.get('access')))}"
+            if "access" in key
+            else f"permissions={','.join(_strings(key.get('permissions')))}"
+        )
         lines.append(
             f"- {key.get('id', 'unknown')}  status={key.get('status', 'unknown')}  "
-            f"permissions={','.join(_strings(key.get('permissions')))}  "
+            f"{authority}  "
             f"{details}  "
             f"created={key.get('created_at', 'unknown')}  "
             f"expires={key.get('expires_at') or 'never'}  "
@@ -57,11 +72,11 @@ def format_app_key_created(payload: Mapping[str, object]) -> str:
         "app key created",
         f"app: {payload.get('app', 'unknown')}",
         f"key: {payload.get('id', 'unknown')}",
-        "permissions: " + ",".join(_strings(payload.get("permissions"))),
     ]
-    if "collection_grants" in payload:
-        grants = _strings(payload.get("collection_grants"))
-        lines.append("collection grants: " + (",".join(grants) if grants else "none"))
+    if "access" in payload:
+        lines.append("access: " + ",".join(_access(payload.get("access"))))
+    else:
+        lines.append("permissions: " + ",".join(_strings(payload.get("permissions"))))
     if "monthly_download_quota_bytes" in payload:
         quota = payload.get("monthly_download_quota_bytes")
         lines.append(

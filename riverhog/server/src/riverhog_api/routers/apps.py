@@ -7,14 +7,14 @@ from fastapi import APIRouter, Query
 from riverhog_api.auth import KeyManager
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.apps import (
+    AppAccessListOut,
+    AppAccessSetOut,
     AppKeyCreatedOut,
     AppKeyListOut,
     AppKeyOut,
     AppListOut,
-    CollectionGrantListOut,
-    CollectionGrantSetOut,
     CreateAppKeyRequest,
-    ReplaceCollectionGrantsRequest,
+    ReplaceAppAccessRequest,
 )
 
 router = APIRouter(tags=["apps"])
@@ -55,8 +55,7 @@ def create_app_key(
     return AppKeyCreatedOut.model_validate(
         container.app_keys.create(
             app=app,
-            permissions=request.permissions,
-            collection_grants=request.collection_grants,
+            access=[(current.permission, current.resource) for current in request.access],
             grantor=principal,
             expires_in=(
                 timedelta(seconds=request.expires_in_seconds)
@@ -80,23 +79,23 @@ def rotate_app_key(
 
 
 @router.get(
-    "/apps/{app}/keys/{key_id}/collection-grants",
-    response_model=CollectionGrantListOut,
+    "/apps/{app}/keys/{key_id}/access",
+    response_model=AppAccessListOut,
 )
-def list_app_key_collection_grants(
+def list_app_key_access(
     app: str,
     key_id: str,
     container: ContainerDep,
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: str = Query("grant"),
+    sort: str = Query("permission"),
     order: str = Query("asc"),
     q: str | None = Query(None),
     all_items: bool = Query(False, alias="all"),
-) -> CollectionGrantListOut:
-    return CollectionGrantListOut.model_validate(
-        container.app_keys.list_collection_grants(
+) -> AppAccessListOut:
+    return AppAccessListOut.model_validate(
+        container.app_keys.list_access(
             app=app,
             key_id=key_id,
             page=page,
@@ -110,21 +109,21 @@ def list_app_key_collection_grants(
 
 
 @router.put(
-    "/apps/{app}/keys/{key_id}/collection-grants",
-    response_model=CollectionGrantSetOut,
+    "/apps/{app}/keys/{key_id}/access",
+    response_model=AppAccessSetOut,
 )
-def replace_app_key_collection_grants(
+def replace_app_key_access(
     app: str,
     key_id: str,
-    request: ReplaceCollectionGrantsRequest,
+    request: ReplaceAppAccessRequest,
     container: ContainerDep,
     principal: KeyManager,
-) -> CollectionGrantSetOut:
-    return CollectionGrantSetOut.model_validate(
-        container.app_keys.replace_collection_grants(
+) -> AppAccessSetOut:
+    return AppAccessSetOut.model_validate(
+        container.app_keys.replace_access(
             app=app,
             key_id=key_id,
-            collection_grants=request.collection_grants,
+            access=[(current.permission, current.resource) for current in request.access],
             grantor=principal,
         )
     )

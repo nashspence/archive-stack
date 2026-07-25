@@ -6,7 +6,7 @@ from typing import Protocol
 
 from lifecycle_events import EventPage
 
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import ApplicationAccess, ApplicationPrincipal
 from riverhog_core.domain.models import ArchiveUsageReport, CollectionListPage, CollectionSummary
 
 JsonObject = dict[str, object]
@@ -79,6 +79,32 @@ class CollectionService(Protocol):
         all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage: ...
+
+
+class SlugService(Protocol):
+    def create(
+        self,
+        slug: str,
+        *,
+        creator: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def get(
+        self,
+        slug: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
 
 
 class CollectionDeletionService(Protocol):
@@ -191,9 +217,8 @@ class AppKeyService(Protocol):
         self,
         *,
         app: str,
-        permissions: Sequence[str],
+        access: Sequence[ApplicationAccess | tuple[str, str]],
         grantor: ApplicationPrincipal,
-        collection_grants: Sequence[str] = (),
         expires_in: timedelta | None = None,
     ) -> JsonObject: ...
     def rotate(
@@ -204,15 +229,15 @@ class AppKeyService(Protocol):
         grantor: ApplicationPrincipal,
     ) -> JsonObject: ...
     def revoke(self, *, app: str, key_id: str) -> JsonObject: ...
-    def replace_collection_grants(
+    def replace_access(
         self,
         *,
         app: str,
         key_id: str,
-        collection_grants: Sequence[str],
+        access: Sequence[ApplicationAccess | tuple[str, str]],
         grantor: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def list_collection_grants(
+    def list_access(
         self,
         *,
         app: str,

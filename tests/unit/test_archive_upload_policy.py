@@ -17,6 +17,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
+    CollectionSlugRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     IngressCleanupRecord,
@@ -142,8 +143,16 @@ def _stage(
     )
     with session_scope(make_session_factory(database_url)) as session:
         session.add(
+            CollectionSlugRecord(
+                id=collection_id.split("/", 1)[0],
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
             CollectionUploadRecord(
                 collection_id=collection_id,
+                slug=collection_id.split("/", 1)[0],
                 archive_store="deep",
                 state="archiving",
             )

@@ -233,6 +233,21 @@ def test_cloudfront_download_configuration_is_atomic(
         load_runtime_config()
 
 
+def test_metered_download_source_cannot_be_bypassed_through_a_store_alias(
+    tmp_path: Path,
+) -> None:
+    deep = _config(tmp_path).archive_store("deep")
+    metered = replace(
+        deep,
+        monthly_download_allowance_bytes=1_000,
+        download_safety_buffer_bytes=100,
+    )
+    alias = replace(deep, name="alias")
+
+    with pytest.raises(ValueError, match="metered archive download source.*alias, deep"):
+        _config(tmp_path, archive_stores={"deep": metered, "alias": alias})
+
+
 def test_cloudfront_downloads_require_an_aws_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

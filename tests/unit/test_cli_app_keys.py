@@ -47,18 +47,19 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             self,
             app_name: str,
             *,
-            permissions: list[str],
-            collection_grants: list[str],
+            access: list[dict[str, str]],
             expires_in_seconds: int | None,
         ) -> dict[str, object]:
             assert app_name == "local"
-            assert permissions == ["catalog:read", "retrieval:manage"]
-            assert collection_grants == []
+            assert access == [
+                {"permission": "catalog:read", "resource": "slug:photos"},
+                {"permission": "retrieval:manage", "resource": "slug:photos"},
+            ]
             assert expires_in_seconds == 2_592_000
             return {
                 "id": "0123456789abcdef",
                 "app": "local",
-                "permissions": ["catalog:read", "retrieval:manage"],
+                "access": access,
                 "status": "active",
                 "created_at": "2026-07-18T00:00:00.000000Z",
                 "expires_at": "2026-08-17T00:00:00.000000Z",
@@ -76,10 +77,10 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             "key",
             "create",
             "local",
-            "--permission",
-            "catalog:read",
-            "--permission",
-            "retrieval:manage",
+            "--allow",
+            "catalog:read=slug:photos",
+            "--allow",
+            "retrieval:manage=slug:photos",
             "--expires-in",
             "30d",
             "--json",
@@ -115,9 +116,9 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
     assert result.stdout == "0123456789abcdef\n"
 
 
-def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
+def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     class FakeClient:
-        def list_app_key_collection_grants(
+        def list_app_key_access(
             self,
             app_name: str,
             key_id: str,
@@ -128,7 +129,7 @@ def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch
                 "page": 1,
                 "per_page": 25,
                 "q": "photos",
-                "sort": "grant",
+                "sort": "permission",
                 "order": "asc",
                 "all_items": True,
             }
@@ -139,7 +140,13 @@ def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch
                 "per_page": 1,
                 "total": 1,
                 "pages": 1,
-                "grants": [{"id": "slug:photos"}],
+                "access": [
+                    {
+                        "id": "catalog:read=slug:photos",
+                        "permission": "catalog:read",
+                        "resource": "slug:photos",
+                    }
+                ],
             }
 
         def list_download_quotas(self, **kwargs: Any) -> dict[str, object]:
@@ -163,12 +170,12 @@ def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
-    grants = runner.invoke(
+    access = runner.invoke(
         app,
         [
             "app",
             "key",
-            "grant",
+            "access",
             "list",
             "local",
             "key-one",
@@ -199,8 +206,8 @@ def test_collection_grant_and_quota_lists_match_pipeable_conventions(monkeypatch
         ],
     )
 
-    assert grants.exit_code == 0
-    assert grants.stdout == "slug:photos\n"
+    assert access.exit_code == 0
+    assert access.stdout == "catalog:read=slug:photos\n"
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
 

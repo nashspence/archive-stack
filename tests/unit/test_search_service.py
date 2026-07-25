@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionFileRecord, CollectionRecord
+from riverhog_core.catalog_models import (
+    CollectionFileRecord,
+    CollectionRecord,
+    CollectionSlugRecord,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
 
@@ -15,8 +19,16 @@ def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
+            CollectionSlugRecord(
+                id="docs",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
             CollectionRecord(
                 id="docs/20250102T030405Z",
+                slug="docs",
                 manifest_etag="0" * 64,
             )
         )
@@ -110,8 +122,7 @@ def test_search_applies_slug_grants_in_the_database(tmp_path: Path) -> None:
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        permissions=frozenset({CATALOG_READ}),
-        collection_grants=frozenset({"slug:other"}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, "slug:other")}),
     )
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
