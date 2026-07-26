@@ -38,6 +38,10 @@ Every object is independently age encrypted and checksummed. No encrypted object
 archive class that requires provider-side retrieval. Archive object keys are opaque, and
 plaintext archive-root guidance contains no collection identity.
 
+Riverhog periodically asks the OpenTimestamps calendars named by pending proofs for their
+Bitcoin attestations. It replaces an encrypted proof only after binding the result to the
+exact archived manifest and rereading and reverifying the replacement.
+
 Archive stores are the durable authority. A collection's archive-copy set can change only
 through guarded copy and retirement operations. An archive copy reads and verifies the
 source object set, writes and verifies an equivalent destination set, and records the copy

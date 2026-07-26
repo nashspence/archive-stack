@@ -5,7 +5,11 @@ from pathlib import Path
 
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
-from riverhog_core.catalog_models import ArchiveCopyJobRecord, CollectionArchiveCopyRecord
+from riverhog_core.catalog_models import (
+    ArchiveCopyJobRecord,
+    CollectionArchiveCopyRecord,
+    CollectionProofMaturationRecord,
+)
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 
 from tests.fixtures.crypto import FixtureProofVerifier
@@ -74,6 +78,8 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
             ("proof", "proof"),
         ]
         assert session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2")) is None
+        maturation = session.get(CollectionProofMaturationRecord, (COLLECTION_ID, "b2"))
+        assert maturation is not None and maturation.state == "pending"
 
 
 def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:

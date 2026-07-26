@@ -150,6 +150,11 @@ class CollectionArchiveCopyRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    proof_maturation: Mapped[CollectionProofMaturationRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class CollectionMetadataPublicationRecord(Base):
@@ -186,6 +191,36 @@ class CollectionMetadataPublicationRecord(Base):
     )
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="metadata_publication")
+
+
+class CollectionProofMaturationRecord(Base):
+    __tablename__ = "collection_proof_maturations"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str] = mapped_column(String)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    matured_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_proof_maturations_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+        ),
+    )
+
+    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="proof_maturation")
 
 
 class CollectionArchiveObjectRecord(Base):

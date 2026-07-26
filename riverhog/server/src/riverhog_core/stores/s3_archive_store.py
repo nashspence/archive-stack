@@ -37,6 +37,7 @@ from riverhog_core.archive_objects import (
     max_age_plaintext_object_bytes,
 )
 from riverhog_core.ports.archive_store import (
+    ArchiveArtifactRead,
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
     ArchiveMultipartUploadTracker,
@@ -623,6 +624,149 @@ class S3ArchiveStore:
             stored_bytes=len(ciphertext),
             stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
             published_at=utc_timestamp_now(),
+        )
+
+    def read_archive_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead:
+        if object.kind not in {"manifest", "proof"}:
+            raise ValueError("only collection manifests and proofs are archive artifacts")
+        head = self._head_object(object_key=object.object_path)
+        if head is None:
+            raise RuntimeError(f"Archive object is missing: {object.object_path}")
+        metadata = _head_metadata(head)
+        try:
+            plaintext_bytes = int(metadata[COLLECTION_BYTES_METADATA])
+            plaintext_sha256 = metadata[COLLECTION_SHA256_METADATA]
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(
+                f"Archive object has invalid collection validation metadata: {object.object_path}"
+            ) from exc
+        storage_class = _normalized_s3_storage_class(head) or "STANDARD"
+        receipt = self._collection_receipt_from_head(
+            object_id=object.object_id,
+            kind=object.kind,
+            object_key=object.object_path,
+            head=head,
+            expected_bytes=plaintext_bytes,
+            expected_sha256=plaintext_sha256,
+            expected_storage_class=storage_class,
+        )
+        current = ArchiveObjectIdentity(
+            object_id=receipt.object_id,
+            kind=receipt.kind,
+            object_path=receipt.object_path,
+            plaintext_bytes=receipt.plaintext_bytes,
+            stored_bytes=receipt.stored_bytes,
+            sha256=receipt.sha256,
+        )
+        _verify_remote_collection_object(
+            object_key=object.object_path,
+            head=head,
+            kind=object.kind,
+            expected=current,
+        )
+        content = b"".join(
+            self.iter_archive_object(
+                collection_id=collection_id,
+                object=current,
+            )
+        )
+        if len(content) != receipt.plaintext_bytes:
+            raise RuntimeError(
+                f"Archive object plaintext size does not match its metadata: {object.object_path}"
+            )
+        if hashlib.sha256(content).hexdigest() != receipt.sha256:
+            raise RuntimeError(
+                f"Archive object plaintext sha256 does not match its metadata: {object.object_path}"
+            )
+        return ArchiveArtifactRead(receipt=receipt, content=content)
+
+    def replace_archive_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt:
+        _ = collection_id
+        if object.object_id != "proof" or object.kind != "proof":
+            raise ValueError("archive proof replacement requires the proof object")
+        if not object.object_path.endswith("/manifest.yml.ots.age"):
+            raise ValueError("archive proof path is not canonical")
+        archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
+        if not object.object_path.startswith(archive_root):
+            raise ValueError("archive proof path is outside the configured archive root")
+
+        proof_sha256 = hashlib.sha256(proof_bytes).hexdigest()
+        existing = self._head_object(object_key=object.object_path)
+        if existing is not None:
+            try:
+                receipt = self._collection_receipt_from_head(
+                    object_id="proof",
+                    kind="proof",
+                    object_key=object.object_path,
+                    head=existing,
+                    expected_bytes=len(proof_bytes),
+                    expected_sha256=proof_sha256,
+                    expected_storage_class="STANDARD",
+                )
+                _verify_remote_collection_object(
+                    object_key=object.object_path,
+                    head=existing,
+                    kind="proof",
+                    expected=ArchiveObjectIdentity(
+                        object_id=receipt.object_id,
+                        kind=receipt.kind,
+                        object_path=receipt.object_path,
+                        plaintext_bytes=receipt.plaintext_bytes,
+                        stored_bytes=receipt.stored_bytes,
+                        sha256=receipt.sha256,
+                    ),
+                )
+                return receipt
+            except RuntimeError:
+                pass
+
+        ciphertext = encrypt_age_scrypt(
+            proof_bytes,
+            self._config.archive_passphrase,
+            log_n=self._config.archive_scrypt_work_factor,
+        )
+        uploaded_at = utc_timestamp_now()
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=object.object_path,
+            Body=ciphertext,
+            ContentLength=len(ciphertext),
+            Metadata={
+                "riverhog-backend": self._store.backend,
+                "riverhog-storage-class": "STANDARD",
+                "riverhog-object-kind": "collection-proof",
+                "riverhog-object-id": "proof",
+                ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
+                PLAINTEXT_BYTES_METADATA: str(len(proof_bytes)),
+                PLAINTEXT_SHA256_METADATA: proof_sha256,
+                COLLECTION_BYTES_METADATA: str(len(proof_bytes)),
+                COLLECTION_SHA256_METADATA: proof_sha256,
+            },
+        )
+        head = cast(
+            dict[str, Any],
+            self._client.head_object(Bucket=self._bucket, Key=object.object_path),
+        )
+        return self._collection_receipt_from_head(
+            object_id="proof",
+            kind="proof",
+            object_key=object.object_path,
+            head=head,
+            expected_bytes=len(proof_bytes),
+            expected_sha256=proof_sha256,
+            expected_storage_class="STANDARD",
+            uploaded_at=uploaded_at,
         )
 
     def _put_archive_root_guidance(self) -> None:

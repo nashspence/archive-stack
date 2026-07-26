@@ -22,6 +22,7 @@ CURRENT_TABLES = {
     "collection_archive_object_uploads",
     "collection_archive_objects",
     "collection_metadata_publications",
+    "collection_proof_maturations",
     "collection_tags",
     "collection_deletions",
     "collection_files",
@@ -75,6 +76,16 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "app",
         "state",
         "plan_etag",
+    }
+    assert {column["name"] for column in inspector.get_columns("collection_proof_maturations")} == {
+        "collection_id",
+        "store",
+        "state",
+        "attempt_count",
+        "next_attempt_at",
+        "last_attempt_at",
+        "matured_at",
+        "failure",
     }
     assert {column["name"] for column in inspector.get_columns("app_keys")} == {
         "id",

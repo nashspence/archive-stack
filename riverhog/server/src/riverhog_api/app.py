@@ -127,6 +127,18 @@ def _process_ingress_cleanup(
     container.archive_uploads.process_due_ingress_cleanup(limit=100)
 
 
+def _process_proof_maturations(
+    container: ServiceContainer,
+    *,
+    startup_recovery: bool = False,
+) -> None:
+    if startup_recovery:
+        requeued = container.proof_maturations.requeue_interrupted_for_startup()
+        if requeued:
+            _LOG.info("startup requeued interrupted proof maturations: count=%s", requeued)
+    container.proof_maturations.process_due(limit=100)
+
+
 def _abort_incomplete_archive_multipart_uploads(
     container: ServiceContainer,
     *,
@@ -281,6 +293,35 @@ async def _run_retrieval_reaper(
             _LOG.exception("retrieval reaper sweep failed")
 
 
+async def _run_proof_maturation_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    sweep_interval: timedelta,
+) -> None:
+    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
+    startup_recovery = True
+    while True:
+        try:
+            if startup_recovery:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            container = container_provider()
+            if container is None:
+                continue
+            current_startup_recovery = startup_recovery
+            startup_recovery = False
+            await asyncio.to_thread(
+                _process_proof_maturations,
+                container,
+                startup_recovery=current_startup_recovery,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("proof maturation reaper sweep failed")
+
+
 def create_app(
     *,
     container: ServiceContainer | None = None,
@@ -290,6 +331,7 @@ def create_app(
     ingress_cleanup_reaper_interval: float | None = None,
     archive_multipart_reaper_interval: float | None = None,
     retrieval_reaper_interval: float | None = None,
+    proof_maturation_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
         raise ValueError("create_app accepts either container or container_provider, not both")
@@ -322,6 +364,11 @@ def create_app(
         timedelta(seconds=retrieval_reaper_interval)
         if retrieval_reaper_interval is not None
         else config.retrieval_sweep_interval
+    )
+    proof_maturation_sweep_interval = (
+        timedelta(seconds=proof_maturation_reaper_interval)
+        if proof_maturation_reaper_interval is not None
+        else config.proof_maturation_sweep_interval
     )
 
     def get_or_create_container() -> ServiceContainer:
@@ -372,6 +419,12 @@ def create_app(
                 sweep_interval=retrieval_sweep_interval,
             )
         )
+        proof_maturation_task = asyncio.create_task(
+            _run_proof_maturation_reaper(
+                get_or_create_container,
+                sweep_interval=proof_maturation_sweep_interval,
+            )
+        )
         try:
             yield
         finally:
@@ -380,6 +433,7 @@ def create_app(
             ingress_cleanup_task.cancel()
             archive_multipart_task.cancel()
             retrieval_task.cancel()
+            proof_maturation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await upload_task
             with contextlib.suppress(asyncio.CancelledError):
@@ -390,6 +444,8 @@ def create_app(
                 await archive_multipart_task
             with contextlib.suppress(asyncio.CancelledError):
                 await retrieval_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await proof_maturation_task
 
     app = FastAPI(title="riverhog API", version="0.1.0", lifespan=lifespan)
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"

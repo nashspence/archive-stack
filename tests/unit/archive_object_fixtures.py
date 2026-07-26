@@ -25,6 +25,7 @@ from riverhog_core.collection_metadata import (
     collection_record_manifest,
 )
 from riverhog_core.ports.archive_store import (
+    ArchiveArtifactRead,
     ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
     ArchiveObjectUploadReceipt,
@@ -230,6 +231,7 @@ class MemoryArchiveStore:
         self.verified: list[tuple[str, ...]] = []
         self.deleted: list[tuple[str, ...]] = []
         self.published_metadata: list[tuple[int, str, bytes]] = []
+        self.replaced_proofs: list[bytes] = []
 
     def read_mode(self) -> str:
         return self._read_mode
@@ -311,6 +313,51 @@ class MemoryArchiveStore:
             stored_sha256=hashlib.sha256(manifest).hexdigest(),
             published_at=UPLOADED_AT,
         )
+
+    def read_archive_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead:
+        assert collection_id == COLLECTION_ID
+        assert self.archive is not None
+        prefix = object.object_path.rsplit("/", 1)[0]
+        receipt = archive_receipt(
+            self.archive,
+            backend=self.backend,
+            storage_class=self.storage_class,
+            prefix=prefix,
+        ).require_object(object.object_id)
+        content = (
+            self.archive.manifest_bytes
+            if object.object_id == "manifest"
+            else self.archive.proof_bytes
+        )
+        return ArchiveArtifactRead(receipt=receipt, content=content)
+
+    def replace_archive_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt:
+        assert collection_id == COLLECTION_ID
+        assert object.object_id == "proof"
+        assert self.archive is not None
+        self.replaced_proofs.append(proof_bytes)
+        self.archive = replace(
+            self.archive,
+            proof_bytes=proof_bytes,
+            proof_sha256=hashlib.sha256(proof_bytes).hexdigest(),
+        )
+        return archive_receipt(
+            self.archive,
+            backend=self.backend,
+            storage_class=self.storage_class,
+            prefix=object.object_path.rsplit("/", 1)[0],
+        ).require_object("proof")
 
     def prepare_archive_objects_read(
         self,

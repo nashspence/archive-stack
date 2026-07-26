@@ -17,6 +17,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
+    CollectionProofMaturationRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     IngressCleanupRecord,
@@ -188,6 +189,8 @@ def test_encrypted_ingress_streams_into_independently_restorable_archive_objects
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         assert copy is not None and copy.state == "uploaded"
+        maturation = session.get(CollectionProofMaturationRecord, (COLLECTION_ID, "deep"))
+        assert maturation is not None and maturation.state == "pending"
         objects = session.query(CollectionArchiveObjectRecord).order_by(
             CollectionArchiveObjectRecord.object_order
         )

@@ -25,6 +25,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
+    CollectionProofMaturationRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
@@ -435,6 +436,17 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
         )
     )
     blockers.extend(f"archive copy retirement is active: {store}" for store in retirements)
+    proof_maturations = list(
+        session.scalars(
+            select(CollectionProofMaturationRecord.store)
+            .where(
+                CollectionProofMaturationRecord.collection_id == collection_id,
+                CollectionProofMaturationRecord.state == "upgrading",
+            )
+            .order_by(CollectionProofMaturationRecord.store)
+        )
+    )
+    blockers.extend(f"archive proof maturation is active: {store}" for store in proof_maturations)
     return blockers
 
 

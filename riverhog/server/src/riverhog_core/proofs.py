@@ -17,12 +17,26 @@ class ProofVerifyError(RuntimeError):
     pass
 
 
+class ProofUpgradeError(RuntimeError):
+    pass
+
+
 class ProofStamper(Protocol):
     def stamp(self, manifest_path: Path) -> Path: ...
 
 
 class ProofVerifier(Protocol):
     def verify(self, *, manifest_bytes: bytes, proof_bytes: bytes) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProofUpgradeResult:
+    proof_bytes: bytes
+    complete: bool
+
+
+class ProofUpgrader(Protocol):
+    def upgrade(self, proof_bytes: bytes) -> ProofUpgradeResult: ...
 
 
 def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
@@ -47,6 +61,11 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
     def attestation(line: str) -> bool:
         return line.startswith("Got ") and " attestation(s) from " in line
 
+    def ignored_calendar(line: str) -> bool:
+        return line.startswith("Ignoring attestation from calendar ") and line.endswith(
+            ": Calendar not in whitelist"
+        )
+
     def bitcoin_disabled(line: str) -> bool:
         return line == "Not checking Bitcoin attestation; Bitcoin disabled"
 
@@ -60,12 +79,17 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
         pending(line)
         or awaiting_confirmations(line)
         or attestation(line)
+        or ignored_calendar(line)
         or bitcoin_disabled(line)
         or manual_check(line)
         for line in lines
     )
     has_deferred_status = any(
-        pending(line) or awaiting_confirmations(line) or bitcoin_disabled(line) for line in lines
+        pending(line)
+        or awaiting_confirmations(line)
+        or ignored_calendar(line)
+        or bitcoin_disabled(line)
+        for line in lines
     )
     disabled_checks_are_described = not any(bitcoin_disabled(line) for line in lines) or any(
         manual_check(line) for line in lines
@@ -118,3 +142,29 @@ class CommandProofVerifier:
             proc.stderr,
         ):
             raise ProofVerifyError(proc.stderr or proc.stdout or "proof verification failed")
+
+
+@dataclass(frozen=True)
+class CommandProofUpgrader:
+    command: Sequence[str] = ("ots",)
+
+    def upgrade(self, proof_bytes: bytes) -> ProofUpgradeResult:
+        if not self.command:
+            raise ProofUpgradeError("proof upgrade command is empty")
+        with tempfile.TemporaryDirectory(prefix="riverhog-ots-upgrade-") as tmp:
+            proof_path = Path(tmp) / "manifest.yml.ots"
+            proof_path.write_bytes(proof_bytes)
+            proc = subprocess.run(
+                [*self.command, "upgrade", str(proof_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                output = "\n".join((proc.stdout, proc.stderr))
+                if "Failed! Timestamp not complete" in output and "Error!" not in output:
+                    return ProofUpgradeResult(proof_bytes=proof_bytes, complete=False)
+                raise ProofUpgradeError(proc.stderr or proc.stdout or "proof upgrade failed")
+            if not proof_path.exists():
+                raise ProofUpgradeError("proof upgrade command removed the .ots file")
+            return ProofUpgradeResult(proof_bytes=proof_path.read_bytes(), complete=True)

@@ -557,6 +557,61 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
 
 
+def test_archive_proof_replacement_is_encrypted_and_immediately_reverified(
+    monkeypatch, tmp_path: Path
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    archive = _archive()
+    uploaded = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    manifest_identity = _identity(uploaded).require_object("manifest")
+    proof_identity = _identity(uploaded).require_object("proof")
+
+    manifest = store.read_archive_artifact(
+        collection_id=COLLECTION_ID,
+        object=manifest_identity,
+    )
+    proof = store.read_archive_artifact(
+        collection_id=COLLECTION_ID,
+        object=proof_identity,
+    )
+
+    assert manifest.content == archive.manifest_bytes
+    assert proof.content == archive.proof_bytes
+
+    completed_proof = archive.proof_bytes + b"matured\n"
+    receipt = store.replace_archive_proof(
+        collection_id=COLLECTION_ID,
+        object=proof_identity,
+        proof_bytes=completed_proof,
+    )
+    persisted = store.read_archive_artifact(
+        collection_id=COLLECTION_ID,
+        object=ArchiveObjectIdentity(
+            object_id=receipt.object_id,
+            kind=receipt.kind,
+            object_path=receipt.object_path,
+            plaintext_bytes=receipt.plaintext_bytes,
+            stored_bytes=receipt.stored_bytes,
+            sha256=receipt.sha256,
+        ),
+    )
+
+    assert persisted.content == completed_proof
+    assert persisted.receipt.storage_class == "STANDARD"
+    assert (
+        decrypt_age_scrypt(
+            cast(bytes, client.objects[receipt.object_path]["Body"]),
+            "test-archive-passphrase",
+        )
+        == completed_proof
+    )
+
+
 def test_collection_metadata_manifest_is_independently_encrypted(
     monkeypatch, tmp_path: Path
 ) -> None:

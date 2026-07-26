@@ -27,6 +27,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
+    CollectionProofMaturationRecord,
     CollectionRecord,
     CollectionTagRecord,
     CollectionUploadFileRecord,
@@ -809,6 +810,15 @@ class SqlAlchemyArchiveUploadService:
                     collection_id=collection_id,
                     store=upload.archive_store,
                     desired_revision=collection.metadata_revision,
+                    state="pending",
+                    attempt_count=0,
+                    next_attempt_at=now,
+                )
+            )
+            session.merge(
+                CollectionProofMaturationRecord(
+                    collection_id=collection_id,
+                    store=upload.archive_store,
                     state="pending",
                     attempt_count=0,
                     next_attempt_at=now,

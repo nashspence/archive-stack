@@ -236,7 +236,14 @@ class RuntimeConfig:
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
-    ots_verify_command: tuple[str, ...] = ("ots", "--no-bitcoin")
+    ots_verify_command: tuple[str, ...] = (
+        "ots",
+        "--no-bitcoin",
+        "--no-default-whitelist",
+    )
+    ots_upgrade_command: tuple[str, ...] = ("ots",)
+    proof_maturation_retry_delay: timedelta = field(default_factory=lambda: timedelta(hours=6))
+    proof_maturation_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
     public_base_url: str | None = None
     event_source: str = "urn:riverhog"
     event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
@@ -246,6 +253,10 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
         if self.event_context_retention.total_seconds() <= 0:
             raise ValueError("RIVERHOG_EVENT_CONTEXT_RETENTION must be > 0")
+        if self.proof_maturation_retry_delay.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_PROOF_MATURATION_RETRY_DELAY must be > 0")
+        if self.proof_maturation_sweep_interval.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL must be > 0")
         if not self.database_url:
             object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
         log_level = self.log_level.strip().upper()
@@ -689,8 +700,15 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_OTS_STAMP_COMMAND",
     )
     ots_verify_command = _parse_command(
-        os.getenv("RIVERHOG_OTS_VERIFY_COMMAND", "ots --no-bitcoin"),
+        os.getenv(
+            "RIVERHOG_OTS_VERIFY_COMMAND",
+            "ots --no-bitcoin --no-default-whitelist",
+        ),
         name="RIVERHOG_OTS_VERIFY_COMMAND",
+    )
+    ots_upgrade_command = _parse_command(
+        os.getenv("RIVERHOG_OTS_UPGRADE_COMMAND", "ots"),
+        name="RIVERHOG_OTS_UPGRADE_COMMAND",
     )
     archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ
     archive_passphrase = (
@@ -771,5 +789,12 @@ def load_runtime_config() -> RuntimeConfig:
         retrieval_tier=retrieval_tier,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
+        ots_upgrade_command=ots_upgrade_command,
+        proof_maturation_retry_delay=parse_duration(
+            os.getenv("RIVERHOG_PROOF_MATURATION_RETRY_DELAY", "6h")
+        ),
+        proof_maturation_sweep_interval=parse_duration(
+            os.getenv("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL", "1h")
+        ),
         public_base_url=public_base_url,
     )

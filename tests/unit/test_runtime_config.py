@@ -87,6 +87,20 @@ def test_load_runtime_config_parses_lifecycle_event_settings(
     assert config.event_context_retention == timedelta(days=14)
 
 
+def test_load_runtime_config_parses_proof_maturation_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_OTS_UPGRADE_COMMAND", "custom-ots --calendar example")
+    monkeypatch.setenv("RIVERHOG_PROOF_MATURATION_RETRY_DELAY", "3h")
+    monkeypatch.setenv("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL", "20m")
+
+    config = load_runtime_config()
+
+    assert config.ots_upgrade_command == ("custom-ots", "--calendar", "example")
+    assert config.proof_maturation_retry_delay == timedelta(hours=3)
+    assert config.proof_maturation_sweep_interval == timedelta(minutes=20)
+
+
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
     config = load_runtime_config()

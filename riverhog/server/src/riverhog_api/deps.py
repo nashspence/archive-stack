@@ -9,7 +9,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
-from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier
+from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
@@ -30,11 +30,13 @@ from riverhog_core.services.interfaces import (
     CollectionDeletionService,
     CollectionService,
     LifecycleEventService,
+    ProofMaturationService,
     RetrievalService,
     SearchService,
     TagService,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
@@ -54,6 +56,7 @@ class ServiceContainer:
     search: SearchService
     archive_uploads: ArchiveUploadService
     archive_copies: ArchiveCopyService
+    proof_maturations: ProofMaturationService
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_reporting: ArchiveReportingService
     retrieval: RetrievalService
@@ -82,6 +85,7 @@ def default_container() -> ServiceContainer:
     upload_store = TusdUploadStore(config)
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
+    proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config),
         collection_access=SqlAlchemyCollectionAccessService(config),
@@ -103,6 +107,12 @@ def default_container() -> ServiceContainer:
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,
+            proof_verifier=proof_verifier,
+        ),
+        proof_maturations=SqlAlchemyProofMaturationService(
+            config,
+            archive_stores,
+            proof_upgrader=proof_upgrader,
             proof_verifier=proof_verifier,
         ),
         archive_copy_retirements=SqlAlchemyArchiveCopyRetirementService(

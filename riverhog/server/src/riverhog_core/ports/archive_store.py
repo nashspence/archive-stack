@@ -37,6 +37,12 @@ class CollectionArchiveUploadReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveArtifactRead:
+    receipt: ArchiveObjectUploadReceipt
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class MutableManifestReceipt:
     object_path: str
     version_id: str | None
@@ -200,6 +206,21 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str,
         manifest: bytes,
     ) -> MutableManifestReceipt: ...
+
+    def read_archive_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead: ...
+
+    def replace_archive_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt: ...
 
     def prepare_archive_objects_read(
         self,
