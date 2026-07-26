@@ -71,10 +71,7 @@ class SqlAlchemyArchiveAttestationService:
             self._signer = signer
         elif configured:
             assert config.attestation_secret_key_file is not None
-            self._signer = CommandAttestationSigner(
-                config.attestation_secret_key_file,
-                config.archive_passphrase,
-            )
+            self._signer = CommandAttestationSigner(config.attestation_secret_key_file)
         else:
             self._signer = None
         self._signature_verifier: AttestationVerifier | None

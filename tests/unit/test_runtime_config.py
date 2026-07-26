@@ -104,19 +104,19 @@ def test_load_runtime_config_parses_proof_maturation_settings(
 def test_load_runtime_config_parses_archive_attestation_key_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key.age")
+    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key")
     monkeypatch.setenv("RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE", "/run/keys/minisign.pub")
 
     config = load_runtime_config()
 
-    assert config.attestation_secret_key_file == Path("/run/keys/minisign.key.age")
+    assert config.attestation_secret_key_file == Path("/run/keys/minisign.key")
     assert config.attestation_public_key_file == Path("/run/keys/minisign.pub")
 
 
 def test_archive_attestation_key_configuration_must_be_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key.age")
+    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key")
 
     with pytest.raises(ValueError, match="attestation key configuration is incomplete"):
         load_runtime_config()

@@ -6,7 +6,6 @@ import subprocess
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import encrypt_age_scrypt
 from riverhog_core.archive_attestations import (
     CommandAttestationSigner,
     CommandAttestationVerifier,
@@ -30,7 +29,7 @@ from tests.unit.archive_object_fixtures import (
 
 
 @pytest.mark.skipif(shutil.which("minisign") is None, reason="minisign is not installed")
-def test_command_signer_uses_an_age_wrapped_unencrypted_minisign_key(tmp_path) -> None:
+def test_command_signer_uses_a_private_minisign_key(tmp_path) -> None:
     secret_key = tmp_path / "minisign.key"
     public_key = tmp_path / "minisign.pub"
     subprocess.run(
@@ -46,17 +45,9 @@ def test_command_signer_uses_an_age_wrapped_unencrypted_minisign_key(tmp_path) -
         check=True,
         capture_output=True,
     )
-    encrypted_key = tmp_path / "minisign.key.age"
-    encrypted_key.write_bytes(
-        encrypt_age_scrypt(secret_key.read_bytes(), "archive passphrase", log_n=1)
-    )
-    secret_key.unlink()
     checksums = b"0" * 64 + b"  objects/data-000000.age\n"
 
-    signature = CommandAttestationSigner(
-        encrypted_key,
-        "archive passphrase",
-    ).sign(checksums)
+    signature = CommandAttestationSigner(secret_key).sign(checksums)
 
     CommandAttestationVerifier(public_key).verify(
         checksums=checksums,

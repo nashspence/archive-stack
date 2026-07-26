@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-
-from riverhog_age import decrypt_age_scrypt
 
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 
@@ -66,59 +63,42 @@ def archive_copy_checksums(
 
 @dataclass(frozen=True, slots=True)
 class CommandAttestationSigner:
-    encrypted_secret_key_file: Path
-    archive_passphrase: str
+    secret_key_file: Path
     command: tuple[str, ...] = ("minisign",)
 
     def sign(self, checksums: bytes) -> bytes:
         if not self.command:
             raise AttestationSignError("attestation signing command is empty")
-        try:
-            encrypted_key = self.encrypted_secret_key_file.read_bytes()
-            secret_key = decrypt_age_scrypt(encrypted_key, self.archive_passphrase)
-        except Exception as exc:
-            raise AttestationSignError("attestation secret key could not be decrypted") from exc
-        if not hasattr(os, "memfd_create"):
-            raise AttestationSignError("attestation signing requires an anonymous memory file")
-        key_fd = os.memfd_create("riverhog-attestation-key", flags=0)
-        try:
-            with os.fdopen(os.dup(key_fd), "wb", closefd=True) as key_file:
-                key_file.write(secret_key)
-                key_file.flush()
-            os.lseek(key_fd, 0, os.SEEK_SET)
-            with tempfile.TemporaryDirectory(prefix="riverhog-attestation-sign-") as tmp:
-                root = Path(tmp)
-                checksums_path = root / "SHA256SUMS"
-                signature_path = root / "SHA256SUMS.minisig"
-                checksums_path.write_bytes(checksums)
-                proc = subprocess.run(
-                    [
-                        *self.command,
-                        "-S",
-                        "-H",
-                        "-s",
-                        f"/proc/self/fd/{key_fd}",
-                        "-m",
-                        str(checksums_path),
-                        "-x",
-                        str(signature_path),
-                        "-t",
-                        TRUSTED_COMMENT,
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    pass_fds=(key_fd,),
+        with tempfile.TemporaryDirectory(prefix="riverhog-attestation-sign-") as tmp:
+            root = Path(tmp)
+            checksums_path = root / "SHA256SUMS"
+            signature_path = root / "SHA256SUMS.minisig"
+            checksums_path.write_bytes(checksums)
+            proc = subprocess.run(
+                [
+                    *self.command,
+                    "-S",
+                    "-H",
+                    "-s",
+                    str(self.secret_key_file),
+                    "-m",
+                    str(checksums_path),
+                    "-x",
+                    str(signature_path),
+                    "-t",
+                    TRUSTED_COMMENT,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                raise AttestationSignError(
+                    proc.stderr.strip() or proc.stdout.strip() or "attestation signing failed"
                 )
-                if proc.returncode != 0:
-                    raise AttestationSignError(
-                        proc.stderr.strip() or proc.stdout.strip() or "attestation signing failed"
-                    )
-                if not signature_path.is_file():
-                    raise AttestationSignError("attestation signing produced no signature")
-                return signature_path.read_bytes()
-        finally:
-            os.close(key_fd)
+            if not signature_path.is_file():
+                raise AttestationSignError("attestation signing produced no signature")
+            return signature_path.read_bytes()
 
 
 @dataclass(frozen=True, slots=True)

@@ -657,7 +657,7 @@ def test_archive_root_publishes_configured_attestation_public_key(
         monkeypatch,
         tmp_path,
         client,
-        attestation_secret_key_file=tmp_path / "minisign.key.age",
+        attestation_secret_key_file=tmp_path / "minisign.key",
         attestation_public_key_file=public_key_path,
     )
 
