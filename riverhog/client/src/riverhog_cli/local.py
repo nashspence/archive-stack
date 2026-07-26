@@ -532,10 +532,7 @@ def evict(
             _output_path(target, normalized, row["path"]).unlink(missing_ok=True)
         collection_dir = target / str(normalized)
         if collection_dir.exists():
-            for directory in sorted(collection_dir.rglob("*"), reverse=True):
-                if directory.is_dir():
-                    directory.rmdir()
-            collection_dir.rmdir()
+            shutil.rmtree(collection_dir)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         db.commit()
     typer.echo(f"evicted local collection: {normalized}")

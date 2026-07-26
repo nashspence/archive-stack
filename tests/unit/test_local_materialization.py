@@ -243,6 +243,36 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     assert runner.invoke(local_materialization.local_app, ["list"]).stdout == ""
 
 
+def test_local_evict_removes_retained_nested_collection_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+
+    assert (
+        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code
+        == 0
+    )
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+    assert (
+        runner.invoke(local_materialization.local_app, ["remove", str(COLLECTION_ID)]).exit_code
+        == 0
+    )
+    assert (target / str(COLLECTION_ID) / "notes/one.txt").exists()
+
+    evicted = runner.invoke(
+        local_materialization.local_app,
+        ["evict", str(COLLECTION_ID), "--confirm"],
+    )
+
+    assert evicted.exit_code == 0
+    assert not (target / str(COLLECTION_ID)).exists()
+
+
 def test_local_materializer_assembles_sequential_archive_segments(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     first = tmp_path / "first"
