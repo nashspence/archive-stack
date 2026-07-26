@@ -128,7 +128,6 @@ class JebApiClient:
         terminal: str = "active",
         state: str | None = None,
         source: str | None = None,
-        collection_tag: str | None = None,
         target: str | None = None,
         query: str | None = None,
         all_items: bool = False,
@@ -143,7 +142,6 @@ class JebApiClient:
         for key, value in {
             "state": state,
             "source": source,
-            "collection_tag": collection_tag,
             "target": target,
             "q": query,
         }.items():

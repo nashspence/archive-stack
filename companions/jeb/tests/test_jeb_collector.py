@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass
@@ -111,10 +110,7 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
 
     assert collector.config.collector.batch_dir == tmp_path / "landing" / ".jeb-batches"
     sources = collector.source_registry.list()
-    assert [(source.id, source.collection_tags) for source in sources] == [
-        ("camera", ("camera",)),
-        ("phone", ("phone",)),
-    ]
+    assert [source.id for source in sources] == ["camera", "phone"]
     assert [source.template for source in sources] == [TEST_TEMPLATE, TEST_TEMPLATE]
 
     with pytest.raises(SourceRegistryError, match="source already exists: camera"):
@@ -162,7 +158,6 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
         "phone",
         {
             "adapters": ["tus"],
-            "collection_tags": ["mobile"],
             "target": "review",
             "cadence": "manual",
         },
@@ -182,7 +177,7 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
     assert page["sources"][0]["template"] == TEST_TEMPLATE
 
     filtered = collector.source_registry.list_page(
-        query="MOBILE",
+        query="REVIEW",
         enabled=False,
         adapter="tus",
         target="review",
@@ -416,18 +411,11 @@ def test_scheduler_batches_each_source_independently(tmp_path: Path) -> None:
 
     assert adapter.calls == 2
     with collector.connect() as conn:
-        batches = conn.execute(
-            "SELECT source_id, collection_tags_json FROM batches ORDER BY source_id"
-        ).fetchall()
-    assert sorted(
-        {
-            (row["source_id"], tuple(json.loads(row["collection_tags_json"])))
-            for row in batches
-        }
-    ) == [
-        ("camera", ("camera",)),
-        ("phone", ("phone",)),
-    ]
+        source_ids = [
+            str(row["source_id"])
+            for row in conn.execute("SELECT source_id FROM batches ORDER BY source_id")
+        ]
+    assert source_ids == ["camera", "phone"]
 
 
 def test_manual_cadence_only_runs_with_archive_now(tmp_path: Path) -> None:
@@ -453,7 +441,6 @@ def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
     assert plan["status"] == "would_process"
     assert plan["dry_run"] is True
     assert plan["source"] == "camera"
-    assert plan["collection_tags"] == ["camera"]
     assert plan["target_name"] == "munchy"
     assert plan["file_count"] == 1
     assert plan["total_bytes"] == 6
@@ -551,7 +538,6 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
 
     assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
     assert request.template == "camera-review"
-    assert request.collection_tags == ("camera",)
     assert request.run_id == "20260719T160102Z"
     assert request.event_context == {"initiator": {"app": "jeb", "attempt_id": batch_id}}
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]

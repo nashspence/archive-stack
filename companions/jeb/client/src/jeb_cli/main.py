@@ -52,7 +52,6 @@ def cmd_attempt_list(args: argparse.Namespace) -> int:
         terminal=args.terminal,
         state=args.state,
         source=args.source,
-        collection_tag=args.collection_tag,
         target=args.target,
         query=args.query,
         all_items=args.all,
@@ -149,7 +148,6 @@ def cmd_source_add(args: argparse.Namespace) -> int:
         "template": args.template,
         "enabled": not args.disabled,
         "stable_seconds": args.stable_seconds,
-        "collection_tags": args.tag or [args.source],
         "target": args.target,
         "threshold_bytes": args.threshold_bytes,
         "cleanup": args.cleanup,
@@ -277,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=ATTEMPT_LIST_SORT_FIELDS,
         default_sort="updated_at",
         default_order="desc",
-        query_help=("Search attempt, batch, job, collection, target, state, timestamp, or error."),
+        query_help=("Search attempt, batch, job, source, target, state, run id, or error."),
     )
     attempt_list.add_argument(
         "--terminal",
@@ -287,7 +285,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
     attempt_list.add_argument("--source", help="Filter by source id.")
-    attempt_list.add_argument("--collection-tag", help="Filter by collection tag.")
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
     attempt_list.set_defaults(func=cmd_attempt_list)
@@ -323,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=SOURCE_LIST_SORT_FIELDS,
         default_sort="id",
         default_order="asc",
-        query_help="Search source, collection tag, target, template, cadence, or adapter.",
+        query_help="Search source, target, template, cadence, or adapter.",
     )
     source_state = source_list.add_mutually_exclusive_group()
     source_state.add_argument(
@@ -370,7 +367,6 @@ def build_parser() -> argparse.ArgumentParser:
     source_add.add_argument("--disabled", action="store_true")
     source_add.add_argument("--stable-seconds", type=int, default=600)
     source_add.add_argument("--include-extension", action="append")
-    source_add.add_argument("--tag", action="append", help="Collection tag; repeat as needed.")
     source_add.add_argument("--target", default="munchy")
     source_add.add_argument("--threshold-bytes", type=int, default=0)
     source_add.add_argument(

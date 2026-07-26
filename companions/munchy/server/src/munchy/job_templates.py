@@ -17,7 +17,6 @@ from munchy_workflows.job_authoring import (
 
 JOB_TEMPLATE_RUNTIME_FIELDS = frozenset(
     {
-        "collection_tags",
         "destination_prefix",
         "input_upload_id",
         "job_id",

@@ -363,7 +363,7 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
 def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
     definition = job_template_definition()
-    definition["job"]["collection_tags"] = ["fixed"]  # type: ignore[index]
+    definition["job"]["run_id"] = "fixed"  # type: ignore[index]
 
     with TestClient(server.app) as client:
         response = client.post(
@@ -373,6 +373,32 @@ def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatc
 
     assert response.status_code == 422
     assert "submission-owned" in response.json()["detail"]
+
+
+def test_job_template_owns_default_collection_tags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    definition = job_template_definition()
+    definition["job"]["collection_tags"] = ["camera-archive"]  # type: ignore[index]
+
+    with TestClient(server.app) as client:
+        created = client.post(
+            "/v1/admin/job-templates",
+            json={"name": "camera-archive", "definition": definition},
+        )
+        submitted = client.post(
+            "/v1/submissions",
+            json={
+                "submission_id": "submission-1",
+                "template": "camera-archive",
+                "run_id": "20260101T000000.123456Z",
+                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+            },
+        )
+
+    assert created.status_code == 201, created.json()
+    assert submitted.status_code == 202, submitted.json()
+    assert server.load_job("submission-1")["collection_tags"] == ["camera-archive"]
 
 
 def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

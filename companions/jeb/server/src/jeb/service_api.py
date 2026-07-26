@@ -445,7 +445,6 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             terminal=_terminal(params),
                             state=_first(params, "state"),
                             source=_first(params, "source"),
-                            collection_tag=_first(params, "collection_tag"),
                             target=_first(params, "target"),
                             all_items=_bool(params, "all", False),
                         ),
@@ -533,9 +532,6 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             if "include_extensions" in payload
                             else ()
                         ),
-                        collection_tags=_sequence(payload, "collection_tags")
-                        if "collection_tags" in payload
-                        else None,
                         target=str(payload.get("target") or "munchy"),
                         threshold_bytes=int(payload.get("threshold_bytes", 0)),
                         cleanup=cast(
@@ -685,8 +681,6 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 payload = _json_body(self)
-                if "collection_tags" in payload:
-                    payload["collection_tags"] = _sequence(payload, "collection_tags")
                 source = state.collector.update_source(source_id, payload)
                 _response(self, HTTPStatus.OK, source.summary())
             except (SourceRegistryError, ValueError) as exc:

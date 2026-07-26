@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         sort_fields=ATTEMPT_LIST_SORT_FIELDS,
         default_sort="updated_at",
         default_order="desc",
-        query_help=("Search attempt, batch, job, collection, target, state, timestamp, or error."),
+        query_help=("Search attempt, batch, job, source, target, state, run id, or error."),
     )
     attempt_list.add_argument(
         "--terminal",
@@ -100,7 +100,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
     attempt_list.add_argument("--source", help="Filter by source id.")
-    attempt_list.add_argument("--collection-tag", help="Filter by collection tag.")
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
     sub.add_parser(
@@ -195,7 +194,6 @@ def main(argv: list[str] | None = None) -> int:
             terminal=args.terminal,
             state=args.state,
             source=args.source,
-            collection_tag=args.collection_tag,
             target=args.target,
             all_items=args.all,
         )

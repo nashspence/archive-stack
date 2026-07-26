@@ -228,10 +228,10 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
         status, updated = request_json(
             "PATCH",
             f"{base}/phone",
-            {"collection_tags": ["mobile"], "cadence": "weekly"},
+            {"cadence": "weekly"},
         )
         assert status == 200
-        assert updated["collection_tags"] == ["mobile"]
+        assert updated["cadence"] == "weekly"
         status, rotated = request_json(
             "POST",
             f"{base}/phone/credential",

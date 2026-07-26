@@ -341,7 +341,6 @@ class Collector:
             "attempt_id": attempt_id if attempt_id and attempt_id != source_id else "",
             "state": str(context.get("state") or "failed"),
             "target": str(context.get("target_name") or context.get("target") or ""),
-            "collection_tags": list(context.get("collection_tags") or []),
             "run_id": str(context.get("run_id") or ""),
         }
         event = cloud_event(
@@ -386,7 +385,6 @@ class Collector:
                 id TEXT PRIMARY KEY,
                 source_id TEXT NOT NULL,
                 target_name TEXT NOT NULL,
-                collection_tags_json TEXT NOT NULL,
                 run_id TEXT NOT NULL,
                 cleanup TEXT NOT NULL,
                 manifest_digest TEXT NOT NULL,
@@ -550,7 +548,6 @@ class Collector:
             CREATE TABLE IF NOT EXISTS target_preflight_failures (
                 source_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
-                collection_tags_json TEXT NOT NULL,
                 target_name TEXT NOT NULL,
                 input_paths_json TEXT NOT NULL,
                 failure_json TEXT NOT NULL,
@@ -647,7 +644,6 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_tags_json,
                     b.run_id
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
@@ -677,7 +673,6 @@ class Collector:
                 "source_id": str(row["source_id"]),
                 "state": str(row["state"]),
                 "target": str(row["target_name"]),
-                "collection_tags": list(json.loads(row["collection_tags_json"])),
                 "run_id": str(row["run_id"]),
                 "target_submission_id": job_id,
             }
@@ -716,7 +711,6 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_tags_json,
                     b.run_id,
                     b.cleanup,
                     b.manifest_digest,
@@ -749,7 +743,6 @@ class Collector:
         state: str | None = None,
         states: Sequence[str] | None = None,
         source: str | None = None,
-        collection_tag: str | None = None,
         target: str | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -787,11 +780,6 @@ class Collector:
         if source:
             clauses.append("b.source_id = ?")
             values.append(source)
-        if collection_tag:
-            clauses.append(
-                "EXISTS (SELECT 1 FROM json_each(b.collection_tags_json) WHERE value = ?)"
-            )
-            values.append(collection_tag)
         if target:
             clauses.append("b.target_name = ?")
             values.append(target)
@@ -805,14 +793,13 @@ class Collector:
                     OR a.state LIKE ? ESCAPE '\\'
                     OR a.target_submission_id LIKE ? ESCAPE '\\'
                     OR b.source_id LIKE ? ESCAPE '\\'
-                    OR b.collection_tags_json LIKE ? ESCAPE '\\'
                     OR b.target_name LIKE ? ESCAPE '\\'
                     OR b.run_id LIKE ? ESCAPE '\\'
                     OR a.last_error LIKE ? ESCAPE '\\'
                 )
                 """
             )
-            values.extend((like,) * 9)
+            values.extend((like,) * 8)
 
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         attempts_sql = f"""
@@ -823,7 +810,6 @@ class Collector:
                 a.state,
                 b.source_id,
                 b.target_name,
-                b.collection_tags_json,
                 b.run_id,
                 b.cleanup,
                 b.manifest_digest,
@@ -891,7 +877,6 @@ class Collector:
             "query": query,
             "filters": {
                 "source": source,
-                "collection_tag": collection_tag,
                 "state": state,
                 "states": list(states) if states is not None else None,
                 "target": target,
@@ -989,7 +974,6 @@ class Collector:
                 "path_exists": source.path.exists(),
                 "stable_seconds": source.stable_seconds,
                 "include_extensions": sorted(source.include_extensions),
-                "collection_tags": list(source.collection_tags),
                 "target": source.target,
                 "cleanup": source.cleanup,
                 "cadence": source.cadence,
@@ -1015,7 +999,6 @@ class Collector:
             "state": str(row["state"]),
             "source_id": str(row["source_id"]),
             "target_name": str(row["target_name"]),
-            "collection_tags": list(json.loads(str(row["collection_tags_json"]))),
             "run_id": str(row["run_id"]),
             "cleanup": str(row["cleanup"]),
             "manifest_digest": str(row["manifest_digest"]),
@@ -1033,7 +1016,6 @@ class Collector:
         return {
             "source_id": str(row["source_id"]),
             "state": str(row["state"]),
-            "collection_tags": list(json.loads(str(row["collection_tags_json"]))),
             "target_name": str(row["target_name"]),
             "file_count": int(row["file_count"]),
             "total_bytes": int(row["total_bytes"]),
@@ -1059,7 +1041,6 @@ class Collector:
         enabled: bool = True,
         stable_seconds: int = 600,
         include_extensions: Sequence[str] = (),
-        collection_tags: Sequence[str] | None = None,
         target: str = "munchy",
         threshold_bytes: int = 0,
         cleanup: Literal["never", "after_target_success"] = "after_target_success",
@@ -1076,7 +1057,6 @@ class Collector:
             "credential": credential,
             "enabled": enabled,
             "stable_seconds": stable_seconds,
-            "collection_tags": collection_tags,
             "target": target,
             "threshold_bytes": threshold_bytes,
             "cleanup": cleanup,
@@ -1391,7 +1371,6 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_tags_json,
                     b.run_id,
                     b.cleanup,
                     b.manifest_digest,
@@ -1725,7 +1704,6 @@ class Collector:
                 )
                 for item in files
             ),
-            collection_tags=source.collection_tags,
             run_id=run_id_for(),
         )
         client = MunchyClient(target.url, token=target.token)
@@ -1839,16 +1817,15 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO target_preflight_failures(
-                    source_id, state, collection_tags_json, target_name,
+                    source_id, state, target_name,
                     input_paths_json, failure_json, fingerprint, message,
                     file_count, total_bytes, first_seen_at,
                     last_seen_at, updated_at, resolved_at,
                     emitted_error_fingerprint, emitted_error_at
                 )
-                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     state = 'failed',
-                    collection_tags_json = excluded.collection_tags_json,
                     target_name = excluded.target_name,
                     input_paths_json = excluded.input_paths_json,
                     failure_json = excluded.failure_json,
@@ -1862,7 +1839,6 @@ class Collector:
                 """,
                 (
                     source.id,
-                    stable_json(source.collection_tags),
                     source.target,
                     stable_json(input_paths),
                     stable_json(failure_payload),
@@ -1993,7 +1969,6 @@ class Collector:
             "id": source_id,
             "source_id": source_id,
             "target_name": str(row_payload["target_name"]),
-            "collection_tags": list(json.loads(str(row_payload["collection_tags_json"]))),
             "run_id": run_id_for(),
             "state": "failed",
         }
@@ -2077,7 +2052,6 @@ class Collector:
             target = self.target_by_name(source.target)
             base_payload: dict[str, Any] = {
                 "source": source.id,
-                "collection_tags": list(source.collection_tags),
                 "target_name": target.name,
                 "cleanup": source.cleanup,
                 "cadence": source.cadence,
@@ -2337,16 +2311,15 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO batches(
-                    id, source_id, target_name, collection_tags_json,
-                    run_id, cleanup, manifest_digest, created_at, updated_at
+                    id, source_id, target_name, run_id, cleanup,
+                    manifest_digest, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
                     source.id,
                     target.name,
-                    stable_json(source.collection_tags),
                     run_id,
                     source.cleanup,
                     digest,
@@ -2973,7 +2946,6 @@ def munchy_submission_request(
         submission_id=str(attempt["target_submission_id"]),
         template=source.template,
         files=files,
-        collection_tags=tuple(json.loads(str(attempt["collection_tags_json"]))),
         run_id=str(attempt["run_id"]),
         event_context={
             "initiator": {
