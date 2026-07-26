@@ -124,6 +124,45 @@ def test_routing_uses_ffprobe_facts_before_falling_through() -> None:
     assert match.route_id == "iphone-video-review"
 
 
+def test_routing_exposes_audio_probe_rates_used_by_device_profiles() -> None:
+    facts = routing_file_facts(
+        "recorder-audio-0001.wav",
+        probe_summary={
+            "has_audio": True,
+            "audio_codec_name": "pcm_s16le",
+            "audio_channels": 1,
+            "audio_sample_rate": 44_100,
+            "audio_bit_rate": 705_600,
+        },
+    )
+    routing = {
+        "routes": [
+            {
+                "id": "pcm-wav",
+                "group": "audio",
+                "when": {
+                    "all": [
+                        {"fact": "audio.codec_name", "equals": "pcm_s16le"},
+                        {"fact": "ffprobe.audio_sample_rate", "between": [44_100, 44_130]},
+                        {"fact": "ffprobe.audio_bit_rate", "equals": 705_600},
+                    ]
+                },
+            }
+        ]
+    }
+
+    match = match_route(
+        routing,
+        "recorder-audio-0001.wav",
+        routing_facts=facts,
+    )
+
+    assert facts["ffprobe.audio_sample_rate"] == 44_100
+    assert facts["ffprobe.audio_bit_rate"] == 705_600
+    assert match is not None
+    assert match.route_id == "pcm-wav"
+
+
 def test_routing_skips_expensive_facts_for_prior_path_only_route() -> None:
     routing = {
         "routes": [

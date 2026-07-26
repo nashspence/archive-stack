@@ -1059,6 +1059,8 @@ def probe_facts(summary: Mapping[str, Any]) -> dict[str, Any]:
         "audio.has_audio": bool(summary.get("has_audio")),
         "audio.codec_name": str(summary.get("audio_codec_name") or "").lower(),
         "audio.channels": parse_int(summary.get("audio_channels")) or 0,
+        "ffprobe.audio_sample_rate": parse_int(summary.get("audio_sample_rate")) or 0,
+        "ffprobe.audio_bit_rate": parse_int(summary.get("audio_bit_rate")) or 0,
     }
 
 
