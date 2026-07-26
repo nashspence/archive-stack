@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from riverhog_core.app_permissions import COLLECTIONS_CREATE
 from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.tusd_ids import tusd_upload_id_from_locator
 from riverhog_protocol.errors import BadRequest
 from starlette.concurrency import run_in_threadpool
 
@@ -66,7 +67,9 @@ def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Resp
     original_path = unquote(urlsplit(original_uri).path)
     if not original_path.startswith("/files/.riverhog/uploads/by-target/"):
         return Response(status_code=403)
-    upload_id = original_path.removeprefix("/files/")
+    upload_id = tusd_upload_id_from_locator(original_path.removeprefix("/files/"))
+    if upload_id is None:
+        return Response(status_code=403)
     collection_id = container.collections.collection_id_for_upload_id(upload_id)
     if collection_id is None:
         return Response(status_code=403)

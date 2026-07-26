@@ -236,3 +236,59 @@ def test_tusd_data_plane_auth_requires_upload_access_for_the_tags() -> None:
     )
     forbidden = authorize_tusd_data_plane(request, wrong_collection)
     assert forbidden.status_code == 403
+
+
+def test_tusd_data_plane_auth_resolves_s3_backend_locator_suffix() -> None:
+    upload_id = ".riverhog/uploads/by-target/" + "e" * 64
+    request = _request(
+        method="GET",
+        headers={
+            "Authorization": "Bearer application-token",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": (
+                f"/files/{quote(upload_id, safe='')}%2B4_backend-owned-locator"
+                "?md5=opaque&expires=9999999999"
+            ),
+        },
+    )
+
+    allowed = _container_with_permissions(
+        COLLECTIONS_CREATE,
+        resource="tag:example",
+    )
+    allowed.collections = SimpleNamespace(
+        collection_id_for_upload_id=lambda value: 1 if value == upload_id else None,
+        require_upload_access=lambda collection_id, principal: None,
+    )
+
+    response = authorize_tusd_data_plane(request, allowed)
+
+    assert response.status_code == 204
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        ".riverhog/uploads/by-target/" + "f" * 63,
+        ".riverhog/uploads/by-target/" + "g" * 64,
+        ".riverhog/uploads/by-target/" + "f" * 64 + "-unexpected-suffix",
+    ],
+)
+def test_tusd_data_plane_auth_rejects_noncanonical_backend_locator(locator: str) -> None:
+    request = _request(
+        method="GET",
+        headers={
+            "Authorization": "Bearer application-token",
+            "X-Original-Method": "PATCH",
+            "X-Original-Uri": f"/files/{quote(locator, safe='')}",
+        },
+    )
+    allowed = _container_with_permissions(COLLECTIONS_CREATE)
+    allowed.collections = SimpleNamespace(
+        collection_id_for_upload_id=lambda value: 1,
+        require_upload_access=lambda collection_id, principal: None,
+    )
+
+    response = authorize_tusd_data_plane(request, allowed)
+
+    assert response.status_code == 403
