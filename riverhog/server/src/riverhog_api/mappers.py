@@ -95,6 +95,7 @@ def map_archive_usage_report(summary: ArchiveUsageReport) -> dict[str, object]:
 def map_collection(summary: CollectionSummary) -> dict[str, object]:
     return {
         "id": summary.id,
+        "created_at": summary.created_at,
         "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,

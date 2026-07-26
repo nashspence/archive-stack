@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from riverhog_api.app import create_app
+from riverhog_api.mappers import map_collection
+from riverhog_core.domain.models import CollectionSummary
+from riverhog_core.domain.types import CollectionId
 
 
 def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
@@ -69,3 +72,14 @@ def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
 
     assert "created_at" in schemas["CollectionSummaryOut"]["required"]
     assert "created_at" in schemas["CollectionUploadSessionOut"]["required"]
+
+    mapped = map_collection(
+        CollectionSummary(
+            id=CollectionId(42),
+            created_at="2026-07-26T20:00:00.000000Z",
+            tags=("family",),
+            files=1,
+            bytes=10,
+        )
+    )
+    assert mapped["created_at"] == "2026-07-26T20:00:00.000000Z"
