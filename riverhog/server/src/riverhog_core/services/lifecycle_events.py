@@ -227,12 +227,27 @@ class SqlAlchemyLifecycleEventService:
                 expires_at=expires_at,
                 session=session,
             )
+        collection_ids = sorted({current.collection_id for current in job.files})
         data: dict[str, Any] = {
             "retrieval_id": job.id,
+            "collection_ids": collection_ids,
             "state": job.state,
             "actor": actor_data(app="riverhog"),
             "initiator": actor_data(app=job.app, key_id=job.initiated_by_key_id),
         }
+        if len(collection_ids) == 1:
+            collection_id = collection_ids[0]
+            collection = session.get(CollectionRecord, collection_id)
+            data["collection_id"] = collection_id
+            if collection is not None:
+                data["collection_created_at"] = collection.created_at
+                data["collection_tags"] = list(
+                    session.scalars(
+                        select(CollectionTagRecord.tag_id)
+                        .where(CollectionTagRecord.collection_id == collection_id)
+                        .order_by(CollectionTagRecord.tag_id)
+                    )
+                )
         data.update(details or {})
         return self.emit(
             owner_app=job.app,

@@ -37,6 +37,7 @@ from riverhog_core.runtime_config import RetrievalCacheConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import DownloadAllowanceExceeded, NotFound
 
@@ -222,6 +223,22 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
     assert byte_count == len(FILES["two.txt"])
     assert sha256 == hashlib.sha256(FILES["two.txt"]).hexdigest()
     assert b"".join(chunks) == FILES["two.txt"]
+    retrieval_events = SqlAlchemyLifecycleEventService(config).page(
+        owner_app="local",
+        after=None,
+        limit=10,
+    ).events
+    assert [event.type.rsplit(".", 1)[-1] for event in retrieval_events] == [
+        "requested",
+        "ready",
+    ]
+    for event in retrieval_events:
+        assert event.subject == job["id"]
+        assert event.data["retrieval_id"] == job["id"]
+        assert event.data["collection_ids"] == [COLLECTION_ID]
+        assert event.data["collection_id"] == COLLECTION_ID
+        assert event.data["collection_created_at"] == "2026-07-15T00:00:00.000000Z"
+        assert event.data["collection_tags"] == ["docs"]
     with pytest.raises(NotFound):
         service.content_metadata(
             app="another-app",
@@ -582,6 +599,17 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
     ]
     plan = service.plan(selection)
     job = service.create(app="local", files=selection, plan_etag=str(plan["etag"]))
+    requested_event = SqlAlchemyLifecycleEventService(config).page(
+        owner_app="local",
+        after=None,
+        limit=10,
+    ).events[0]
+
+    assert requested_event.data["collection_ids"] == [
+        COLLECTION_ID,
+        SECOND_COLLECTION_ID,
+    ]
+    assert "collection_id" not in requested_event.data
 
     assert service.process_due(limit=1) == 1
     assert service.get(app="local", job_id=str(job["id"]))["state"] == "requested"
