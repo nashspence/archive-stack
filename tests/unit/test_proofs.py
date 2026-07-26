@@ -54,6 +54,28 @@ def test_command_proof_verifier_accepts_pending_blockchain_confirmation(
     )
 
 
+def test_command_proof_verifier_accepts_transaction_awaiting_confirmations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "riverhog_core.proofs.subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Calendar https://example.invalid: Timestamped by transaction "
+                f"{'a' * 64}; waiting for 6 confirmations\n"
+            ),
+        ),
+    )
+
+    CommandProofVerifier(_COMMAND).verify(
+        manifest_bytes=b"schema: unit/v1\n",
+        proof_bytes=b"pending transaction proof",
+    )
+
+
 def test_command_proof_verifier_accepts_locally_validated_timestamp_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

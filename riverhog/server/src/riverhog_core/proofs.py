@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -34,6 +35,15 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
             ": Pending confirmation in Bitcoin blockchain"
         )
 
+    def awaiting_confirmations(line: str) -> bool:
+        return bool(
+            re.fullmatch(
+                r"Calendar \S+: Timestamped by transaction [0-9a-f]{64}; "
+                r"waiting for [1-9][0-9]* confirmations",
+                line,
+            )
+        )
+
     def attestation(line: str) -> bool:
         return line.startswith("Got ") and " attestation(s) from " in line
 
@@ -47,10 +57,16 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
         )
 
     allowed = all(
-        pending(line) or attestation(line) or bitcoin_disabled(line) or manual_check(line)
+        pending(line)
+        or awaiting_confirmations(line)
+        or attestation(line)
+        or bitcoin_disabled(line)
+        or manual_check(line)
         for line in lines
     )
-    has_deferred_status = any(pending(line) or bitcoin_disabled(line) for line in lines)
+    has_deferred_status = any(
+        pending(line) or awaiting_confirmations(line) or bitcoin_disabled(line) for line in lines
+    )
     disabled_checks_are_described = not any(bitcoin_disabled(line) for line in lines) or any(
         manual_check(line) for line in lines
     )
