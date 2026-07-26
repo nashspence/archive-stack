@@ -36,9 +36,12 @@ def format_find(payload: Mapping[str, object]) -> str:
 def format_collections(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "collections")]
     for collection in _items(payload, "collections"):
+        tags = collection.get("tags")
+        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
         lines.append(
             f"- {collection.get('id', 'unknown')}  files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
+            f"tags={tag_text or 'none'}  "
             f"archive={_archive_copy_states(collection)}"
         )
     return "\n".join(lines)
@@ -48,8 +51,11 @@ def format_collection_summary(
     payload: Mapping[str, object],
     archive_report: Mapping[str, object] | None = None,
 ) -> str:
+    tags = payload.get("tags")
+    tag_text = ", ".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
     lines = [
         f"collection {payload.get('id', 'unknown')}",
+        f"tags: {tag_text or 'none'}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"archive copies: {_archive_copy_states(payload)}",
@@ -213,26 +219,40 @@ def format_app_access_set(payload: Mapping[str, object]) -> str:
     )
 
 
-def format_slug(payload: Mapping[str, object]) -> str:
+def format_tag(payload: Mapping[str, object]) -> str:
     return "\n".join(
         [
-            f"slug: {payload.get('id', 'unknown')}",
+            f"tag: {payload.get('id', 'unknown')}",
             f"created by: {payload.get('created_by_app', 'unknown')}/"
             f"{payload.get('created_by_key_id') or 'bootstrap'}",
             f"created: {payload.get('created_at', 'unknown')}",
             f"collections: {payload.get('collections', 0)}",
-            f"uploads: {payload.get('uploads', 0)}",
         ]
     )
 
 
-def format_slugs(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "slugs")]
-    for slug in _items(payload, "slugs"):
+def format_tags(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "tags")]
+    for tag in _items(payload, "tags"):
         lines.append(
-            f"- {slug.get('id', 'unknown')}  collections={slug.get('collections', 0)}  "
-            f"uploads={slug.get('uploads', 0)}  created={slug.get('created_at', 'unknown')}"
+            f"- {tag.get('id', 'unknown')}  collections={tag.get('collections', 0)}  "
+            f"created={tag.get('created_at', 'unknown')}"
         )
+    return "\n".join(lines)
+
+
+def format_collection_tags(payload: Mapping[str, object]) -> str:
+    tags = payload.get("tags")
+    values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    lines = [
+        f"collection {payload.get('collection_id', 'unknown')}",
+        f"metadata revision: {payload.get('metadata_revision', 'unknown')}",
+        f"record etag: {payload.get('record_etag', 'unknown')}",
+        "tags:",
+    ]
+    lines.extend(f"- {tag}" for tag in values)
+    if not values:
+        lines.append("- none")
     return "\n".join(lines)
 
 

@@ -17,18 +17,21 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
-    CollectionSlugRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     IngressCleanupRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
+    TagRecord,
+)
+from riverhog_core.collection_metadata import (
+    collection_content_etag,
+    collection_record_manifest,
 )
 from riverhog_core.ingress_crypto import (
     create_ingress_encryption,
     ingress_encryption_descriptor,
 )
-from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import CollectionArchiveUploadReceipt
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
@@ -93,7 +96,7 @@ def _stage(
     path: Path,
     upload_store: MemoryUploadStore,
     *,
-    collection_id: str = COLLECTION_ID,
+    collection_id: int = COLLECTION_ID,
     file_path: str = "document.txt",
     content: bytes = CONTENT,
 ) -> RuntimeConfig:
@@ -142,17 +145,20 @@ def _stage(
         )
     )
     with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            CollectionSlugRecord(
-                id=collection_id.split("/", 1)[0],
-                created_by_app="fixture",
-                created_at="2026-01-01T00:00:00.000000Z",
+        if session.get(TagRecord, "docs") is None:
+            session.add(
+                TagRecord(
+                    id="docs",
+                    created_by_app="fixture",
+                    created_at="2026-01-01T00:00:00.000000Z",
+                )
             )
-        )
         session.add(
             CollectionUploadRecord(
                 collection_id=collection_id,
-                slug=collection_id.split("/", 1)[0],
+                idempotency_key=f"fixture-{collection_id}",
+                tags_json='["docs"]',
+                initiated_by_app="fixture",
                 archive_store="deep",
                 state="archiving",
             )
@@ -195,11 +201,16 @@ def test_encrypted_ingress_streams_into_independently_restorable_archive_objects
         assert session.get(CollectionUploadRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "created" and event.collection_id == COLLECTION_ID
-        _manifest, expected_etag = portable_collection_manifest(
-            COLLECTION_ID,
-            (("document.txt", len(CONTENT), hashlib.sha256(CONTENT).hexdigest()),),
+        files = (("document.txt", len(CONTENT), hashlib.sha256(CONTENT).hexdigest()),)
+        content_etag = collection_content_etag(files)
+        _manifest, expected_etag = collection_record_manifest(
+            collection_id=COLLECTION_ID,
+            content_etag=content_etag,
+            metadata_revision=1,
+            tags=("docs",),
+            files=files,
         )
-        assert event.manifest_etag == expected_etag
+        assert event.record_etag == expected_etag
     assert archive_store.archive is not None
     chunks, _size = iter_verified_file_chunks(
         archive_store.archive,
@@ -210,7 +221,6 @@ def test_encrypted_ingress_streams_into_independently_restorable_archive_objects
     )
     assert b"".join(chunks) == CONTENT
     assert upload_store.targets == {}
-    assert len(archive_store.catalog_entries) == 1
 
 
 def test_restore_required_ingest_records_the_initial_cache_lease(tmp_path: Path) -> None:
@@ -285,7 +295,7 @@ def test_ingress_cleanup_does_not_block_the_next_archive(tmp_path: Path) -> None
         _stage(
             tmp_path,
             upload_store,
-            collection_id="next/20260102T030406Z",
+            collection_id=2,
             file_path="next.txt",
             content=b"next archive\n",
         )
@@ -294,7 +304,7 @@ def test_ingress_cleanup_does_not_block_the_next_archive(tmp_path: Path) -> None
         assert cleanup.result(timeout=5) == 1
 
     with session_scope(make_session_factory(config.database_url)) as session:
-        assert session.get(CollectionFileRecord, ("next/20260102T030406Z", "next.txt"))
+        assert session.get(CollectionFileRecord, (2, "next.txt"))
 
 
 def test_ingress_cleanup_is_bounded_and_restart_safe(tmp_path: Path) -> None:

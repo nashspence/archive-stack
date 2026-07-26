@@ -36,9 +36,9 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
         unrestricted_delegation=True,
     )
     alpha_token = str(
-        app_keys.create(
-            app="alpha", access=[ApplicationAccess(EVENTS_READ)], grantor=grantor
-        )["token"]
+        app_keys.create(app="alpha", access=[ApplicationAccess(EVENTS_READ)], grantor=grantor)[
+            "token"
+        ]
     )
     operator_token = str(
         app_keys.create(

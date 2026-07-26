@@ -11,7 +11,7 @@ from riverhog_core.catalog_models import (
 )
 
 
-def require_collection_custody_idle(session: Session, collection_id: str) -> None:
+def require_collection_custody_idle(session: Session, collection_id: int) -> None:
     session.scalar(
         select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
     )

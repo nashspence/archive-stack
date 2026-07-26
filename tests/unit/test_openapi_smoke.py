@@ -32,8 +32,9 @@ def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
         "/v1/download-quota",
         "/v1/download-quotas",
         "/v1/search",
-        "/v1/slugs",
-        "/v1/slugs/{slug}",
+        "/v1/tags",
+        "/v1/tags/{tag}",
+        "/v1/collections/{collection_id}/tags",
     }.issubset(paths)
     assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]
 

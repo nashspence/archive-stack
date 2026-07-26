@@ -7,9 +7,10 @@ stores hold encrypted bytes.
 
 ## Ingress and custody
 
-A collection is the deletion unit. Its immutable name is `<slug>/<second-precision time>`;
-the slug must already exist in Riverhog's explicit slug registry. Each file has an immutable
-relative path, size, SHA-256 digest, and optional portable metadata supplied by the client.
+A collection is the deletion unit. PostgreSQL assigns its immutable positive-integer id when
+an idempotent upload session is opened. Existing tags may be assigned at creation and changed
+later without changing identity. Each file has an immutable relative path, size, SHA-256 digest,
+and optional portable metadata supplied by the client.
 
 Authenticated preflight creates a random per-file ingress secret and returns it to that
 client once as part of the upload descriptor. The secret is envelope-encrypted in the
@@ -26,6 +27,11 @@ Each archive copy contains:
 - sequential objects for larger files;
 - a portable manifest mapping every logical byte to its object or pack member;
 - a proof binding that manifest.
+
+Each copy also has a mutable, independently age-encrypted `metadata.yml.age`. Its current
+revision records collection-level metadata such as tags. A database outbox coalesces changes
+and republishes this small recovery-discovery record without rewriting the immutable data
+objects.
 
 Every object is independently age encrypted and checksummed. No encrypted object exceeds
 32 GiB. The manifest and proof remain immediately readable even when data objects use an
@@ -45,8 +51,9 @@ Riverhog does not track whether an application has materialized a file.
 
 Every application key carries explicit action-and-resource bindings. Authentication
 establishes a named application principal; independent bindings control catalog, retrieval,
-upload, deletion, archive, slug, quota, and key-management operations. Creating a slug is
-separate from uploading to it and grants the creating key only upload access to that slug.
+collection creation, deletion, archive, tag, quota, and key-management operations. Creating a
+tag is separate from creating a collection and grants the creating key only collection-creation
+access under that tag. Post-creation tag changes require their own explicit permission.
 The bootstrap credential can issue application keys and assign their download quotas but
 has no operational collection authority. Riverhog's guarded deletion and download policies
 remain in force after authorization.
@@ -109,9 +116,10 @@ presentation.
 
 ## Core terms
 
-- **Collection:** the immutable logical namespace and deletion unit.
-- **Slug:** an explicit stable namespace that must exist before a collection can be uploaded.
-- **Archive object:** one independently encrypted pack, file, segment, manifest, or proof.
+- **Collection:** an integer-identified immutable logical namespace and deletion unit.
+- **Tag:** a mutable catalog label that must exist before assignment to a collection.
+- **Archive object:** one independently encrypted pack, file, segment, manifest, proof, or
+  mutable metadata manifest.
 - **Archive store:** a named durable object-store destination with defined read behavior.
 - **Archive copy:** one verified object set for a collection in one archive store.
 - **Ingress store:** temporary encrypted upload storage.

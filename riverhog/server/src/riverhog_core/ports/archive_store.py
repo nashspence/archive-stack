@@ -37,6 +37,15 @@ class CollectionArchiveUploadReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class MutableManifestReceipt:
+    object_path: str
+    version_id: str | None
+    stored_bytes: int
+    stored_sha256: str
+    published_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveObjectIdentity:
     object_id: str
     kind: str
@@ -91,7 +100,7 @@ class ArchiveMultipartUploadTracker(Protocol):
     def load_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         object_path: str,
         part_size: int,
@@ -102,14 +111,14 @@ class ArchiveMultipartUploadTracker(Protocol):
     def save_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
     ) -> None: ...
 
     def record_multipart_upload_progress(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
         part: ArchiveMultipartUploadedPart,
         uploaded_bytes: int,
@@ -120,7 +129,7 @@ class ArchiveMultipartUploadTracker(Protocol):
     def clear_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         upload_id: str,
     ) -> None: ...
@@ -128,14 +137,14 @@ class ArchiveMultipartUploadTracker(Protocol):
     def load_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
     ) -> RetrievalCacheReceipt | None: ...
 
     def save_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         receipt: RetrievalCacheReceipt,
     ) -> None: ...
@@ -164,7 +173,7 @@ class ArchiveStore(Protocol):
     def upload_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchive,
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
@@ -173,28 +182,29 @@ class ArchiveStore(Protocol):
     def verify_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchiveIdentity,
     ) -> None: ...
 
     def delete_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None: ...
 
-    def publish_archive_catalog(
+    def publish_collection_metadata(
         self,
         *,
-        entries: Sequence[dict[str, object]],
-        generated_at: str,
-    ) -> None: ...
+        collection_id: int,
+        archive_storage_prefix: str,
+        manifest: bytes,
+    ) -> MutableManifestReceipt: ...
 
     def prepare_archive_objects_read(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
         retrieval_tier: str,
         hold_days: int,
@@ -205,7 +215,7 @@ class ArchiveStore(Protocol):
     def get_archive_objects_read_status(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
         requested_at: str,
         estimated_ready_at: str | None,
@@ -215,7 +225,7 @@ class ArchiveStore(Protocol):
     def iter_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]: ...
@@ -223,7 +233,7 @@ class ArchiveStore(Protocol):
     def iter_stored_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]: ...
@@ -231,6 +241,6 @@ class ArchiveStore(Protocol):
     def cleanup_archive_objects_read(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None: ...

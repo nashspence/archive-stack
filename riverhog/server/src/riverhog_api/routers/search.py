@@ -25,7 +25,7 @@ def search(
         "bytes",
     ] = Query("logical_path"),
     order: Literal["asc", "desc"] = Query("asc"),
-    collection: str | None = Query(None, min_length=1),
+    collection: int | None = Query(None, ge=1),
     all_items: bool = Query(False, alias="all"),
 ) -> SearchResponse:
     payload = container.search.search(

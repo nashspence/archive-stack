@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
@@ -11,6 +11,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
+    CollectionMetadataPublicationRecord,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
@@ -114,35 +115,68 @@ def archive_copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiv
     )
 
 
+def archive_copy_owned_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiveIdentity:
+    immutable = archive_copy_identity(copy)
+    publication = copy.metadata_publication
+    if publication is None or publication.object_path is None:
+        return immutable
+    return CollectionArchiveIdentity(
+        objects=(
+            *immutable.objects,
+            ArchiveObjectIdentity(
+                object_id="metadata",
+                kind="metadata",
+                object_path=publication.object_path,
+                plaintext_bytes=0,
+                stored_bytes=publication.stored_bytes or 0,
+                sha256=publication.stored_sha256 or "0" * 64,
+            ),
+        )
+    )
+
+
 ArchiveCopyAggregate = tuple[int, int]
 
 
 def archive_copy_aggregates(
     session: Session,
     *,
-    collection_ids: Sequence[str] | None = None,
-) -> dict[tuple[str, str], ArchiveCopyAggregate]:
+    collection_ids: Sequence[int] | None = None,
+) -> dict[tuple[int, str], ArchiveCopyAggregate]:
+    object_rows = select(
+        CollectionArchiveObjectRecord.collection_id.label("collection_id"),
+        CollectionArchiveObjectRecord.store.label("store"),
+        literal(1).label("object_count"),
+        CollectionArchiveObjectRecord.stored_bytes.label("stored_bytes"),
+    )
+    metadata_rows = select(
+        CollectionMetadataPublicationRecord.collection_id.label("collection_id"),
+        CollectionMetadataPublicationRecord.store.label("store"),
+        literal(1).label("object_count"),
+        func.coalesce(CollectionMetadataPublicationRecord.stored_bytes, 0).label("stored_bytes"),
+    ).where(CollectionMetadataPublicationRecord.object_path.is_not(None))
+    combined = union_all(object_rows, metadata_rows).subquery()
     stmt = (
         select(
-            CollectionArchiveObjectRecord.collection_id,
-            CollectionArchiveObjectRecord.store,
-            func.count(CollectionArchiveObjectRecord.object_id),
-            func.coalesce(func.sum(CollectionArchiveObjectRecord.stored_bytes), 0),
+            combined.c.collection_id,
+            combined.c.store,
+            func.sum(combined.c.object_count),
+            func.coalesce(func.sum(combined.c.stored_bytes), 0),
         )
         .group_by(
-            CollectionArchiveObjectRecord.collection_id,
-            CollectionArchiveObjectRecord.store,
+            combined.c.collection_id,
+            combined.c.store,
         )
         .order_by(
-            CollectionArchiveObjectRecord.collection_id,
-            CollectionArchiveObjectRecord.store,
+            combined.c.collection_id,
+            combined.c.store,
         )
     )
     if collection_ids is not None:
         if not collection_ids:
             return {}
-        stmt = stmt.where(CollectionArchiveObjectRecord.collection_id.in_(collection_ids))
+        stmt = stmt.where(combined.c.collection_id.in_(collection_ids))
     return {
-        (str(collection_id), str(store)): (int(object_count), int(stored_bytes))
+        (int(collection_id), str(store)): (int(object_count), int(stored_bytes))
         for collection_id, store, object_count, stored_bytes in session.execute(stmt)
     }

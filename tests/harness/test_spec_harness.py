@@ -52,7 +52,7 @@ def harness(tmp_path: Path) -> Harness:
                 change="created",
                 collection_id=COLLECTION_ID,
                 occurred_at="2026-07-18T00:00:00.000000Z",
-                manifest_etag=collection.manifest_etag,
+                record_etag=collection.record_etag,
             )
         )
     archive_stores = ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))})
@@ -104,13 +104,13 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
         SimpleNamespace(retrieval=harness.retrieval),
     )
 
-    assert str(collection.id) == COLLECTION_ID
+    assert collection.id == COLLECTION_ID
     assert [(copy.store, copy.state.value) for copy in collection.archive_copies] == [
         ("deep", "uploaded")
     ]
     assert search["files"][0]["logical_path"] == f"{COLLECTION_ID}/readme.txt"
     assert archive.totals.uploaded_collections == 1
-    assert COLLECTION_ID.encode() in resources.body
+    assert str(COLLECTION_ID).encode() in resources.body
 
 
 def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> None:

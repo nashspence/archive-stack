@@ -394,7 +394,7 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             assert compact is True
             return {
                 "job_id": "job-1",
-                "collection_slug": "camera",
+                "collection_tags": ["camera"],
                 "state": "running",
                 "phase": "encoding",
             }
@@ -524,9 +524,9 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             "route=camera-main",
             "--server-url",
             "http://munchy.test",
-            "--collection",
+            "--tag",
             "camera",
-            "--timestamp",
+            "--run-id",
             "20260621T120000.123456Z",
             "--no-hash-cache",
             "--interval",
@@ -539,8 +539,8 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
     request = seen["request"]
     assert request.template == "camera-archive"
     assert request.inputs == {"route": "camera-main"}
-    assert request.collection_slug == "camera"
-    assert request.collection_timestamp == "20260621T120000.123456Z"
+    assert request.collection_tags == ("camera",)
+    assert request.run_id == "20260621T120000.123456Z"
     assert [item.rel_path for item in request.files] == ["clip.mp4"]
     assert seen["uploaded"] == request.submission_id
     assert awake_reasons == ["munchy submit"]
@@ -612,7 +612,7 @@ def test_munchy_job_plan_review_sweep_reports_routes(tmp_path) -> None:  # type:
         """
 job:
   workflow_mode: review
-  collection_timestamp: 20260712T120000Z
+  run_id: 20260712T120000Z
   handoff:
     destination: rclone
     options:

@@ -23,8 +23,9 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     RetrievalJobRecord,
+    TagRecord,
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.upload_store import UploadStore
@@ -38,7 +39,7 @@ from tests.fixtures.crypto import FixtureProofVerifier
 
 pytestmark = pytest.mark.integration
 
-COLLECTION_ID = "docs/20250102T030405Z"
+COLLECTION_ID = 1
 FILE_PATH = "document.txt"
 CONTENT = b"archived document"
 DELETER = ApplicationPrincipal(
@@ -53,7 +54,6 @@ class BlockingArchiveStore:
         self.delete_started = threading.Event()
         self.allow_delete = threading.Event()
         self.deleted: list[tuple[str, ...]] = []
-        self.catalog_entries: list[dict[str, object]] = []
 
     def read_mode(self) -> str:
         return "immediate"
@@ -61,7 +61,7 @@ class BlockingArchiveStore:
     def delete_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
         assert collection_id == COLLECTION_ID
@@ -69,16 +69,6 @@ class BlockingArchiveStore:
         if not self.allow_delete.wait(10):
             raise RuntimeError("timed out waiting to finish archive deletion")
         self.deleted.append(tuple(current.object_id for current in objects))
-
-    def publish_archive_catalog(
-        self,
-        *,
-        entries: Sequence[dict[str, object]],
-        generated_at: str,
-    ) -> None:
-        assert generated_at.endswith("Z")
-        self.catalog_entries = list(entries)
-
 
 class UnusedUploadStore:
     def cancel_upload(self, tus_url: str) -> None:
@@ -109,14 +99,30 @@ def _seed(database_url: str) -> None:
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         session.add(
-            CollectionSlugRecord(
+            TagRecord(
                 id="docs",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add(
-            CollectionRecord(id=COLLECTION_ID, slug="docs", manifest_etag="0" * 64)
+            CollectionRecord(
+                id=COLLECTION_ID,
+                creation_idempotency_key="fixture-docs",
+                content_etag="0" * 64,
+                record_etag="0" * 64,
+                metadata_revision=1,
+                metadata_updated_at="2026-01-01T00:00:00.000000Z",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionTagRecord(
+                collection_id=COLLECTION_ID,
+                tag_id="docs",
+                assigned_by_app="fixture",
+                assigned_at="2026-01-01T00:00:00.000000Z",
+            )
         )
         session.add(
             CollectionFileRecord(

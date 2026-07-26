@@ -74,7 +74,7 @@ def safe_id(value: str) -> str:
     return text or "munchy-job"
 
 
-def collection_timestamp_now() -> str:
+def run_id_now() -> str:
     return utc_now().strftime("%Y%m%dT%H%M%S.%fZ")
 
 
@@ -349,12 +349,10 @@ def render_job_template(
     review = mapping(job.get("review"), label="review")
     values = {
         "job_id": str(job.get("job_id") or ""),
-        "run_id": str(job.get("run_id") or job.get("collection_timestamp") or ""),
+        "run_id": str(job.get("run_id") or ""),
         "device_id": str(review.get("device_id") or ""),
         "route_id": str(review.get("route_id") or ""),
         "profile_id": str(review.get("profile_id") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
     }
     if context is not None:
         values.update({str(key): str(value) for key, value in context.items()})
@@ -441,8 +439,8 @@ def build_submission_upload_request(
     source: Path,
     template: str,
     inputs: Mapping[str, str] | None = None,
-    collection: str | None = None,
-    collection_timestamp: str | None = None,
+    collection_tags: Sequence[str] | None = None,
+    run_id: str | None = None,
     submission_id: str | None = None,
     destination_prefix: str | None = None,
     handoff_on_failure: str = "preserve_for_resume",
@@ -454,11 +452,9 @@ def build_submission_upload_request(
     template_name = template.strip()
     if not template_name:
         raise MunchyJobAuthoringError("--template must not be blank")
-    timestamp = (collection_timestamp or collection_timestamp_now()).strip()
-    collection_slug = (collection or "").strip() or None
-    identifier = (
-        submission_id or safe_id(f"{collection_slug or template_name}-{timestamp}")
-    ).strip()
+    resolved_run_id = (run_id or run_id_now()).strip()
+    tags = tuple(dict.fromkeys(tag.strip() for tag in collection_tags or () if tag.strip()))
+    identifier = (submission_id or safe_id(f"{template_name}-{resolved_run_id}")).strip()
     if not identifier:
         raise MunchyJobAuthoringError("submission id must not be blank")
     failure_action = normalize_mode(
@@ -482,8 +478,8 @@ def build_submission_upload_request(
         template=template_name,
         files=tuple(files),
         inputs={str(name): str(value) for name, value in (inputs or {}).items()},
-        collection_slug=collection_slug,
-        collection_timestamp=timestamp,
+        collection_tags=tags,
+        run_id=resolved_run_id,
         handoff_on_failure=failure_action,
         upload_workers=upload_workers,
         upload_chunk_mib=upload_chunk_mib,
@@ -543,15 +539,11 @@ def build_review_sweep_plan(
         group_names=set(groups),
     ).as_dict()
 
-    timestamp = str(defaults.get("collection_timestamp") or collection_timestamp_now()).strip()
-    run_id = str(defaults.get("run_id") or timestamp).strip()
-    collection_slug = str(defaults.get("collection_slug") or "").strip()
-    job_id = str(defaults.get("job_id") or safe_id(f"review-{timestamp}")).strip()
+    run_id = str(defaults.get("run_id") or run_id_now()).strip()
+    job_id = str(defaults.get("job_id") or safe_id(f"review-{run_id}")).strip()
     job_context = {
         "job_id": job_id,
         "run_id": run_id,
-        "collection_slug": collection_slug,
-        "collection_timestamp": timestamp,
         "review": review,
     }
 
@@ -780,5 +772,5 @@ __all__ = [
     "routing_report_text",
     "safe_id",
     "storage_groups",
-    "collection_timestamp_now",
+    "run_id_now",
 ]

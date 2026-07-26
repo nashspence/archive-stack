@@ -46,12 +46,12 @@ def _connect(target: Path) -> sqlite3.Connection:
             value TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS desired_collections (
-            collection_id TEXT PRIMARY KEY,
-            manifest_etag TEXT NOT NULL,
+            collection_id INTEGER PRIMARY KEY,
+            record_etag TEXT NOT NULL,
             remote_deleted INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS desired_files (
-            collection_id TEXT NOT NULL,
+            collection_id INTEGER NOT NULL,
             path TEXT NOT NULL,
             bytes INTEGER NOT NULL,
             sha256 TEXT NOT NULL,
@@ -71,18 +71,18 @@ def _connect(target: Path) -> sqlite3.Connection:
 
 
 def _store_manifest(db: sqlite3.Connection, payload: dict[str, Any]) -> None:
-    collection_id = normalize_collection_id(str(payload["collection"]))
+    collection_id = normalize_collection_id(payload["collection"])
     files = payload.get("files")
-    if payload.get("format") != "riverhog-collection/v1" or not isinstance(files, list):
+    if payload.get("format") != "riverhog-collection/v2" or not isinstance(files, list):
         raise RuntimeError("Riverhog returned an unsupported collection manifest")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     etag = hashlib.sha256(canonical).hexdigest()
     db.execute(
         """
-        INSERT INTO desired_collections (collection_id, manifest_etag, remote_deleted)
+        INSERT INTO desired_collections (collection_id, record_etag, remote_deleted)
         VALUES (?, ?, 0)
         ON CONFLICT (collection_id) DO UPDATE SET
-            manifest_etag = excluded.manifest_etag,
+            record_etag = excluded.record_etag,
             remote_deleted = 0
         """,
         (collection_id, etag),
@@ -103,8 +103,8 @@ def _store_manifest(db: sqlite3.Connection, payload: dict[str, Any]) -> None:
         )
 
 
-def _output_path(target: Path, collection_id: str, path: str) -> Path:
-    output = (target / collection_id / path).resolve()
+def _output_path(target: Path, collection_id: int, path: str) -> Path:
+    output = (target / str(collection_id) / path).resolve()
     if not output.is_relative_to(target):
         raise RuntimeError("materialization path escapes RIVERHOG_LOCAL_ROOT")
     return output
@@ -122,7 +122,7 @@ def _matches(path: Path, *, byte_count: int, sha256: str) -> bool:
     return path.is_file() and path.stat().st_size == byte_count and _sha256(path) == sha256
 
 
-def _transfer_object_path(root: Path, *, collection_id: str, object_id: str) -> Path:
+def _transfer_object_path(root: Path, *, collection_id: int, object_id: str) -> Path:
     digest = hashlib.sha256(f"{collection_id}\0{object_id}".encode()).hexdigest()
     return root / "objects" / digest
 
@@ -132,10 +132,10 @@ def _extract_pack(
     *,
     placements: list[dict[str, Any]],
     staging_root: Path,
-) -> set[tuple[str, str]]:
-    selected: dict[str, tuple[str, str, int]] = {}
+) -> set[tuple[int, str]]:
+    selected: dict[str, tuple[int, str, int]] = {}
     for placement in placements:
-        collection_id = normalize_collection_id(str(placement["collection_id"]))
+        collection_id = normalize_collection_id(placement["collection_id"])
         path = normalize_relpath(str(placement["path"]))
         raw_member = placement["member"]
         if not isinstance(raw_member, str):
@@ -145,7 +145,7 @@ def _extract_pack(
             raise RuntimeError(f"duplicate archive pack member mapping: {member}")
         selected[member] = (collection_id, path, int(placement["bytes"]))
 
-    extracted: set[tuple[str, str]] = set()
+    extracted: set[tuple[int, str]] = set()
     with tarfile.open(object_path, mode="r:*") as archive:
         for info in archive:
             member = normalize_relpath(info.name)
@@ -183,8 +183,8 @@ def _place_raw_object(
     *,
     placement: dict[str, Any],
     staging_root: Path,
-) -> tuple[str, str]:
-    collection_id = normalize_collection_id(str(placement["collection_id"]))
+) -> tuple[int, str]:
+    collection_id = normalize_collection_id(placement["collection_id"])
     path = normalize_relpath(str(placement["path"]))
     expected_bytes = int(placement["bytes"])
     if object_path.stat().st_size != expected_bytes:
@@ -203,7 +203,7 @@ def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
     after = int(row["value"]) if row is not None else 0
     changes = api.catalog_changes(after=after)
     for change in changes["changes"]:
-        collection_id = str(change["collection_id"])
+        collection_id = normalize_collection_id(change["collection_id"])
         desired = db.execute(
             "SELECT 1 FROM desired_collections WHERE collection_id = ?",
             (collection_id,),
@@ -215,7 +215,7 @@ def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
                 "UPDATE desired_collections SET remote_deleted = 1 WHERE collection_id = ?",
                 (collection_id,),
             )
-        elif change["change"] == "created":
+        elif change["change"] in {"created", "updated"}:
             _store_manifest(db, api.get_portable_collection_manifest(collection_id))
     db.execute(
         """
@@ -231,8 +231,8 @@ def _missing_files(
     target: Path,
     *,
     repair: bool,
-) -> list[tuple[str, str]]:
-    missing: list[tuple[str, str]] = []
+) -> list[tuple[int, str]]:
+    missing: list[tuple[int, str]] = []
     for row in db.execute(
         """
         SELECT f.collection_id, f.path, f.bytes, f.sha256
@@ -251,7 +251,12 @@ def _missing_files(
         if not repair:
             typer.echo(f"mismatch retained: {row['collection_id']}/{row['path']}", err=True)
             continue
-        quarantine = target / ".riverhog-local-quarantine" / row["collection_id"] / row["path"]
+        quarantine = (
+            target
+            / ".riverhog-local-quarantine"
+            / str(row["collection_id"])
+            / row["path"]
+        )
         quarantine.parent.mkdir(parents=True, exist_ok=True)
         candidate = quarantine
         index = 1
@@ -269,9 +274,9 @@ def _download_job(
     api: ApiClient,
     job: dict[str, Any],
 ) -> int:
-    expected: dict[tuple[str, str], tuple[int, str]] = {}
+    expected: dict[tuple[int, str], tuple[int, str]] = {}
     for current in job["files"]:
-        collection_id = normalize_collection_id(str(current["collection_id"]))
+        collection_id = normalize_collection_id(current["collection_id"])
         path = normalize_relpath(str(current["path"]))
         output = _output_path(target, collection_id, path)
         expected_bytes = int(current["bytes"])
@@ -286,13 +291,13 @@ def _download_job(
     transfer_root = target / ".riverhog-local-transfers" / str(job["id"])
     staging_root = transfer_root / "files"
     shutil.rmtree(transfer_root, ignore_errors=True)
-    staged: set[tuple[str, str]] = set()
+    staged: set[tuple[int, str]] = set()
     try:
         for current in job["objects"]:
             kind = str(current["kind"])
             if kind not in {"pack", "file", "segment"}:
                 continue
-            collection_id = normalize_collection_id(str(current["collection_id"]))
+            collection_id = normalize_collection_id(current["collection_id"])
             placements = [
                 {**placement, "collection_id": collection_id}
                 for placement in current["placements"]
@@ -429,7 +434,7 @@ def _sync(*, wait: bool, repair: bool) -> None:
 
 
 @local_app.command("add")
-def add_collection(collection_id: Annotated[str, typer.Argument(help="Collection name")]) -> None:
+def add_collection(collection_id: Annotated[int, typer.Argument(help="Collection ID")]) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
     with closing(_connect(target)) as db, ApiClient() as api:
@@ -440,7 +445,7 @@ def add_collection(collection_id: Annotated[str, typer.Argument(help="Collection
 
 @local_app.command("remove")
 def remove_collection(
-    collection_id: Annotated[str, typer.Argument(help="Collection name")],
+    collection_id: Annotated[int, typer.Argument(help="Collection ID")],
 ) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
@@ -509,7 +514,7 @@ def audit() -> None:
 
 @local_app.command("evict")
 def evict(
-    collection_id: Annotated[str, typer.Argument(help="Collection name")],
+    collection_id: Annotated[int, typer.Argument(help="Collection ID")],
     confirm: Annotated[bool, typer.Option(help="Confirm local file removal")] = False,
 ) -> None:
     if not confirm:
@@ -525,7 +530,7 @@ def evict(
         )
         for row in rows:
             _output_path(target, normalized, row["path"]).unlink(missing_ok=True)
-        collection_dir = target / normalized
+        collection_dir = target / str(normalized)
         if collection_dir.exists():
             for directory in sorted(collection_dir.rglob("*"), reverse=True):
                 if directory.is_dir():

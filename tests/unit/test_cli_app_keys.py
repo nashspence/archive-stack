@@ -52,8 +52,8 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
         ) -> dict[str, object]:
             assert app_name == "local"
             assert access == [
-                {"permission": "catalog:read", "resource": "slug:photos"},
-                {"permission": "retrieval:manage", "resource": "slug:photos"},
+                {"permission": "catalog:read", "resource": "tag:photos"},
+                {"permission": "retrieval:manage", "resource": "tag:photos"},
             ]
             assert expires_in_seconds == 2_592_000
             return {
@@ -78,9 +78,9 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             "create",
             "local",
             "--allow",
-            "catalog:read=slug:photos",
+            "catalog:read=tag:photos",
             "--allow",
-            "retrieval:manage=slug:photos",
+            "retrieval:manage=tag:photos",
             "--expires-in",
             "30d",
             "--json",
@@ -142,9 +142,9 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "pages": 1,
                 "access": [
                     {
-                        "id": "catalog:read=slug:photos",
+                        "id": "catalog:read=tag:photos",
                         "permission": "catalog:read",
-                        "resource": "slug:photos",
+                        "resource": "tag:photos",
                     }
                 ],
             }
@@ -207,7 +207,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     )
 
     assert access.exit_code == 0
-    assert access.stdout == "catalog:read=slug:photos\n"
+    assert access.stdout == "catalog:read=tag:photos\n"
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
 

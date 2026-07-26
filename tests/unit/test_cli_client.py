@@ -21,7 +21,7 @@ def test_search_uses_current_collection_filters() -> None:
     client = RecordingClient()
     client.search(
         "tax",
-        collection="docs/20250102T030405Z",
+        collection="1",
         sort="collection_path",
         order="desc",
         all_items=True,
@@ -38,7 +38,7 @@ def test_search_uses_current_collection_filters() -> None:
                     "sort": "collection_path",
                     "order": "desc",
                     "q": "tax",
-                    "collection": "docs/20250102T030405Z",
+                    "collection": "1",
                     "all": True,
                 }
             },
@@ -49,26 +49,31 @@ def test_search_uses_current_collection_filters() -> None:
 def test_collection_upload_selects_archive_store_without_materialization_policy() -> None:
     client = RecordingClient()
 
-    client.create_or_resume_collection_upload("docs", [], archive_store="b2")
-    client.create_or_resume_collection_upload_session("docs", archive_store="b2")
+    client.create_or_resume_collection_upload("upload-one", ["docs"], [], archive_store="b2")
+    client.create_or_resume_collection_upload_session("upload-two", ["docs"], archive_store="b2")
 
     assert client.calls[0][2]["json"] == {
-        "slug": "docs",
+        "idempotency_key": "upload-one",
+        "tags": ["docs"],
         "files": [],
         "archive_store": "b2",
     }
-    assert client.calls[1][2]["json"] == {"slug": "docs", "archive_store": "b2"}
+    assert client.calls[1][2]["json"] == {
+        "idempotency_key": "upload-two",
+        "tags": ["docs"],
+        "archive_store": "b2",
+    }
 
 
 def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
     client = RecordingClient()
 
-    client.cancel_collection_upload_session("docs/20250102T030405Z")
+    client.cancel_collection_upload_session(1)
 
     assert client.calls == [
         (
             "POST",
-            "/v1/collection-upload-sessions/docs/20250102T030405Z/cancel",
+            "/v1/collection-upload-sessions/1/cancel",
             {"timeout": 1800.0},
         )
     ]
@@ -78,7 +83,7 @@ def test_collection_deletion_carries_optional_event_context() -> None:
     client = RecordingClient()
 
     client.delete_collection(
-        "docs/20250102T030405Z",
+        42,
         challenge="delete-challenge",
         event_context={"workflow": "direct-delete"},
     )
@@ -86,7 +91,7 @@ def test_collection_deletion_carries_optional_event_context() -> None:
     assert client.calls == [
         (
             "POST",
-            "/v1/collections/docs/20250102T030405Z/delete",
+            "/v1/collections/42/delete",
             {
                 "json": {
                     "challenge": "delete-challenge",
@@ -99,7 +104,7 @@ def test_collection_deletion_carries_optional_event_context() -> None:
 
 def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     client = RecordingClient()
-    files = [("docs/20250102T030405Z", "invoice.pdf")]
+    files = [(42, "invoice.pdf")]
 
     client.plan_retrieval(files, lease_seconds=3600)
     client.create_retrieval_job(files, plan_etag="a" * 64, lease_seconds=3600)
@@ -107,7 +112,7 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     payload = {
         "files": [
             {
-                "collection_id": "docs/20250102T030405Z",
+                "collection_id": 42,
                 "path": "invoice.pdf",
             }
         ],
@@ -139,7 +144,7 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
 
     result = client.download_retrieval_object(
         "job-id",
-        collection_id="docs/20250102T030405Z",
+        collection_id=42,
         object_id="data-000000",
         output=output,
     )
@@ -148,7 +153,7 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
     assert calls == [
         (
             "/v1/retrieval-jobs/job-id/objects/data-000000/content?"
-            "collection_id=docs%2F20250102T030405Z",
+            "collection_id=42",
             output,
         )
     ]
@@ -171,8 +176,8 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
     client.create_app_key(
         "local",
         access=[
-            {"permission": "catalog:read", "resource": "slug:photos"},
-            {"permission": "retrieval:manage", "resource": "slug:photos"},
+            {"permission": "catalog:read", "resource": "tag:photos"},
+            {"permission": "retrieval:manage", "resource": "tag:photos"},
         ],
         expires_in_seconds=3600,
     )
@@ -201,8 +206,8 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
             {
                 "json": {
                     "access": [
-                        {"permission": "catalog:read", "resource": "slug:photos"},
-                        {"permission": "retrieval:manage", "resource": "slug:photos"},
+                        {"permission": "catalog:read", "resource": "tag:photos"},
+                        {"permission": "retrieval:manage", "resource": "tag:photos"},
                     ],
                     "expires_in_seconds": 3600,
                 }
@@ -230,17 +235,17 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
     ]
 
 
-def test_client_manages_explicit_slugs() -> None:
+def test_client_manages_explicit_tags() -> None:
     client = RecordingClient()
-    client.create_slug("photos")
-    client.get_slug("photos")
-    client.list_slugs(q="photo", all_items=True)
+    client.create_tag("photos")
+    client.get_tag("photos")
+    client.list_tags(q="photo", all_items=True)
     assert client.calls == [
-        ("POST", "/v1/slugs", {"json": {"id": "photos"}}),
-        ("GET", "/v1/slugs/photos", {}),
+        ("POST", "/v1/tags", {"json": {"id": "photos"}}),
+        ("GET", "/v1/tags/photos", {}),
         (
             "GET",
-            "/v1/slugs",
+            "/v1/tags",
             {
                 "params": {
                     "page": 1,

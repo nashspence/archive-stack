@@ -1,38 +1,89 @@
 from __future__ import annotations
 
-from riverhog_protocol.errors import NotFound
-from sqlalchemy import false, or_, true
-from sqlalchemy.orm import InstrumentedAttribute
+from collections.abc import Iterable
+
+from riverhog_protocol.errors import BadRequest, NotFound
+from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
+from sqlalchemy import exists, false, or_, select, true
+from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     COLLECTION_PREFIX,
-    SLUG_PREFIX,
+    TAG_PREFIX,
     ApplicationPrincipal,
 )
+from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_models import CollectionRecord, CollectionTagRecord
+from riverhog_core.runtime_config import RuntimeConfig
+
+
+class SqlAlchemyCollectionAccessService:
+    def __init__(self, config: RuntimeConfig) -> None:
+        self._session_factory = make_session_factory(config.database_url)
+
+    def require(
+        self,
+        principal: ApplicationPrincipal,
+        permission: str,
+        collection_id: int,
+    ) -> int:
+        try:
+            normalized = normalize_collection_id(collection_id)
+        except PathNormalizationError as exc:
+            raise BadRequest(str(exc)) from exc
+        with session_scope(self._session_factory) as session:
+            if session.get(CollectionRecord, normalized) is None:
+                raise NotFound(f"collection not found: {normalized}")
+            require_collection_access(session, principal, permission, normalized)
+        return normalized
 
 
 def require_collection_access(
+    session: Session,
     principal: ApplicationPrincipal | None,
     permission: str,
-    collection_id: str,
+    collection_id: int,
 ) -> None:
-    if principal is not None and not principal.allows_collection(permission, collection_id):
-        raise NotFound(f"collection not found: {collection_id}")
+    if principal is None:
+        return
+    resources = _resources(principal, permission)
+    if ALL_RESOURCES in resources or f"{COLLECTION_PREFIX}{collection_id}" in resources:
+        return
+    allowed_tags = _tag_ids(resources)
+    if (
+        allowed_tags
+        and session.scalar(
+            select(CollectionTagRecord.collection_id)
+            .where(CollectionTagRecord.collection_id == collection_id)
+            .where(CollectionTagRecord.tag_id.in_(allowed_tags))
+            .limit(1)
+        )
+        is not None
+    ):
+        return
+    raise NotFound(f"collection not found: {collection_id}")
 
 
-def require_slug_access(
+def require_collection_create_access(
     principal: ApplicationPrincipal | None,
     permission: str,
-    slug: str,
+    tags: Iterable[str],
 ) -> None:
-    if principal is not None and not principal.allows_slug(permission, slug):
-        raise NotFound(f"collection slug not found: {slug}")
+    if principal is None:
+        return
+    resources = _resources(principal, permission)
+    if ALL_RESOURCES in resources:
+        return
+    requested = {f"{TAG_PREFIX}{tag}" for tag in tags}
+    if requested and requested <= resources:
+        return
+    raise NotFound("collection tags are not available")
 
 
 def collection_access_filter(
-    column: ColumnElement[str] | InstrumentedAttribute[str],
+    column: ColumnElement[int] | InstrumentedAttribute[int],
     principal: ApplicationPrincipal | None,
     permission: str,
 ) -> ColumnElement[bool]:
@@ -41,16 +92,24 @@ def collection_access_filter(
     resources = _resources(principal, permission)
     if ALL_RESOURCES in resources:
         return true()
+    collection_ids = _collection_ids(resources)
+    tag_ids = _tag_ids(resources)
     filters: list[ColumnElement[bool]] = []
-    for resource in resources:
-        if resource.startswith(SLUG_PREFIX):
-            filters.append(column.like(f"{resource.removeprefix(SLUG_PREFIX)}/%"))
-        elif resource.startswith(COLLECTION_PREFIX):
-            filters.append(column == resource.removeprefix(COLLECTION_PREFIX))
+    if collection_ids:
+        filters.append(column.in_(collection_ids))
+    if tag_ids:
+        filters.append(
+            exists(
+                select(1).where(
+                    CollectionTagRecord.collection_id == column,
+                    CollectionTagRecord.tag_id.in_(tag_ids),
+                )
+            )
+        )
     return or_(*filters) if filters else false()
 
 
-def slug_access_filter(
+def tag_access_filter(
     column: ColumnElement[str] | InstrumentedAttribute[str],
     principal: ApplicationPrincipal | None,
     permission: str,
@@ -60,11 +119,20 @@ def slug_access_filter(
     resources = _resources(principal, permission)
     if ALL_RESOURCES in resources:
         return true()
-    filters = [
-        column == resource.removeprefix(SLUG_PREFIX)
-        for resource in resources
-        if resource.startswith(SLUG_PREFIX)
-    ]
+    tag_ids = _tag_ids(resources)
+    collection_ids = _collection_ids(resources)
+    filters: list[ColumnElement[bool]] = []
+    if tag_ids:
+        filters.append(column.in_(tag_ids))
+    if collection_ids:
+        filters.append(
+            exists(
+                select(1).where(
+                    CollectionTagRecord.tag_id == column,
+                    CollectionTagRecord.collection_id.in_(collection_ids),
+                )
+            )
+        )
     return or_(*filters) if filters else false()
 
 
@@ -77,9 +145,26 @@ def _resources(principal: ApplicationPrincipal, permission: str) -> set[str]:
     }
 
 
+def _collection_ids(resources: Iterable[str]) -> set[int]:
+    return {
+        int(resource.removeprefix(COLLECTION_PREFIX))
+        for resource in resources
+        if resource.startswith(COLLECTION_PREFIX)
+    }
+
+
+def _tag_ids(resources: Iterable[str]) -> set[str]:
+    return {
+        resource.removeprefix(TAG_PREFIX)
+        for resource in resources
+        if resource.startswith(TAG_PREFIX)
+    }
+
+
 __all__ = [
+    "SqlAlchemyCollectionAccessService",
     "collection_access_filter",
     "require_collection_access",
-    "require_slug_access",
-    "slug_access_filter",
+    "require_collection_create_access",
+    "tag_access_filter",
 ]

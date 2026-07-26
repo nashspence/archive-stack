@@ -32,11 +32,11 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.ports.archive_store import ArchiveVerificationError
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import (
     archive_copy_aggregates,
     archive_copy_identity,
     archive_copy_is_complete,
+    archive_copy_owned_identity,
 )
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
@@ -63,7 +63,7 @@ class SqlAlchemyArchiveCopyRetirementService:
         self._archive_stores = archive_stores
         self._session_factory = make_session_factory(config.database_url)
 
-    def plan(self, collection_id: str, *, store: str) -> dict[str, object]:
+    def plan(self, collection_id: int, *, store: str) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         normalized_store = self._configured_store(store)
         with session_scope(self._session_factory) as session:
@@ -86,7 +86,7 @@ class SqlAlchemyArchiveCopyRetirementService:
 
     def retire(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         store: str,
         challenge: str,
@@ -155,11 +155,6 @@ class SqlAlchemyArchiveCopyRetirementService:
 
         target_store = self._archive_stores.require(normalized_store)
         if already_absent:
-            publish_archive_catalog(
-                store_name=normalized_store,
-                archive_store=target_store,
-                session_factory=self._session_factory,
-            )
             return _result(plan, status="already_absent", verified_store=None)
 
         try:
@@ -167,11 +162,6 @@ class SqlAlchemyArchiveCopyRetirementService:
                 normalized_id,
                 supplied_challenge,
                 plan,
-            )
-            publish_archive_catalog(
-                store_name=verified_store,
-                archive_store=self._archive_stores.require(verified_store),
-                session_factory=self._session_factory,
             )
         except Exception:
             self._clear_active(normalized_id, normalized_store, supplied_challenge)
@@ -184,16 +174,10 @@ class SqlAlchemyArchiveCopyRetirementService:
             )
             if target is None or not archive_copy_is_complete(target):
                 raise Conflict("archive copy changed during retirement")
-            target_objects = archive_copy_identity(target).objects
+            target_objects = archive_copy_owned_identity(target).objects
         target_store.delete_collection_archive(
             collection_id=normalized_id,
             objects=target_objects,
-        )
-        publish_archive_catalog(
-            store_name=normalized_store,
-            archive_store=target_store,
-            session_factory=self._session_factory,
-            excluded_collection_ids={normalized_id},
         )
         return self._finish(
             normalized_id,
@@ -205,7 +189,7 @@ class SqlAlchemyArchiveCopyRetirementService:
 
     def _verify_retained_copy(
         self,
-        collection_id: str,
+        collection_id: int,
         challenge: str,
         plan: dict[str, object],
     ) -> str:
@@ -261,7 +245,7 @@ class SqlAlchemyArchiveCopyRetirementService:
 
     def _finish(
         self,
-        collection_id: str,
+        collection_id: int,
         store: str,
         challenge: str,
         plan: dict[str, object],
@@ -333,7 +317,7 @@ class SqlAlchemyArchiveCopyRetirementService:
             record_archive_usage_snapshot(session, config=self._config)
         return _result(plan, status="retired", verified_store=verified_store)
 
-    def _clear_active(self, collection_id: str, store: str, challenge: str) -> None:
+    def _clear_active(self, collection_id: int, store: str, challenge: str) -> None:
         with session_scope(self._session_factory) as session:
             active = session.get(ArchiveCopyRetirementRecord, (collection_id, store))
             if active is not None and secrets.compare_digest(active.challenge, challenge):
@@ -350,7 +334,7 @@ def _build_plan(
     session: Session,
     *,
     config: RuntimeConfig,
-    collection_id: str,
+    collection_id: int,
     store: str,
     expires_at: datetime,
 ) -> dict[str, object]:
@@ -437,7 +421,7 @@ def _build_plan(
             "object_path": current.object_path,
             "stored_bytes": current.stored_bytes,
         }
-        for current in sorted(target.objects, key=lambda item: item.object_order)
+        for current in archive_copy_owned_identity(target).objects
     ]
     aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
     return {
@@ -485,7 +469,7 @@ def _challenge_expiry(challenge: str) -> datetime:
     return datetime.fromtimestamp(int(match.group(1)), tz=UTC)
 
 
-def _absent_plan(collection_id: str, store: str) -> dict[str, object]:
+def _absent_plan(collection_id: int, store: str) -> dict[str, object]:
     return {
         "collection_id": collection_id,
         "store": store,

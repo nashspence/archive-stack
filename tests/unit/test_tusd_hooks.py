@@ -10,12 +10,13 @@ import pytest
 from riverhog_api.routers.internal import authorize_tusd_data_plane, handle_tusd_hook
 from riverhog_core.app_permissions import (
     CATALOG_READ,
-    COLLECTIONS_UPLOAD,
+    COLLECTIONS_CREATE,
     ApplicationAccess,
     ApplicationPrincipal,
 )
 from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 from riverhog_core.tusd_ids import tusd_upload_id_for_target_path
+from riverhog_protocol.errors import NotFound
 from starlette.requests import Request
 
 
@@ -109,14 +110,23 @@ def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(
     calls: list[str] = []
 
     class Collections:
-        def collection_id_for_upload_id(self, value: str) -> str | None:
+        def collection_id_for_upload_id(self, value: str) -> int | None:
             assert value == upload_id
-            return "example/20260724T000000Z"
+            return 1
+
+        def require_upload_access(
+            self,
+            collection_id: int,
+            principal: ApplicationPrincipal,
+        ) -> None:
+            assert collection_id == 1
+            if not principal.allows(COLLECTIONS_CREATE):
+                raise NotFound("collection upload not found")
 
         def sync_finished_upload_id(self, value: str) -> None:
             calls.append(value)
 
-    container = _container_with_permissions(COLLECTIONS_UPLOAD)
+    container = _container_with_permissions(COLLECTIONS_CREATE)
     container.collections = Collections()
     monkeypatch.setattr("riverhog_api.routers.internal.default_container", lambda: container)
 
@@ -135,23 +145,30 @@ def test_post_finish_hook_syncs_the_catalog_file_by_opaque_id(
     assert calls == [upload_id]
 
 
-def test_post_finish_application_token_requires_upload_access_for_the_slug(
+def test_post_finish_application_token_requires_upload_access_for_the_tags(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_TUSD_HOOK_SECRET", "hook-secret")
     upload_id = ".riverhog/uploads/by-target/" + "d" * 64
 
     class Collections:
-        def collection_id_for_upload_id(self, value: str) -> str | None:
+        def collection_id_for_upload_id(self, value: str) -> int | None:
             assert value == upload_id
-            return "example/20260724T000000Z"
+            return 1
+
+        def require_upload_access(
+            self,
+            collection_id: int,
+            principal: ApplicationPrincipal,
+        ) -> None:
+            raise NotFound("collection upload not found")
 
         def sync_finished_upload_id(self, value: str) -> None:
             raise AssertionError(f"unauthorized upload was synchronized: {value}")
 
     container = _container_with_permissions(
-        COLLECTIONS_UPLOAD,
-        resource="slug:other",
+        COLLECTIONS_CREATE,
+        resource="tag:other",
     )
     container.collections = Collections()
     monkeypatch.setattr("riverhog_api.routers.internal.default_container", lambda: container)
@@ -174,7 +191,7 @@ def test_tusd_metadata_contains_only_the_opaque_upload_id() -> None:
     assert base64.b64decode(encoded).decode("ascii") == tusd_upload_id_for_target_path(target_path)
 
 
-def test_tusd_data_plane_auth_requires_upload_access_for_the_slug() -> None:
+def test_tusd_data_plane_auth_requires_upload_access_for_the_tags() -> None:
     upload_id = ".riverhog/uploads/by-target/" + "c" * 64
     request = _request(
         method="GET",
@@ -186,13 +203,12 @@ def test_tusd_data_plane_auth_requires_upload_access_for_the_slug() -> None:
     )
 
     allowed = _container_with_permissions(
-        COLLECTIONS_UPLOAD,
-        resource="slug:example",
+        COLLECTIONS_CREATE,
+        resource="tag:example",
     )
     allowed.collections = SimpleNamespace(
-        collection_id_for_upload_id=lambda value: (
-            "example/20260724T000000Z" if value == upload_id else None
-        )
+        collection_id_for_upload_id=lambda value: 1 if value == upload_id else None,
+        require_upload_access=lambda collection_id, principal: None,
     )
     response = authorize_tusd_data_plane(
         request,
@@ -209,9 +225,14 @@ def test_tusd_data_plane_auth_requires_upload_access_for_the_slug() -> None:
     assert forbidden.status_code == 403
 
     wrong_collection = _container_with_permissions(
-        COLLECTIONS_UPLOAD,
-        resource="slug:other",
+        COLLECTIONS_CREATE,
+        resource="tag:other",
     )
-    wrong_collection.collections = allowed.collections
+    wrong_collection.collections = SimpleNamespace(
+        collection_id_for_upload_id=lambda value: 1 if value == upload_id else None,
+        require_upload_access=lambda collection_id, principal: (_ for _ in ()).throw(
+            NotFound("collection upload not found")
+        ),
+    )
     forbidden = authorize_tusd_data_plane(request, wrong_collection)
     assert forbidden.status_code == 403

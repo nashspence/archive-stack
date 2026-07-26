@@ -201,7 +201,7 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
     config = {
         "job": {
             "workflow_mode": "review",
-            "collection_timestamp": "20260712T120000Z",
+            "run_id": "20260712T120000Z",
             "handoff": {
                 "destination": "rclone",
                 "options": {

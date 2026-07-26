@@ -1,32 +1,41 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, ForeignKeyConstraint, Index, Integer, String, Text
+from sqlalchemy import BigInteger, ForeignKeyConstraint, Identity, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
 
+COLLECTION_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
 
-class CollectionSlugRecord(Base):
-    __tablename__ = "collection_slugs"
+
+class TagRecord(Base):
+    __tablename__ = "tags"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     created_by_app: Mapped[str] = mapped_column(String)
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
 
-    collections: Mapped[list[CollectionRecord]] = relationship(back_populates="slug_record")
-    uploads: Mapped[list[CollectionUploadRecord]] = relationship(back_populates="slug_record")
+    assignments: Mapped[list[CollectionTagRecord]] = relationship(
+        back_populates="tag",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class CollectionRecord(Base):
     __tablename__ = "collections"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    slug: Mapped[str] = mapped_column(String)
-    manifest_etag: Mapped[str] = mapped_column(String(64))
+    id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    creation_idempotency_key: Mapped[str] = mapped_column(String, unique=True)
+    content_etag: Mapped[str] = mapped_column(String(64))
+    record_etag: Mapped[str] = mapped_column(String(64))
+    metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
+    metadata_updated_at: Mapped[str] = mapped_column(String)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
     files: Mapped[list[CollectionFileRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
@@ -37,18 +46,36 @@ class CollectionRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    slug_record: Mapped[CollectionSlugRecord] = relationship(back_populates="collections")
+    tags: Mapped[list[CollectionTagRecord]] = relationship(
+        back_populates="collection",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class CollectionTagRecord(Base):
+    __tablename__ = "collection_tags"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
+    assigned_by_app: Mapped[str] = mapped_column(String)
+    assigned_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assigned_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
-        ForeignKeyConstraint(["slug"], ["collection_slugs.id"], ondelete="RESTRICT"),
-        Index("ix_collections_slug", "slug", "id"),
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
+        Index("ix_collection_tags_tag", "tag_id", "collection_id"),
     )
+
+    collection: Mapped[CollectionRecord] = relationship(back_populates="tags")
+    tag: Mapped[TagRecord] = relationship(back_populates="assignments")
 
 
 class CollectionDeletionRecord(Base):
     __tablename__ = "collection_deletions"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     challenge: Mapped[str] = mapped_column(String)
     plan_json: Mapped[str] = mapped_column(Text)
     started_at: Mapped[str] = mapped_column(String)
@@ -57,7 +84,7 @@ class CollectionDeletionRecord(Base):
 class ArchiveCopyRetirementRecord(Base):
     __tablename__ = "archive_copy_retirements"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     challenge: Mapped[str] = mapped_column(String)
     plan_json: Mapped[str] = mapped_column(Text)
@@ -75,7 +102,7 @@ class ArchiveCopyRetirementRecord(Base):
 class CollectionFileRecord(Base):
     __tablename__ = "collection_files"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -94,7 +121,7 @@ class CollectionFileRecord(Base):
 class CollectionArchiveCopyRecord(Base):
     __tablename__ = "collection_archive_copies"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default="pending")
     archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -118,12 +145,53 @@ class CollectionArchiveCopyRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="archive_copies")
+    metadata_publication: Mapped[CollectionMetadataPublicationRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class CollectionMetadataPublicationRecord(Base):
+    __tablename__ = "collection_metadata_publications"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    desired_revision: Mapped[int] = mapped_column(BigInteger)
+    published_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    state: Mapped[str] = mapped_column(String)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_metadata_publications_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+        ),
+    )
+
+    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="metadata_publication")
 
 
 class CollectionArchiveObjectRecord(Base):
     __tablename__ = "collection_archive_objects"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_order: Mapped[int] = mapped_column(Integer)
@@ -162,7 +230,7 @@ class CollectionArchiveObjectRecord(Base):
 class CollectionArchiveFileObjectRecord(Base):
     __tablename__ = "collection_archive_file_objects"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -237,7 +305,7 @@ class ArchiveDownloadReservationRecord(Base):
 class ArchiveCopyJobRecord(Base):
     __tablename__ = "archive_copy_jobs"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     destination_store: Mapped[str] = mapped_column(String, primary_key=True)
     destination_storage_prefix: Mapped[str] = mapped_column(String)
     source_store: Mapped[str] = mapped_column(String)
@@ -264,9 +332,9 @@ class CatalogEventRecord(Base):
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     change: Mapped[str] = mapped_column(String)
-    collection_id: Mapped[str] = mapped_column(String)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
     occurred_at: Mapped[str] = mapped_column(String)
-    manifest_etag: Mapped[str] = mapped_column(String(64))
+    record_etag: Mapped[str] = mapped_column(String(64))
 
     __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
 
@@ -394,7 +462,7 @@ class RetrievalJobFileRecord(Base):
     __tablename__ = "retrieval_job_files"
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     file_order: Mapped[int] = mapped_column(Integer)
 
@@ -414,7 +482,7 @@ class RetrievalJobObjectRecord(Base):
     __tablename__ = "retrieval_job_objects"
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     source_store: Mapped[str] = mapped_column(String, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_order: Mapped[int] = mapped_column(Integer)
@@ -440,7 +508,7 @@ class RetrievalCacheObjectRecord(Base):
     __tablename__ = "retrieval_cache_objects"
 
     source_store: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_path: Mapped[str] = mapped_column(String)
     version_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -467,7 +535,7 @@ class RetrievalCacheLeaseRecord(Base):
 
     owner: Mapped[str] = mapped_column(String, primary_key=True)
     source_store: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     expires_at: Mapped[str] = mapped_column(String)
 
@@ -488,8 +556,13 @@ class RetrievalCacheLeaseRecord(Base):
 class CollectionUploadRecord(Base):
     __tablename__ = "collection_uploads"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
-    slug: Mapped[str] = mapped_column(String)
+    collection_id: Mapped[int] = mapped_column(
+        COLLECTION_ID_TYPE,
+        Identity(),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String)
+    tags_json: Mapped[str] = mapped_column(Text)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -518,18 +591,16 @@ class CollectionUploadRecord(Base):
         back_populates="upload",
         cascade="all, delete-orphan",
     )
-    slug_record: Mapped[CollectionSlugRecord] = relationship(back_populates="uploads")
-
     __table_args__ = (
-        ForeignKeyConstraint(["slug"], ["collection_slugs.id"], ondelete="RESTRICT"),
-        Index("ix_collection_uploads_slug", "slug", "collection_id"),
+        Index("ux_collection_uploads_idempotency_key", "idempotency_key", unique=True),
+        {"sqlite_autoincrement": True},
     )
 
 
 class CollectionUploadFileRecord(Base):
     __tablename__ = "collection_upload_files"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
     file_order: Mapped[int] = mapped_column(Integer)
     bytes: Mapped[int] = mapped_column(BigInteger)
@@ -559,7 +630,7 @@ class IngressCleanupRecord(Base):
     __tablename__ = "ingress_cleanup"
 
     target_path: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[str] = mapped_column(String)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
     ingress_upload_id: Mapped[str] = mapped_column(String)
     state: Mapped[str] = mapped_column(String, default="pending")
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -577,7 +648,7 @@ class IngressCleanupRecord(Base):
 class CollectionArchiveObjectUploadRecord(Base):
     __tablename__ = "collection_archive_object_uploads"
 
-    collection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     kind: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)

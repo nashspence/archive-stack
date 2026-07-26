@@ -24,6 +24,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
+    CollectionMetadataPublicationRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
@@ -34,8 +35,10 @@ from riverhog_core.catalog_models import (
 from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_catalog
-from riverhog_core.services.archive_records import archive_copy_identity, archive_copy_is_complete
+from riverhog_core.services.archive_records import (
+    archive_copy_is_complete,
+    archive_copy_owned_identity,
+)
 from riverhog_core.services.collections import (
     _collection_upload_target_path,
     _normalize_collection_id_or_raise,
@@ -65,7 +68,7 @@ class SqlAlchemyCollectionDeletionService:
         self._session_factory = make_session_factory(config.database_url)
         self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
-    def plan(self, collection_id: str) -> dict[str, object]:
+    def plan(self, collection_id: int) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         with session_scope(self._session_factory) as session:
             active = session.get(CollectionDeletionRecord, normalized_id)
@@ -78,7 +81,7 @@ class SqlAlchemyCollectionDeletionService:
 
     def delete(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         challenge: str,
         initiator: ApplicationPrincipal,
@@ -142,16 +145,9 @@ class SqlAlchemyCollectionDeletionService:
         self._delete_upload_remnants(normalized_id)
         self._delete_cached_objects(normalized_id)
         self._delete_archive_objects(plan)
-        for store_name, archive_store in self._archive_stores.items():
-            publish_archive_catalog(
-                store_name=store_name,
-                archive_store=archive_store,
-                session_factory=self._session_factory,
-                excluded_collection_ids={normalized_id},
-            )
         return self._finish(normalized_id, supplied_challenge, plan)
 
-    def _delete_upload_remnants(self, collection_id: str) -> None:
+    def _delete_upload_remnants(self, collection_id: int) -> None:
         with session_scope(self._session_factory) as session:
             upload = session.scalar(
                 select(CollectionUploadRecord)
@@ -167,7 +163,7 @@ class SqlAlchemyCollectionDeletionService:
                     self._upload_store.cancel_upload(file.tus_url)
                 self._upload_store.delete_target(_collection_upload_target_path(file))
 
-    def _delete_cached_objects(self, collection_id: str) -> None:
+    def _delete_cached_objects(self, collection_id: int) -> None:
         with session_scope(self._session_factory) as session:
             cached = list(
                 session.scalars(
@@ -186,7 +182,7 @@ class SqlAlchemyCollectionDeletionService:
             )
 
     def _delete_archive_objects(self, plan: dict[str, object]) -> None:
-        collection_id = str(plan["collection_id"])
+        collection_id = cast(int, plan["collection_id"])
         stores = {
             str(item["store"]) for item in cast(list[dict[str, object]], plan["archive_objects"])
         }
@@ -195,7 +191,7 @@ class SqlAlchemyCollectionDeletionService:
                 copy = session.get(CollectionArchiveCopyRecord, (collection_id, store_name))
                 if copy is None or not archive_copy_is_complete(copy):
                     raise Conflict("collection archive changed during deletion")
-                objects = archive_copy_identity(copy).objects
+                objects = archive_copy_owned_identity(copy).objects
             self._archive_stores.require(store_name).delete_collection_archive(
                 collection_id=collection_id,
                 objects=objects,
@@ -203,7 +199,7 @@ class SqlAlchemyCollectionDeletionService:
 
     def _finish(
         self,
-        collection_id: str,
+        collection_id: int,
         challenge: str,
         plan: dict[str, object],
     ) -> dict[str, object]:
@@ -264,7 +260,7 @@ class SqlAlchemyCollectionDeletionService:
                     change="deleted",
                     collection_id=collection_id,
                     occurred_at=format_utc_timestamp(utc_now()),
-                    manifest_etag=str(plan["manifest_etag"]),
+                    record_etag=str(plan["record_etag"]),
                 )
             )
             session.delete(active)
@@ -274,7 +270,7 @@ class SqlAlchemyCollectionDeletionService:
 def _build_plan(
     session: Session,
     *,
-    collection_id: str,
+    collection_id: int,
     expires_at: datetime,
 ) -> dict[str, object]:
     collection = session.get(CollectionRecord, collection_id)
@@ -312,6 +308,14 @@ def _build_plan(
         )
         or 0
     )
+    remote_storage_bytes += int(
+        session.scalar(
+            select(
+                func.coalesce(func.sum(CollectionMetadataPublicationRecord.stored_bytes), 0)
+            ).where(CollectionMetadataPublicationRecord.collection_id == collection_id)
+        )
+        or 0
+    )
     upload = session.get(CollectionUploadRecord, collection_id)
     upload_file_count = int(
         session.scalar(
@@ -334,6 +338,22 @@ def _build_plan(
         for archive in archives
         for current in sorted(archive.objects, key=lambda item: item.object_order)
     ]
+    archive_objects.extend(
+        {
+            "store": publication.store,
+            "kind": "metadata",
+            "object_path": publication.object_path,
+            "stored_bytes": publication.stored_bytes or 0,
+        }
+        for publication in session.scalars(
+            select(CollectionMetadataPublicationRecord)
+            .where(
+                CollectionMetadataPublicationRecord.collection_id == collection_id,
+                CollectionMetadataPublicationRecord.object_path.is_not(None),
+            )
+            .order_by(CollectionMetadataPublicationRecord.store)
+        )
+    )
     return {
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
@@ -352,11 +372,15 @@ def _build_plan(
                 .order_by(CollectionUploadFileRecord.file_order)
             )
         ],
-        "manifest_etag": collection.manifest_etag,
+        "record_etag": collection.record_etag,
         "metadata_rows": {
             "collections": 1,
             "collection_files": int(file_count),
             "collection_archive_copies": len(archives),
+            "collection_tags": len(collection.tags),
+            "collection_metadata_publications": len(
+                [item for item in archive_objects if item["kind"] == "metadata"]
+            ),
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
         },
@@ -379,7 +403,7 @@ def _execution(plan: dict[str, object]) -> dict[str, object]:
     return cast(dict[str, object], execution)
 
 
-def _active_blockers(session: Session, collection_id: str) -> list[str]:
+def _active_blockers(session: Session, collection_id: int) -> list[str]:
     blockers: list[str] = []
     retrieval_jobs = list(
         session.scalars(

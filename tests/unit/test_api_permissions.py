@@ -5,7 +5,6 @@ from typing import Any, cast
 
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
-
 from riverhog_api.app import create_app
 from riverhog_core.app_permissions import APPLICATION_PERMISSIONS
 

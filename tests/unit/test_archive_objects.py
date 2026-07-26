@@ -23,7 +23,7 @@ from riverhog_core.archive_objects import (
 
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 
-COLLECTION_ID = "object-policy/20260715T170000Z"
+COLLECTION_ID = 1
 
 
 def _source(path: str, content: bytes) -> CollectionArchiveSourceFile:
@@ -83,6 +83,25 @@ def test_whole_file_and_segments_are_independent_raw_objects() -> None:
     assert b"".join(archive.data_objects[2].iter_plaintext_range(7, 11)) == whole[7:18]
 
 
+def test_manifest_identity_is_portable_across_catalogs() -> None:
+    files = (_source("note.txt", b"portable content"),)
+    first = build_collection_archive(
+        collection_id=1,
+        files=files,
+        max_plaintext_object_bytes=SMALL_FILE_LIMIT,
+        stamper=FixtureProofStamper(),
+    )
+    second = build_collection_archive(
+        collection_id=2,
+        files=files,
+        max_plaintext_object_bytes=SMALL_FILE_LIMIT,
+        stamper=FixtureProofStamper(),
+    )
+
+    assert first.manifest_bytes == second.manifest_bytes
+    assert first.manifest_sha256 == second.manifest_sha256
+
+
 def test_manifest_binds_files_to_pack_file_and_segment_objects() -> None:
     contents = {
         "note.txt": b"note",
@@ -114,7 +133,6 @@ def test_manifest_binds_files_to_pack_file_and_segment_objects() -> None:
     descriptors = parse_collection_archive_manifest(
         manifest_bytes=archive.manifest_bytes,
         expected_sha256=archive.manifest_sha256,
-        collection_id=COLLECTION_ID,
         files=archive.files,
     )
     assert len(descriptors) == 4

@@ -11,12 +11,15 @@ from typing import Any
 from riverhog_cli import local as local_materialization
 from typer.testing import CliRunner
 
-COLLECTION_ID = "local/20260102T030405Z"
+COLLECTION_ID = 1
 CONTENT = b"locally materialized archive file\n"
 SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {
-    "format": "riverhog-collection/v1",
+    "format": "riverhog-collection/v2",
     "collection": COLLECTION_ID,
+    "content_etag": "a" * 64,
+    "metadata_revision": 1,
+    "tags": ["docs"],
     "files": [
         {
             "path": "notes/one.txt",
@@ -99,7 +102,7 @@ class FakeApi:
     def __exit__(self, *_args: object) -> None:
         return
 
-    def get_portable_collection_manifest(self, collection_id: str) -> dict[str, Any]:
+    def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
         return MANIFEST
 
@@ -139,7 +142,7 @@ class FakeApi:
         files = [
             current
             for current in JOB_FILES
-            if (str(current["collection_id"]), str(current["path"])) in selected
+            if (int(current["collection_id"]), str(current["path"])) in selected
         ]
         objects = [
             {
@@ -162,7 +165,7 @@ class FakeApi:
         self,
         job_id: str,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         output: Path,
     ) -> int:
@@ -191,14 +194,14 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
-    added = runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID])
+    added = runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)])
     synced = runner.invoke(local_materialization.local_app, ["sync"])
-    output = target / COLLECTION_ID / "notes/one.txt"
+    output = target / str(COLLECTION_ID) / "notes/one.txt"
 
     assert added.exit_code == 0
     assert synced.exit_code == 0
     assert output.read_bytes() == CONTENT
-    assert (target / COLLECTION_ID / "notes/two.txt").read_bytes() == SECOND_CONTENT
+    assert (target / str(COLLECTION_ID) / "notes/two.txt").read_bytes() == SECOND_CONTENT
     assert api.downloaded_objects == ["data-000000"]
     assert api.acknowledged == ["job-1"]
 
@@ -228,9 +231,12 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
-    assert runner.invoke(local_materialization.local_app, ["add", COLLECTION_ID]).exit_code == 0
+    assert (
+        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code
+        == 0
+    )
     assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
-    removed = runner.invoke(local_materialization.local_app, ["remove", COLLECTION_ID])
+    removed = runner.invoke(local_materialization.local_app, ["remove", str(COLLECTION_ID)])
 
     assert removed.exit_code == 0
     assert api.canceled == ["job-1"]
@@ -264,4 +270,4 @@ def test_local_materializer_assembles_sequential_archive_segments(tmp_path: Path
         staging_root=staging,
     )
 
-    assert (staging / COLLECTION_ID / "large.bin").read_bytes() == b"first second"
+    assert (staging / str(COLLECTION_ID) / "large.bin").read_bytes() == b"first second"

@@ -5,7 +5,7 @@ from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
-from riverhog_core.app_permissions import COLLECTIONS_UPLOAD
+from riverhog_core.app_permissions import COLLECTIONS_CREATE
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_protocol.errors import BadRequest
 from starlette.concurrency import run_in_threadpool
@@ -53,7 +53,7 @@ def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Resp
     )
     if principal is None:
         return Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})
-    if not principal.allows(COLLECTIONS_UPLOAD):
+    if not principal.allows(COLLECTIONS_CREATE):
         return Response(status_code=403)
 
     method = request.headers.get("x-original-method", "").upper()
@@ -68,9 +68,11 @@ def authorize_tusd_data_plane(request: Request, container: ContainerDep) -> Resp
         return Response(status_code=403)
     upload_id = original_path.removeprefix("/files/")
     collection_id = container.collections.collection_id_for_upload_id(upload_id)
-    if collection_id is None or not principal.allows_collection(
-        COLLECTIONS_UPLOAD, collection_id
-    ):
+    if collection_id is None:
+        return Response(status_code=403)
+    try:
+        container.collections.require_upload_access(collection_id, principal)
+    except Exception:
         return Response(status_code=403)
     return Response(status_code=204)
 
@@ -95,7 +97,7 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
             container,
         )
         authorized = hook_authorized or bool(
-            principal is not None and principal.allows(COLLECTIONS_UPLOAD)
+            principal is not None and principal.allows(COLLECTIONS_CREATE)
         )
     if not authorized:
         return _json_response({"RejectUpload": True}, status_code=403)
@@ -120,9 +122,11 @@ async def handle_tusd_hook(request: Request) -> JSONResponse:
         assert container is not None
         assert principal is not None
         collection_id = container.collections.collection_id_for_upload_id(upload_id)
-        if collection_id is None or not principal.allows_collection(
-            COLLECTIONS_UPLOAD, collection_id
-        ):
+        if collection_id is None:
+            return _json_response({"RejectUpload": True}, status_code=403)
+        try:
+            container.collections.require_upload_access(collection_id, principal)
+        except Exception:
             return _json_response({"RejectUpload": True}, status_code=403)
 
     try:

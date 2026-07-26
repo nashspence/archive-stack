@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         "archive-now",
         help="archive one source immediately",
     )
-    archive_now.add_argument("--source", required=True, help="Source slug to archive.")
+    archive_now.add_argument("--source", required=True, help="Source id to archive.")
     archive_now.add_argument(
         "--no-process",
         action="store_true",
@@ -99,8 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Show active, terminal, or all attempts.",
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
-    attempt_list.add_argument("--source", help="Filter by source slug.")
-    attempt_list.add_argument("--collection-slug", help="Filter by output collection slug.")
+    attempt_list.add_argument("--source", help="Filter by source id.")
+    attempt_list.add_argument("--collection-tag", help="Filter by collection tag.")
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
     sub.add_parser(
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             terminal=args.terminal,
             state=args.state,
             source=args.source,
-            collection_slug=args.collection_slug,
+            collection_tag=args.collection_tag,
             target=args.target,
             all_items=args.all,
         )

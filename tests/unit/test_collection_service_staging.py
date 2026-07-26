@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,11 +12,11 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     CollectionUploadFileRecord,
+    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services import collections
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_protocol.errors import Conflict, NotFound
 from sqlalchemy import select
@@ -132,11 +131,11 @@ def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyColl
     )
 
 
-def _seed_slug(path: Path, slug: str) -> None:
+def _seed_tag(path: Path, tag: str) -> None:
     with session_scope(make_session_factory(sqlite_url(path))) as session:
         session.add(
-            CollectionSlugRecord(
-                id=slug,
+            TagRecord(
+                id=tag,
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
             )
@@ -144,7 +143,7 @@ def _seed_slug(path: Path, slug: str) -> None:
 
 
 def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyRecord:
-    collection_id = "alpha/20250101T000000Z"
+    collection_id = 1
     verified_at = "2026-07-14T00:00:00Z"
     prefix = f"collections/alpha/{store}"
     copy = CollectionArchiveCopyRecord(
@@ -189,23 +188,36 @@ def _seed(path: Path) -> None:
     with session_scope(factory) as session:
         session.add_all(
             [
-                CollectionSlugRecord(
-                    id=slug,
+                TagRecord(
+                    id=tag,
                     created_by_app="fixture",
                     created_at="2026-01-01T00:00:00.000000Z",
                 )
-                for slug in ("alpha", "beta")
+                for tag in ("alpha", "beta")
             ]
         )
-        for collection_id, size in (
-            ("alpha/20250101T000000Z", 10),
-            ("beta/20250102T000000Z", 20),
+        for collection_id, tag, size in (
+            (1, "alpha", 10),
+            (2, "beta", 20),
         ):
             session.add(
                 CollectionRecord(
                     id=collection_id,
-                    slug=collection_id.split("/", 1)[0],
-                    manifest_etag="0" * 64,
+                    creation_idempotency_key=f"fixture-{collection_id}",
+                    content_etag="0" * 64,
+                    record_etag="1" * 64,
+                    metadata_revision=1,
+                    metadata_updated_at="2026-01-01T00:00:00.000000Z",
+                    created_by_app="fixture",
+                    created_at="2026-01-01T00:00:00.000000Z",
+                )
+            )
+            session.add(
+                CollectionTagRecord(
+                    collection_id=collection_id,
+                    tag_id=tag,
+                    assigned_by_app="fixture",
+                    assigned_at="2026-01-01T00:00:00.000000Z",
                 )
             )
             session.add(
@@ -213,7 +225,7 @@ def _seed(path: Path) -> None:
                     collection_id=collection_id,
                     path="file.txt",
                     bytes=size,
-                    sha256=("a" if collection_id.startswith("alpha/") else "b") * 64,
+                    sha256=("a" if collection_id == 1 else "b") * 64,
                 )
             )
         session.add(_archive_copy("deep", stored_bytes=14))
@@ -226,7 +238,7 @@ def test_collection_summary_reports_each_archive_copy(tmp_path: Path) -> None:
     with session_scope(make_session_factory(sqlite_url(path))) as session:
         session.add(_archive_copy("b2", stored_bytes=15))
 
-    summary = _service(path).get("alpha/20250101T000000Z")
+    summary = _service(path).get("1")
 
     assert summary.files == 1
     assert summary.bytes == 10
@@ -247,8 +259,8 @@ def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) ->
     )
 
     assert [(str(item.id), item.files, item.bytes) for item in page.collections] == [
-        ("beta/20250102T000000Z", 1, 20),
-        ("alpha/20250101T000000Z", 1, 10),
+        ("2", 1, 20),
+        ("1", 1, 10),
     ]
 
 
@@ -259,9 +271,7 @@ def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> 
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        access=frozenset(
-            {ApplicationAccess(CATALOG_READ, "collection:beta/20250102T000000Z")}
-        ),
+        access=frozenset({ApplicationAccess(CATALOG_READ, "collection:2")}),
     )
 
     page = _service(path).list(
@@ -274,47 +284,41 @@ def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> 
     )
 
     assert page.total == 1
-    assert [str(item.id) for item in page.collections] == ["beta/20250102T000000Z"]
-    assert _service(path).get("beta/20250102T000000Z", principal=principal).bytes == 20
+    assert [str(item.id) for item in page.collections] == ["2"]
+    assert _service(path).get("2", principal=principal).bytes == 20
     with pytest.raises(NotFound):
-        _service(path).get("alpha/20250101T000000Z", principal=principal)
+        _service(path).get("1", principal=principal)
 
 
-def test_same_slug_and_second_with_different_manifest_conflicts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_idempotency_key_with_different_manifest_conflicts(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    _seed_slug(path, "photos")
+    _seed_tag(path, "photos")
     service = _service(path)
-    monkeypatch.setattr(
-        collections,
-        "utc_now",
-        lambda: datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
-    )
 
     first = service.create_or_resume_upload(
-        upload_slug="photos",
+        idempotency_key="photos-upload",
+        tags=["photos"],
         files=[{"path": "one.jpg", "bytes": 1, "sha256": "a" * 64}],
     )
 
-    assert first["collection_id"] == "photos/20250102T030405Z"
-    with pytest.raises(Conflict, match="different manifest"):
+    assert first["collection_id"] == 1
+    with pytest.raises(Conflict, match="files are immutable"):
         service.create_or_resume_upload(
-            upload_slug="photos",
+            idempotency_key="photos-upload",
+            tags=["photos"],
             files=[{"path": "two.jpg", "bytes": 1, "sha256": "b" * 64}],
         )
 
 
-def test_collection_upload_requires_a_registered_slug(tmp_path: Path) -> None:
+def test_collection_upload_requires_registered_tags(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
 
-    with pytest.raises(NotFound, match="collection slug not found: photos"):
+    with pytest.raises(NotFound, match="tag not found: photos"):
         _service(path).create_or_resume_upload_session(
-            upload_slug="photos",
-            upload_timestamp="20250103T000000Z",
+            idempotency_key="photos-upload",
+            tags=["photos"],
         )
 
 
@@ -323,12 +327,12 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
 ) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    _seed_slug(path, "encrypted")
+    _seed_tag(path, "encrypted")
     upload_store = UploadStoreStub()
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
-        upload_slug="encrypted",
-        upload_timestamp="20250103T000000Z",
+        idempotency_key="encrypted-upload",
+        tags=["encrypted"],
     )
     collection_id = str(created["collection_id"])
     service.register_upload_session_file(
@@ -359,14 +363,14 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
 def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
-    _seed_slug(path, "repeat")
+    _seed_tag(path, "repeat")
     service = _service(path)
     upload_ids: list[str] = []
 
-    for _ in range(2):
+    for index in range(2):
         created = service.create_or_resume_upload_session(
-            upload_slug="repeat",
-            upload_timestamp="20250103T000000Z",
+            idempotency_key=f"repeat-upload-{index}",
+            tags=["repeat"],
         )
         collection_id = str(created["collection_id"])
         service.register_upload_session_file(
@@ -388,11 +392,11 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     file_count = 8
     worker_count = 4
     upload_store = ConcurrentCancelUploadStore(worker_count)
-    _seed_slug(path, "cancel-me")
+    _seed_tag(path, "cancel-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
-        upload_slug="cancel-me",
-        upload_timestamp="20250103T000000Z",
+        idempotency_key="cancel-upload",
+        tags=["cancel-me"],
     )
     collection_id = str(created["collection_id"])
     for index in range(file_count):
@@ -419,11 +423,11 @@ def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     file_count = 8
     worker_count = 4
     upload_store = ConcurrentVerifyUploadStore(worker_count)
-    _seed_slug(path, "verify-me")
+    _seed_tag(path, "verify-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
-        upload_slug="verify-me",
-        upload_timestamp="20250103T000000Z",
+        idempotency_key="verify-upload",
+        tags=["verify-me"],
     )
     collection_id = str(created["collection_id"])
     for index in range(file_count):
@@ -457,11 +461,11 @@ def test_collection_upload_completion_persists_missing_target_state(tmp_path: Pa
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     upload_store = MissingTargetUploadStore()
-    _seed_slug(path, "missing-target")
+    _seed_tag(path, "missing-target")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
-        upload_slug="missing-target",
-        upload_timestamp="20250103T000000Z",
+        idempotency_key="missing-target-upload",
+        tags=["missing-target"],
     )
     collection_id = str(created["collection_id"])
     service.register_upload_session_file(

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import pytest
 from riverhog_protocol.paths import (
-    collection_id_for_upload,
     normalize_collection_id,
     normalize_relpath,
-    normalize_upload_slug,
-    normalize_upload_timestamp,
+    normalize_tag,
     path_parents,
 )
 
@@ -20,33 +18,26 @@ def test_normalize_relpath_rejects_escape() -> None:
         normalize_relpath("../x")
 
 
-def test_collection_id_for_upload_uses_slug_and_timestamp() -> None:
-    assert (
-        collection_id_for_upload("Family Photos", "20250712T213200Z")
-        == "family-photos/20250712T213200Z"
-    )
-
-
-def test_normalize_collection_id_accepts_canonical_upload_id() -> None:
-    collection_id = "family-photos/20250712T213200Z"
-    assert normalize_collection_id(collection_id) == collection_id
+def test_normalize_collection_id_accepts_canonical_integer() -> None:
+    assert normalize_collection_id("42") == 42
+    assert normalize_collection_id(42) == 42
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "Family-Photos/20250712T213200Z",
-        "family-photos/20250230T213200Z",
-        "family_photos/20250712T213200Z",
-        "family photos/20250712T213200Z",
-        " family-photos/20250712T213200Z ",
-        "family-photos//20250712T213200Z",
-        "/family-photos/20250712T213200Z",
+        "0",
+        "01",
+        "-1",
+        " 1",
+        "1 ",
+        "1.0",
+        True,
     ],
 )
-def test_normalize_collection_id_requires_canonical_upload_id(raw: str) -> None:
+def test_normalize_collection_id_requires_canonical_positive_integer(raw: object) -> None:
     with pytest.raises(ValueError):
-        normalize_collection_id(raw)
+        normalize_collection_id(raw)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -58,33 +49,13 @@ def test_normalize_collection_id_requires_canonical_upload_id(raw: str) -> None:
         ("unknown/photo\\envelope", "unknown-photo-envelope"),
     ],
 )
-def test_normalize_upload_slug_fold_and_collapse(raw: str, expected: str) -> None:
-    assert normalize_upload_slug(raw) == expected
+def test_normalize_tag_folds_and_collapses(raw: str, expected: str) -> None:
+    assert normalize_tag(raw) == expected
 
 
-def test_normalize_upload_slug_rejects_empty_slug() -> None:
+def test_normalize_tag_rejects_empty_tag() -> None:
     with pytest.raises(ValueError):
-        normalize_upload_slug(" -- ")
-
-
-def test_normalize_upload_timestamp_accepts_utc_basic_form() -> None:
-    assert normalize_upload_timestamp(" 20250712T213200Z ") == "20250712T213200Z"
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "2025-07-12T21:32:00Z",
-        "20250712T213200",
-        "20250712T213200+0000",
-        "20250230T213200Z",
-    ],
-)
-def test_normalize_upload_timestamp_rejects_non_canonical_or_invalid_values(
-    raw: str,
-) -> None:
-    with pytest.raises(ValueError):
-        normalize_upload_timestamp(raw)
+        normalize_tag(" -- ")
 
 
 def test_path_parents_lists_intermediate_dirs() -> None:

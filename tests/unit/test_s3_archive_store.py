@@ -44,7 +44,7 @@ from riverhog_protocol.errors import DownloadAllowanceExceeded
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
-COLLECTION_ID = "docs/20250102T030405Z"
+COLLECTION_ID = 1
 ARCHIVE_PREFIX = "archive/archives/opaque-docs"
 
 
@@ -84,7 +84,7 @@ class _FakeS3Client:
             raise _MissingObjectError
         return {key: value for key, value in self.objects[Key].items() if key != "Body"}
 
-    def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> None:
+    def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> dict[str, str]:
         _ = Bucket
         body = Body if isinstance(Body, bytes) else b"".join(cast(Iterator[bytes], Body))
         self.objects[Key] = {
@@ -93,6 +93,7 @@ class _FakeS3Client:
             "LastModified": datetime(2026, 1, 1, tzinfo=UTC),
             **kwargs,
         }
+        return {}
 
     def create_multipart_upload(self, *, Bucket: str, Key: str, **kwargs: Any) -> dict[str, str]:
         _ = Bucket
@@ -310,7 +311,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
         return replace(state, parts=tuple(self.parts[object_id])) if state else None
 
     def save_multipart_upload(
-        self, *, collection_id: str, state: ArchiveMultipartUploadState
+        self, *, collection_id: int, state: ArchiveMultipartUploadState
     ) -> None:
         _ = collection_id
         self.states[state.object_id] = state
@@ -319,7 +320,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
     def record_multipart_upload_progress(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
         part: ArchiveMultipartUploadedPart,
         uploaded_bytes: int,
@@ -329,7 +330,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
         _ = collection_id, uploaded_bytes, uploaded_parts, total_parts
         self.parts[state.object_id].append(part)
 
-    def clear_multipart_upload(self, *, collection_id: str, object_id: str, upload_id: str) -> None:
+    def clear_multipart_upload(self, *, collection_id: int, object_id: str, upload_id: str) -> None:
         _ = collection_id, upload_id
         self.states.pop(object_id, None)
         self.parts.pop(object_id, None)
@@ -337,7 +338,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
     def load_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
     ) -> RetrievalCacheReceipt | None:
         _ = collection_id
@@ -346,7 +347,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
     def save_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         receipt: RetrievalCacheReceipt,
     ) -> None:
@@ -362,7 +363,7 @@ class _MemoryRetrievalCache:
         self,
         *,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         content: Iterator[bytes],
         content_length: int,
@@ -554,6 +555,38 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
         assert len(plaintext) == current.plaintext_bytes
         assert hashlib.sha256(plaintext).hexdigest() == current.sha256
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
+
+
+def test_collection_metadata_manifest_is_independently_encrypted(
+    monkeypatch, tmp_path: Path
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    manifest = b"format: riverhog-collection-metadata/v1\ncollection: 1\ntags: [docs]\n"
+
+    receipt = store.publish_collection_metadata(
+        collection_id=COLLECTION_ID,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        manifest=manifest,
+    )
+
+    stored = client.objects[receipt.object_path]
+    assert receipt.object_path == f"{ARCHIVE_PREFIX}/metadata.yml.age"
+    assert (
+        decrypt_age_scrypt(
+            cast(bytes, stored["Body"]),
+            "test-archive-passphrase",
+        )
+        == manifest
+    )
+    assert stored["Metadata"]["riverhog-collection-id"] == "1"
+    assert stored["Metadata"]["collection-metadata-format"] == "riverhog-collection-metadata/v1"
+    readme_key = next(key for key in client.objects if key.endswith("/README.md"))
+    agents_key = next(key for key in client.objects if key.endswith("/AGENTS.md"))
+    readme = cast(bytes, client.objects[readme_key]["Body"]).decode()
+    agents = cast(bytes, client.objects[agents_key]["Body"]).decode()
+    assert "archives/ARCHIVE_ID/metadata.yml.age" in readme
+    assert "archives/ARCHIVE_ID/metadata.yml.age" in agents
 
 
 def test_restore_required_upload_uses_exact_leased_cache_ciphertext(

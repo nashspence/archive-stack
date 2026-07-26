@@ -17,9 +17,13 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
+    TagRecord,
 )
-from riverhog_core.portable_catalog import portable_collection_manifest
+from riverhog_core.collection_metadata import (
+    collection_content_etag,
+    collection_record_manifest,
+)
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
@@ -27,6 +31,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
+    MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
@@ -35,14 +40,14 @@ from riverhog_core.services.archive_records import apply_archive_receipt
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
 
-COLLECTION_ID = "docs/20260102T030405Z"
+COLLECTION_ID = 1
 UPLOADED_AT = "2026-07-15T00:00:00.000000Z"
 
 
 def make_archive(
     files: dict[str, bytes],
     *,
-    collection_id: str = COLLECTION_ID,
+    collection_id: int = COLLECTION_ID,
 ) -> CollectionArchive:
     return build_collection_archive(
         collection_id=collection_id,
@@ -126,24 +131,41 @@ def seed_archive_copy(
     current = archive or make_archive(files)
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
-        _manifest, manifest_etag = portable_collection_manifest(
-            current.collection_id,
-            ((file.path, file.bytes, file.sha256) for file in current.files),
+        files = [(file.path, file.bytes, file.sha256) for file in current.files]
+        content_etag = collection_content_etag(files)
+        _manifest, record_etag = collection_record_manifest(
+            collection_id=current.collection_id,
+            content_etag=content_etag,
+            metadata_revision=1,
+            tags=("docs",),
+            files=files,
         )
-        slug = current.collection_id.split("/", 1)[0]
         session.add(
-            CollectionSlugRecord(
-                id=slug,
+            TagRecord(
+                id="docs",
                 created_by_app="fixture",
                 created_at=UPLOADED_AT,
             )
         )
         collection = CollectionRecord(
             id=current.collection_id,
-            slug=slug,
-            manifest_etag=manifest_etag,
+            creation_idempotency_key="fixture-docs",
+            content_etag=content_etag,
+            record_etag=record_etag,
+            metadata_revision=1,
+            metadata_updated_at=UPLOADED_AT,
+            created_by_app="fixture",
+            created_at=UPLOADED_AT,
         )
         session.add(collection)
+        session.add(
+            CollectionTagRecord(
+                collection_id=current.collection_id,
+                tag_id="docs",
+                assigned_by_app="fixture",
+                assigned_at=UPLOADED_AT,
+            )
+        )
         for file in current.files:
             session.add(
                 CollectionFileRecord(
@@ -207,7 +229,7 @@ class MemoryArchiveStore:
         self.cleaned: list[tuple[str, ...]] = []
         self.verified: list[tuple[str, ...]] = []
         self.deleted: list[tuple[str, ...]] = []
-        self.catalog_entries: list[dict[str, object]] = []
+        self.published_metadata: list[tuple[int, str, bytes]] = []
 
     def read_mode(self) -> str:
         return self._read_mode
@@ -224,7 +246,7 @@ class MemoryArchiveStore:
     def upload_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchive,
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
@@ -258,7 +280,7 @@ class MemoryArchiveStore:
     def verify_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchiveIdentity,
     ) -> None:
         assert collection_id == COLLECTION_ID
@@ -267,20 +289,28 @@ class MemoryArchiveStore:
     def delete_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
         assert collection_id == COLLECTION_ID
         self.deleted.append(tuple(current.object_id for current in objects))
 
-    def publish_archive_catalog(
+    def publish_collection_metadata(
         self,
         *,
-        entries: Sequence[dict[str, object]],
-        generated_at: str,
-    ) -> None:
-        assert generated_at.endswith("Z")
-        self.catalog_entries = list(entries)
+        collection_id: int,
+        archive_storage_prefix: str,
+        manifest: bytes,
+    ) -> MutableManifestReceipt:
+        self.published_metadata.append((collection_id, archive_storage_prefix, manifest))
+        object_path = f"{archive_storage_prefix}/metadata.yml.age"
+        return MutableManifestReceipt(
+            object_path=object_path,
+            version_id=f"v{len(self.published_metadata)}",
+            stored_bytes=len(manifest),
+            stored_sha256=hashlib.sha256(manifest).hexdigest(),
+            published_at=UPLOADED_AT,
+        )
 
     def prepare_archive_objects_read(
         self,
@@ -302,7 +332,7 @@ class MemoryArchiveStore:
     def iter_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
@@ -320,7 +350,7 @@ class MemoryArchiveStore:
     def iter_stored_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:

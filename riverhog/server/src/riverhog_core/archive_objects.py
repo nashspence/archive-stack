@@ -16,7 +16,7 @@ from riverhog_protocol.paths import normalize_collection_id, normalize_relpath
 
 from riverhog_core.proofs import CommandProofStamper, ProofStamper, ProofVerifier
 
-COLLECTION_ARCHIVE_MANIFEST_SCHEMA = "collection-archive-manifest/v1"
+COLLECTION_ARCHIVE_MANIFEST_SCHEMA = "collection-archive-manifest/v2"
 SMALL_FILE_LIMIT = 16 * 1024 * 1024
 PACK_PAYLOAD_LIMIT = 32 * 1024 * 1024
 STORED_OBJECT_LIMIT = 32 * 1024 * 1024 * 1024
@@ -114,7 +114,7 @@ class CollectionArchiveDataObject:
 
 @dataclass(frozen=True, slots=True)
 class CollectionArchive:
-    collection_id: str
+    collection_id: int
     files: tuple[CollectionArchiveFile, ...]
     data_objects: tuple[CollectionArchiveDataObject, ...]
     manifest_bytes: bytes
@@ -131,7 +131,7 @@ class CollectionArchive:
 
 def build_collection_archive(
     *,
-    collection_id: str,
+    collection_id: int,
     files: Sequence[CollectionArchiveSourceFile],
     max_plaintext_object_bytes: int,
     stamper: ProofStamper | None = None,
@@ -156,7 +156,7 @@ def build_collection_archive(
 
 def build_collection_archive_from_chunk_reader(
     *,
-    collection_id: str,
+    collection_id: int,
     files: Sequence[CollectionArchiveFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
     read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None,
@@ -173,11 +173,7 @@ def build_collection_archive_from_chunk_reader(
         max_plaintext_object_bytes=max_plaintext_object_bytes,
     )
     data_objects = tuple(_hash_planned_object(current) for current in planned)
-    manifest_bytes = _manifest_bytes(
-        collection_id=normalized_collection_id,
-        files=normalized_files,
-        data_objects=data_objects,
-    )
+    manifest_bytes = _manifest_bytes(files=normalized_files, data_objects=data_objects)
     proof_bytes = _stamp_manifest_bytes(manifest_bytes, stamper=stamper)
     return CollectionArchive(
         collection_id=normalized_collection_id,
@@ -192,7 +188,7 @@ def build_collection_archive_from_chunk_reader(
 
 def build_collection_archive_from_manifest(
     *,
-    collection_id: str,
+    collection_id: int,
     files: Sequence[CollectionArchiveFile],
     read_file_chunks: Callable[[str], Iterable[bytes]],
     read_file_chunks_range: Callable[[str, int, int | None], Iterable[bytes]] | None,
@@ -204,7 +200,6 @@ def build_collection_archive_from_manifest(
     normalized_files = _normalized_files(files)
     descriptors = parse_collection_archive_manifest(
         manifest_bytes=manifest_bytes,
-        collection_id=normalized_collection_id,
         files=normalized_files,
     )
     verify_collection_archive_manifest_proof(
@@ -235,7 +230,7 @@ def build_collection_archive_from_manifest(
 
 def load_collection_archive(
     *,
-    collection_id: str,
+    collection_id: int,
     files: Sequence[CollectionArchiveFile],
     manifest_bytes: bytes,
     proof_bytes: bytes,
@@ -249,7 +244,6 @@ def load_collection_archive(
     normalized_files = _normalized_files(files)
     descriptors = parse_collection_archive_manifest(
         manifest_bytes=manifest_bytes,
-        collection_id=normalized_collection_id,
         files=normalized_files,
     )
     verify_collection_archive_manifest_proof(
@@ -319,7 +313,6 @@ def load_collection_archive(
 def parse_collection_archive_manifest(
     *,
     manifest_bytes: bytes,
-    collection_id: str,
     files: Sequence[CollectionArchiveFile],
     expected_sha256: str | None = None,
 ) -> tuple[dict[str, Any], ...]:
@@ -333,8 +326,6 @@ def parse_collection_archive_manifest(
         raise ValueError("collection archive manifest must be a mapping")
     if payload.get("schema") != COLLECTION_ARCHIVE_MANIFEST_SCHEMA:
         raise ValueError("collection archive manifest schema mismatch")
-    if payload.get("collection") != normalize_collection_id(collection_id):
-        raise ValueError("collection archive manifest collection mismatch")
 
     normalized_files = _normalized_files(files)
     expected_by_path = {file.path: file for file in normalized_files}
@@ -623,7 +614,6 @@ def _hash_planned_object(planned: _PlannedObject) -> CollectionArchiveDataObject
 
 def _manifest_bytes(
     *,
-    collection_id: str,
     files: tuple[CollectionArchiveFile, ...],
     data_objects: tuple[CollectionArchiveDataObject, ...],
 ) -> bytes:
@@ -661,7 +651,6 @@ def _manifest_bytes(
         )
     payload = {
         "schema": COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
-        "collection": collection_id,
         "tree": {"sha256": tree_digest.hexdigest(), "total_bytes": total_bytes},
         "objects": [
             {

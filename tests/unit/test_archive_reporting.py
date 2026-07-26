@@ -11,9 +11,10 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    TagRecord,
 )
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.runtime_config import RuntimeConfig
@@ -31,7 +32,7 @@ def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
-            CollectionSlugRecord(
+            TagRecord(
                 id="docs",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
@@ -39,21 +40,34 @@ def _seed(path: Path) -> None:
         )
         session.add(
             CollectionRecord(
-                id="docs/20250102T030405Z",
-                slug="docs",
-                manifest_etag="0" * 64,
+                id=1,
+                creation_idempotency_key="fixture-1",
+                content_etag="0" * 64,
+                record_etag="1" * 64,
+                metadata_revision=1,
+                metadata_updated_at="2026-01-01T00:00:00.000000Z",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionTagRecord(
+                collection_id=1,
+                tag_id="docs",
+                assigned_by_app="fixture",
+                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add(
             CollectionFileRecord(
-                collection_id="docs/20250102T030405Z",
+                collection_id=1,
                 path="readme.txt",
                 bytes=12,
                 sha256="a" * 64,
             )
         )
         copy = CollectionArchiveCopyRecord(
-            collection_id="docs/20250102T030405Z",
+            collection_id=1,
             store="deep",
             state="uploaded",
             archive_storage_prefix="collections/docs",
@@ -161,7 +175,7 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
-            CollectionSlugRecord(
+            TagRecord(
                 id="pending",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
@@ -169,15 +183,17 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         )
         session.add(
             CollectionUploadRecord(
-                collection_id="pending/20250103T030405Z",
-                slug="pending",
+                collection_id=2,
+                idempotency_key="fixture-2",
+                tags_json='["pending"]',
+                initiated_by_app="fixture",
                 archive_store="deep",
                 state="archiving",
             )
         )
         session.add(
             CollectionUploadFileRecord(
-                collection_id="pending/20250103T030405Z",
+                collection_id=2,
                 path="pending.txt",
                 file_order=1,
                 bytes=7,
@@ -200,20 +216,18 @@ def test_archive_report_includes_pending_upload_in_database_totals(tmp_path: Pat
         for item in report.collections
     ]
     assert collection_rows == [
-        ("docs/20250102T030405Z", 12, "uploaded"),
-        ("pending/20250103T030405Z", 7, "uploading"),
+        ("1", 12, "uploaded"),
+        ("2", 7, "uploading"),
     ]
 
     restricted = SqlAlchemyArchiveReportingService(_config(path)).get_report(
         principal=ApplicationPrincipal(
             app="docs-reader",
             key_id="docs-key",
-            access=frozenset({ApplicationAccess(ARCHIVES_READ, "slug:docs")}),
+            access=frozenset({ApplicationAccess(ARCHIVES_READ, "tag:docs")}),
         )
     )
     assert restricted.totals.collections == 1
     assert restricted.totals.uploaded_collections == 1
-    assert [str(item.id) for item in restricted.collections] == [
-        "docs/20250102T030405Z"
-    ]
+    assert [str(item.id) for item in restricted.collections] == ["1"]
     assert restricted.history == ()

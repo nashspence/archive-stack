@@ -7,7 +7,6 @@ from riverhog_protocol.errors import InvalidPath
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_collection_id,
-    normalize_upload_slug,
 )
 
 
@@ -41,17 +40,15 @@ def parse_logical_path(raw: str) -> LogicalPath:
     parts = path.parts
     if len(parts) == 1:
         try:
-            canonical_slug = normalize_upload_slug(parts[0])
+            normalize_collection_id(parts[0])
         except PathNormalizationError as exc:
-            raise InvalidPath("a collection slug path must be canonical") from exc
-        if not is_directory or parts[0] != canonical_slug:
-            raise InvalidPath("a collection slug path must be canonical and end with '/'")
+            raise InvalidPath("a collection path must begin with a canonical id") from exc
+        if not is_directory:
+            raise InvalidPath("a collection path must end with '/'")
         return LogicalPath(path=path, is_directory=True)
 
     try:
-        normalize_collection_id(f"{parts[0]}/{parts[1]}")
+        normalize_collection_id(parts[0])
     except PathNormalizationError as exc:
         raise InvalidPath("path must begin with a canonical collection id") from exc
-    if len(parts) == 2 and not is_directory:
-        raise InvalidPath("a collection path must end with '/'")
     return LogicalPath(path=path, is_directory=is_directory)

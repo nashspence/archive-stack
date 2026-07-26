@@ -167,8 +167,8 @@ class JobRequest(BaseModel):
     encode_profile: EncodeProfile | None = None
     max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
     tasks: list[TaskName] = Field(default_factory=default_tasks)
-    collection_slug: str | None = None
-    collection_timestamp: str | None = None
+    collection_tags: list[str] = Field(default_factory=list)
+    run_id: str | None = None
     review_clip_plan: ReviewClipPlanConfig = Field(default_factory=ReviewClipPlanConfig)
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)

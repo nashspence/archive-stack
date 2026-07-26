@@ -21,9 +21,10 @@ CURRENT_TABLES = {
     "collection_archive_file_objects",
     "collection_archive_object_uploads",
     "collection_archive_objects",
+    "collection_metadata_publications",
+    "collection_tags",
     "collection_deletions",
     "collection_files",
-    "collection_slugs",
     "collection_upload_files",
     "collection_uploads",
     "collections",
@@ -36,6 +37,7 @@ CURRENT_TABLES = {
     "retrieval_job_files",
     "retrieval_job_objects",
     "retrieval_jobs",
+    "tags",
 }
 
 
@@ -99,8 +101,10 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "file_order",
     }
     collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
-    assert collection_columns["slug"]["nullable"] is False
-    assert collection_columns["manifest_etag"]["nullable"] is False
+    assert collection_columns["content_etag"]["nullable"] is False
+    assert collection_columns["record_etag"]["nullable"] is False
+    assert collection_columns["metadata_revision"]["nullable"] is False
+    assert collection_columns["metadata_updated_at"]["nullable"] is False
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")
     }

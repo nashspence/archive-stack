@@ -148,6 +148,7 @@ class _TusdHttpUploadStore:
             raise
         _ok_or_raise(response)
 
+
 class TusdUploadStore(_TusdHttpUploadStore):
     def __init__(self, config: RuntimeConfig) -> None:
         super().__init__(config)

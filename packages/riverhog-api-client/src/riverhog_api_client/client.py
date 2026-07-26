@@ -58,8 +58,8 @@ def _timeout_seconds(env_name: str, default: float) -> float:
 
 
 def _file_selections_payload(
-    files: Sequence[tuple[str, str]],
-) -> list[dict[str, str]]:
+    files: Sequence[tuple[int, str]],
+) -> list[dict[str, object]]:
     return [{"collection_id": collection_id, "path": path} for collection_id, path in files]
 
 
@@ -285,7 +285,9 @@ class ApiClient(_HttpApiClient):
             metadata = next((child for child in url if child.tag.endswith("md")), None)
             if loc is None or metadata is None:
                 continue
-            collection_id = loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+            collection_id = int(
+                loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+            )
             changes.append(
                 {
                     "collection_id": collection_id,
@@ -296,15 +298,15 @@ class ApiClient(_HttpApiClient):
             )
         return {"cursor": int(root.attrib.get("data-cursor", after)), "changes": changes}
 
-    def get_portable_collection_manifest(self, collection_id: str) -> dict[str, Any]:
+    def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/catalog/collections/{quote(collection_id, safe='/')}/manifest",
+            f"/v1/catalog/collections/{str(collection_id)}/manifest",
         )
 
     def plan_retrieval(
         self,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         *,
         lease_seconds: int | None = None,
     ) -> dict[str, Any]:
@@ -315,7 +317,7 @@ class ApiClient(_HttpApiClient):
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         *,
         plan_etag: str,
         lease_seconds: int | None = None,
@@ -346,14 +348,14 @@ class ApiClient(_HttpApiClient):
         self,
         job_id: str,
         *,
-        collection_id: str,
+        collection_id: int,
         path: str,
         output: Path,
         progress: DownloadProgress | None = None,
     ) -> int:
         result = self._download(
             f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
-            f"collection_id={quote(collection_id, safe='')}&path={quote(path, safe='')}",
+            f"collection_id={str(collection_id)}&path={quote(path, safe='')}",
             output,
             progress=progress,
         )
@@ -363,7 +365,7 @@ class ApiClient(_HttpApiClient):
         self,
         job_id: str,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         output: Path,
         progress: DownloadProgress | None = None,
@@ -371,7 +373,7 @@ class ApiClient(_HttpApiClient):
         result = self._download(
             f"/v1/retrieval-jobs/{quote(job_id, safe='')}/objects/"
             f"{quote(object_id, safe='')}/content?"
-            f"collection_id={quote(collection_id, safe='')}",
+            f"collection_id={str(collection_id)}",
             output,
             progress=progress,
         )
@@ -379,22 +381,21 @@ class ApiClient(_HttpApiClient):
 
     def create_or_resume_collection_upload(
         self,
-        slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         files: Sequence[Mapping[str, Any]],
         *,
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "slug": slug,
+            "idempotency_key": idempotency_key,
+            "tags": list(tags),
             "files": [dict(file) for file in files],
         }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
-        if upload_timestamp is not None:
-            payload["upload_timestamp"] = upload_timestamp
         if archive_store is not None:
             payload["archive_store"] = archive_store
         if event_context is not None:
@@ -403,18 +404,19 @@ class ApiClient(_HttpApiClient):
 
     def create_or_resume_collection_upload_session(
         self,
-        slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         *,
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"slug": slug}
+        payload: dict[str, Any] = {
+            "idempotency_key": idempotency_key,
+            "tags": list(tags),
+        }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
-        if upload_timestamp is not None:
-            payload["upload_timestamp"] = upload_timestamp
         if archive_store is not None:
             payload["archive_store"] = archive_store
         if event_context is not None:
@@ -423,48 +425,48 @@ class ApiClient(_HttpApiClient):
 
     def register_collection_upload_session_file(
         self,
-        collection_id: str,
+        collection_id: int,
         file: Mapping[str, Any],
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/files",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/files",
             json=dict(file),
         )
 
-    def complete_collection_upload_session(self, collection_id: str) -> dict[str, Any]:
+    def complete_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/complete",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/complete",
         )
 
-    def cancel_collection_upload_session(self, collection_id: str) -> dict[str, Any]:
+    def cancel_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/cancel",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/cancel",
             timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
-    def get_collection_upload(self, collection_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collection-uploads/{quote(collection_id, safe='/')}")
+    def get_collection_upload(self, collection_id: int) -> dict[str, Any]:
+        return self._json("GET", f"/v1/collection-uploads/{str(collection_id)}")
 
     def create_or_resume_collection_file_upload(
-        self, collection_id: str, path: str
+        self, collection_id: int, path: str
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-uploads/{quote(collection_id, safe='/')}/files/"
+            f"/v1/collection-uploads/{str(collection_id)}/files/"
             f"{quote(path, safe='/')}/upload",
         )
 
     def create_or_resume_registered_collection_file_upload(
         self,
-        collection_id: str,
+        collection_id: int,
         file: Mapping[str, Any],
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-upload-sessions/{quote(collection_id, safe='/')}/files/upload",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/files/upload",
             json=dict(file),
         )
 
@@ -476,7 +478,7 @@ class ApiClient(_HttpApiClient):
         per_page: int = 25,
         sort: str = "logical_path",
         order: str = "asc",
-        collection: str | None = None,
+        collection: int | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
@@ -493,21 +495,21 @@ class ApiClient(_HttpApiClient):
             params["all"] = True
         return self._json("GET", "/v1/search", params=params)
 
-    def get_collection(self, collection_id: str) -> dict[str, Any]:
+    def get_collection(self, collection_id: int) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/collections/{quote(collection_id, safe='/')}",
+            f"/v1/collections/{str(collection_id)}",
         )
 
-    def plan_collection_deletion(self, collection_id: str) -> dict[str, Any]:
+    def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collections/{quote(collection_id, safe='/')}/deletion-plan",
+            f"/v1/collections/{str(collection_id)}/deletion-plan",
         )
 
     def delete_collection(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         challenge: str,
         event_context: Mapping[str, Any] | None = None,
@@ -517,7 +519,7 @@ class ApiClient(_HttpApiClient):
             payload["event_context"] = dict(event_context)
         return self._json(
             "POST",
-            f"/v1/collections/{quote(collection_id, safe='/')}/delete",
+            f"/v1/collections/{str(collection_id)}/delete",
             json=payload,
         )
 
@@ -548,7 +550,7 @@ class ApiClient(_HttpApiClient):
     def get_archive_report(
         self,
         *,
-        collection: str | None = None,
+        collection: int | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if collection:
@@ -681,13 +683,13 @@ class ApiClient(_HttpApiClient):
             json={"access": [dict(current) for current in access]},
         )
 
-    def create_slug(self, slug: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/slugs", json={"id": slug})
+    def create_tag(self, tag: str) -> dict[str, Any]:
+        return self._json("POST", "/v1/tags", json={"id": tag})
 
-    def get_slug(self, slug: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/slugs/{quote(slug, safe='')}")
+    def get_tag(self, tag: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/tags/{quote(tag, safe='')}")
 
-    def list_slugs(
+    def list_tags(
         self,
         *,
         page: int = 1,
@@ -707,7 +709,22 @@ class ApiClient(_HttpApiClient):
             params["q"] = q
         if all_items:
             params["all"] = True
-        return self._json("GET", "/v1/slugs", params=params)
+        return self._json("GET", "/v1/tags", params=params)
+
+    def get_collection_tags(self, collection_id: int) -> dict[str, Any]:
+        return self._json("GET", f"/v1/collections/{collection_id}/tags")
+
+    def replace_collection_tags(
+        self,
+        collection_id: int,
+        tags: Sequence[str],
+        *,
+        event_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"tags": list(tags)}
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
+        return self._json("PUT", f"/v1/collections/{collection_id}/tags", json=payload)
 
     def get_download_quota(self) -> dict[str, Any]:
         return self._json("GET", "/v1/download-quota")
@@ -755,7 +772,7 @@ class ApiClient(_HttpApiClient):
 
     def create_or_resume_archive_copy(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         destination_store: str,
         source_store: str | None = None,
@@ -770,7 +787,7 @@ class ApiClient(_HttpApiClient):
 
     def plan_archive_copy_retirement(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         store: str,
     ) -> dict[str, Any]:
@@ -782,7 +799,7 @@ class ApiClient(_HttpApiClient):
 
     def retire_archive_copy(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         store: str,
         challenge: str,

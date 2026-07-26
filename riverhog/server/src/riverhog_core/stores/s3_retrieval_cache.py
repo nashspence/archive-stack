@@ -21,7 +21,7 @@ class S3RetrievalCache:
         self._cache = config.retrieval_cache
         self._client = create_retrieval_cache_s3_client(config, self._cache)
 
-    def _object_path(self, source_store: str, collection_id: str, object_id: str) -> str:
+    def _object_path(self, source_store: str, collection_id: int, object_id: str) -> str:
         identity = f"{source_store}\0{collection_id}\0{object_id}".encode()
         digest = hashlib.sha256(identity).hexdigest()
         parts = [part for part in (self._cache.prefix, "objects", digest[:2], digest) if part]
@@ -31,7 +31,7 @@ class S3RetrievalCache:
         self,
         *,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         content: Iterable[bytes],
         content_length: int,

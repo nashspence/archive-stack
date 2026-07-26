@@ -52,7 +52,7 @@ def cmd_attempt_list(args: argparse.Namespace) -> int:
         terminal=args.terminal,
         state=args.state,
         source=args.source,
-        collection_slug=args.collection_slug,
+        collection_tag=args.collection_tag,
         target=args.target,
         query=args.query,
         all_items=args.all,
@@ -149,7 +149,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
         "template": args.template,
         "enabled": not args.disabled,
         "stable_seconds": args.stable_seconds,
-        "collection_slug": args.collection_slug or args.source,
+        "collection_tags": args.tag or [args.source],
         "target": args.target,
         "threshold_bytes": args.threshold_bytes,
         "cleanup": args.cleanup,
@@ -286,8 +286,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show active, terminal, or all attempts.",
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
-    attempt_list.add_argument("--source", help="Filter by source slug.")
-    attempt_list.add_argument("--collection-slug", help="Filter by output collection slug.")
+    attempt_list.add_argument("--source", help="Filter by source id.")
+    attempt_list.add_argument("--collection-tag", help="Filter by collection tag.")
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
     attempt_list.set_defaults(func=cmd_attempt_list)
@@ -301,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     once.set_defaults(func=cmd_once)
 
     archive_now = sub.add_parser("archive-now", help="archive one source immediately")
-    archive_now.add_argument("--source", required=True, help="Source slug to archive.")
+    archive_now.add_argument("--source", required=True, help="Source id to archive.")
     archive_now.add_argument(
         "--no-process",
         action="store_true",
@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=SOURCE_LIST_SORT_FIELDS,
         default_sort="id",
         default_order="asc",
-        query_help="Search source, collection slug, target, template, cadence, or adapter.",
+        query_help="Search source, collection tag, target, template, cadence, or adapter.",
     )
     source_state = source_list.add_mutually_exclusive_group()
     source_state.add_argument(
@@ -370,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_add.add_argument("--disabled", action="store_true")
     source_add.add_argument("--stable-seconds", type=int, default=600)
     source_add.add_argument("--include-extension", action="append")
-    source_add.add_argument("--collection-slug")
+    source_add.add_argument("--tag", action="append", help="Collection tag; repeat as needed.")
     source_add.add_argument("--target", default="munchy")
     source_add.add_argument("--threshold-bytes", type=int, default=0)
     source_add.add_argument(

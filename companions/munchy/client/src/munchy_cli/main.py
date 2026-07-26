@@ -305,12 +305,12 @@ def format_jobs(payload: Mapping[str, Any]) -> Any:
         return _plain_jobs(payload)
 
     jobs = [job for job in _sequence(payload.get("jobs")) if isinstance(job, Mapping)]
-    table = _quiet_table("Job", "Collection", "State", "Phase", "Progress")
+    table = _quiet_table("Job", "Tags", "State", "Phase", "Progress")
     for job in jobs:
         job_id = str(job.get("job_id") or job.get("id") or "unknown")
         table.add_row(
             _entity_text(job_id),
-            str(job.get("collection_slug") or ""),
+            ", ".join(str(tag) for tag in job.get("collection_tags") or []),
             _attention_text(job.get("state", "unknown")),
             str(job.get("phase") or ""),
             format_job_status_line(dict(job)),
@@ -384,9 +384,10 @@ def format_job_template(payload: Mapping[str, Any]) -> Any:
 
 
 def _plain_job(job: Mapping[str, Any]) -> str:
+    collection_tags = ", ".join(str(tag) for tag in job.get("collection_tags") or [])
     lines = [
         f"job: {job.get('job_id', 'unknown')}",
-        f"collection: {job.get('collection_slug') or 'unknown'}",
+        f"collection tags: {collection_tags or 'none'}",
         f"state: {job.get('state', 'unknown')}",
     ]
     if job.get("phase"):
@@ -405,7 +406,10 @@ def format_job(job: Mapping[str, Any]) -> Any:
 
     table = _detail_table()
     table.add_row("job", _entity_text(job.get("job_id", "unknown")))
-    table.add_row("collection", str(job.get("collection_slug") or "unknown"))
+    table.add_row(
+        "collection tags",
+        ", ".join(str(tag) for tag in job.get("collection_tags") or []) or "none",
+    )
     table.add_row("state", _attention_text(job.get("state", "unknown")))
     if job.get("phase"):
         table.add_row("phase", str(job.get("phase")))
@@ -542,8 +546,8 @@ def _submission_plan_payload(
         "template_digest": template.get("digest"),
         "files_total": len(request.files),
         "bytes_total": sum(item.bytes for item in request.files),
-        "collection_slug": request.collection_slug,
-        "collection_timestamp": request.collection_timestamp,
+        "collection_tags": list(request.collection_tags),
+        "run_id": request.run_id,
         "workflow_mode": preflight.get("workflow_mode"),
         "content_inspection": preflight.get("content_inspection"),
         "upload_workers": request.upload_workers,
@@ -559,7 +563,10 @@ def format_submission_plan(payload: Mapping[str, Any]) -> Any:
         ("template", str(payload.get("template", "unknown"))),
         ("template revision", str(payload.get("template_revision") or "unknown")),
         ("workflow", str(payload.get("workflow_mode", "unknown"))),
-        ("collection", str(payload.get("collection_slug") or "n/a")),
+        (
+            "collection tags",
+            ", ".join(str(tag) for tag in payload.get("collection_tags") or []) or "none",
+        ),
         ("files", str(payload.get("files_total", 0))),
         ("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0))),
         ("content inspection", str(payload.get("content_inspection") or "unknown")),
@@ -1100,13 +1107,13 @@ def submit(
         str | None,
         typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
     ] = None,
-    collection: Annotated[
-        str | None,
-        typer.Option("--collection", help="Collection slug when required by the template"),
+    collection_tags: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Collection tag; repeat to assign more than one"),
     ] = None,
-    collection_timestamp: Annotated[
+    run_id: Annotated[
         str | None,
-        typer.Option("--timestamp", help="Collection timestamp; defaults to now"),
+        typer.Option("--run-id", help="Workflow run id; defaults to a timestamp"),
     ] = None,
     destination_prefix: Annotated[
         str | None,
@@ -1158,8 +1165,8 @@ def submit(
                 source=source,
                 template=template,
                 inputs=_template_inputs(inputs or []),
-                collection=collection,
-                collection_timestamp=collection_timestamp,
+                collection_tags=collection_tags,
+                run_id=run_id,
                 submission_id=submission_id,
                 destination_prefix=destination_prefix,
                 handoff_on_failure=handoff_on_failure,

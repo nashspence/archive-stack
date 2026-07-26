@@ -221,9 +221,7 @@ class RuntimeConfig:
     ingress_secret_key: str = DEV_INGRESS_SECRET_KEY
     ingress_cleanup_concurrency: int = 8
     ingress_cleanup_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
-    ingress_cleanup_sweep_interval: timedelta = field(
-        default_factory=lambda: timedelta(seconds=10)
-    )
+    ingress_cleanup_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=10))
     retrieval_cache: RetrievalCacheConfig | None = None
     retrieval_initial_ingestion_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))

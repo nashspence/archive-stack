@@ -8,6 +8,7 @@ from riverhog_core.runtime_config import (
     RetrievalCacheConfig,
     RuntimeConfig,
 )
+
 from tests.harness import configure_garage
 from tests.unit.db_helpers import sqlite_url
 

@@ -135,7 +135,7 @@ def event_timestamp(value: datetime | None = None) -> str:
     return format_utc_timestamp(value or current_time())
 
 
-def collection_identity_timestamp(value: datetime | None = None) -> str:
+def run_id_for(value: datetime | None = None) -> str:
     return (value or current_time()).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
@@ -341,8 +341,8 @@ class Collector:
             "attempt_id": attempt_id if attempt_id and attempt_id != source_id else "",
             "state": str(context.get("state") or "failed"),
             "target": str(context.get("target_name") or context.get("target") or ""),
-            "collection_slug": str(context.get("collection_slug") or ""),
-            "collection_timestamp": str(context.get("collection_timestamp") or ""),
+            "collection_tags": list(context.get("collection_tags") or []),
+            "run_id": str(context.get("run_id") or ""),
         }
         event = cloud_event(
             source=self.config.events.source,
@@ -386,8 +386,8 @@ class Collector:
                 id TEXT PRIMARY KEY,
                 source_id TEXT NOT NULL,
                 target_name TEXT NOT NULL,
-                collection_slug TEXT NOT NULL,
-                collection_timestamp TEXT NOT NULL,
+                collection_tags_json TEXT NOT NULL,
+                run_id TEXT NOT NULL,
                 cleanup TEXT NOT NULL,
                 manifest_digest TEXT NOT NULL,
                 file_count INTEGER NOT NULL DEFAULT 0,
@@ -443,8 +443,7 @@ class Collector:
         )
         self.ensure_batch_file_summary_triggers(conn)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_source_period "
-            "ON batches(source_id, collection_timestamp)"
+            "CREATE INDEX IF NOT EXISTS idx_jeb_batches_source_period ON batches(source_id, run_id)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jeb_batches_source ON batches(source_id, id)")
         conn.execute(
@@ -551,7 +550,7 @@ class Collector:
             CREATE TABLE IF NOT EXISTS target_preflight_failures (
                 source_id TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
-                collection_slug TEXT NOT NULL,
+                collection_tags_json TEXT NOT NULL,
                 target_name TEXT NOT NULL,
                 input_paths_json TEXT NOT NULL,
                 failure_json TEXT NOT NULL,
@@ -648,8 +647,8 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_slug,
-                    b.collection_timestamp
+                    b.collection_tags_json,
+                    b.run_id
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE a.target_submission_id = ?
@@ -678,8 +677,8 @@ class Collector:
                 "source_id": str(row["source_id"]),
                 "state": str(row["state"]),
                 "target": str(row["target_name"]),
-                "collection_slug": str(row["collection_slug"]),
-                "collection_timestamp": str(row["collection_timestamp"]),
+                "collection_tags": list(json.loads(row["collection_tags_json"])),
+                "run_id": str(row["run_id"]),
                 "target_submission_id": job_id,
             }
         )
@@ -717,8 +716,8 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_slug,
-                    b.collection_timestamp,
+                    b.collection_tags_json,
+                    b.run_id,
                     b.cleanup,
                     b.manifest_digest,
                     a.target_submission_id,
@@ -750,7 +749,7 @@ class Collector:
         state: str | None = None,
         states: Sequence[str] | None = None,
         source: str | None = None,
-        collection_slug: str | None = None,
+        collection_tag: str | None = None,
         target: str | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -788,9 +787,11 @@ class Collector:
         if source:
             clauses.append("b.source_id = ?")
             values.append(source)
-        if collection_slug:
-            clauses.append("b.collection_slug = ?")
-            values.append(collection_slug)
+        if collection_tag:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(b.collection_tags_json) WHERE value = ?)"
+            )
+            values.append(collection_tag)
         if target:
             clauses.append("b.target_name = ?")
             values.append(target)
@@ -804,9 +805,9 @@ class Collector:
                     OR a.state LIKE ? ESCAPE '\\'
                     OR a.target_submission_id LIKE ? ESCAPE '\\'
                     OR b.source_id LIKE ? ESCAPE '\\'
-                    OR b.collection_slug LIKE ? ESCAPE '\\'
+                    OR b.collection_tags_json LIKE ? ESCAPE '\\'
                     OR b.target_name LIKE ? ESCAPE '\\'
-                    OR b.collection_timestamp LIKE ? ESCAPE '\\'
+                    OR b.run_id LIKE ? ESCAPE '\\'
                     OR a.last_error LIKE ? ESCAPE '\\'
                 )
                 """
@@ -822,8 +823,8 @@ class Collector:
                 a.state,
                 b.source_id,
                 b.target_name,
-                b.collection_slug,
-                b.collection_timestamp,
+                b.collection_tags_json,
+                b.run_id,
                 b.cleanup,
                 b.manifest_digest,
                 a.target_submission_id,
@@ -840,8 +841,7 @@ class Collector:
         sort_sql = {
             "attempt_number": "a.attempt_number",
             "bytes": "b.total_bytes",
-            "collection_slug": "b.collection_slug",
-            "collection_timestamp": "b.collection_timestamp",
+            "run_id": "b.run_id",
             "created_at": "a.created_at",
             "file_count": "b.file_count",
             "target_submission_id": "a.target_submission_id",
@@ -891,7 +891,7 @@ class Collector:
             "query": query,
             "filters": {
                 "source": source,
-                "collection_slug": collection_slug,
+                "collection_tag": collection_tag,
                 "state": state,
                 "states": list(states) if states is not None else None,
                 "target": target,
@@ -989,7 +989,7 @@ class Collector:
                 "path_exists": source.path.exists(),
                 "stable_seconds": source.stable_seconds,
                 "include_extensions": sorted(source.include_extensions),
-                "collection_slug": source.collection_slug,
+                "collection_tags": list(source.collection_tags),
                 "target": source.target,
                 "cleanup": source.cleanup,
                 "cadence": source.cadence,
@@ -1015,8 +1015,8 @@ class Collector:
             "state": str(row["state"]),
             "source_id": str(row["source_id"]),
             "target_name": str(row["target_name"]),
-            "collection_slug": str(row["collection_slug"]),
-            "collection_timestamp": str(row["collection_timestamp"]),
+            "collection_tags": list(json.loads(str(row["collection_tags_json"]))),
+            "run_id": str(row["run_id"]),
             "cleanup": str(row["cleanup"]),
             "manifest_digest": str(row["manifest_digest"]),
             "target_submission_id": row["target_submission_id"],
@@ -1033,7 +1033,7 @@ class Collector:
         return {
             "source_id": str(row["source_id"]),
             "state": str(row["state"]),
-            "collection_slug": str(row["collection_slug"]),
+            "collection_tags": list(json.loads(str(row["collection_tags_json"]))),
             "target_name": str(row["target_name"]),
             "file_count": int(row["file_count"]),
             "total_bytes": int(row["total_bytes"]),
@@ -1059,7 +1059,7 @@ class Collector:
         enabled: bool = True,
         stable_seconds: int = 600,
         include_extensions: Sequence[str] = (),
-        collection_slug: str | None = None,
+        collection_tags: Sequence[str] | None = None,
         target: str = "munchy",
         threshold_bytes: int = 0,
         cleanup: Literal["never", "after_target_success"] = "after_target_success",
@@ -1076,7 +1076,7 @@ class Collector:
             "credential": credential,
             "enabled": enabled,
             "stable_seconds": stable_seconds,
-            "collection_slug": collection_slug,
+            "collection_tags": collection_tags,
             "target": target,
             "threshold_bytes": threshold_bytes,
             "cleanup": cleanup,
@@ -1391,8 +1391,8 @@ class Collector:
                     a.state,
                     b.source_id,
                     b.target_name,
-                    b.collection_slug,
-                    b.collection_timestamp,
+                    b.collection_tags_json,
+                    b.run_id,
                     b.cleanup,
                     b.manifest_digest,
                     a.target_submission_id,
@@ -1630,16 +1630,16 @@ class Collector:
         source_id: str,
         period: datetime,
     ) -> bool:
-        timestamp = collection_identity_timestamp(period)
+        run_id = run_id_for(period)
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT a.id, a.state
                 FROM batches b
                 JOIN batch_attempts a ON a.batch_id = b.id
-                WHERE b.source_id = ? AND b.collection_timestamp = ?
+                WHERE b.source_id = ? AND b.run_id = ?
                 """,
-                (source_id, timestamp),
+                (source_id, run_id),
             ).fetchall()
         return any(str(row["state"]) != "superseded" for row in rows)
 
@@ -1725,8 +1725,8 @@ class Collector:
                 )
                 for item in files
             ),
-            collection_slug=source.collection_slug,
-            collection_timestamp=collection_identity_timestamp(),
+            collection_tags=source.collection_tags,
+            run_id=run_id_for(),
         )
         client = MunchyClient(target.url, token=target.token)
         try:
@@ -1839,7 +1839,7 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO target_preflight_failures(
-                    source_id, state, collection_slug, target_name,
+                    source_id, state, collection_tags_json, target_name,
                     input_paths_json, failure_json, fingerprint, message,
                     file_count, total_bytes, first_seen_at,
                     last_seen_at, updated_at, resolved_at,
@@ -1848,7 +1848,7 @@ class Collector:
                 VALUES(?, 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     state = 'failed',
-                    collection_slug = excluded.collection_slug,
+                    collection_tags_json = excluded.collection_tags_json,
                     target_name = excluded.target_name,
                     input_paths_json = excluded.input_paths_json,
                     failure_json = excluded.failure_json,
@@ -1862,7 +1862,7 @@ class Collector:
                 """,
                 (
                     source.id,
-                    source.collection_slug,
+                    stable_json(source.collection_tags),
                     source.target,
                     stable_json(input_paths),
                     stable_json(failure_payload),
@@ -1993,8 +1993,8 @@ class Collector:
             "id": source_id,
             "source_id": source_id,
             "target_name": str(row_payload["target_name"]),
-            "collection_slug": str(row_payload["collection_slug"]),
-            "collection_timestamp": collection_identity_timestamp(),
+            "collection_tags": list(json.loads(str(row_payload["collection_tags_json"]))),
+            "run_id": run_id_for(),
             "state": "failed",
         }
         if not self.emit_issue(
@@ -2077,7 +2077,7 @@ class Collector:
             target = self.target_by_name(source.target)
             base_payload: dict[str, Any] = {
                 "source": source.id,
-                "collection_slug": source.collection_slug,
+                "collection_tags": list(source.collection_tags),
                 "target_name": target.name,
                 "cleanup": source.cleanup,
                 "cadence": source.cadence,
@@ -2156,8 +2156,8 @@ class Collector:
                 }
 
             batch_id, digest = self.batch_identity(source, accepted_files, period=period)
-            collection_timestamp = collection_identity_timestamp(period)
-            target_submission_id = f"jeb-{source.id}-{collection_timestamp.lower()}-{digest}"
+            run_id = run_id_for(period)
+            target_submission_id = f"jeb-{source.id}-{run_id.lower()}-{digest}"
             return {
                 **base_payload,
                 "status": "would_process" if process else "would_stage",
@@ -2165,7 +2165,7 @@ class Collector:
                 "batch_id": batch_id,
                 "attempt_id": batch_id,
                 "manifest_digest": digest,
-                "collection_timestamp": collection_timestamp,
+                "run_id": run_id,
                 "target_submission_id": target_submission_id,
                 "file_count": len(accepted_files),
                 "total_bytes": total,
@@ -2253,7 +2253,7 @@ class Collector:
             suffix = "" if attempt_number == 1 else f"-r{attempt_number}"
             target_submission_id = (
                 f"jeb-{failed_attempt['source_id']}-"
-                f"{str(failed_attempt['collection_timestamp']).lower()}-"
+                f"{str(failed_attempt['run_id']).lower()}-"
                 f"{failed_attempt['manifest_digest']}{suffix}"
             )
             created_at = event_timestamp()
@@ -2323,11 +2323,11 @@ class Collector:
         batch_id: str | None = None,
         digest: str | None = None,
     ) -> str:
-        collection_timestamp = collection_identity_timestamp(period)
+        run_id = run_id_for(period)
         if batch_id is None or digest is None:
             batch_id, digest = self.batch_identity(source, files, period=period)
         target = self.target_by_name(source.target)
-        target_submission_id = f"jeb-{source.id}-{collection_timestamp.lower()}-{digest}"
+        target_submission_id = f"jeb-{source.id}-{run_id.lower()}-{digest}"
         batch_root = self.config.collector.batch_dir / batch_id / "input"
         created_at = event_timestamp()
         with self.connect() as conn:
@@ -2337,8 +2337,8 @@ class Collector:
             conn.execute(
                 """
                 INSERT INTO batches(
-                    id, source_id, target_name, collection_slug,
-                    collection_timestamp, cleanup, manifest_digest, created_at, updated_at
+                    id, source_id, target_name, collection_tags_json,
+                    run_id, cleanup, manifest_digest, created_at, updated_at
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -2346,8 +2346,8 @@ class Collector:
                     batch_id,
                     source.id,
                     target.name,
-                    source.collection_slug,
-                    collection_timestamp,
+                    stable_json(source.collection_tags),
+                    run_id,
                     source.cleanup,
                     digest,
                     created_at,
@@ -2407,10 +2407,10 @@ class Collector:
         *,
         period: datetime,
     ) -> tuple[str, str]:
-        collection_timestamp = collection_identity_timestamp(period)
+        run_id = run_id_for(period)
         manifest = "\n".join(f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files)
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
-        return f"{collection_timestamp}__{source.id}__{digest}", digest
+        return f"{run_id}__{source.id}__{digest}", digest
 
     def attempt_process_lock_path(self, attempt_id: str) -> Path:
         digest = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:16]
@@ -2973,8 +2973,8 @@ def munchy_submission_request(
         submission_id=str(attempt["target_submission_id"]),
         template=source.template,
         files=files,
-        collection_slug=str(attempt["collection_slug"]),
-        collection_timestamp=str(attempt["collection_timestamp"]),
+        collection_tags=tuple(json.loads(str(attempt["collection_tags_json"]))),
+        run_id=str(attempt["run_id"]),
         event_context={
             "initiator": {
                 "app": "jeb",

@@ -36,7 +36,7 @@ class SourceConfig:
     adapters: tuple[str, ...]
     stable_seconds: int
     include_extensions: frozenset[str]
-    collection_slug: str
+    collection_tags: tuple[str, ...]
     target: str
     template: str
     threshold_bytes: int
@@ -53,7 +53,7 @@ class SourceConfig:
             "adapters": list(self.adapters),
             "stable_seconds": self.stable_seconds,
             "include_extensions": sorted(self.include_extensions),
-            "collection_slug": self.collection_slug,
+            "collection_tags": list(self.collection_tags),
             "target": self.target,
             "template": self.template,
             "threshold_bytes": self.threshold_bytes,
@@ -101,7 +101,7 @@ class SourceRegistry:
                     upload_signing_key TEXT NOT NULL,
                     stable_seconds INTEGER NOT NULL,
                     include_extensions_json TEXT NOT NULL,
-                    collection_slug TEXT NOT NULL,
+                    collection_tags_json TEXT NOT NULL,
                     target TEXT NOT NULL,
                     template TEXT NOT NULL,
                     threshold_bytes INTEGER NOT NULL,
@@ -127,7 +127,7 @@ class SourceRegistry:
         enabled: bool = True,
         stable_seconds: int = 600,
         include_extensions: Sequence[str] = tuple(sorted(DEFAULT_INCLUDE_EXTENSIONS)),
-        collection_slug: str | None = None,
+        collection_tags: Sequence[str] | None = None,
         target: str = "munchy",
         threshold_bytes: int = 0,
         cleanup: Cleanup = "after_target_success",
@@ -159,7 +159,8 @@ class SourceRegistry:
                     """
                     INSERT INTO sources(
                         id, enabled, adapters_json, password_hash, upload_signing_key,
-                        stable_seconds, include_extensions_json, collection_slug, target, template,
+                        stable_seconds, include_extensions_json, collection_tags_json,
+                        target, template,
                         threshold_bytes, cleanup, cadence, weekday, hour, minute,
                         created_at, updated_at
                     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -172,7 +173,7 @@ class SourceRegistry:
                         secrets.token_hex(32),
                         stable_seconds,
                         _json(sorted(normalized_extensions)),
-                        collection_slug or normalized_id,
+                        _json(_collection_tags(collection_tags or (normalized_id,))),
                         target.strip() or "munchy",
                         normalized_template,
                         threshold_bytes,
@@ -233,7 +234,7 @@ class SourceRegistry:
                 """
                 (
                     lower(id) LIKE ? ESCAPE '\\'
-                    OR lower(collection_slug) LIKE ? ESCAPE '\\'
+                    OR lower(collection_tags_json) LIKE ? ESCAPE '\\'
                     OR lower(target) LIKE ? ESCAPE '\\'
                     OR lower(template) LIKE ? ESCAPE '\\'
                     OR lower(cadence) LIKE ? ESCAPE '\\'
@@ -255,7 +256,6 @@ class SourceRegistry:
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         sort_sql = {
             "cadence": "cadence",
-            "collection_slug": "collection_slug",
             "created_at": "created_at",
             "enabled": "enabled",
             "id": "id",
@@ -269,7 +269,7 @@ class SourceRegistry:
                 id,
                 enabled,
                 adapters_json,
-                collection_slug,
+                collection_tags_json,
                 target,
                 cadence,
                 template,
@@ -313,7 +313,7 @@ class SourceRegistry:
                     "id": str(row["id"]),
                     "enabled": bool(row["enabled"]),
                     "adapters": list(json.loads(row["adapters_json"])),
-                    "collection_slug": str(row["collection_slug"]),
+                    "collection_tags": list(json.loads(row["collection_tags_json"])),
                     "target": str(row["target"]),
                     "cadence": str(row["cadence"]),
                     "template": str(row["template"]),
@@ -353,7 +353,7 @@ class SourceRegistry:
             "adapters",
             "stable_seconds",
             "include_extensions",
-            "collection_slug",
+            "collection_tags",
             "target",
             "threshold_bytes",
             "cleanup",
@@ -393,7 +393,7 @@ class SourceRegistry:
                 """
                 UPDATE sources
                 SET adapters_json = ?, stable_seconds = ?, include_extensions_json = ?,
-                    collection_slug = ?, target = ?, template = ?, threshold_bytes = ?,
+                    collection_tags_json = ?, target = ?, template = ?, threshold_bytes = ?,
                     cleanup = ?, cadence = ?, weekday = ?, hour = ?, minute = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -402,7 +402,7 @@ class SourceRegistry:
                     _json(adapters),
                     stable_seconds,
                     _json(sorted(extensions)),
-                    str(values["collection_slug"]).strip() or current.id,
+                    _json(_collection_tags(values["collection_tags"])),
                     str(values["target"]).strip() or current.target,
                     template,
                     threshold_bytes,
@@ -533,7 +533,7 @@ class SourceRegistry:
             adapters=tuple(json.loads(row["adapters_json"])),
             stable_seconds=int(row["stable_seconds"]),
             include_extensions=frozenset(json.loads(row["include_extensions_json"])),
-            collection_slug=str(row["collection_slug"]),
+            collection_tags=tuple(json.loads(row["collection_tags_json"])),
             target=str(row["target"]),
             template=str(row["template"]),
             threshold_bytes=int(row["threshold_bytes"]),
@@ -548,15 +548,24 @@ class SourceRegistry:
 def _source_id(value: str) -> str:
     normalized = value.strip()
     if not SOURCE_ID.fullmatch(normalized):
-        raise SourceRegistryError(f"source must be a safe slug: {value!r}")
+        raise SourceRegistryError(f"source must be a safe id: {value!r}")
     return normalized
 
 
 def _template(value: str) -> str:
     normalized = value.strip()
     if not SOURCE_ID.fullmatch(normalized):
-        raise SourceRegistryError(f"template must be a safe slug: {value!r}")
+        raise SourceRegistryError(f"template must be a safe id: {value!r}")
     return normalized
+
+
+def _collection_tags(values: Sequence[Any]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise SourceRegistryError("collection_tags must be a sequence of tag ids")
+    tags = tuple(dict.fromkeys(str(value).strip() for value in values))
+    if not tags or any(not tag for tag in tags):
+        raise SourceRegistryError("collection_tags must contain non-empty tag ids")
+    return tags
 
 
 def _adapters(values: Sequence[Any]) -> tuple[str, ...]:

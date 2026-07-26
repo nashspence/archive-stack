@@ -363,7 +363,7 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
 def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
     definition = job_template_definition()
-    definition["job"]["collection_slug"] = "fixed"  # type: ignore[index]
+    definition["job"]["collection_tags"] = ["fixed"]  # type: ignore[index]
 
     with TestClient(server.app) as client:
         response = client.post(
@@ -493,8 +493,8 @@ def test_submission_preflight_resolves_template_without_creating_state(
             "/v1/submissions/preflight",
             json={
                 "template": "camera-archive",
-                "collection_slug": "camera",
-                "collection_timestamp": "20260101T000000.123456Z",
+                "collection_tags": ["camera"],
+                "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
             },
         )
@@ -518,8 +518,8 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
     request = {
         "submission_id": "submission-1",
         "template": "camera-archive",
-        "collection_slug": "camera",
-        "collection_timestamp": "20260101T000000.123456Z",
+        "collection_tags": ["camera"],
+        "run_id": "20260101T000000.123456Z",
         "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
     }
 
@@ -583,8 +583,8 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
             json={
                 "submission_id": "submission-1",
                 "template": "camera-archive",
-                "collection_slug": "camera",
-                "collection_timestamp": "20260101T000000.123456Z",
+                "collection_tags": ["camera"],
+                "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "video/a.mp4", "bytes": 4}],
             },
         )
@@ -651,8 +651,8 @@ def test_handoff_failure_policy_is_runtime_job_option(
     job = server.create_job_state_from_request(
         server.CreateJobRequest(
             input_upload_id="upload-1",
-            collection_slug="collection",
-            collection_timestamp="20260101T000000Z",
+            collection_tags=["collection"],
+            run_id="20260101T000000Z",
             tasks=["archive_video"],
             handoff={
                 "destination": "riverhog",
@@ -902,7 +902,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_slug="phone-collection-archive",
+        collection_tags=["phone-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -948,7 +948,7 @@ def test_create_job_request_accepts_disabled_group_metadata_projection(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_slug="camera-collection-archive",
+        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -969,7 +969,7 @@ def test_create_job_request_accepts_routing_extra_exiftool_tags(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_slug="camera-collection-archive",
+        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1006,7 +1006,7 @@ def test_create_job_request_accepts_sidecar_fact_extractors(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_slug="camera-collection-archive",
+        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1170,8 +1170,8 @@ def test_routing_manifest_records_actual_route_and_output(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-collection-archive",
-        "collection_timestamp": "20260628T000000Z",
+        "collection_tags": ["phone-collection-archive"],
+        "run_id": "20260628T000000Z",
         "routing": {
             "routes": [
                 {
@@ -1275,8 +1275,8 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-collection-archive",
-        "collection_timestamp": "20260628T000000Z",
+        "collection_tags": ["phone-collection-archive"],
+        "run_id": "20260628T000000Z",
         "routing": {
             "sidecars": [
                 {
@@ -1375,7 +1375,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-collection-archive",
+        "collection_tags": ["phone-collection-archive"],
     }
     server.save_job(job)
     groups = {
@@ -1509,7 +1509,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
         {
             "job_id": "job-1",
             "input_upload_id": "upload-1",
-            "collection_slug": "phone-collection-archive",
+            "collection_tags": ["phone-collection-archive"],
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
@@ -1527,7 +1527,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     stale_job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-collection-archive",
+        "collection_tags": ["phone-collection-archive"],
         "handoff": {"destination": "riverhog", "options": {}},
     }
 
@@ -1644,7 +1644,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "phone-collection-archive",
+        "collection_tags": ["phone-collection-archive"],
     }
     server.save_job(job)
     groups = {
@@ -2096,7 +2096,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         tasks=["archive_video"],
     )
     payload = server.build_eager_gpu_payload(
-        {"job_id": "job-1", "collection_slug": "phone-collection-archive"},
+        {"job_id": "job-1", "collection_tags": ["phone-collection-archive"]},
         batch_id="batch-1",
         group_name="camera",
         group_config=group_config,
@@ -2146,8 +2146,8 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_slug": "camera-archive",
-        "collection_timestamp": "20260101T000000Z",
+        "collection_tags": ["camera-archive"],
+        "run_id": "20260101T000000Z",
     }
     server.save_job(job)
     group_config = {
@@ -2240,8 +2240,8 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     job = {
         "job_id": "job-1",
         "input_upload_id": upload_id,
-        "collection_slug": "camera-archive",
-        "collection_timestamp": "20260101T000000Z",
+        "collection_tags": ["camera-archive"],
+        "run_id": "20260101T000000Z",
     }
     server.save_job(job)
     group_config = {
@@ -3091,7 +3091,7 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_slug": "voice-collection-archive",
+        "collection_tags": ["voice-collection-archive"],
     }
     server.save_job(job)
     archive_dir = tmp_path / "archive"
@@ -3366,7 +3366,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_slug": "esonic-collection-archive",
+        "collection_tags": ["esonic-collection-archive"],
     }
     server.save_job(job)
 
@@ -3445,7 +3445,7 @@ def test_submission_accepts_bounded_lifecycle_event_context(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_slug="collection",
+        collection_tags=["collection"],
         handoff={"destination": "riverhog"},
         event_context={"workflow": "desktop-archive", "run": 3},
     )
@@ -3499,7 +3499,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     server = load_server(tmp_path, monkeypatch)
     server.ensure_dirs()
     server.init_state_store()
-    collection_id = "collection/20260605T120000Z"
+    collection_id = 41
     server.save_job(
         {
             "job_id": "job-1",
@@ -3508,8 +3508,8 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
             "state": "running",
             "phase": "handoff",
             "workflow_mode": "collection_archive",
-            "collection_slug": "collection",
-            "collection_timestamp": "20260605T120000Z",
+            "collection_tags": ["collection"],
+            "run_id": "20260605T120000Z",
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {"collection_id": collection_id},
         }
@@ -3517,7 +3517,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     upstream = server.cloud_event(
         source="urn:riverhog",
         type="io.riverhog.riverhog.collection.finalized",
-        subject=collection_id,
+        subject=str(collection_id),
         data={"collection_id": collection_id, "archive_store": "b2"},
     )
 
@@ -3545,7 +3545,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
         "id": upstream.id,
         "source": upstream.source,
         "type": upstream.type,
-        "subject": collection_id,
+        "subject": str(collection_id),
     }
 
 
@@ -3556,7 +3556,7 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     server = load_server(tmp_path, monkeypatch)
     server.ensure_dirs()
     server.init_state_store()
-    collection_id = "collection/20260605T120000Z"
+    collection_id = 41
     for job_id, created_at in (
         ("job-1", "2026-06-05T12:00:00.000000Z"),
         ("job-2", "2026-06-05T13:00:00.000000Z"),
@@ -3565,8 +3565,8 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
             {
                 "job_id": job_id,
                 "created_at": created_at,
-                "collection_slug": "collection",
-                "collection_timestamp": "20260605T120000Z",
+                "collection_tags": ["collection"],
+                "run_id": "20260605T120000Z",
                 "handoff_adapter_state": {"collection_id": collection_id},
             }
         )
@@ -3592,13 +3592,13 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
     server.ensure_dirs()
     server.init_state_store()
     monkeypatch.setattr(server, "RIVERHOG_HANDOFF_ENABLED", True)
-    collection_id = "collection/20260605T120000Z"
+    collection_id = 41
     job = {
         "job_id": "job-1",
         "state": "running",
         "phase": "handoff",
-        "collection_slug": "collection",
-        "collection_timestamp": "20260605T120000Z",
+        "collection_tags": ["collection"],
+        "run_id": "20260605T120000Z",
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "collection_id": collection_id,
@@ -3652,8 +3652,8 @@ def test_job_issue_event_carries_operational_facts_without_presentation(
     server.init_state_store()
     job = {
         "job_id": "job-1",
-        "collection_slug": "collection",
-        "collection_timestamp": "20260605T120000Z",
+        "collection_tags": ["collection"],
+        "run_id": "20260605T120000Z",
         "phase": "queued",
         "state": "queued",
     }
@@ -3688,8 +3688,8 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
             device_id="camera",
             workflow_mode="collection_archive",
             group="camera-video",
-            collection_slug="camera-collection-archive",
-            collection_timestamp="20260606T120000Z",
+            collection_tags=["camera-collection-archive"],
+            run_id="20260606T120000Z",
             input_upload_id="upload-1",
             job_id="job-1",
             files=2,
@@ -3726,8 +3726,8 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
     server.init_state_store()
     job = {
         "job_id": "job-1",
-        "collection_slug": "camera-collection-archive",
-        "collection_timestamp": "20260606T120000Z",
+        "collection_tags": ["camera-collection-archive"],
+        "run_id": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
     }
@@ -3962,7 +3962,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
         ),
     )
     riverhog_session = {
-        "collection_id": "weekly-device-artifacts/20260615T030000Z",
+        "collection_id": 43,
         "state": "open",
         "files": {
             "camera/a.webm": {
@@ -3985,8 +3985,8 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             "state": "failed",
             "phase": "copying_preserve:preserve",
             "input_upload_id": "upload-1",
-            "collection_slug": "weekly-device-artifacts",
-            "collection_timestamp": "20260615T030000Z",
+            "collection_tags": ["weekly-device-artifacts"],
+            "run_id": "20260615T030000Z",
             "workflow_mode": "collection_archive",
             "handoff": {"destination": "riverhog", "options": {}},
             "error": "old error",
@@ -4041,15 +4041,15 @@ def test_review_rclone_upload_excludes_platform_cruft(
     result = server.run_external_handoff(
         {
             "job_id": "job-1",
-            "collection_slug": "collection-archive",
-            "collection_timestamp": "20260629T000000Z",
+            "collection_tags": ["collection-archive"],
+            "run_id": "20260629T000000Z",
         },
         source_dir,
         config={
             "enabled": True,
             "method": "rclone",
             "mode": "copy",
-            "destination": "remote:{collection_slug}/{collection_timestamp}",
+            "destination": "remote:reviews/{run_id}",
         },
         source_label="collection archive",
         result_key="handoff_receipt",
@@ -4060,13 +4060,13 @@ def test_review_rclone_upload_excludes_platform_cruft(
 
     assert result["artifact_count"] == 1
     assert result["destination"] == "rclone"
-    assert result["location"] == "remote:collection-archive/20260629T000000Z"
+    assert result["location"] == "remote:reviews/20260629T000000Z"
     command = commands[0]
     assert command[:2] == ["rclone", "copy"]
     assert str(source_dir) in command
-    assert "remote:collection-archive/20260629T000000Z" in command
+    assert "remote:reviews/20260629T000000Z" in command
     assert command.index(str(source_dir)) < command.index(
-        "remote:collection-archive/20260629T000000Z"
+        "remote:reviews/20260629T000000Z"
     )
     assert command.count("--exclude") >= 4
     assert ".DS_Store" in command
@@ -4203,7 +4203,7 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
-                "collection_id": "camera-archive/20260101T000000Z",
+                "collection_id": 42,
                 "files": {},
             },
         }
@@ -5777,8 +5777,8 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "phase": "queued",
             "workflow_mode": "collection_archive",
             "input_upload_id": "upload-1",
-            "collection_slug": "camera-archive",
-            "collection_timestamp": "20260101T000000Z",
+            "collection_tags": ["camera-archive"],
+            "run_id": "20260101T000000Z",
             "groups": {
                 "camera": {
                     "output_mode": "video",
@@ -5846,8 +5846,8 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "phase": "handoff",
         "workflow_mode": "collection_archive",
         "input_upload_id": "upload-1",
-        "collection_slug": "camera-archive",
-        "collection_timestamp": "20260101T000000Z",
+        "collection_tags": ["camera-archive"],
+        "run_id": "20260101T000000Z",
         "handoff": {"destination": "riverhog", "options": {}},
         "event_context": {"workflow": "desktop-archive"},
     }
@@ -5870,25 +5870,25 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
         def create_or_resume_collection_upload_session(
             self,
-            slug: str,
+            idempotency_key: str,
+            tags: list[str],
             *,
             ingest_source: str | None = None,
-            upload_timestamp: str | None = None,
             archive_store: str | None = None,
             event_context: dict[str, object] | None = None,
         ) -> dict[str, object]:
-            assert slug == "camera-archive"
+            assert idempotency_key == "job-1"
+            assert tags == ["camera-archive"]
             assert ingest_source == str(archive_dir)
-            assert upload_timestamp == "20260101T000000Z"
             assert event_context == {"workflow": "desktop-archive"}
             return self.payload(state="open")
 
-        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             return self.payload(state="open")
 
-        def get_collection(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def get_collection(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             return {
                 "files": 2,
                 "bytes": 9,
@@ -5897,10 +5897,10 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
         def create_or_resume_registered_collection_file_upload(
             self,
-            collection_id: str,
+            collection_id: int,
             file: dict[str, object],
         ) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+            assert collection_id == 42
             path = str(file["path"])
             self.offsets.setdefault(path, 0)
             descriptor = self.descriptors.get(path)
@@ -5945,8 +5945,8 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 },
             }
 
-        def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def complete_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             self.completed = True
             return self.payload(state="archiving")
 
@@ -5965,7 +5965,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 for path, payload in sorted(self.registered.items())
             ]
             return {
-                "collection_id": "camera-archive/20260101T000000Z",
+                "collection_id": 42,
                 "state": state,
                 "files_total": len(files),
                 "files_uploaded": sum(
@@ -6004,7 +6004,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     result = server.upload_to_riverhog(job, archive_dir)
 
     assert result["destination"] == "riverhog"
-    assert result["external_id"] == "camera-archive/20260101T000000Z"
+    assert result["external_id"] == 42
     assert fake.completed is True
     assert sorted(fake.registered) == [
         "camera/a.webm",
@@ -6087,8 +6087,8 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
     job = server.create_job_state_from_request(
         server.CreateJobRequest(
             input_upload_id="upload-1",
-            collection_slug="camera",
-            collection_timestamp="20260101T000000Z",
+            collection_tags=["camera"],
+            run_id="20260101T000000Z",
             tasks=["archive_video"],
             groups={"video": {"output_mode": "video", "tasks": ["archive_video"]}},
             routing={
@@ -6126,7 +6126,7 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -6146,7 +6146,7 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
+        lambda job, api, archive_dir: 42,
     )
 
     def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
@@ -6181,7 +6181,7 @@ def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
     job = {
         "job_id": "job-1",
         "handoff_adapter_state": {
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {record["path"]: record},
         },
     }
@@ -6189,7 +6189,7 @@ def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda *_args: "camera-archive/20260101T000000Z",
+        lambda *_args: 42,
     )
     monkeypatch.setattr(server, "riverhog_file_record", lambda *_args: record)
     monkeypatch.setattr(
@@ -6225,7 +6225,7 @@ def test_stale_eager_handoff_stops_at_metadata_projection(
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
-                "collection_id": "camera-archive/20260101T000000Z",
+                "collection_id": 42,
                 "files": {},
             },
             "eager_archive": {
@@ -6242,7 +6242,7 @@ def test_stale_eager_handoff_stops_at_metadata_projection(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -6318,7 +6318,7 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -6338,7 +6338,7 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
+        lambda job, api, archive_dir: 42,
     )
 
     def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
@@ -6380,7 +6380,7 @@ def test_eager_riverhog_upload_uses_parallel_workers(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -6399,7 +6399,7 @@ def test_eager_riverhog_upload_uses_parallel_workers(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
+        lambda job, api, archive_dir: 42,
     )
 
     barrier = threading.Barrier(2)
@@ -6448,7 +6448,7 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -6473,7 +6473,7 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
     monkeypatch.setattr(
         server,
         "ensure_riverhog_session",
-        lambda job, api, archive_dir: "camera-archive/20260101T000000Z",
+        lambda job, api, archive_dir: 42,
     )
 
     barrier = threading.Barrier(2)
@@ -6523,7 +6523,7 @@ def test_riverhog_upload_bounds_single_chunk_completion_concurrency(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
     }
@@ -6900,7 +6900,7 @@ def test_handoff_progress_uses_expected_archive_output_count(
         "handoff_expected_primary_files_total": 3636,
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": files,
         },
     }
@@ -6931,18 +6931,18 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "archiving",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
     }
 
     class FakeApi:
-        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             raise server.NotFound("already finalized")
 
-        def get_collection(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def get_collection(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             return {
                 "id": collection_id,
                 "files": 7,
@@ -6974,14 +6974,14 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_receipt": {
             "destination": "riverhog",
-            "external_id": "camera-archive/20260101T000000Z",
+            "external_id": 42,
         },
     }
     server.save_job(job)
 
     class FakeApi:
-        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
-            assert collection_id == "camera-archive/20260101T000000Z"
+        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
             return {
                 "collection_id": collection_id,
                 "state": "archiving",
@@ -7006,7 +7006,7 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
     refreshed = server.job_response(job)
     progress = refreshed["handoff_progress"]
 
-    assert progress["external_id"] == "camera-archive/20260101T000000Z"
+    assert progress["external_id"] == 42
     assert progress["state"] == "archiving"
     assert progress["safe_to_delete"] is False
     archive_stage = progress["stages"][1]
@@ -7031,7 +7031,7 @@ def test_handoff_progress_prefers_recent_burst_rate(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "last_eager_upload_at": server.utc_timestamp_now(),
             "last_eager_upload_bytes": 2048,
             "last_eager_upload_elapsed_seconds": 2.0,
@@ -7180,7 +7180,7 @@ def test_handoff_progress_counts_known_local_sidecars(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
         "eager_archive": {
@@ -7221,7 +7221,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
             "state": "open",
-            "collection_id": "camera-archive/20260101T000000Z",
+            "collection_id": 42,
             "files": {},
         },
     }
@@ -7234,7 +7234,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
         def close(self) -> None:
             return
 
-        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+        def cancel_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             self.canceled.append(collection_id)
             return {
                 "collection_id": collection_id,
@@ -7252,7 +7252,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
 
     server.cancel_riverhog_upload_session(job, reason="test")
 
-    assert fake.canceled == ["camera-archive/20260101T000000Z"]
+    assert fake.canceled == [42]
     stored = server.load_job("job-1")
     assert stored["handoff_adapter_state"]["state"] == "canceled"
     assert stored["handoff_adapter_state"]["canceled_at"]
@@ -7293,7 +7293,7 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
                 "on_failure": "preserve_for_resume",
             },
             "handoff_adapter_state": {
-                "collection_id": "camera-archive/20260101T000000Z",
+                "collection_id": 42,
                 "state": "open",
                 "files": {
                     "camera/a.webm": {
@@ -7363,7 +7363,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
                 "on_failure": "cancel",
             },
             "handoff_adapter_state": {
-                "collection_id": "camera-archive/20260101T000000Z",
+                "collection_id": 42,
                 "state": "open",
                 "files": {
                     "camera/a.webm": {
@@ -7399,58 +7399,6 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
     assert "preserved_after_failure_at" not in stored["handoff_adapter_state"]
 
 
-def test_cancel_riverhog_upload_session_derives_unpersisted_session_id(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
-    server = load_server(tmp_path, monkeypatch)
-    server.ensure_dirs()
-    server.init_state_store()
-
-    job = {
-        "job_id": "job-1",
-        "state": "running",
-        "phase": "cancel_requested",
-        "collection_slug": "camera-archive",
-        "collection_timestamp": "20260101T000000Z",
-        "handoff": {"destination": "riverhog", "options": {}},
-    }
-    server.save_job(job)
-
-    class FakeRiverhogApi:
-        def __init__(self) -> None:
-            self.canceled: list[str] = []
-
-        def close(self) -> None:
-            return
-
-        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
-            self.canceled.append(collection_id)
-            return {
-                "collection_id": collection_id,
-                "state": "canceled",
-                "files_total": 0,
-                "files_uploaded": 0,
-                "bytes_total": 0,
-                "uploaded_bytes": 0,
-                "missing_bytes": 0,
-                "files": [],
-            }
-
-    fake = FakeRiverhogApi()
-    monkeypatch.setattr(server, "ApiClient", lambda: fake)
-
-    server.cancel_riverhog_upload_session(job, reason="test")
-
-    assert fake.canceled == ["camera-archive/20260101T000000Z"]
-    stored = server.load_job("job-1")
-    assert stored["handoff_adapter_state"]["collection_id"] == ("camera-archive/20260101T000000Z")
-    assert stored["handoff_adapter_state"]["state"] == "canceled"
-    assert stored["handoff_adapter_state"]["canceled_at"]
-    assert stored["handoff_adapter_state"]["cancel_reason"] == "test"
-
-
 def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
     tmp_path: Path,
     monkeypatch,
@@ -7465,17 +7413,18 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
             "job_id": "job-1",
             "state": "running",
             "phase": "cancel_requested",
-            "collection_slug": "camera-archive",
-            "collection_timestamp": "20260101T000000Z",
-            "handoff": {"destination": "riverhog", "options": {}},
-        }
-    )
+                "collection_tags": ["camera-archive"],
+                "run_id": "20260101T000000Z",
+                "handoff": {"destination": "riverhog", "options": {}},
+                "handoff_adapter_state": {"collection_id": 42, "state": "open"},
+            }
+        )
 
     class FakeRiverhogApi:
         def close(self) -> None:
             return
 
-        def cancel_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+        def cancel_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             raise server.NotFound("missing")
 
     monkeypatch.setattr(server, "ApiClient", FakeRiverhogApi)
@@ -8361,7 +8310,7 @@ def test_compact_job_response_keeps_operational_fields_only(
         "state": "running",
         "phase": "eager_archive:pipeline=1/3",
         "input_upload_id": "upload-1",
-        "collection_slug": "camera-collection-archive",
+        "collection_tags": ["camera-collection-archive"],
         "handoff": {"destination": "command", "options": {}},
         "eager_archive": {
             "files": {},
@@ -8443,7 +8392,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "job_id": "job-1",
             "state": "running",
             "phase": "encoding",
-            "collection_slug": "front-camera",
+            "collection_tags": ["front-camera"],
             "input_upload_id": "upload-1",
             "workflow_mode": "collection_archive",
             "created_at": "2026-01-01T00:00:00Z",
@@ -8473,7 +8422,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "job_id": "job-3",
             "state": "succeeded",
             "phase": "done",
-            "collection_slug": "front-camera",
+            "collection_tags": ["front-camera"],
             "input_upload_id": "upload-3",
             "workflow_mode": "collection_archive",
             "created_at": "2026-01-03T00:00:00Z",

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import BigInteger
-from sqlalchemy.orm import DeclarativeBase
-
 from riverhog_core.catalog_models import (
     ArchiveUsageSnapshotRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
 )
+from sqlalchemy import BigInteger
+from sqlalchemy.orm import DeclarativeBase
 
 
 @pytest.mark.parametrize(

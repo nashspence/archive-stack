@@ -12,7 +12,7 @@ from riverhog_api.routers.resourcesync import (
 from riverhog_api_client.client import ApiClient
 from starlette.requests import Request
 
-COLLECTION_ID = "catalog/20260102T030405Z"
+COLLECTION_ID = 42
 ETAG = "a" * 64
 
 
@@ -36,12 +36,12 @@ class RetrievalStub:
             ],
         }
 
-    def collection_manifest(self, collection_id: str, *, principal: object):
+    def collection_manifest(self, collection_id: int, *, principal: object):
         assert collection_id == COLLECTION_ID
         assert principal == "app"
         return (
             {
-                "format": "riverhog-collection/v1",
+                "format": "riverhog-collection/v2",
                 "collection": collection_id,
                 "files": [],
             },
@@ -78,7 +78,7 @@ def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None
 
     resource_root = ElementTree.fromstring(resources.body)
     change_root = ElementTree.fromstring(changes.body)
-    assert COLLECTION_ID in resources.body.decode()
+    assert str(COLLECTION_ID) in resources.body.decode()
     assert f"sha-256:{ETAG}" in resources.body.decode()
     assert change_root.attrib["data-cursor"] == "3"
     assert len(resource_root) == len(change_root) == 1
@@ -126,4 +126,4 @@ def test_portable_manifest_response_has_a_content_etag() -> None:
     )
 
     assert response.headers["etag"] == f'"{ETAG}"'
-    assert b"riverhog-collection/v1" in response.body
+    assert b"riverhog-collection/v2" in response.body

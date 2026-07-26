@@ -5,7 +5,6 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
-
 from riverhog_core.proofs import CommandProofStamper, CommandProofVerifier, ProofVerifyError
 
 _COMMAND = (sys.executable, "-m", "tests.fixtures.ots_stamp_command")

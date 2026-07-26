@@ -79,6 +79,10 @@ def _percent(done: int, total: int) -> float:
     return min(max(done / total * 100.0, 0.0), 100.0)
 
 
+def _collection_label(collection_id: int | None) -> str:
+    return str(collection_id) if collection_id is not None else "allocating"
+
+
 def _attention_needed(value: str) -> bool:
     normalized = value.casefold().replace("-", "_")
     return any(
@@ -89,7 +93,7 @@ def _attention_needed(value: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class CollectionUploadProgressState:
-    collection_id: str
+    collection_id: int | None
     phase: str
     files_uploaded: int
     files_total: int
@@ -133,7 +137,7 @@ class RichUploadProgressRenderer(UploadProgressRenderer):
         self.live = RichLive(
             self._render(
                 CollectionUploadProgressState(
-                    collection_id="unknown",
+                    collection_id=None,
                     phase="preparing",
                     files_uploaded=0,
                     files_total=0,
@@ -172,7 +176,7 @@ class RichUploadProgressRenderer(UploadProgressRenderer):
 
     def _render(self, state: CollectionUploadProgressState) -> Any:
         title = RichText("collection upload ", style="bold")
-        title.append(state.collection_id, style=ENTITY_ID_STYLE)
+        title.append(_collection_label(state.collection_id), style=ENTITY_ID_STYLE)
 
         table = RichTable.grid(padding=(0, 2))
         table.add_column(justify="right", style=FIELD_STYLE, no_wrap=True, width=14)
@@ -250,7 +254,7 @@ def format_upload_progress_line(state: CollectionUploadProgressState) -> str:
             "discovered; final total open"
         )
     pieces = [
-        f"collection upload {state.collection_id}",
+        f"collection upload {_collection_label(state.collection_id)}",
         state.phase,
         files,
         bytes_value,
@@ -272,7 +276,7 @@ class CollectionUploadProgress:
     def __init__(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         files_total: int,
         bytes_total: int,
         files_uploaded: int = 0,
@@ -393,7 +397,7 @@ class CollectionUploadProgress:
 
 def make_collection_upload_progress(
     *,
-    collection_id: str,
+    collection_id: int,
     files_total: int,
     bytes_total: int,
     files_uploaded: int = 0,

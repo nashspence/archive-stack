@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request, Response
-from riverhog_core.app_permissions import COLLECTIONS_DELETE, COLLECTIONS_UPLOAD
-from riverhog_core.collection_access import require_collection_access
+from riverhog_core.app_permissions import COLLECTIONS_DELETE
 
-from riverhog_api.auth import CatalogReader, CollectionDeleter, CollectionUploader
+from riverhog_api.auth import CatalogReader, CollectionCreator, CollectionDeleter
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
@@ -56,13 +55,13 @@ def list_collections(
 def create_or_resume_collection_upload(
     request: CreateOrResumeCollectionUploadRequest,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
     payload = container.collections.create_or_resume_upload(
-        upload_slug=request.slug,
+        idempotency_key=request.idempotency_key,
+        tags=request.tags,
         files=[item.model_dump() for item in request.files],
         ingest_source=request.ingest_source,
-        upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
         initiator=principal,
         event_context=request.event_context,
@@ -74,12 +73,12 @@ def create_or_resume_collection_upload(
 def create_or_resume_collection_upload_session(
     request: CreateOrResumeCollectionUploadSessionRequest,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
     payload = container.collections.create_or_resume_upload_session(
-        upload_slug=request.slug,
+        idempotency_key=request.idempotency_key,
+        tags=request.tags,
         ingest_source=request.ingest_source,
-        upload_timestamp=request.upload_timestamp,
         archive_store=request.archive_store,
         initiator=principal,
         event_context=request.event_context,
@@ -88,16 +87,16 @@ def create_or_resume_collection_upload_session(
 
 
 @router.post(
-    "/collection-upload-sessions/{collection_id:path}/files",
+    "/collection-upload-sessions/{collection_id}/files",
     response_model=CollectionUploadSessionFileRegistrationOut,
 )
 def register_collection_upload_session_file(
-    collection_id: str,
+    collection_id: int,
     request: RegisterCollectionUploadSessionFileRequest,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionFileRegistrationOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.register_upload_session_file(
         collection_id,
         request.model_dump(),
@@ -106,18 +105,18 @@ def register_collection_upload_session_file(
 
 
 @router.post(
-    "/collection-upload-sessions/{collection_id:path}/files/upload",
+    "/collection-upload-sessions/{collection_id}/files/upload",
     response_model=CollectionUploadSessionFileUploadOut,
 )
 def create_or_resume_registered_collection_file_upload(
-    collection_id: str,
+    collection_id: int,
     request: RegisterCollectionUploadSessionFileRequest,
     req: Request,
     response: Response,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionFileUploadOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.create_or_resume_registered_file_upload(
         collection_id,
         request.model_dump(),
@@ -133,57 +132,57 @@ def create_or_resume_registered_collection_file_upload(
 
 
 @router.post(
-    "/collection-upload-sessions/{collection_id:path}/complete",
+    "/collection-upload-sessions/{collection_id}/complete",
     response_model=CollectionUploadSessionOut,
 )
 def complete_collection_upload_session(
-    collection_id: str,
+    collection_id: int,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.complete_upload_session(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 
 @router.post(
-    "/collection-upload-sessions/{collection_id:path}/cancel",
+    "/collection-upload-sessions/{collection_id}/cancel",
     response_model=CollectionUploadSessionOut,
 )
 def cancel_collection_upload_session(
-    collection_id: str,
+    collection_id: int,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.cancel_upload_session(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 
-@router.get("/collection-uploads/{collection_id:path}", response_model=CollectionUploadSessionOut)
+@router.get("/collection-uploads/{collection_id}", response_model=CollectionUploadSessionOut)
 def get_collection_upload(
-    collection_id: str,
+    collection_id: int,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.get_upload(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 
 @router.post(
-    "/collection-uploads/{collection_id:path}/files/{path:path}/upload",
+    "/collection-uploads/{collection_id}/files/{path:path}/upload",
     response_model=CollectionFileUploadSessionOut,
 )
 def create_or_resume_collection_file_upload(
-    collection_id: str,
+    collection_id: int,
     path: str,
     request: Request,
     response: Response,
     container: ContainerDep,
-    principal: CollectionUploader,
+    principal: CollectionCreator,
 ) -> CollectionFileUploadSessionOut:
-    require_collection_access(principal, COLLECTIONS_UPLOAD, collection_id)
+    container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
     payload["upload_url"] = public_tusd_upload_url(
         str(payload["upload_url"]),
@@ -195,9 +194,9 @@ def create_or_resume_collection_file_upload(
     return CollectionFileUploadSessionOut.model_validate(payload)
 
 
-@router.get("/collections/{collection_id:path}", response_model=CollectionSummaryOut)
+@router.get("/collections/{collection_id}", response_model=CollectionSummaryOut)
 def get_collection(
-    collection_id: str,
+    collection_id: int,
     container: ContainerDep,
     principal: CatalogReader,
 ) -> CollectionSummaryOut:
@@ -207,31 +206,31 @@ def get_collection(
 
 
 @router.post(
-    "/collections/{collection_id:path}/deletion-plan",
+    "/collections/{collection_id}/deletion-plan",
     response_model=CollectionDeletionPlanOut,
 )
 def plan_collection_deletion(
-    collection_id: str,
+    collection_id: int,
     container: ContainerDep,
     principal: CollectionDeleter,
 ) -> CollectionDeletionPlanOut:
-    require_collection_access(principal, COLLECTIONS_DELETE, collection_id)
+    container.collection_access.require(principal, COLLECTIONS_DELETE, collection_id)
     return CollectionDeletionPlanOut.model_validate(
         container.collection_deletions.plan(collection_id)
     )
 
 
 @router.post(
-    "/collections/{collection_id:path}/delete",
+    "/collections/{collection_id}/delete",
     response_model=CollectionDeletionResultOut,
 )
 def delete_collection(
-    collection_id: str,
+    collection_id: int,
     request: DeleteCollectionRequest,
     container: ContainerDep,
     principal: CollectionDeleter,
 ) -> CollectionDeletionResultOut:
-    require_collection_access(principal, COLLECTIONS_DELETE, collection_id)
+    container.collection_access.require(principal, COLLECTIONS_DELETE, collection_id)
     return CollectionDeletionResultOut.model_validate(
         container.collection_deletions.delete(
             collection_id,

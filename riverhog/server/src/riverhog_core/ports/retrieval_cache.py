@@ -20,7 +20,7 @@ class RetrievalCache(Protocol):
         self,
         *,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         content: Iterable[bytes],
         content_length: int,

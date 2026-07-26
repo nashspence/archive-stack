@@ -13,15 +13,15 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
     class FakeClient:
         def list_collections(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs["all_items"] is True
-            assert kwargs["q"] == "2025/"
+            assert kwargs["q"] == "camera"
             return {
                 "page": 1,
                 "per_page": 2,
                 "total": 2,
                 "pages": 1,
                 "collections": [
-                    {"id": "alpha/20250101T000000Z"},
-                    {"id": "beta/20250102T000000Z"},
+                    {"id": 41},
+                    {"id": 42},
                 ],
             }
 
@@ -29,11 +29,11 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
 
     result = runner.invoke(
         app,
-        ["collection", "list", "--query", "2025/", "--all", "--ids"],
+        ["collection", "list", "--query", "camera", "--all", "--ids"],
     )
 
     assert result.exit_code == 0
-    assert result.stdout == ("alpha/20250101T000000Z\nbeta/20250102T000000Z\n")
+    assert result.stdout == "41\n42\n"
 
 
 def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
@@ -44,11 +44,11 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
             return {
                 "files": [
                     {
-                        "collection_id": "docs/20250101T000000Z",
+                        "collection_id": 41,
                         "collection_path": "tax/invoice.pdf",
                     },
                     {
-                        "collection_id": "docs/20250102T000000Z",
+                        "collection_id": 42,
                         "collection_path": "tax/invoice.pdf",
                     },
                 ]
@@ -60,7 +60,7 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == (
-        "docs/20250101T000000Z::tax/invoice.pdf\ndocs/20250102T000000Z::tax/invoice.pdf\n"
+        "41::tax/invoice.pdf\n42::tax/invoice.pdf\n"
     )
 
 

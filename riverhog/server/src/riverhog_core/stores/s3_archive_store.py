@@ -14,7 +14,6 @@ from typing import Any, TypedDict, cast
 from urllib.parse import quote
 
 import httpx
-import yaml
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -29,10 +28,7 @@ from riverhog_age import (
 from time_formats import format_utc_timestamp, utc_timestamp_now
 
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING, archive_agents_guidance
-from riverhog_core.archive_object_paths import (
-    archive_id_from_storage_prefix,
-    archive_store_object_path,
-)
+from riverhog_core.archive_object_paths import archive_store_object_path
 from riverhog_core.archive_objects import (
     PACK_PAYLOAD_LIMIT,
     STORED_OBJECT_LIMIT,
@@ -50,6 +46,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveVerificationError,
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
+    MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
@@ -453,7 +450,7 @@ class S3ArchiveStore:
     def upload_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchive,
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
@@ -530,7 +527,7 @@ class S3ArchiveStore:
     def verify_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchiveIdentity,
     ) -> None:
         _ = collection_id
@@ -565,7 +562,7 @@ class S3ArchiveStore:
     def delete_collection_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
         _ = collection_id
@@ -591,59 +588,41 @@ class S3ArchiveStore:
                 "collection archive deletion could not be verified: " + ", ".join(remaining)
             )
 
-    def publish_archive_catalog(
+    def publish_collection_metadata(
         self,
         *,
-        entries: Sequence[dict[str, object]],
-        generated_at: str,
-    ) -> None:
+        collection_id: int,
+        archive_storage_prefix: str,
+        manifest: bytes,
+    ) -> MutableManifestReceipt:
         self._put_archive_root_guidance()
-        catalog_key = archive_store_object_path(
-            self._store.prefix,
-            "catalog",
-            "collections.yml.age",
-        )
-        catalog_bytes = yaml.safe_dump(
-            {
-                "format": "encrypted-archive-catalog-v1",
-                "generated_at": generated_at,
-                "archives": [
-                    {
-                        key: value
-                        for key, value in {
-                            **entry,
-                            "archive_id": archive_id_from_storage_prefix(
-                                archive_prefix=self._store.prefix,
-                                storage_prefix=cast(
-                                    str | None,
-                                    entry.get("archive_storage_prefix"),
-                                ),
-                            ),
-                        }.items()
-                        if value is not None
-                    }
-                    for entry in entries
-                ],
-            },
-            sort_keys=False,
-            allow_unicode=True,
-        ).encode("utf-8")
+        object_key = f"{archive_storage_prefix.strip('/')}/metadata.yml.age"
         ciphertext = encrypt_age_scrypt(
-            catalog_bytes,
+            manifest,
             self._config.archive_passphrase,
             log_n=self._config.archive_scrypt_work_factor,
         )
-        self._client.put_object(
+        response = self._client.put_object(
             Bucket=self._bucket,
-            Key=catalog_key,
+            Key=object_key,
             Body=ciphertext,
             ContentLength=len(ciphertext),
             Metadata={
-                "archive-catalog-format": "encrypted-archive-catalog-v1",
+                "collection-metadata-format": "riverhog-collection-metadata/v1",
+                "riverhog-collection-id": str(collection_id),
                 ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
-                PLAINTEXT_BYTES_METADATA: str(len(catalog_bytes)),
-                PLAINTEXT_SHA256_METADATA: hashlib.sha256(catalog_bytes).hexdigest(),
+                PLAINTEXT_BYTES_METADATA: str(len(manifest)),
+                PLAINTEXT_SHA256_METADATA: hashlib.sha256(manifest).hexdigest(),
             },
+        )
+        return MutableManifestReceipt(
+            object_path=object_key,
+            version_id=(
+                str(response["VersionId"]) if response.get("VersionId") is not None else None
+            ),
+            stored_bytes=len(ciphertext),
+            stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
+            published_at=utc_timestamp_now(),
         )
 
     def _put_archive_root_guidance(self) -> None:
@@ -670,7 +649,7 @@ class S3ArchiveStore:
     def _put_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         object_key: str,
         content: Any,
@@ -773,9 +752,6 @@ class S3ArchiveStore:
                 "riverhog-storage-class": _configured_s3_storage_class(storage_class),
                 "riverhog-object-kind": f"collection-{kind}",
                 "riverhog-object-id": object_id,
-                "riverhog-collection-sha256": hashlib.sha256(
-                    collection_id.encode("utf-8")
-                ).hexdigest(),
                 ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
                 PLAINTEXT_BYTES_METADATA: str(plaintext_bytes),
                 PLAINTEXT_SHA256_METADATA: sha256,
@@ -841,7 +817,7 @@ class S3ArchiveStore:
     def _put_archive_object_multipart(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         object_key: str,
         content: Any,
@@ -1130,7 +1106,7 @@ class S3ArchiveStore:
     def _put_encrypted_object_multipart(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         object_key: str,
         object: CollectionArchiveDataObject,
@@ -1520,7 +1496,7 @@ class S3ArchiveStore:
     def prepare_archive_objects_read(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
         retrieval_tier: str,
         hold_days: int,
@@ -1594,7 +1570,7 @@ class S3ArchiveStore:
     def get_archive_objects_read_status(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
         requested_at: str,
         estimated_ready_at: str | None,
@@ -1657,7 +1633,7 @@ class S3ArchiveStore:
     def iter_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
@@ -1673,7 +1649,7 @@ class S3ArchiveStore:
     def iter_stored_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
@@ -1754,7 +1730,7 @@ class S3ArchiveStore:
     def cleanup_archive_objects_read(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
     ) -> None:
         _ = collection_id, objects
@@ -1816,20 +1792,18 @@ commands below will prompt for it.
 
 ## Find an archive
 
-If `catalog/collections.yml.age` is present, download and decrypt it to map
-private collection labels to opaque archive IDs:
-
-```sh
-aws s3 cp s3://BUCKET/PREFIX/catalog/collections.yml.age .
-age --decrypt -o collections.yml collections.yml.age
-# Enter the archive passphrase when age prompts.
-```
-
-If there is no catalog, list the opaque archive directories:
+List the opaque archive directories, then inspect each directory's independently
+encrypted collection metadata:
 
 ```sh
 aws s3 ls s3://BUCKET/PREFIX/archives/
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/metadata.yml.age .
+age --decrypt -o metadata.yml metadata.yml.age
+# Enter the archive passphrase when age prompts.
 ```
+
+`metadata.yml` identifies the collection and its current mutable metadata. The
+directory's immutable manifest maps every logical file to its encrypted objects.
 
 Replace `BUCKET` and `ARCHIVE_ID` in the examples below. `PREFIX/` is optional:
 omit it when this guidance file is stored at the bucket root.

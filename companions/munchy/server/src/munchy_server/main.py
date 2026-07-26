@@ -345,11 +345,11 @@ SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY
 TERMINAL_JOB_STATES = {"succeeded", "failed", "canceled"}
 JOB_LIST_SORT_COLUMNS = {
     "job_id": "job_id",
-    "collection_slug": "collection_slug",
     "created_at": "created_at",
     "finished_at": "finished_at",
     "input_upload_id": "input_upload_id",
     "phase": "phase",
+    "run_id": "run_id",
     "state": "state",
     "updated_at": "updated_at",
     "workflow_mode": "workflow_mode",
@@ -804,8 +804,7 @@ class ClientPreflightFailureRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=180)
     workflow_mode: WorkflowMode
     group: str = Field(min_length=1, max_length=180)
-    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
-    collection_timestamp: str | None = Field(default=None, min_length=1, max_length=64)
+    collection_tags: list[str] = Field(default_factory=list)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     route_id: str | None = Field(default=None, min_length=1, max_length=180)
     profile_id: str | None = Field(default=None, min_length=1, max_length=180)
@@ -1245,8 +1244,7 @@ class CreateJobRequest(BaseModel):
     job_id: str | None = Field(default=None, min_length=1, max_length=180)
     input_upload_id: str | None = Field(default=None, min_length=1, max_length=180)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
-    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
-    collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
+    collection_tags: list[str] = Field(default_factory=list)
     workflow_mode: WorkflowMode = "collection_archive"
     output_mode: OutputMode = "video"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
@@ -1320,8 +1318,6 @@ class CreateJobRequest(BaseModel):
                 raise ValueError("review jobs require at least one reviewable group")
             return self
 
-        if not self.collection_slug:
-            raise ValueError("collection_archive jobs require collection_slug")
         for name, output_mode, tasks in task_lists:
             if output_mode in {"video", "audio"} and not any(
                 task in tasks for task in ("archive_video", "archive_audio")
@@ -1371,8 +1367,7 @@ class SubmissionSpec(BaseModel):
     template: str = Field(min_length=1, max_length=160)
     inputs: dict[str, str] = Field(default_factory=dict)
     files: list[InputFileSpec]
-    collection_slug: str | None = Field(default=None, min_length=1, max_length=180)
-    collection_timestamp: str | None = Field(default=None, min_length=16, max_length=32)
+    collection_tags: list[str] = Field(default_factory=list)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     handoff_on_failure: HandoffFailureAction = "preserve_for_resume"
     event_context: dict[str, Any] | None = None
@@ -1469,8 +1464,8 @@ def init_state_store() -> None:
                 started_at TEXT NOT NULL,
                 finished_at TEXT NOT NULL,
                 input_upload_id TEXT NOT NULL,
-                collection_slug TEXT NOT NULL,
-                collection_timestamp TEXT NOT NULL,
+                collection_tags_json TEXT NOT NULL,
+                run_id TEXT NOT NULL,
                 workflow_mode TEXT NOT NULL,
                 handoff_destination TEXT NOT NULL,
                 output_mode TEXT NOT NULL,
@@ -1498,8 +1493,8 @@ def init_state_store() -> None:
             "ON job_summaries(handoff_destination, updated_at, job_id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_collection_updated "
-            "ON job_summaries(collection_slug, updated_at, job_id)"
+            "CREATE INDEX IF NOT EXISTS job_summaries_run_updated "
+            "ON job_summaries(run_id, updated_at, job_id)"
         )
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
@@ -1523,12 +1518,6 @@ def validated_job_template_definition(
             input_values,
         )
         validation_payload["input_upload_id"] = "template-validation"
-        if (
-            str(validation_payload.get("workflow_mode") or "collection_archive")
-            == "collection_archive"
-        ):
-            validation_payload["collection_slug"] = "template-validation"
-            validation_payload["collection_timestamp"] = "20260101T000000Z"
         CreateJobRequest.model_validate(validation_payload)
     except (JobTemplateError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1795,22 +1784,14 @@ def resolved_submission(
         )
     except JobTemplateError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    workflow_mode = str(raw_job.get("workflow_mode") or "collection_archive")
-    if workflow_mode == "collection_archive" and not req.collection_timestamp:
-        raise HTTPException(
-            status_code=422,
-            detail="collection_timestamp is required for collection_archive submissions",
-        )
     handoff = dict_or_empty(raw_job.get("handoff"))
     handoff["on_failure"] = req.handoff_on_failure
     raw_job["handoff"] = handoff
     raw_job.update({"job_id": submission_id, "input_upload_id": submission_id})
     raw_job["event_context"] = req.event_context
-    for key, value in (
-        ("collection_slug", req.collection_slug),
-        ("collection_timestamp", req.collection_timestamp),
-        ("run_id", req.run_id),
-    ):
+    if req.collection_tags:
+        raw_job["collection_tags"] = req.collection_tags
+    for key, value in (("run_id", req.run_id),):
         if value is not None:
             raw_job[key] = value
     try:
@@ -1985,8 +1966,8 @@ def bool_int(value: Any) -> int:
 def job_summary_search_text(job: dict[str, Any]) -> str:
     values = [
         job.get("job_id"),
-        job.get("collection_slug"),
-        job.get("collection_timestamp"),
+        *(job.get("collection_tags") or []),
+        job.get("run_id"),
         job.get("input_upload_id"),
         job.get("state"),
         job.get("phase"),
@@ -2012,8 +1993,8 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
         "started_at": str(job.get("started_at") or ""),
         "finished_at": str(job.get("finished_at") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "collection_tags_json": json.dumps(job.get("collection_tags") or []),
+        "run_id": str(job.get("run_id") or ""),
         "workflow_mode": str(job.get("workflow_mode") or ""),
         "handoff_destination": handoff_destination,
         "output_mode": str(job.get("output_mode") or ""),
@@ -2033,8 +2014,8 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             started_at,
             finished_at,
             input_upload_id,
-            collection_slug,
-            collection_timestamp,
+            collection_tags_json,
+            run_id,
             workflow_mode,
             handoff_destination,
             output_mode,
@@ -2052,8 +2033,8 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             :started_at,
             :finished_at,
             :input_upload_id,
-            :collection_slug,
-            :collection_timestamp,
+            :collection_tags_json,
+            :run_id,
             :workflow_mode,
             :handoff_destination,
             :output_mode,
@@ -2070,8 +2051,8 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             started_at = excluded.started_at,
             finished_at = excluded.finished_at,
             input_upload_id = excluded.input_upload_id,
-            collection_slug = excluded.collection_slug,
-            collection_timestamp = excluded.collection_timestamp,
+            collection_tags_json = excluded.collection_tags_json,
+            run_id = excluded.run_id,
             workflow_mode = excluded.workflow_mode,
             handoff_destination = excluded.handoff_destination,
             output_mode = excluded.output_mode,
@@ -4958,8 +4939,8 @@ def write_routing_manifest(
         "created_at": utc_timestamp_now(),
         "job_id": str(job.get("job_id") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "collection_tags": list(job.get("collection_tags") or []),
+        "run_id": str(job.get("run_id") or ""),
         "files": sorted(files, key=lambda item: str(item["source"]["path"])),
     }
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -5404,9 +5385,11 @@ def metadata_projection_tags_for_file(
     if not config["include_context_tags"]:
         return dedup_metadata_projection_tags(tags)
 
-    collection_slug = str(job.get("collection_slug") or "").strip()
-    if collection_slug:
-        tags.append(f"munchy/collection/{collection_slug}")
+    tags.extend(
+        f"munchy/collection/{collection_tag}"
+        for collection_tag in job.get("collection_tags") or []
+        if str(collection_tag).strip()
+    )
     if group_name:
         tags.append(f"munchy/group/{group_name}")
     route_id = str(file_state.get("route_id") or "").strip()
@@ -5988,7 +5971,7 @@ RIVERHOG_CAUSAL_EVENT_TYPES = {
 
 
 def job_for_riverhog_collection(
-    collection_id: str,
+    collection_id: int,
     *,
     event_time: str | None = None,
 ) -> dict[str, Any] | None:
@@ -6002,15 +5985,10 @@ def job_for_riverhog_collection(
                     json_extract(payload, '$.handoff_adapter_state.collection_id') = ?
                  OR json_extract(payload, '$.handoff_receipt.external_id') = ?
                  OR json_extract(payload, '$.handoff_progress.external_id') = ?
-                 OR (
-                        json_extract(payload, '$.collection_slug')
-                        || '/'
-                        || json_extract(payload, '$.collection_timestamp')
-                    ) = ?
               )
             ORDER BY updated_at DESC
             """,
-            (collection_id, collection_id, collection_id, collection_id),
+            (collection_id, collection_id, collection_id),
         ).fetchall()
     if not rows:
         return None
@@ -6035,9 +6013,10 @@ def translate_riverhog_event(event: CloudEvent) -> bool:
     mapped_type = RIVERHOG_CAUSAL_EVENT_TYPES.get(event.type)
     if mapped_type is None:
         return False
-    collection_id = str(event.data.get("collection_id") or event.subject or "")
-    if not collection_id:
+    raw_collection_id = event.data.get("collection_id") or event.subject
+    if raw_collection_id is None:
         raise RuntimeError(f"Riverhog event {event.id} has no collection identity")
+    collection_id = int(raw_collection_id)
     job = job_for_riverhog_collection(collection_id, event_time=event.time)
     if job is None:
         log.warning(
@@ -6176,8 +6155,8 @@ def emit_job_event(
         "state": str(job.get("state") or "unknown"),
         "phase": str(job.get("phase") or "unknown"),
         "workflow_mode": str(job.get("workflow_mode") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
+        "collection_tags": list(job.get("collection_tags") or []),
+        "run_id": str(job.get("run_id") or ""),
         "severity": severity,
         "actor": {"app": "munchy"},
         "initiator": {
@@ -6544,25 +6523,17 @@ def riverhog_handoff_options(job: Mapping[str, Any]) -> dict[str, Any]:
     return dict_or_empty(handoff.get("options"))
 
 
-def riverhog_collection_id_for_job(job: dict[str, Any]) -> str | None:
+def riverhog_collection_id_for_job(job: dict[str, Any]) -> int | None:
     state = job.get("handoff_adapter_state")
     if isinstance(state, dict) and state.get("collection_id"):
-        return str(state["collection_id"])
+        return int(state["collection_id"])
     receipt = job.get("handoff_receipt")
     if isinstance(receipt, dict) and receipt.get("external_id"):
-        return str(receipt["external_id"])
+        return int(receipt["external_id"])
     progress = job.get("handoff_progress")
     if isinstance(progress, dict) and progress.get("external_id"):
-        return str(progress["external_id"])
-    return derived_riverhog_collection_id(job)
-
-
-def derived_riverhog_collection_id(job: dict[str, Any]) -> str | None:
-    timestamp = str(job.get("collection_timestamp") or "").strip()
-    slug = str(job.get("collection_slug") or "").strip()
-    if not timestamp or not slug:
-        return None
-    return f"{slug}/{timestamp}"
+        return int(progress["external_id"])
+    return None
 
 
 def riverhog_session_state(job: dict[str, Any]) -> dict[str, Any]:
@@ -6600,7 +6571,7 @@ def compact_riverhog_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def finalized_riverhog_payload_from_collection(
-    collection_id: str,
+    collection_id: int,
     collection: dict[str, Any],
 ) -> dict[str, Any]:
     files_total = int(collection.get("files") or 0)
@@ -6641,7 +6612,7 @@ def update_remote_state_from_payload(
     with riverhog_upload_lock(str(job.get("job_id") or "")):
         state = riverhog_session_state(job)
         if payload.get("collection_id"):
-            state["collection_id"] = str(payload["collection_id"])
+            state["collection_id"] = int(payload["collection_id"])
         if payload.get("state"):
             state["remote_state"] = str(payload["state"])
             state["state"] = str(payload["state"])
@@ -6693,7 +6664,7 @@ def update_remote_state_from_payload(
 
 
 def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> dict[str, Any] | None:
-    collection_id = riverhog_collection_id_for_job(job) or ""
+    collection_id = riverhog_collection_id_for_job(job)
     if not collection_id:
         return None
     state = riverhog_session_state(job)
@@ -6736,28 +6707,23 @@ def ensure_riverhog_session(
     job: dict[str, Any],
     api: ApiClient,
     archive_dir: Path,
-) -> str:
+) -> int:
     if not riverhog_config_enabled(job):
         raise RuntimeError("riverhog upload is not enabled for this job")
     if not RIVERHOG_HANDOFF_ENABLED:
         raise RuntimeError(
             "riverhog upload requested, but Munchy server Riverhog upload is disabled"
         )
-    timestamp = job.get("collection_timestamp")
-    if not timestamp:
-        raise RuntimeError("riverhog upload requires collection_timestamp")
-
     lock = riverhog_upload_lock(str(job.get("job_id") or ""))
     with lock:
         state = riverhog_session_state(job)
-        collection_id = str(state.get("collection_id") or "")
-        if collection_id:
-            return collection_id
+        if state.get("collection_id"):
+            return int(state["collection_id"])
 
         payload = api.create_or_resume_collection_upload_session(
-            str(job["collection_slug"]),
+            str(job.get("submission_id") or job["job_id"]),
+            [str(tag) for tag in job.get("collection_tags") or []],
             ingest_source=str(archive_dir),
-            upload_timestamp=str(timestamp),
             archive_store=cast(
                 str | None,
                 riverhog_handoff_options(job).get("archive_store"),
@@ -6768,10 +6734,10 @@ def ensure_riverhog_session(
         state = riverhog_session_state(job)
         state["opened_at"] = state.get("opened_at") or utc_timestamp_now()
         save_job(job)
-        collection_id = str(state.get("collection_id") or "")
-        if not collection_id:
+        collection_id = state.get("collection_id")
+        if collection_id is None:
             raise RuntimeError("riverhog upload session did not return a collection_id")
-        return collection_id
+        return int(collection_id)
 
 
 def riverhog_file_record(
@@ -6856,7 +6822,7 @@ def riverhog_payload_confirms_file_uploaded(
 def confirm_riverhog_artifact_uploaded(
     job: dict[str, Any],
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     file_payload: dict[str, object],
 ) -> dict[str, Any]:
     rel_path = str(file_payload["path"])
@@ -7727,7 +7693,7 @@ def compact_riverhog_progress_metrics(progress: dict[str, Any] | None) -> dict[s
 def wait_for_riverhog_finalized(
     job: dict[str, Any],
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
 ) -> dict[str, Any]:
     while True:
         raise_if_job_canceled(str(job["job_id"]))
@@ -7798,8 +7764,9 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
                 max(0.0, time.monotonic() - complete_started),
                 6,
             )
-            collection_id = str(payload.get("collection_id") or "")
-            if collection_id:
+            raw_collection_id = payload.get("collection_id")
+            collection_id = int(raw_collection_id) if raw_collection_id is not None else None
+            if collection_id is not None:
                 finalize_started = time.monotonic()
                 metrics["wait_finalized_started_at"] = utc_timestamp_now()
                 save_job(job)
@@ -7877,8 +7844,8 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     state = job.get("handoff_adapter_state")
     if not isinstance(state, dict):
         state = riverhog_session_state(job)
-    collection_id = str(state.get("collection_id") or derived_riverhog_collection_id(job) or "")
-    if not collection_id:
+    collection_id = riverhog_collection_id_for_job(job)
+    if collection_id is None:
         return
     state["collection_id"] = collection_id
     if state.get("state") in {"canceled", "archiving", "finalized"} or state.get("canceled_at"):
@@ -7937,12 +7904,10 @@ def render_job_template(
     review = dict_or_empty(job.get("review"))
     mapping = {
         "job_id": str(job.get("job_id") or ""),
-        "run_id": str(job.get("run_id") or job.get("collection_timestamp") or ""),
+        "run_id": str(job.get("run_id") or ""),
         "device_id": str(review.get("device_id") or ""),
         "route_id": str(review.get("route_id") or ""),
         "profile_id": str(review.get("profile_id") or ""),
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": str(job.get("collection_timestamp") or ""),
     }
     if context is not None:
         mapping.update({str(key): str(value) for key, value in context.items()})
@@ -8094,8 +8059,8 @@ def run_external_handoff(
     env["MUNCHY_HANDOFF_SOURCE"] = str(source_dir)
     env["MUNCHY_HANDOFF_SOURCE_LABEL"] = source_label
     env["MUNCHY_JOB_ID"] = str(job["job_id"])
-    env["MUNCHY_COLLECTION_SLUG"] = str(job.get("collection_slug") or "")
-    env["MUNCHY_COLLECTION_TIMESTAMP"] = str(job.get("collection_timestamp") or "")
+    env["MUNCHY_COLLECTION_TAGS"] = json.dumps(job.get("collection_tags") or [])
+    env["MUNCHY_RUN_ID"] = str(job.get("run_id") or "")
     review = dict_or_empty(job.get("review"))
     review_context = {
         "device_id": str(review.get("device_id") or ""),
@@ -8620,8 +8585,8 @@ def run_review_sweep_job(
                     "review_dir": gpu_runtime_container_path(variant_review_dir),
                     "profile": profile_id,
                     "tasks": tasks,
-                    "collection_slug": str(job.get("collection_slug") or ""),
-                    "collection_timestamp": job.get("collection_timestamp"),
+                    "collection_tags": list(job.get("collection_tags") or []),
+                    "run_id": job.get("run_id"),
                     "container_metadata_required": gpu_tasks_require_container_metadata(
                         tasks,
                         group_config,
@@ -9385,7 +9350,7 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
     destination_bytes_total = int(last_payload.get("bytes_total") or bytes_total)
     finalized = state_name == "finalized" or str(last_payload.get("state") or "") == "finalized"
     return {
-        "collection_id": str(state.get("collection_id") or ""),
+        "collection_id": int(state["collection_id"]),
         "state": state_name,
         "files_total": primary_files_total,
         "registered_files_total": registered_files_total,
@@ -9460,8 +9425,7 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "finished_at",
         "input_upload_id",
         "run_id",
-        "collection_slug",
-        "collection_timestamp",
+        "collection_tags",
         "workflow_mode",
         "handoff",
         "review",
@@ -9654,8 +9618,8 @@ def build_eager_gpu_payload(
         "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
         "profile": group_config.get("profile", "av1-nvenc-high"),
         "tasks": tasks,
-        "collection_slug": str(job.get("collection_slug") or ""),
-        "collection_timestamp": job.get("collection_timestamp"),
+        "collection_tags": list(job.get("collection_tags") or []),
+        "run_id": job.get("run_id"),
         "container_metadata_required": gpu_tasks_require_container_metadata(tasks, group_config),
     }
     if group_config.get("encode_profile") is not None:
@@ -9781,9 +9745,7 @@ def prepare_eager_gpu_batch_input(
             file_states,
             group_name=group_name,
             materialized_group_root=batch_root / group_name,
-            container_group_root=Path(
-                f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"
-            ),
+            container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
         )
         payload = build_eager_gpu_payload(
             job,
@@ -10340,8 +10302,8 @@ def run_job(job_id: str) -> None:
                         "review_dir": gpu_runtime_container_path(review_dir / group_name),
                         "profile": group_config.get("profile", "av1-nvenc-high"),
                         "tasks": tasks,
-                        "collection_slug": str(job.get("collection_slug") or ""),
-                        "collection_timestamp": job.get("collection_timestamp"),
+                        "collection_tags": list(job.get("collection_tags") or []),
+                        "run_id": job.get("run_id"),
                         "container_metadata_required": gpu_tasks_require_container_metadata(
                             tasks,
                             group_config,
@@ -10584,8 +10546,6 @@ def capabilities() -> dict[str, Any]:
             "failure_actions": ["preserve_for_resume", "cancel"],
             "template_fields": [
                 "job_id",
-                "collection_slug",
-                "collection_timestamp",
                 "device_id",
                 "route_id",
                 "profile_id",
@@ -10764,7 +10724,7 @@ def record_preflight_failure(
     }
     if req.elapsed_seconds is not None:
         data["elapsed_seconds"] = req.elapsed_seconds
-    subject = req.job_id or req.run_id or req.collection_timestamp
+    subject = req.job_id or req.run_id
     event = cloud_event(
         source=EVENT_SOURCE,
         type="io.riverhog.munchy.submission.preflight_failed",
@@ -11225,9 +11185,8 @@ def create_job_state_from_request(
         "initiated_by_app": initiated_by_app,
         "initiated_by_key_id": initiated_by_key_id,
         "input_upload_id": req.input_upload_id,
-        "run_id": req.run_id or req.collection_timestamp or "",
-        "collection_slug": req.collection_slug or "",
-        "collection_timestamp": req.collection_timestamp or "",
+        "run_id": req.run_id or "",
+        "collection_tags": req.collection_tags,
         "workflow_mode": req.workflow_mode,
         "output_mode": req.output_mode,
         "tasks": grouped_task_union(groups) if req.groups else req.tasks,

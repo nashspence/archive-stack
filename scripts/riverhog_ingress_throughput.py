@@ -23,21 +23,21 @@ INCOMPLETE_PLAINTEXT_BYTES = MIB
 class _Api(Protocol):
     def create_or_resume_collection_upload_session(
         self,
-        slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         *,
-        upload_timestamp: str,
         archive_store: str | None,
     ) -> dict[str, Any]: ...
 
     def register_collection_upload_session_file(
         self,
-        collection_id: str,
+        collection_id: int,
         file: dict[str, object],
     ) -> dict[str, Any]: ...
 
     def create_or_resume_collection_file_upload(
         self,
-        collection_id: str,
+        collection_id: int,
         path: str,
     ) -> dict[str, Any]: ...
 
@@ -50,7 +50,7 @@ class _Api(Protocol):
         content: bytes,
     ) -> dict[str, Any]: ...
 
-    def cancel_collection_upload_session(self, collection_id: str) -> dict[str, Any]: ...
+    def cancel_collection_upload_session(self, collection_id: int) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
 
@@ -87,25 +87,25 @@ def _file_count(value: str) -> int:
     return parsed
 
 
-def _upload_timestamp() -> str:
+def _run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _prepare_uploads(
     api: _Api,
     *,
-    slug: str,
-    upload_timestamp: str,
+    tag: str,
+    idempotency_key: str,
     archive_store: str | None,
     files: int,
     bytes_per_file: int,
-) -> tuple[str, list[_PreparedUpload]]:
+) -> tuple[int, list[_PreparedUpload]]:
     session = api.create_or_resume_collection_upload_session(
-        slug,
-        upload_timestamp=upload_timestamp,
+        idempotency_key,
+        [tag],
         archive_store=archive_store,
     )
-    collection_id = str(session["collection_id"])
+    collection_id = int(session["collection_id"])
     prepared: list[_PreparedUpload] = []
     declared_plaintext_bytes = bytes_per_file + INCOMPLETE_PLAINTEXT_BYTES
     try:
@@ -174,8 +174,8 @@ def _run(
     api: _Api,
     *,
     api_factory: Callable[[], _Api],
-    slug: str,
-    upload_timestamp: str,
+    tag: str,
+    idempotency_key: str,
     archive_store: str | None,
     files: int,
     bytes_per_file: int,
@@ -185,8 +185,8 @@ def _run(
     preparation_started = clock()
     collection_id, prepared = _prepare_uploads(
         api,
-        slug=slug,
-        upload_timestamp=upload_timestamp,
+        tag=tag,
+        idempotency_key=idempotency_key,
         archive_store=archive_store,
         files=files,
         bytes_per_file=bytes_per_file,
@@ -261,9 +261,9 @@ def _parser() -> argparse.ArgumentParser:
         help="archive store recorded on the disposable session",
     )
     parser.add_argument(
-        "--slug",
+        "--tag",
         default="ingress-throughput-probe",
-        help="disposable collection slug (default: ingress-throughput-probe)",
+        help="existing tag for the disposable collection (default: ingress-throughput-probe)",
     )
     return parser
 
@@ -275,8 +275,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run(
             api,
             api_factory=ApiClient,
-            slug=args.slug,
-            upload_timestamp=_upload_timestamp(),
+            tag=args.tag,
+            idempotency_key=f"ingress-throughput-{_run_id()}",
             archive_store=args.archive_store,
             files=args.files,
             bytes_per_file=args.mib_per_file * MIB,

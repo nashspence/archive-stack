@@ -17,11 +17,11 @@ from munchy_workflows.job_authoring import (
 
 JOB_TEMPLATE_RUNTIME_FIELDS = frozenset(
     {
-        "collection_slug",
-        "collection_timestamp",
+        "collection_tags",
         "destination_prefix",
         "input_upload_id",
         "job_id",
+        "run_id",
     }
 )
 JOB_TEMPLATE_INPUT_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.-]*)\}\}")

@@ -43,16 +43,16 @@ class _FakeApi:
         self.barrier = threading.Barrier(files)
 
     def create_or_resume_collection_upload_session(self, *_args: Any, **_kwargs: Any):
-        return {"collection_id": "ingress-throughput-probe/20250102T030405Z"}
+        return {"collection_id": 1}
 
     def register_collection_upload_session_file(
-        self, _collection_id: str, file: dict[str, object]
+        self, _collection_id: int, file: dict[str, object]
     ) -> dict[str, object]:
         self.registered.append(file)
         return {"files": [file]}
 
     def create_or_resume_collection_file_upload(
-        self, _collection_id: str, path: str
+        self, _collection_id: int, path: str
     ) -> dict[str, object]:
         if self.fail_preparation:
             raise RuntimeError("preparation failed")
@@ -77,7 +77,7 @@ class _FakeApi:
             self.active -= 1
         return {"offset": offset + len(bytes(kwargs["content"]))}
 
-    def cancel_collection_upload_session(self, _collection_id: str) -> dict[str, object]:
+    def cancel_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
         self.canceled = True
         return {"state": "canceled"}
 
@@ -92,8 +92,8 @@ def test_probe_overlaps_uploads_and_cancels_the_incomplete_session() -> None:
     result = module._run(
         api,
         api_factory=lambda: api,
-        slug="ingress-throughput-probe",
-        upload_timestamp="20250102T030405Z",
+        tag="ingress-throughput-probe",
+        idempotency_key="probe-1",
         archive_store="b2",
         files=2,
         bytes_per_file=2 * module.MIB,
@@ -118,8 +118,8 @@ def test_probe_cancels_the_session_after_transfer_failure() -> None:
         module._run(
             api,
             api_factory=lambda: api,
-            slug="ingress-throughput-probe",
-            upload_timestamp="20250102T030405Z",
+            tag="ingress-throughput-probe",
+            idempotency_key="probe-1",
             archive_store="b2",
             files=1,
             bytes_per_file=module.MIB,
@@ -137,8 +137,8 @@ def test_probe_cancels_the_session_after_preparation_failure() -> None:
     with pytest.raises(RuntimeError, match="preparation failed"):
         module._prepare_uploads(
             api,
-            slug="ingress-throughput-probe",
-            upload_timestamp="20250102T030405Z",
+            tag="ingress-throughput-probe",
+            idempotency_key="probe-1",
             archive_store="b2",
             files=1,
             bytes_per_file=module.MIB,

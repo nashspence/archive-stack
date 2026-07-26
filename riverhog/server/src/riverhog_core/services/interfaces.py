@@ -16,10 +16,10 @@ class CollectionService(Protocol):
     def create_or_resume_upload(
         self,
         *,
-        upload_slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         files: list[dict[str, object]],
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         initiator: ApplicationPrincipal | None = None,
         event_context: dict[str, object] | None = None,
@@ -27,44 +27,49 @@ class CollectionService(Protocol):
     def create_or_resume_upload_session(
         self,
         *,
-        upload_slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         initiator: ApplicationPrincipal | None = None,
         event_context: dict[str, object] | None = None,
     ) -> JsonObject: ...
+    def require_upload_access(
+        self,
+        collection_id: int,
+        principal: ApplicationPrincipal,
+    ) -> None: ...
     def register_upload_session_file(
         self,
-        collection_id: str,
+        collection_id: int,
         file: dict[str, object],
     ) -> JsonObject: ...
     def create_or_resume_registered_file_upload(
         self,
-        collection_id: str,
+        collection_id: int,
         file: dict[str, object],
     ) -> JsonObject: ...
-    def collection_id_for_upload_id(self, upload_id: str) -> str | None: ...
+    def collection_id_for_upload_id(self, upload_id: str) -> int | None: ...
     def sync_finished_upload_id(self, upload_id: str) -> JsonObject | None: ...
-    def complete_upload_session(self, collection_id: str) -> JsonObject: ...
-    def cancel_upload_session(self, collection_id: str) -> JsonObject: ...
-    def get_upload(self, collection_id: str) -> JsonObject: ...
-    def create_or_resume_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
+    def complete_upload_session(self, collection_id: int) -> JsonObject: ...
+    def cancel_upload_session(self, collection_id: int) -> JsonObject: ...
+    def get_upload(self, collection_id: int) -> JsonObject: ...
+    def create_or_resume_file_upload(self, collection_id: int, path: str) -> JsonObject: ...
     def append_upload_chunk(
         self,
-        collection_id: str,
+        collection_id: int,
         path: str,
         *,
         offset: int,
         checksum: str,
         content: bytes,
     ) -> JsonObject: ...
-    def get_file_upload(self, collection_id: str, path: str) -> JsonObject: ...
-    def cancel_file_upload(self, collection_id: str, path: str) -> None: ...
+    def get_file_upload(self, collection_id: int, path: str) -> JsonObject: ...
+    def cancel_file_upload(self, collection_id: int, path: str) -> None: ...
     def expire_stale_uploads(self) -> None: ...
     def get(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionSummary: ...
@@ -81,16 +86,16 @@ class CollectionService(Protocol):
     ) -> CollectionListPage: ...
 
 
-class SlugService(Protocol):
+class TagService(Protocol):
     def create(
         self,
-        slug: str,
+        tag: str,
         *,
         creator: ApplicationPrincipal,
     ) -> JsonObject: ...
     def get(
         self,
-        slug: str,
+        tag: str,
         *,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
@@ -105,13 +110,27 @@ class SlugService(Protocol):
         all_items: bool,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def get_collection(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def replace_collection(
+        self,
+        collection_id: int,
+        tags: Sequence[str],
+        *,
+        principal: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> JsonObject: ...
 
 
 class CollectionDeletionService(Protocol):
-    def plan(self, collection_id: str) -> JsonObject: ...
+    def plan(self, collection_id: int) -> JsonObject: ...
     def delete(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         challenge: str,
         initiator: ApplicationPrincipal,
@@ -122,7 +141,7 @@ class CollectionDeletionService(Protocol):
 class RetrievalService(Protocol):
     def collection_manifest(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[JsonObject, str]: ...
@@ -130,7 +149,7 @@ class RetrievalService(Protocol):
         self,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> list[dict[str, str]]: ...
+    ) -> list[dict[str, object]]: ...
     def change_list(
         self,
         *,
@@ -140,7 +159,7 @@ class RetrievalService(Protocol):
     ) -> JsonObject: ...
     def plan(
         self,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         *,
         lease: timedelta | None = None,
         principal: ApplicationPrincipal | None = None,
@@ -150,7 +169,7 @@ class RetrievalService(Protocol):
         *,
         app: str,
         key_id: str | None = None,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         plan_etag: str,
         lease: timedelta | None = None,
         event_context: dict[str, object] | None = None,
@@ -176,7 +195,7 @@ class RetrievalService(Protocol):
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         path: str,
         key_id: str | None = None,
     ) -> tuple[int, str]: ...
@@ -185,7 +204,7 @@ class RetrievalService(Protocol):
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         path: str,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
@@ -194,7 +213,7 @@ class RetrievalService(Protocol):
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         key_id: str | None = None,
     ) -> tuple[int, str]: ...
@@ -203,7 +222,7 @@ class RetrievalService(Protocol):
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
@@ -293,7 +312,7 @@ class SearchService(Protocol):
         per_page: int,
         sort: str,
         order: str,
-        collection: str | None = None,
+        collection: int | None = None,
         all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
@@ -302,9 +321,10 @@ class SearchService(Protocol):
 class ArchiveUploadService(Protocol):
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
     def requeue_interrupted_ingress_cleanup_for_startup(self) -> int: ...
+    def requeue_interrupted_metadata_publications_for_startup(self) -> int: ...
     def ingress_cleanup_status(self) -> JsonObject: ...
     def process_due_ingress_cleanup(self, *, limit: int = 100) -> int: ...
-    def publish_archive_catalog(self) -> int: ...
+    def process_due_metadata_publications(self, *, limit: int = 10) -> int: ...
     def abort_incomplete_multipart_uploads(
         self,
         *,
@@ -317,7 +337,7 @@ class ArchiveCopyService(Protocol):
     def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int: ...
     def create_or_resume(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         destination_store: str,
         source_store: str | None = None,
@@ -326,14 +346,14 @@ class ArchiveCopyService(Protocol):
 
 
 class ArchiveCopyRetirementService(Protocol):
-    def plan(self, collection_id: str, *, store: str) -> JsonObject: ...
-    def retire(self, collection_id: str, *, store: str, challenge: str) -> JsonObject: ...
+    def plan(self, collection_id: int, *, store: str) -> JsonObject: ...
+    def retire(self, collection_id: int, *, store: str, challenge: str) -> JsonObject: ...
 
 
 class ArchiveReportingService(Protocol):
     def get_report(
         self,
         *,
-        collection: str | None = None,
+        collection: int | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> ArchiveUsageReport: ...

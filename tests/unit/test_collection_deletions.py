@@ -65,7 +65,7 @@ def test_deletion_plan_uses_catalog_object_and_file_aggregates(tmp_path: Path) -
     )
 
 
-def test_confirmed_deletion_removes_archive_and_publishes_catalog_change(
+def test_confirmed_deletion_removes_archive_and_catalog_record(
     tmp_path: Path,
 ) -> None:
     config, archive_store, service = _service(tmp_path / "catalog.sqlite3")
@@ -75,7 +75,6 @@ def test_confirmed_deletion_removes_archive_and_publishes_catalog_change(
 
     assert result["status"] == "deleted"
     assert archive_store.deleted == [("data-000000", "manifest", "proof")]
-    assert archive_store.catalog_entries == []
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()

@@ -21,11 +21,15 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
+    TagRecord,
 )
-from riverhog_core.portable_catalog import portable_collection_manifest
+from riverhog_core.collection_metadata import (
+    collection_content_etag,
+    collection_record_manifest,
+)
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
@@ -50,7 +54,7 @@ FILES = {
     "one.txt": b"first archived file\n",
     "two.txt": b"second archived file\n",
 }
-SECOND_COLLECTION_ID = "more-docs/20260102T030406Z"
+SECOND_COLLECTION_ID = 2
 BOOTSTRAP = ApplicationPrincipal(
     app="bootstrap",
     key_id=None,
@@ -68,7 +72,7 @@ class MemoryRetrievalCache:
         self,
         *,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         content: Iterable[bytes],
         content_length: int,
@@ -145,7 +149,7 @@ class PreparedArchiveStore(MemoryArchiveStore):
     def iter_stored_archive_object(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object: ArchiveObjectIdentity,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
@@ -160,7 +164,7 @@ class PartiallyReadyArchiveStore(PreparedArchiveStore):
     def get_archive_objects_read_status(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         **_kwargs: object,
     ):
         from riverhog_core.ports.archive_store import ArchiveReadStatus
@@ -258,9 +262,7 @@ def test_retrieval_grants_and_job_ownership_follow_the_logical_key(tmp_path: Pat
     principal = ApplicationPrincipal(
         app="review",
         key_id="key-one",
-        access=frozenset(
-            {ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}
-        ),
+        access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}),
     )
     selection = [(COLLECTION_ID, "one.txt")]
     plan = service.plan(selection, principal=principal)
@@ -288,7 +290,7 @@ def test_retrieval_grants_and_job_ownership_follow_the_logical_key(tmp_path: Pat
             principal=ApplicationPrincipal(
                 app="other",
                 key_id="other-key",
-                access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, "slug:other")}),
+                access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, "tag:other")}),
             ),
         )
 
@@ -300,9 +302,7 @@ def test_retrieval_reserves_key_quota_before_creating_or_preparing_a_job(
     keys = SqlAlchemyAppKeyService(config)
     created = keys.create(
         app="review",
-        access=(
-            ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}"),
-        ),
+        access=(ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}"),),
         grantor=BOOTSTRAP,
     )
     principal = keys.authenticate(str(created["token"]))
@@ -359,15 +359,15 @@ def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) ->
             [
                 CatalogEventRecord(
                     change="created",
-                    collection_id="hidden/20260102T030404Z",
+                    collection_id=99,
                     occurred_at="2026-07-18T00:00:00.000000Z",
-                    manifest_etag="a" * 64,
+                    record_etag="a" * 64,
                 ),
                 CatalogEventRecord(
                     change="created",
                     collection_id=COLLECTION_ID,
                     occurred_at="2026-07-18T00:00:01.000000Z",
-                    manifest_etag="b" * 64,
+                    record_etag="b" * 64,
                 ),
             ]
         )
@@ -380,9 +380,7 @@ def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) ->
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        access=frozenset(
-            {ApplicationAccess(CATALOG_READ, f"collection:{COLLECTION_ID}")}
-        ),
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"collection:{COLLECTION_ID}")}),
     )
 
     first = service.change_list(after=0, limit=1, principal=principal)
@@ -412,9 +410,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     principal = ApplicationPrincipal(
         app="local",
         key_id="local-key",
-        access=frozenset(
-            {ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}
-        ),
+        access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}),
     )
     allowance = RecordingDownloadAllowance()
     service = SqlAlchemyRetrievalService(
@@ -427,8 +423,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     selection = [(COLLECTION_ID, "one.txt")]
     plan = service.plan(selection, principal=principal)
     expected_remote_bytes = sum(
-        int(current["stored_bytes"])
-        * (2 if current["read_mode"] == "restore_required" else 1)
+        int(current["stored_bytes"]) * (2 if current["read_mode"] == "restore_required" else 1)
         for current in plan["objects"]
     )
     job = service.create(
@@ -457,9 +452,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     )
     assert job["state"] == "ready"
     assert b"".join(chunks) == FILES["one.txt"]
-    assert {store for store, _bytes, _attribution in allowance.tracked} == {
-        "retrieval-cache"
-    }
+    assert {store for store, _bytes, _attribution in allowance.tracked} == {"retrieval-cache"}
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.query(RetrievalCacheObjectRecord).count() == 1
         assert session.query(RetrievalCacheLeaseRecord).count() == 1
@@ -473,9 +466,7 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     assert "restore_required" not in {
         str(current["read_mode"]) for current in cached_plan["objects"]
     }
-    cached_expected_bytes = sum(
-        int(current["stored_bytes"]) for current in cached_plan["objects"]
-    )
+    cached_expected_bytes = sum(int(current["stored_bytes"]) for current in cached_plan["objects"])
     cached_job = service.create(
         app=cached_principal.app,
         key_id=cached_principal.key_id,
@@ -515,12 +506,17 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
         collection_id=SECOND_COLLECTION_ID,
     )
     with session_scope(make_session_factory(config.database_url)) as session:
-        _manifest, manifest_etag = portable_collection_manifest(
-            SECOND_COLLECTION_ID,
-            ((file.path, file.bytes, file.sha256) for file in second_archive.files),
+        files = [(file.path, file.bytes, file.sha256) for file in second_archive.files]
+        content_etag = collection_content_etag(files)
+        _manifest, record_etag = collection_record_manifest(
+            collection_id=SECOND_COLLECTION_ID,
+            content_etag=content_etag,
+            metadata_revision=1,
+            tags=("more-docs",),
+            files=files,
         )
         session.add(
-            CollectionSlugRecord(
+            TagRecord(
                 id="more-docs",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
@@ -529,8 +525,21 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
         session.add(
             CollectionRecord(
                 id=SECOND_COLLECTION_ID,
-                slug="more-docs",
-                manifest_etag=manifest_etag,
+                creation_idempotency_key="fixture-2",
+                content_etag=content_etag,
+                record_etag=record_etag,
+                metadata_revision=1,
+                metadata_updated_at="2026-01-01T00:00:00.000000Z",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionTagRecord(
+                collection_id=SECOND_COLLECTION_ID,
+                tag_id="more-docs",
+                assigned_by_app="fixture",
+                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         for file in second_archive.files:

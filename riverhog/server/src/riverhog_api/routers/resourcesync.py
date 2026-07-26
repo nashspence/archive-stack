@@ -99,9 +99,9 @@ def resourcesync_change_list(
     return _xml(root)
 
 
-@router.get("/v1/catalog/collections/{collection_id:path}/manifest")
+@router.get("/v1/catalog/collections/{collection_id}/manifest")
 def collection_portable_manifest(
-    collection_id: str,
+    collection_id: int,
     principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:

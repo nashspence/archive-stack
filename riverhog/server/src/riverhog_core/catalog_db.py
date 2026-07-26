@@ -97,8 +97,9 @@ def initialize_db(database_url: str) -> None:
         CollectionArchiveObjectUploadRecord,
         CollectionDeletionRecord,
         CollectionFileRecord,
+        CollectionMetadataPublicationRecord,
         CollectionRecord,
-        CollectionSlugRecord,
+        CollectionTagRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         IngressCleanupRecord,
@@ -110,6 +111,7 @@ def initialize_db(database_url: str) -> None:
         RetrievalJobFileRecord,
         RetrievalJobObjectRecord,
         RetrievalJobRecord,
+        TagRecord,
     )
 
     _ = (
@@ -128,7 +130,8 @@ def initialize_db(database_url: str) -> None:
         CollectionDeletionRecord,
         CollectionFileRecord,
         CollectionRecord,
-        CollectionSlugRecord,
+        CollectionMetadataPublicationRecord,
+        CollectionTagRecord,
         CollectionUploadFileRecord,
         CollectionUploadRecord,
         IngressCleanupRecord,
@@ -140,6 +143,7 @@ def initialize_db(database_url: str) -> None:
         RetrievalJobObjectRecord,
         RetrievalCacheObjectRecord,
         RetrievalCacheLeaseRecord,
+        TagRecord,
     )
     engine = create_catalog_engine(database_url)
     Base.metadata.create_all(engine)

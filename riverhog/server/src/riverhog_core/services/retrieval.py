@@ -9,6 +9,7 @@ from typing import cast
 
 from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
+from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
@@ -31,6 +32,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalJobFileRecord,
@@ -38,7 +40,7 @@ from riverhog_core.catalog_models import (
     RetrievalJobRecord,
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
-from riverhog_core.portable_catalog import portable_collection_manifest
+from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache
@@ -73,42 +75,53 @@ class SqlAlchemyRetrievalService:
 
     def collection_manifest(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[dict[str, object], str]:
-        require_collection_access(principal, CATALOG_READ, collection_id)
+        normalized_id = _normalize_collection_id_or_raise(collection_id)
         with session_scope(self._session_factory) as session:
-            collection = session.get(CollectionRecord, collection_id)
+            collection = session.get(CollectionRecord, normalized_id)
             if collection is None:
-                raise NotFound(f"collection not found: {collection_id}")
+                raise NotFound(f"collection not found: {normalized_id}")
+            require_collection_access(session, principal, CATALOG_READ, normalized_id)
             files = list(
                 session.scalars(
                     select(CollectionFileRecord)
-                    .where(CollectionFileRecord.collection_id == collection_id)
+                    .where(CollectionFileRecord.collection_id == normalized_id)
                     .order_by(CollectionFileRecord.path)
                 )
             )
-            payload, etag = portable_collection_manifest(
-                collection_id,
-                ((row.path, row.bytes, row.sha256) for row in files),
+            tags = tuple(
+                session.scalars(
+                    select(CollectionTagRecord.tag_id)
+                    .where(CollectionTagRecord.collection_id == normalized_id)
+                    .order_by(CollectionTagRecord.tag_id)
+                ).all()
             )
-            if etag != collection.manifest_etag:
-                raise InvalidState("portable collection manifest does not match its catalog ETag")
+            payload, etag = collection_record_manifest(
+                collection_id=normalized_id,
+                content_etag=collection.content_etag,
+                metadata_revision=collection.metadata_revision,
+                tags=tags,
+                files=((row.path, row.bytes, row.sha256) for row in files),
+            )
+            if etag != collection.record_etag:
+                raise InvalidState("collection record does not match its catalog ETag")
             return payload, etag
 
     def resource_list(
         self,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, object]]:
         with session_scope(self._session_factory) as session:
             rows = session.execute(
-                select(CollectionRecord.id, CollectionRecord.manifest_etag)
+                select(CollectionRecord.id, CollectionRecord.record_etag)
                 .where(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
                 .order_by(CollectionRecord.id)
             ).all()
-            return [{"collection_id": str(row.id), "etag": str(row.manifest_etag)} for row in rows]
+            return [{"collection_id": row.id, "etag": str(row.record_etag)} for row in rows]
 
     def change_list(
         self,
@@ -154,7 +167,7 @@ class SqlAlchemyRetrievalService:
                         "change": row["change"],
                         "collection_id": row["collection_id"],
                         "occurred_at": row["occurred_at"],
-                        "etag": row["manifest_etag"],
+                        "etag": row["record_etag"],
                     }
                     for row in rows
                 ],
@@ -162,20 +175,25 @@ class SqlAlchemyRetrievalService:
 
     def plan(
         self,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         *,
         lease: timedelta | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
-        for collection_id, _path in normalized:
-            require_collection_access(principal, RETRIEVAL_MANAGE, collection_id)
         requested_lease = lease or self._config.retrieval_default_lease
         if requested_lease.total_seconds() <= 0:
             raise BadRequest("retrieval lease must be positive")
         if requested_lease > self._config.retrieval_max_lease:
             raise BadRequest("retrieval lease exceeds the configured maximum")
         with session_scope(self._session_factory) as session:
+            for collection_id, _path in normalized:
+                require_collection_access(
+                    session,
+                    principal,
+                    RETRIEVAL_MANAGE,
+                    collection_id,
+                )
             payload = self._build_plan(session, normalized, requested_lease)
         canonical = _canonical_json(payload)
         return {
@@ -188,7 +206,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         key_id: str | None = None,
-        files: Sequence[tuple[str, str]],
+        files: Sequence[tuple[int, str]],
         plan_etag: str,
         lease: timedelta | None = None,
         event_context: dict[str, object] | None = None,
@@ -257,7 +275,7 @@ class SqlAlchemyRetrievalService:
                     record.files.append(
                         RetrievalJobFileRecord(
                             job_id=job_id,
-                            collection_id=str(current["collection_id"]),
+                            collection_id=cast(int, current["collection_id"]),
                             path=str(current["path"]),
                             file_order=order,
                         )
@@ -266,7 +284,7 @@ class SqlAlchemyRetrievalService:
                     record.objects.append(
                         RetrievalJobObjectRecord(
                             job_id=job_id,
-                            collection_id=str(current["collection_id"]),
+                            collection_id=cast(int, current["collection_id"]),
                             source_store=str(current["source_store"]),
                             object_id=str(current["object_id"]),
                             object_order=order,
@@ -278,7 +296,7 @@ class SqlAlchemyRetrievalService:
                             session,
                             owner=_job_owner(job_id),
                             source_store=str(current["source_store"]),
-                            collection_id=str(current["collection_id"]),
+                            collection_id=cast(int, current["collection_id"]),
                             object_id=str(current["object_id"]),
                             expires_at=expires_at,
                         )
@@ -368,7 +386,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         path: str,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]:
@@ -461,7 +479,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         path: str,
         key_id: str | None = None,
     ) -> tuple[int, str]:
@@ -482,7 +500,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]:
@@ -525,7 +543,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         key_id: str | None = None,
     ) -> tuple[int, str]:
@@ -619,13 +637,13 @@ class SqlAlchemyRetrievalService:
     def _build_plan(
         self,
         session: Session,
-        files: tuple[tuple[str, str], ...],
+        files: tuple[tuple[int, str], ...],
         lease: timedelta,
     ) -> dict[str, object]:
         files_payload: list[dict[str, object]] = []
         objects_payload: list[dict[str, object]] = []
-        object_payloads: dict[tuple[str, str, str], dict[str, object]] = {}
-        copy_by_collection: dict[str, CollectionArchiveCopyRecord] = {}
+        object_payloads: dict[tuple[int, str, str], dict[str, object]] = {}
+        copy_by_collection: dict[int, CollectionArchiveCopyRecord] = {}
         for collection_id, path in files:
             file_record = session.get(CollectionFileRecord, (collection_id, path))
             if file_record is None:
@@ -699,7 +717,7 @@ class SqlAlchemyRetrievalService:
         self,
         session: Session,
         *,
-        collection_id: str,
+        collection_id: int,
         store: str,
         object_id: str,
     ) -> dict[str, object]:
@@ -726,7 +744,7 @@ class SqlAlchemyRetrievalService:
             "placements": [],
         }
 
-    def _select_copy(self, session: Session, collection_id: str) -> CollectionArchiveCopyRecord:
+    def _select_copy(self, session: Session, collection_id: int) -> CollectionArchiveCopyRecord:
         copies = {
             copy.store: copy
             for copy in session.scalars(
@@ -747,7 +765,7 @@ class SqlAlchemyRetrievalService:
         *,
         app: str,
         job_id: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         key_id: str | None = None,
     ) -> tuple[CollectionArchiveObjectRecord, RetrievalCacheObjectRecord | None]:
@@ -780,7 +798,7 @@ class SqlAlchemyRetrievalService:
         self,
         *,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         identity: ArchiveObjectIdentity,
         cached: RetrievalCacheObjectRecord | None,
         attribution: DownloadAttribution | None,
@@ -975,8 +993,8 @@ class SqlAlchemyRetrievalService:
         self,
         session: Session,
         job: RetrievalJobRecord,
-    ) -> dict[tuple[str, str], list[ArchiveObjectIdentity]]:
-        groups: dict[tuple[str, str], list[ArchiveObjectIdentity]] = {}
+    ) -> dict[tuple[str, int], list[ArchiveObjectIdentity]]:
+        groups: dict[tuple[str, int], list[ArchiveObjectIdentity]] = {}
         for current in job.objects:
             if current.read_mode != "restore_required":
                 continue
@@ -1000,7 +1018,7 @@ class SqlAlchemyRetrievalService:
         *,
         owner: str,
         source_store: str,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         expires_at: str,
     ) -> None:
@@ -1062,13 +1080,14 @@ def _canonical_json(payload: object) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _normalize_file_refs(files: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-    normalized: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+def _normalize_file_refs(files: Sequence[tuple[int, str]]) -> tuple[tuple[int, str], ...]:
+    normalized: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
     for collection_id, path in files:
-        current = (str(collection_id).strip(), str(path).strip())
-        if not current[0] or not current[1]:
+        normalized_path = str(path).strip()
+        if not normalized_path:
             raise BadRequest("retrieval file references require collection_id and path")
+        current = (_normalize_collection_id_or_raise(collection_id), normalized_path)
         if current in seen:
             continue
         seen.add(current)
@@ -1076,6 +1095,13 @@ def _normalize_file_refs(files: Sequence[tuple[str, str]]) -> tuple[tuple[str, s
     if not normalized:
         raise BadRequest("retrieval requires at least one file")
     return tuple(normalized)
+
+
+def _normalize_collection_id_or_raise(value: str | int) -> int:
+    try:
+        return normalize_collection_id(value)
+    except PathNormalizationError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentity:

@@ -5,7 +5,7 @@ from typing import Any
 
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import asc, desc, func, literal, select
+from sqlalchemy import String, asc, cast, desc, func, literal, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
@@ -63,7 +63,7 @@ class SqlAlchemySearchService:
         per_page: int,
         sort: str,
         order: str,
-        collection: str | None = None,
+        collection: int | None = None,
         all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
@@ -76,16 +76,17 @@ class SqlAlchemySearchService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
 
-        normalized_collection: str | None = None
+        normalized_collection: int | None = None
         if collection:
             try:
                 normalized_collection = normalize_collection_id(collection)
             except PathNormalizationError as exc:
                 raise BadRequest(str(exc)) from exc
-            require_collection_access(principal, CATALOG_READ, normalized_collection)
 
         logical_path_expr = (
-            CollectionFileRecord.collection_id + literal("/") + CollectionFileRecord.path
+            cast(CollectionFileRecord.collection_id, String)
+            + literal("/")
+            + CollectionFileRecord.path
         )
         filters: list[ColumnElement[bool]] = [
             collection_access_filter(CollectionFileRecord.collection_id, principal, CATALOG_READ)
@@ -101,6 +102,13 @@ class SqlAlchemySearchService:
         if normalized_collection is not None:
             filters.append(CollectionFileRecord.collection_id == normalized_collection)
         with session_scope(self._session_factory) as session:
+            if normalized_collection is not None:
+                require_collection_access(
+                    session,
+                    principal,
+                    CATALOG_READ,
+                    normalized_collection,
+                )
             total = session.scalar(
                 select(func.count()).select_from(CollectionFileRecord).where(*filters)
             )

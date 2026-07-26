@@ -7,7 +7,7 @@ from riverhog_api.schemas.common import RiverhogModel
 
 class SearchFileOut(RiverhogModel):
     logical_path: str
-    collection_id: str
+    collection_id: int
     collection_path: str
     bytes: int
     sha256: str
@@ -15,7 +15,7 @@ class SearchFileOut(RiverhogModel):
 
 class SearchResponse(RiverhogModel):
     query: str | None
-    collection: str | None
+    collection: int | None
     page: int
     per_page: int
     total: int

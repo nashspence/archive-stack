@@ -3,6 +3,7 @@ from __future__ import annotations
 _ARCHIVE_FILENAMES = {
     "manifest.yml.age",
     "manifest.yml.ots.age",
+    "metadata.yml.age",
 }
 
 

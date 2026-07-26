@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -110,9 +111,9 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
 
     assert collector.config.collector.batch_dir == tmp_path / "landing" / ".jeb-batches"
     sources = collector.source_registry.list()
-    assert [(source.id, source.collection_slug) for source in sources] == [
-        ("camera", "camera"),
-        ("phone", "phone"),
+    assert [(source.id, source.collection_tags) for source in sources] == [
+        ("camera", ("camera",)),
+        ("phone", ("phone",)),
     ]
     assert [source.template for source in sources] == [TEST_TEMPLATE, TEST_TEMPLATE]
 
@@ -161,7 +162,7 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
         "phone",
         {
             "adapters": ["tus"],
-            "collection_slug": "mobile",
+            "collection_tags": ["mobile"],
             "target": "review",
             "cadence": "manual",
         },
@@ -323,10 +324,10 @@ def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
     assert config.events.context_retention_seconds == 2 * 86_400
 
 
-def test_source_registry_requires_safe_source_slugs(tmp_path: Path) -> None:
+def test_source_registry_requires_safe_source_ids(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources=""))
 
-    with pytest.raises(SourceRegistryError, match="safe slug"):
+    with pytest.raises(SourceRegistryError, match="safe id"):
         collector.add_source(
             "phone/raw",
             adapters=("tus",),
@@ -416,11 +417,16 @@ def test_scheduler_batches_each_source_independently(tmp_path: Path) -> None:
     assert adapter.calls == 2
     with collector.connect() as conn:
         batches = conn.execute(
-            "SELECT source_id, collection_slug FROM batches ORDER BY source_id"
+            "SELECT source_id, collection_tags_json FROM batches ORDER BY source_id"
         ).fetchall()
-    assert sorted({(row["source_id"], row["collection_slug"]) for row in batches}) == [
-        ("camera", "camera"),
-        ("phone", "phone"),
+    assert sorted(
+        {
+            (row["source_id"], tuple(json.loads(row["collection_tags_json"])))
+            for row in batches
+        }
+    ) == [
+        ("camera", ("camera",)),
+        ("phone", ("phone",)),
     ]
 
 
@@ -447,7 +453,7 @@ def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
     assert plan["status"] == "would_process"
     assert plan["dry_run"] is True
     assert plan["source"] == "camera"
-    assert plan["collection_slug"] == "camera"
+    assert plan["collection_tags"] == ["camera"]
     assert plan["target_name"] == "munchy"
     assert plan["file_count"] == 1
     assert plan["total_bytes"] == 6
@@ -545,8 +551,8 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
 
     assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
     assert request.template == "camera-review"
-    assert request.collection_slug == "camera"
-    assert request.collection_timestamp == "20260719T160102Z"
+    assert request.collection_tags == ("camera",)
+    assert request.run_id == "20260719T160102Z"
     assert request.event_context == {"initiator": {"app": "jeb", "attempt_id": batch_id}}
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]
     assert request.files[0].sha256

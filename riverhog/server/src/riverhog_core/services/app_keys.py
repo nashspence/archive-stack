@@ -29,10 +29,10 @@ from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
     AppKeyRecord,
     CollectionRecord,
-    CollectionSlugRecord,
     KeyDownloadReservationRecord,
     RetrievalCacheLeaseRecord,
     RetrievalJobRecord,
+    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -190,13 +190,8 @@ class SqlAlchemyAppKeyService:
             access = _record_access(session, record.id)
             if not grantor.can_grant(access):
                 raise Forbidden("an application key cannot rotate authority it does not hold")
-            if (
-                record.monthly_download_quota_bytes != 0
-                and not grantor.allows(QUOTAS_MANAGE)
-            ):
-                raise Forbidden(
-                    "quotas:manage is required to rotate a key with download allowance"
-                )
+            if record.monthly_download_quota_bytes != 0 and not grantor.allows(QUOTAS_MANAGE):
+                raise Forbidden("quotas:manage is required to rotate a key with download allowance")
             _new_id, token, digest = create_key_credentials("rh_app_")
             record.token_sha256 = digest
             return {
@@ -315,9 +310,7 @@ class SqlAlchemyAppKeyService:
         normalized_app = normalize_app_name(app)
         normalized_key_id = key_id.strip().casefold()
         query = q.strip() if q is not None else None
-        filters: list[ColumnElement[bool]] = [
-            AppKeyAccessGrantRecord.key_id == normalized_key_id
-        ]
+        filters: list[ColumnElement[bool]] = [AppKeyAccessGrantRecord.key_id == normalized_key_id]
         if query:
             filters.append(
                 or_(
@@ -570,12 +563,12 @@ def _require_access_targets(session: Session, access: Sequence[ApplicationAccess
     for current in access:
         if current.resource == "*":
             continue
-        if current.resource.startswith("slug:"):
-            slug = current.resource.removeprefix("slug:")
-            if session.get(CollectionSlugRecord, slug) is None:
-                raise NotFound(f"collection slug not found: {slug}")
+        if current.resource.startswith("tag:"):
+            tag = current.resource.removeprefix("tag:")
+            if session.get(TagRecord, tag) is None:
+                raise NotFound(f"tag not found: {tag}")
             continue
-        collection_id = current.resource.removeprefix("collection:")
+        collection_id = int(current.resource.removeprefix("collection:"))
         if session.get(CollectionRecord, collection_id) is None:
             raise NotFound(f"collection not found: {collection_id}")
 

@@ -15,18 +15,18 @@ class CollectionUploadFileIn(RiverhogModel):
 
 
 class CreateOrResumeCollectionUploadRequest(RiverhogModel):
-    slug: str
+    idempotency_key: str
+    tags: list[str]
     files: list[CollectionUploadFileIn]
     ingest_source: str | None = None
-    upload_timestamp: str | None = None
     archive_store: str | None = None
     event_context: dict[str, Any] | None = None
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
-    slug: str
+    idempotency_key: str
+    tags: list[str]
     ingest_source: str | None = None
-    upload_timestamp: str | None = None
     archive_store: str | None = None
     event_context: dict[str, Any] | None = None
 
@@ -36,7 +36,8 @@ class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
 
 
 class CollectionSummaryOut(RiverhogModel):
-    id: str
+    id: int
+    tags: list[str]
     files: int
     bytes: int
     archive_copies: list[ArchiveCopyOut]
@@ -57,7 +58,7 @@ class CollectionDeletionFileOut(RiverhogModel):
 
 class CollectionDeletionObjectOut(RiverhogModel):
     store: str
-    kind: Literal["pack", "file", "segment", "manifest", "proof"]
+    kind: Literal["pack", "file", "segment", "manifest", "proof", "metadata"]
     object_path: str
     stored_bytes: int
 
@@ -69,7 +70,7 @@ class CollectionDeletionUploadFileOut(RiverhogModel):
 
 class CollectionDeletionPlanOut(RiverhogModel):
     status: Literal["ready", "blocked", "deleting"]
-    collection_id: str
+    collection_id: int
     warning: str
     expires_at: str
     challenge: str | None
@@ -79,7 +80,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
     archive_objects: list[CollectionDeletionObjectOut]
     remote_storage_bytes: int
     upload_files: list[CollectionDeletionUploadFileOut]
-    manifest_etag: str
+    record_etag: str
     metadata_rows: dict[str, int]
     blockers: list[str]
     billing_note: str
@@ -92,7 +93,7 @@ class DeleteCollectionRequest(RiverhogModel):
 
 class CollectionDeletionResultOut(RiverhogModel):
     status: Literal["deleted", "already_absent"]
-    collection_id: str
+    collection_id: int
     files: int
     bytes: int
     remote_storage_bytes: int
@@ -108,7 +109,7 @@ class CollectionUploadFileOut(RiverhogModel):
 
 
 class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
-    collection_id: str
+    collection_id: int
     ingest_source: str | None
     archive_store: str
     state: Literal["open", "uploading"]
@@ -116,7 +117,8 @@ class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
 
 
 class CollectionUploadSessionOut(RiverhogModel):
-    collection_id: str
+    collection_id: int
+    tags: list[str]
     ingest_source: str | None
     archive_store: str
     state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
@@ -161,7 +163,7 @@ class CollectionFileUploadSessionOut(RiverhogModel):
 
 
 class CollectionUploadSessionFileUploadOut(CollectionFileUploadSessionOut):
-    collection_id: str
+    collection_id: int
     ingest_source: str | None
     archive_store: str
     state: Literal["open", "uploading"]

@@ -26,7 +26,7 @@ from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
-from riverhog_api.routers.slugs import router as slugs_router
+from riverhog_api.routers.tags import router as tags_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 
 _LOG = logging.getLogger(__name__)
@@ -94,7 +94,6 @@ def _process_archive_uploads(
     container: ServiceContainer,
     *,
     startup_failed_retry_audit: bool = False,
-    startup_archive_catalog_refresh: bool = False,
 ) -> None:
     if startup_failed_retry_audit:
         retried = container.archive_uploads.requeue_failed_uploads_for_startup(limit=100)
@@ -103,14 +102,17 @@ def _process_archive_uploads(
         requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(limit=100)
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
-    if startup_archive_catalog_refresh:
-        archive_count = container.archive_uploads.publish_archive_catalog()
-        _LOG.info(
-            "startup refreshed encrypted archive catalog: archives=%s",
-            archive_count,
+        requeued_metadata = (
+            container.archive_uploads.requeue_interrupted_metadata_publications_for_startup()
         )
+        if requeued_metadata:
+            _LOG.info(
+                "startup requeued interrupted metadata-manifest publications: count=%s",
+                requeued_metadata,
+            )
     container.archive_uploads.process_due_uploads(limit=1)
     container.archive_copies.process_due(limit=1)
+    container.archive_uploads.process_due_metadata_publications(limit=10)
 
 
 def _process_ingress_cleanup(
@@ -180,8 +182,7 @@ async def _run_archive_upload_reaper(
             startup_failed_retry_audit = False
             if current_startup_failed_retry_audit:
                 _LOG.info(
-                    "startup failed archive-upload retry audit and recovery catalog refresh "
-                    "queued in background; "
+                    "startup failed archive-upload retry audit queued in background; "
                     "API startup is not blocked"
                 )
             async with operation_lock:
@@ -189,7 +190,6 @@ async def _run_archive_upload_reaper(
                     _process_archive_uploads,
                     container,
                     startup_failed_retry_audit=current_startup_failed_retry_audit,
-                    startup_archive_catalog_refresh=current_startup_failed_retry_audit,
                 )
         except asyncio.CancelledError:
             raise
@@ -431,7 +431,7 @@ def create_app(
     app.include_router(collections_router, prefix="/v1")
     app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")
-    app.include_router(slugs_router, prefix="/v1")
+    app.include_router(tags_router, prefix="/v1")
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")
     app.include_router(quotas_router, prefix="/v1")

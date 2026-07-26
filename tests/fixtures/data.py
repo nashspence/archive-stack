@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-PHOTOS_COLLECTION_ID = "photos/20240701T120000Z"
-DOCS_COLLECTION_ID = "docs/20250102T030405Z"
+PHOTOS_COLLECTION_ID = 1
+DOCS_COLLECTION_ID = 2
 
 PHOTOS_2024_FILES: dict[str, bytes] = {
     "albums/japan/day-01.txt": b"arrived in tokyo\n",

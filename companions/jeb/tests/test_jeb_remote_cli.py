@@ -137,7 +137,7 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
             "attempts",
             {
                 "source": "camera",
-                "collection_slug": None,
+                "collection_tag": None,
                 "order": "desc",
                 "page": 1,
                 "per_page": 25,
@@ -297,7 +297,7 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> N
                 "template": "camera-review",
                 "enabled": True,
                 "stable_seconds": 600,
-                "collection_slug": "camera",
+                "collection_tags": ["camera"],
                 "target": "munchy",
                 "threshold_bytes": 0,
                 "cleanup": "after_target_success",

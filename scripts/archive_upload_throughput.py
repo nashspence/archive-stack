@@ -25,7 +25,7 @@ from riverhog_core.stores.s3_support import create_archive_s3_client
 MIB = 1024 * 1024
 READ_BYTES = 8 * MIB
 MINIMUM_PROBE_BYTES = 5 * MIB
-COLLECTION_ID = "archive-throughput-probe/20000101T000000Z"
+COLLECTION_ID = 1
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ class _MemoryMultipartTracker:
     def save_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
     ) -> None:
         _ = collection_id
@@ -94,7 +94,7 @@ class _MemoryMultipartTracker:
     def record_multipart_upload_progress(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
         part: ArchiveMultipartUploadedPart,
         uploaded_bytes: int,
@@ -107,7 +107,7 @@ class _MemoryMultipartTracker:
     def clear_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         upload_id: str,
     ) -> None:

@@ -50,7 +50,7 @@ class SqlAlchemyArchiveReportingService:
     def get_report(
         self,
         *,
-        collection: str | None = None,
+        collection: int | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> ArchiveUsageReport:
         measured_at = format_utc_timestamp(utc_now())
@@ -109,7 +109,7 @@ def record_archive_usage_snapshot(session: Session, *, config: RuntimeConfig) ->
 def _collection_usage_reports(
     session: Session,
     *,
-    collection_filter: str | None,
+    collection_filter: int | None,
     principal: ApplicationPrincipal | None,
 ) -> list[ArchiveUsageCollection]:
     file_stats = (
@@ -158,7 +158,7 @@ def _collection_usage_reports(
     collection_rows = session.execute(collection_query).all()
     aggregates = archive_copy_aggregates(
         session,
-        collection_ids=[str(row[0].id) for row in collection_rows],
+        collection_ids=[row[0].id for row in collection_rows],
     )
     reports = [
         ArchiveUsageCollection(
@@ -230,7 +230,7 @@ def _collection_usage_reports(
 def _archive_usage_totals(
     session: Session,
     *,
-    collection_filter: str | None,
+    collection_filter: int | None,
     principal: ApplicationPrincipal | None,
 ) -> ArchiveUsageTotals:
     stored = (
@@ -312,7 +312,7 @@ def _reportable_upload_expression() -> Any:
 def _collection_archive_status(
     archive: CollectionArchiveCopyRecord,
     *,
-    aggregates: dict[tuple[str, str], ArchiveCopyAggregate],
+    aggregates: dict[tuple[int, str], ArchiveCopyAggregate],
 ) -> ArchiveCopyStatus:
     object_count, stored_bytes = aggregates.get((archive.collection_id, archive.store), (0, 0))
     return ArchiveCopyStatus(

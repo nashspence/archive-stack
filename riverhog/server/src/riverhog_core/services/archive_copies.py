@@ -15,6 +15,7 @@ from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
+    CollectionMetadataPublicationRecord,
     CollectionRecord,
 )
 from riverhog_core.ports.archive_store import (
@@ -24,7 +25,6 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import (
     apply_archive_receipt,
     archive_copy_identity,
@@ -68,7 +68,7 @@ class SqlAlchemyArchiveCopyService:
 
     def create_or_resume(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         destination_store: str,
         source_store: str | None = None,
@@ -145,7 +145,7 @@ class SqlAlchemyArchiveCopyService:
         for collection_id, destination_store in jobs:
             try:
                 self._process_one(
-                    collection_id=str(collection_id),
+                    collection_id=collection_id,
                     destination_store=str(destination_store),
                 )
             except Exception as exc:
@@ -155,17 +155,17 @@ class SqlAlchemyArchiveCopyService:
                     destination_store,
                 )
                 self._record_failure(
-                    collection_id=str(collection_id),
+                    collection_id=collection_id,
                     destination_store=str(destination_store),
                     exc=exc,
                 )
                 self._cleanup_source_read(
-                    collection_id=str(collection_id),
+                    collection_id=collection_id,
                     destination_store=str(destination_store),
                 )
         return len(jobs)
 
-    def _process_one(self, *, collection_id: str, destination_store: str) -> None:
+    def _process_one(self, *, collection_id: int, destination_store: str) -> None:
         current = utc_now()
         current_text = format_utc_timestamp(current)
         with session_scope(self._session_factory) as session:
@@ -278,19 +278,26 @@ class SqlAlchemyArchiveCopyService:
                 )
                 session.add(copy)
             apply_archive_receipt(copy, receipt, archive)
+            collection = session.get(CollectionRecord, collection_id)
+            assert collection is not None
+            session.merge(
+                CollectionMetadataPublicationRecord(
+                    collection_id=collection_id,
+                    store=destination_store,
+                    desired_revision=collection.metadata_revision,
+                    state="pending",
+                    attempt_count=0,
+                    next_attempt_at=format_utc_timestamp(utc_now()),
+                )
+            )
             session.delete(job)
             record_archive_usage_snapshot(session, config=self._config)
         source_store.cleanup_archive_objects_read(
             collection_id=collection_id,
             objects=data_objects,
         )
-        publish_archive_catalog(
-            store_name=destination_store,
-            archive_store=destination,
-            session_factory=self._session_factory,
-        )
 
-    def _expected_files(self, collection_id: str) -> tuple[CollectionArchiveFile, ...]:
+    def _expected_files(self, collection_id: int) -> tuple[CollectionArchiveFile, ...]:
         with session_scope(self._session_factory) as session:
             files = session.scalars(
                 select(CollectionFileRecord)
@@ -305,7 +312,7 @@ class SqlAlchemyArchiveCopyService:
     def _record_failure(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         destination_store: str,
         exc: Exception,
     ) -> None:
@@ -317,7 +324,7 @@ class SqlAlchemyArchiveCopyService:
             job.next_attempt_at = None
             job.failure = f"{type(exc).__name__}: {exc}"
 
-    def _cleanup_source_read(self, *, collection_id: str, destination_store: str) -> None:
+    def _cleanup_source_read(self, *, collection_id: int, destination_store: str) -> None:
         with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
             if job is None or job.read_requested_at is None:
@@ -373,7 +380,7 @@ def _select_source_copy(
 
 def _required_copy(
     session: Session,
-    collection_id: str,
+    collection_id: int,
     store: str,
 ) -> CollectionArchiveCopyRecord:
     copy = session.get(CollectionArchiveCopyRecord, (collection_id, store))
@@ -398,7 +405,7 @@ def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArch
     )
 
 
-def _normalize_collection_id(value: str) -> str:
+def _normalize_collection_id(value: str | int) -> int:
     try:
         return normalize_collection_id(value)
     except PathNormalizationError as exc:

@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
@@ -26,15 +26,21 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
+    CollectionMetadataPublicationRecord,
     CollectionRecord,
+    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     IngressCleanupRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
+from riverhog_core.collection_metadata import (
+    collection_content_etag,
+    collection_metadata_manifest,
+    collection_record_manifest,
+)
 from riverhog_core.ingress_crypto import iter_ingress_plaintext
-from riverhog_core.portable_catalog import portable_collection_manifest
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,
@@ -47,7 +53,6 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_catalog import publish_archive_catalog
 from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import (
@@ -73,7 +78,7 @@ class CollectionUploadFileEntry:
 @dataclass(frozen=True, slots=True)
 class IngressCleanupEntry:
     target_path: str
-    collection_id: str
+    collection_id: int
     ingress_upload_id: str
 
 
@@ -171,13 +176,157 @@ class SqlAlchemyArchiveUploadService:
             )
             return int(getattr(result, "rowcount", 0) or 0)
 
+    def requeue_interrupted_metadata_publications_for_startup(self) -> int:
+        current_text = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            result = session.execute(
+                update(CollectionMetadataPublicationRecord)
+                .where(CollectionMetadataPublicationRecord.state == "publishing")
+                .values(
+                    state="pending",
+                    next_attempt_at=current_text,
+                    failure="publication interrupted before completion",
+                )
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
+
+    def process_due_metadata_publications(self, *, limit: int = 10) -> int:
+        if limit < 1:
+            return 0
+        processed = 0
+        for _ in range(limit):
+            claimed = self._claim_due_metadata_publication()
+            if claimed is None:
+                break
+            collection_id, store, revision = claimed
+            self._publish_collection_metadata(
+                collection_id=collection_id,
+                store=store,
+                revision=revision,
+            )
+            processed += 1
+        return processed
+
+    def _claim_due_metadata_publication(self) -> tuple[int, str, int] | None:
+        now = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            publication = session.scalar(
+                select(CollectionMetadataPublicationRecord)
+                .where(
+                    CollectionMetadataPublicationRecord.state.in_(("pending", "retry_wait")),
+                    CollectionMetadataPublicationRecord.next_attempt_at <= now,
+                )
+                .order_by(
+                    CollectionMetadataPublicationRecord.next_attempt_at,
+                    CollectionMetadataPublicationRecord.collection_id,
+                    CollectionMetadataPublicationRecord.store,
+                )
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if publication is None:
+                return None
+            publication.state = "publishing"
+            publication.attempt_count += 1
+            publication.last_attempt_at = now
+            return (
+                publication.collection_id,
+                publication.store,
+                publication.desired_revision,
+            )
+
+    def _publish_collection_metadata(
+        self,
+        *,
+        collection_id: int,
+        store: str,
+        revision: int,
+    ) -> None:
+        try:
+            with session_scope(self._session_factory) as session:
+                collection = session.get(CollectionRecord, collection_id)
+                copy = session.get(CollectionArchiveCopyRecord, (collection_id, store))
+                publication = session.get(
+                    CollectionMetadataPublicationRecord,
+                    (collection_id, store),
+                )
+                if collection is None or copy is None or publication is None:
+                    return
+                if collection.metadata_revision != revision:
+                    publication.state = "pending"
+                    publication.next_attempt_at = format_utc_timestamp(utc_now())
+                    return
+                if copy.archive_storage_prefix is None:
+                    raise RuntimeError("collection archive has no storage prefix")
+                tags = tuple(
+                    session.scalars(
+                        select(CollectionTagRecord.tag_id)
+                        .where(CollectionTagRecord.collection_id == collection_id)
+                        .order_by(CollectionTagRecord.tag_id)
+                    ).all()
+                )
+                manifest = collection_metadata_manifest(
+                    collection_id=collection_id,
+                    content_etag=collection.content_etag,
+                    record_etag=collection.record_etag,
+                    metadata_revision=collection.metadata_revision,
+                    tags=tags,
+                    updated_at=collection.metadata_updated_at,
+                )
+                archive_storage_prefix = copy.archive_storage_prefix
+
+            receipt = self._archive_stores.require(store).publish_collection_metadata(
+                collection_id=collection_id,
+                archive_storage_prefix=archive_storage_prefix,
+                manifest=manifest,
+            )
+            with session_scope(self._session_factory) as session:
+                publication = session.get(
+                    CollectionMetadataPublicationRecord,
+                    (collection_id, store),
+                )
+                if publication is None:
+                    return
+                publication.published_revision = revision
+                publication.object_path = receipt.object_path
+                publication.version_id = receipt.version_id
+                publication.stored_bytes = receipt.stored_bytes
+                publication.stored_sha256 = receipt.stored_sha256
+                publication.published_at = receipt.published_at
+                publication.failure = None
+                if publication.desired_revision == revision:
+                    publication.state = "published"
+                else:
+                    publication.state = "pending"
+                    publication.next_attempt_at = format_utc_timestamp(utc_now())
+        except Exception as exc:
+            _LOG.exception(
+                "collection metadata manifest publication failed: collection_id=%s store=%s",
+                collection_id,
+                store,
+            )
+            with session_scope(self._session_factory) as session:
+                publication = session.get(
+                    CollectionMetadataPublicationRecord,
+                    (collection_id, store),
+                )
+                if publication is None:
+                    return
+                delay = min(3600, 2 ** min(publication.attempt_count, 10))
+                publication.state = "retry_wait"
+                publication.next_attempt_at = format_utc_timestamp(
+                    utc_now() + timedelta(seconds=delay)
+                )
+                publication.failure = str(exc)[:1000]
+
     def ingress_cleanup_status(self) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
             counts = {
                 str(state): int(count)
                 for state, count in session.execute(
-                    select(IngressCleanupRecord.state, func.count())
-                    .group_by(IngressCleanupRecord.state)
+                    select(IngressCleanupRecord.state, func.count()).group_by(
+                        IngressCleanupRecord.state
+                    )
                 )
             }
             oldest_created_at = session.scalar(select(func.min(IngressCleanupRecord.created_at)))
@@ -240,9 +389,7 @@ class SqlAlchemyArchiveUploadService:
             with session_scope(self._session_factory) as session:
                 active_owner = session.scalar(
                     select(CollectionUploadFileRecord.collection_id)
-                    .where(
-                        CollectionUploadFileRecord.ingress_upload_id == entry.ingress_upload_id
-                    )
+                    .where(CollectionUploadFileRecord.ingress_upload_id == entry.ingress_upload_id)
                     .limit(1)
                 )
             if active_owner is not None:
@@ -251,9 +398,7 @@ class SqlAlchemyArchiveUploadService:
                 )
             upload_store.delete_target(entry.target_path)
         except Exception as exc:
-            retry_at = format_utc_timestamp(
-                utc_now() + self._config.ingress_cleanup_retry_delay
-            )
+            retry_at = format_utc_timestamp(utc_now() + self._config.ingress_cleanup_retry_delay)
             with session_scope(self._session_factory) as session:
                 record = session.get(IngressCleanupRecord, entry.target_path)
                 if record is not None:
@@ -272,9 +417,6 @@ class SqlAlchemyArchiveUploadService:
             record = session.get(IngressCleanupRecord, entry.target_path)
             if record is not None:
                 session.delete(record)
-
-    def publish_archive_catalog(self) -> int:
-        return self._publish_archive_catalog()
 
     def abort_incomplete_multipart_uploads(
         self,
@@ -309,7 +451,7 @@ class SqlAlchemyArchiveUploadService:
         current = utc_now()
         current_text = format_utc_timestamp(current)
         with session_scope(self._session_factory) as session:
-            collection_ids: list[str] = []
+            collection_ids: list[int] = []
             if self._upload_store is not None:
                 collection_ids = list(
                     session.scalars(
@@ -344,7 +486,7 @@ class SqlAlchemyArchiveUploadService:
             attempted += 1
         return attempted
 
-    def _process_one_collection(self, *, collection_id: str) -> None:
+    def _process_one_collection(self, *, collection_id: int) -> None:
         if self._upload_store is None:
             return
         upload_store = self._upload_store
@@ -557,7 +699,6 @@ class SqlAlchemyArchiveUploadService:
                     "archive_store": archive_store_name,
                 },
             )
-            self._publish_archive_catalog()
         except Exception as exc:
             error = _error_text(exc)
             if _archive_failure_is_retryable(exc):
@@ -587,7 +728,7 @@ class SqlAlchemyArchiveUploadService:
     def _finalize_archived_collection(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         receipt: CollectionArchiveUploadReceipt,
         archive: CollectionArchive,
         upload_files: list[CollectionUploadFileEntry],
@@ -600,24 +741,45 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase = "finalizing"
             upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
             session.flush()
-            _manifest, manifest_etag = portable_collection_manifest(
-                collection_id,
-                ((row.path, row.bytes, row.sha256) for row in upload_files),
+            file_entries = [(row.path, row.bytes, row.sha256) for row in upload_files]
+            tags = tuple(json.loads(upload.tags_json))
+            content_etag = collection_content_etag(file_entries)
+            now = format_utc_timestamp(utc_now())
+            _manifest, record_etag = collection_record_manifest(
+                collection_id=collection_id,
+                content_etag=content_etag,
+                metadata_revision=1,
+                tags=tags,
+                files=file_entries,
             )
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 collection = CollectionRecord(
                     id=collection_id,
-                    slug=upload.slug,
-                    manifest_etag=manifest_etag,
+                    creation_idempotency_key=upload.idempotency_key,
+                    content_etag=content_etag,
+                    record_etag=record_etag,
+                    metadata_revision=1,
+                    metadata_updated_at=now,
                     ingest_source=upload.ingest_source,
                     created_by_app=upload.initiated_by_app,
                     created_by_key_id=upload.initiated_by_key_id,
+                    created_at=now,
                 )
                 session.add(collection)
                 session.flush()
-            elif collection.manifest_etag != manifest_etag:
-                raise RuntimeError("immutable portable collection manifest changed")
+                for tag in tags:
+                    collection.tags.append(
+                        CollectionTagRecord(
+                            collection_id=collection_id,
+                            tag_id=tag,
+                            assigned_by_app=upload.initiated_by_app,
+                            assigned_by_key_id=upload.initiated_by_key_id,
+                            assigned_at=now,
+                        )
+                    )
+            elif collection.content_etag != content_etag:
+                raise RuntimeError("immutable collection content changed")
             existing_paths = {file_record.path for file_record in collection.files}
             for entry in upload_files:
                 if entry.path in existing_paths:
@@ -642,6 +804,16 @@ class SqlAlchemyArchiveUploadService:
                 session.add(copy)
             apply_archive_receipt(copy, receipt, archive)
             session.flush()
+            session.merge(
+                CollectionMetadataPublicationRecord(
+                    collection_id=collection_id,
+                    store=upload.archive_store,
+                    desired_revision=collection.metadata_revision,
+                    state="pending",
+                    attempt_count=0,
+                    next_attempt_at=now,
+                )
+            )
             self._record_ingestion_cache(
                 session,
                 collection_id=collection_id,
@@ -652,8 +824,8 @@ class SqlAlchemyArchiveUploadService:
                 CatalogEventRecord(
                     change="created",
                     collection_id=collection_id,
-                    occurred_at=format_utc_timestamp(utc_now()),
-                    manifest_etag=manifest_etag,
+                    occurred_at=now,
+                    record_etag=record_etag,
                 )
             )
             self._lifecycle_events.emit_collection(
@@ -683,7 +855,7 @@ class SqlAlchemyArchiveUploadService:
         self,
         session: Session,
         *,
-        collection_id: str,
+        collection_id: int,
         store: str,
         receipt: CollectionArchiveUploadReceipt,
     ) -> None:
@@ -721,7 +893,7 @@ class SqlAlchemyArchiveUploadService:
     def _record_completed_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         receipt: CollectionArchiveUploadReceipt,
         manifest_bytes: bytes,
         proof_bytes: bytes,
@@ -741,27 +913,10 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase_updated_at = current_text
             upload.archive_failure = None
 
-    def _publish_archive_catalog(self) -> int:
-        published = 0
-        for store_name, archive_store in self._archive_stores.items():
-            try:
-                published += publish_archive_catalog(
-                    store_name=store_name,
-                    archive_store=archive_store,
-                    session_factory=self._session_factory,
-                )
-            except Exception:
-                _LOG.warning(
-                    "failed to publish encrypted archive catalog for %s",
-                    store_name,
-                    exc_info=True,
-                )
-        return published
-
     def _record_planned_archive(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         archive: CollectionArchive,
         manifest_bytes: bytes,
         proof_bytes: bytes,
@@ -792,7 +947,7 @@ class SqlAlchemyArchiveUploadService:
     def _record_collection_failure(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         error: str,
         retryable: bool,
     ) -> None:
@@ -863,7 +1018,7 @@ class SqlAlchemyArchiveUploadService:
     def _emit_collection_archive_retry_scheduled(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         attempt_count: int,
         error: str,
         failed_at: str,
@@ -884,7 +1039,7 @@ class SqlAlchemyArchiveUploadService:
     def _emit_collection_archive_failed(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         attempt_count: int,
         error: str,
         failed_at: str,
@@ -902,7 +1057,7 @@ class SqlAlchemyArchiveUploadService:
     def _record_archive_phase(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         phase: str,
         updated_at: str,
     ) -> None:
@@ -921,7 +1076,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def load_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         object_path: str,
         part_size: int,
@@ -958,7 +1113,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def save_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
     ) -> None:
         with session_scope(self._session_factory) as session:
@@ -989,7 +1144,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def record_multipart_upload_progress(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         state: ArchiveMultipartUploadState,
         part: ArchiveMultipartUploadedPart,
         uploaded_bytes: int,
@@ -1021,7 +1176,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def clear_multipart_upload(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         upload_id: str,
     ) -> None:
@@ -1040,7 +1195,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def load_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
     ) -> RetrievalCacheReceipt | None:
         with session_scope(self._session_factory) as session:
@@ -1069,7 +1224,7 @@ class _SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
     def save_ingestion_cache(
         self,
         *,
-        collection_id: str,
+        collection_id: int,
         object_id: str,
         receipt: RetrievalCacheReceipt,
     ) -> None:
@@ -1231,7 +1386,7 @@ def _positive_int_or_none(value: int | None) -> int | None:
 def enqueue_collection_archive_upload(
     session: Session,
     *,
-    collection_id: str,
+    collection_id: int,
     next_attempt_at: str,
 ) -> None:
     upload = session.get(CollectionUploadRecord, collection_id)

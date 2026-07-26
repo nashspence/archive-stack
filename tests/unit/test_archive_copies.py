@@ -7,6 +7,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import ArchiveCopyJobRecord, CollectionArchiveCopyRecord
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
+
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,

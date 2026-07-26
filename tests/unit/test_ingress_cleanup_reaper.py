@@ -27,12 +27,15 @@ class _ArchiveUploadService:
     def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int:
         return 0
 
-    def publish_archive_catalog(self) -> int:
+    def requeue_interrupted_metadata_publications_for_startup(self) -> int:
         return 0
 
     def process_due_uploads(self, *, limit: int = 1) -> int:
         self.archive_processed.set()
         return 1
+
+    def process_due_metadata_publications(self, *, limit: int = 10) -> int:
+        return 0
 
 
 class _ArchiveCopyService:

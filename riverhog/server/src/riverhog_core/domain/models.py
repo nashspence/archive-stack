@@ -79,6 +79,7 @@ class ArchiveUsageReport:
 @dataclass(frozen=True)
 class CollectionSummary:
     id: CollectionId
+    tags: tuple[str, ...]
     files: int
     bytes: int
     archive_copies: tuple[ArchiveCopyStatus, ...] = ()

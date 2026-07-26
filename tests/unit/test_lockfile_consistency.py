@@ -50,6 +50,5 @@ def test_riverhog_server_declares_its_http2_download_transport() -> None:
     )
 
     assert any(
-        dependency.startswith("httpx[http2]")
-        for dependency in pyproject["project"]["dependencies"]
+        dependency.startswith("httpx[http2]") for dependency in pyproject["project"]["dependencies"]
     )

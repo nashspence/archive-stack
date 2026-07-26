@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -12,31 +13,30 @@ from riverhog_age import plaintext_bytes_for_ciphertext_offset
 from riverhog_protocol.errors import BadRequest, Conflict, HashMismatch, NotFound
 from riverhog_protocol.paths import (
     PathNormalizationError,
-    collection_id_for_upload,
     normalize_collection_id,
     normalize_relpath,
-    normalize_upload_slug,
-    normalize_upload_timestamp,
+    normalize_tag,
 )
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import String, and_, case, cast, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 from time_formats import parse_utc_timestamp, utc_now, utc_timestamp_now
 
-from riverhog_core.app_permissions import CATALOG_READ, COLLECTIONS_UPLOAD, ApplicationPrincipal
+from riverhog_core.app_permissions import CATALOG_READ, COLLECTIONS_CREATE, ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    TagRecord,
 )
 from riverhog_core.collection_access import (
     collection_access_filter,
-    require_slug_access,
+    require_collection_create_access,
 )
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
@@ -115,43 +115,37 @@ class SqlAlchemyCollectionService:
     def create_or_resume_upload(
         self,
         *,
-        upload_slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         files: Sequence[dict[str, object]],
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         initiator: ApplicationPrincipal | None = None,
         event_context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
+        normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
+        normalized_tags = _normalize_tags(tags)
         normalized_archive_store = self._normalize_archive_store(archive_store)
         initiator_app = initiator.app if initiator is not None else "riverhog"
         initiator_key_id = initiator.key_id if initiator is not None else None
         normalized_event_context_json = event_context_json(event_context)
-        normalized_upload_timestamp = (
-            _normalize_upload_timestamp_or_raise(upload_timestamp)
-            if upload_timestamp is not None
-            else None
-        )
-        requested_collection_id = (
-            collection_id_for_upload(normalized_slug, normalized_upload_timestamp)
-            if normalized_upload_timestamp is not None
-            else None
-        )
-        require_slug_access(initiator, COLLECTIONS_UPLOAD, normalized_slug)
+        require_collection_create_access(initiator, COLLECTIONS_CREATE, normalized_tags)
         normalized_files = _normalize_upload_files(files)
 
         with session_scope(self._session_factory) as session:
-            _require_slug(session, normalized_slug)
-            collection = _find_matching_collection(
-                session,
-                upload_slug=normalized_slug,
-                files=normalized_files,
+            _require_tags(session, normalized_tags)
+            collection = session.scalar(
+                select(CollectionRecord)
+                .options(selectinload(CollectionRecord.archive_copies))
+                .where(CollectionRecord.creation_idempotency_key == normalized_idempotency_key)
             )
             if collection is not None:
-                _ensure_requested_collection_id_matches(
-                    collection.id,
-                    requested_collection_id,
+                _ensure_finalized_request_matches(
+                    session,
+                    collection=collection,
+                    tags=normalized_tags,
+                    files=normalized_files,
+                    initiator_app=initiator_app,
                 )
                 return _finalized_collection_upload_payload(
                     session,
@@ -159,26 +153,23 @@ class SqlAlchemyCollectionService:
                     archive_store=normalized_archive_store,
                 )
 
-            upload = _find_matching_upload(
-                session,
-                upload_slug=normalized_slug,
-                files=normalized_files,
-                upload_store=self._upload_store,
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .options(selectinload(CollectionUploadRecord.files))
+                .where(CollectionUploadRecord.idempotency_key == normalized_idempotency_key)
             )
             if upload is not None:
-                _ensure_requested_collection_id_matches(
-                    upload.collection_id,
-                    requested_collection_id,
+                upload = _sync_and_expire_collection_upload(
+                    session,
+                    upload,
+                    upload_store=self._upload_store,
                 )
-                _ensure_upload_archive_store_matches(upload, normalized_archive_store)
+                if upload is not None:
+                    _ensure_upload_archive_store_matches(upload, normalized_archive_store)
             if upload is None:
-                normalized_collection_id = requested_collection_id or _mint_collection_id(
-                    normalized_slug
-                )
-                _ensure_collection_id_unused(session, normalized_collection_id)
                 upload = CollectionUploadRecord(
-                    collection_id=normalized_collection_id,
-                    slug=normalized_slug,
+                    idempotency_key=normalized_idempotency_key,
+                    tags_json=_tags_json(normalized_tags),
                     ingest_source=ingest_source,
                     initiated_by_app=initiator_app,
                     initiated_by_key_id=initiator_key_id,
@@ -189,6 +180,8 @@ class SqlAlchemyCollectionService:
                     last_activity_at=utc_timestamp_now(),
                 )
                 session.add(upload)
+                session.flush()
+                normalized_collection_id = upload.collection_id
                 for index, item in enumerate(normalized_files, start=1):
                     upload.files.append(
                         _new_collection_upload_file(
@@ -203,6 +196,8 @@ class SqlAlchemyCollectionService:
             else:
                 _ensure_upload_initiator_matches(upload, initiator_app)
                 _ensure_event_context_matches(upload, normalized_event_context_json)
+                _ensure_upload_tags_match(upload, normalized_tags)
+                _ensure_upload_files_match(upload, normalized_files)
                 upload.ingest_source = ingest_source
                 _touch_collection_upload(upload)
                 normalized_collection_id = upload.collection_id
@@ -232,47 +227,51 @@ class SqlAlchemyCollectionService:
     def create_or_resume_upload_session(
         self,
         *,
-        upload_slug: str,
+        idempotency_key: str,
+        tags: Sequence[str],
         ingest_source: str | None = None,
-        upload_timestamp: str | None = None,
         archive_store: str | None = None,
         initiator: ApplicationPrincipal | None = None,
         event_context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        normalized_slug = _normalize_upload_slug_or_raise(upload_slug)
+        normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
+        normalized_tags = _normalize_tags(tags)
         normalized_archive_store = self._normalize_archive_store(archive_store)
         initiator_app = initiator.app if initiator is not None else "riverhog"
         initiator_key_id = initiator.key_id if initiator is not None else None
         normalized_event_context_json = event_context_json(event_context)
-        normalized_upload_timestamp = (
-            _normalize_upload_timestamp_or_raise(upload_timestamp)
-            if upload_timestamp is not None
-            else None
-        )
-        requested_collection_id = (
-            collection_id_for_upload(normalized_slug, normalized_upload_timestamp)
-            if normalized_upload_timestamp is not None
-            else None
-        )
-        require_slug_access(initiator, COLLECTIONS_UPLOAD, normalized_slug)
+        require_collection_create_access(initiator, COLLECTIONS_CREATE, normalized_tags)
 
         with session_scope(self._session_factory) as session:
-            _require_slug(session, normalized_slug)
-            if requested_collection_id is not None:
-                collection = session.get(CollectionRecord, requested_collection_id)
-                if collection is not None:
-                    return _finalized_collection_upload_payload(
-                        session,
-                        collection,
-                        archive_store=normalized_archive_store,
-                    )
-                upload = session.get(CollectionUploadRecord, requested_collection_id)
-            else:
-                upload = _find_open_upload_session(session, upload_slug=normalized_slug)
+            _require_tags(session, normalized_tags)
+            collection = session.scalar(
+                select(CollectionRecord)
+                .options(selectinload(CollectionRecord.archive_copies))
+                .where(CollectionRecord.creation_idempotency_key == normalized_idempotency_key)
+            )
+            if collection is not None:
+                _ensure_finalized_request_matches(
+                    session,
+                    collection=collection,
+                    tags=normalized_tags,
+                    files=None,
+                    initiator_app=initiator_app,
+                )
+                return _finalized_collection_upload_payload(
+                    session,
+                    collection,
+                    archive_store=normalized_archive_store,
+                )
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .options(selectinload(CollectionUploadRecord.files))
+                .where(CollectionUploadRecord.idempotency_key == normalized_idempotency_key)
+            )
 
             if upload is not None:
                 _ensure_upload_initiator_matches(upload, initiator_app)
                 _ensure_event_context_matches(upload, normalized_event_context_json)
+                _ensure_upload_tags_match(upload, normalized_tags)
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
                 upload = _sync_and_expire_collection_upload(
                     session,
@@ -280,9 +279,6 @@ class SqlAlchemyCollectionService:
                     upload_store=self._upload_store,
                     session_idle_ttl=self._upload_session_idle_ttl,
                 )
-            if upload is not None:
-                if upload.state in {"canceled", "expired"} and requested_collection_id is None:
-                    upload = None
             if upload is not None:
                 if upload.state == "open":
                     upload.ingest_source = ingest_source
@@ -304,14 +300,10 @@ class SqlAlchemyCollectionService:
                     collection=None,
                 )
 
-            normalized_collection_id = requested_collection_id or _mint_collection_id(
-                normalized_slug
-            )
-            _ensure_collection_id_unused(session, normalized_collection_id)
             now = utc_timestamp_now()
             upload = CollectionUploadRecord(
-                collection_id=normalized_collection_id,
-                slug=normalized_slug,
+                idempotency_key=normalized_idempotency_key,
+                tags_json=_tags_json(normalized_tags),
                 ingest_source=ingest_source,
                 initiated_by_app=initiator_app,
                 initiated_by_key_id=initiator_key_id,
@@ -322,6 +314,7 @@ class SqlAlchemyCollectionService:
                 last_activity_at=now,
             )
             session.add(upload)
+            session.flush()
             return _collection_upload_payload(
                 session=session,
                 upload=upload,
@@ -339,7 +332,7 @@ class SqlAlchemyCollectionService:
 
     def register_upload_session_file(
         self,
-        collection_id: str,
+        collection_id: int,
         file: dict[str, object],
     ) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -353,9 +346,25 @@ class SqlAlchemyCollectionService:
             )
             return _collection_upload_file_registration_payload(upload, file_record)
 
+    def require_upload_access(
+        self,
+        collection_id: int,
+        principal: ApplicationPrincipal,
+    ) -> None:
+        normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None:
+                raise NotFound(f"collection upload not found: {normalized_collection_id}")
+            require_collection_create_access(
+                principal,
+                COLLECTIONS_CREATE,
+                _upload_tags(upload),
+            )
+
     def create_or_resume_registered_file_upload(
         self,
-        collection_id: str,
+        collection_id: int,
         file: dict[str, object],
     ) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -435,7 +444,7 @@ class SqlAlchemyCollectionService:
             )
         return payload
 
-    def collection_id_for_upload_id(self, upload_id: str) -> str | None:
+    def collection_id_for_upload_id(self, upload_id: str) -> int | None:
         with session_scope(self._session_factory) as session:
             return session.scalar(
                 select(CollectionUploadFileRecord.collection_id).where(
@@ -447,7 +456,7 @@ class SqlAlchemyCollectionService:
         self,
         session: Session,
         *,
-        normalized_collection_id: str,
+        normalized_collection_id: int,
         normalized_file: _UploadManifestEntry,
     ) -> tuple[CollectionUploadRecord, CollectionUploadFileRecord]:
         upload = session.get(CollectionUploadRecord, normalized_collection_id)
@@ -493,7 +502,7 @@ class SqlAlchemyCollectionService:
         session.add(file_record)
         return upload, file_record
 
-    def complete_upload_session(self, collection_id: str) -> dict[str, object]:
+    def complete_upload_session(self, collection_id: int) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         staged_event_details: dict[str, object] | None = None
         missing_file_bytes = False
@@ -560,7 +569,7 @@ class SqlAlchemyCollectionService:
         assert payload is not None
         return payload
 
-    def cancel_upload_session(self, collection_id: str) -> dict[str, object]:
+    def cancel_upload_session(self, collection_id: int) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
 
         with session_scope(self._session_factory) as session:
@@ -606,7 +615,7 @@ class SqlAlchemyCollectionService:
             session.delete(upload)
             return payload
 
-    def get_upload(self, collection_id: str) -> dict[str, object]:
+    def get_upload(self, collection_id: int) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
 
         with session_scope(self._session_factory) as session:
@@ -653,7 +662,7 @@ class SqlAlchemyCollectionService:
                 collection=None,
             )
 
-    def create_or_resume_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
+    def create_or_resume_file_upload(self, collection_id: int, path: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         normalized_path = _normalize_relpath_or_raise(path)
 
@@ -691,7 +700,7 @@ class SqlAlchemyCollectionService:
 
     def append_upload_chunk(
         self,
-        collection_id: str,
+        collection_id: int,
         path: str,
         *,
         offset: int,
@@ -779,7 +788,7 @@ class SqlAlchemyCollectionService:
             )
         return response
 
-    def get_file_upload(self, collection_id: str, path: str) -> dict[str, object]:
+    def get_file_upload(self, collection_id: int, path: str) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         normalized_path = _normalize_relpath_or_raise(path)
 
@@ -806,7 +815,7 @@ class SqlAlchemyCollectionService:
                 tus_url=file_record.tus_url,
             )
 
-    def cancel_file_upload(self, collection_id: str, path: str) -> None:
+    def cancel_file_upload(self, collection_id: int, path: str) -> None:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         normalized_path = _normalize_relpath_or_raise(path)
 
@@ -854,7 +863,7 @@ class SqlAlchemyCollectionService:
 
     def get(
         self,
-        collection_id: str,
+        collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionSummary:
@@ -903,9 +912,20 @@ class SqlAlchemyCollectionService:
             filters.append(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
             if needle is not None:
                 filters.append(
-                    func.lower(CollectionRecord.id).like(
-                        _like_pattern(needle),
-                        escape="\\",
+                    or_(
+                        cast(CollectionRecord.id, String).like(
+                            _like_pattern(needle),
+                            escape="\\",
+                        ),
+                        exists(
+                            select(1).where(
+                                CollectionTagRecord.collection_id == CollectionRecord.id,
+                                func.lower(CollectionTagRecord.tag_id).like(
+                                    _like_pattern(needle),
+                                    escape="\\",
+                                ),
+                            )
+                        ),
                     )
                 )
             total = int(
@@ -926,7 +946,7 @@ class SqlAlchemyCollectionService:
             rows = session.execute(collections_stmt).all()
             aggregates = archive_copy_aggregates(
                 session,
-                collection_ids=[str(row[0].id) for row in rows],
+                collection_ids=[row[0].id for row in rows],
             )
 
             return CollectionListPage(
@@ -958,7 +978,10 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             files.label("files"),
             bytes_total.label("bytes"),
         )
-        .options(selectinload(CollectionRecord.archive_copies))
+        .options(
+            selectinload(CollectionRecord.archive_copies),
+            selectinload(CollectionRecord.tags),
+        )
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),
         {
             "id": CollectionRecord.id,
@@ -971,11 +994,12 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
 def _collection_summary_from_row(
     row: Any,
     *,
-    aggregates: dict[tuple[str, str], ArchiveCopyAggregate],
+    aggregates: dict[tuple[int, str], ArchiveCopyAggregate],
 ) -> CollectionSummary:
     collection = row[0]
     return CollectionSummary(
         id=CollectionId(collection.id),
+        tags=tuple(sorted(assignment.tag_id for assignment in collection.tags)),
         files=int(row.files),
         bytes=int(row.bytes),
         archive_copies=tuple(
@@ -985,7 +1009,7 @@ def _collection_summary_from_row(
     )
 
 
-def _normalize_collection_id_or_raise(raw: str) -> str:
+def _normalize_collection_id_or_raise(raw: str | int) -> int:
     try:
         return normalize_collection_id(raw)
     except PathNormalizationError as exc:
@@ -1002,18 +1026,43 @@ def _like_prefix(value: str) -> str:
     return f"{escaped}%"
 
 
-def _normalize_upload_slug_or_raise(raw: str) -> str:
+def _normalize_tag_or_raise(raw: str) -> str:
     try:
-        return normalize_upload_slug(raw)
+        normalized = normalize_tag(raw)
     except PathNormalizationError as exc:
         raise BadRequest(str(exc)) from exc
+    if raw != normalized:
+        raise BadRequest("tag id must be canonical")
+    return normalized
 
 
-def _normalize_upload_timestamp_or_raise(raw: str) -> str:
-    try:
-        return normalize_upload_timestamp(raw)
-    except PathNormalizationError as exc:
-        raise BadRequest(str(exc)) from exc
+def _normalize_tags(tags: Sequence[str]) -> tuple[str, ...]:
+    normalized = tuple(sorted({_normalize_tag_or_raise(str(tag)) for tag in tags}))
+    if len(normalized) != len(tags):
+        raise BadRequest("collection tags must not contain duplicates")
+    return normalized
+
+
+def _normalize_idempotency_key(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise BadRequest("idempotency_key must not be empty")
+    if normalized != value:
+        raise BadRequest("idempotency_key must not have surrounding whitespace")
+    if len(normalized) > 200:
+        raise BadRequest("idempotency_key must not exceed 200 characters")
+    return normalized
+
+
+def _tags_json(tags: Sequence[str]) -> str:
+    return json.dumps(list(tags), separators=(",", ":"))
+
+
+def _upload_tags(upload: CollectionUploadRecord) -> tuple[str, ...]:
+    decoded = json.loads(upload.tags_json)
+    if not isinstance(decoded, list) or not all(isinstance(tag, str) for tag in decoded):
+        raise RuntimeError("collection upload tags are invalid")
+    return tuple(decoded)
 
 
 def _normalize_relpath_or_raise(raw: str) -> str:
@@ -1064,18 +1113,6 @@ def _manifest_entry_payload(
     }
 
 
-def _ensure_requested_collection_id_matches(
-    existing_collection_id: str,
-    requested_collection_id: str | None,
-) -> None:
-    if requested_collection_id is None or existing_collection_id == requested_collection_id:
-        return
-    raise Conflict(
-        "collection upload already exists for this slug and manifest with a different "
-        f"timestamp: {existing_collection_id}"
-    )
-
-
 def _ensure_upload_archive_store_matches(
     upload: CollectionUploadRecord,
     archive_store: str,
@@ -1087,25 +1124,57 @@ def _ensure_upload_archive_store_matches(
     )
 
 
-def _find_matching_collection(
+def _ensure_upload_tags_match(
+    upload: CollectionUploadRecord,
+    tags: Sequence[str],
+) -> None:
+    if _upload_tags(upload) != tuple(tags):
+        raise Conflict("tags are immutable for an existing collection upload")
+
+
+def _ensure_upload_files_match(
+    upload: CollectionUploadRecord,
+    files: Sequence[_UploadManifestEntry],
+) -> None:
+    current = sorted(
+        (_manifest_entry_payload(file_record) for file_record in upload.files),
+        key=lambda item: item["path"],
+    )
+    if current != list(files):
+        raise Conflict("files are immutable for an existing collection upload")
+
+
+def _ensure_finalized_request_matches(
     session: Session,
     *,
-    upload_slug: str,
-    files: Sequence[_UploadManifestEntry],
-) -> CollectionRecord | None:
-    stats = _collection_manifest_match_stats(CollectionFileRecord, files)
-    return session.scalar(
-        select(CollectionRecord)
-        .options(selectinload(CollectionRecord.archive_copies))
-        .join(stats, stats.c.collection_id == CollectionRecord.id)
-        .where(
-            CollectionRecord.slug == upload_slug,
-            stats.c.files_total == len(files),
-            stats.c.files_matching == len(files),
-        )
-        .order_by(CollectionRecord.id.asc())
-        .limit(1)
+    collection: CollectionRecord,
+    tags: Sequence[str],
+    files: Sequence[_UploadManifestEntry] | None,
+    initiator_app: str,
+) -> None:
+    if collection.created_by_app != initiator_app:
+        raise Conflict("idempotency_key belongs to a different application")
+    current_tags = tuple(
+        session.scalars(
+            select(CollectionTagRecord.tag_id)
+            .where(CollectionTagRecord.collection_id == collection.id)
+            .order_by(CollectionTagRecord.tag_id)
+        ).all()
     )
+    if current_tags != tuple(tags):
+        raise Conflict("idempotency_key already finalized with different tags")
+    if files is None:
+        return
+    current_files = [
+        {"path": row.path, "bytes": row.bytes, "sha256": row.sha256}
+        for row in session.scalars(
+            select(CollectionFileRecord)
+            .where(CollectionFileRecord.collection_id == collection.id)
+            .order_by(CollectionFileRecord.path)
+        ).all()
+    ]
+    if current_files != list(files):
+        raise Conflict("idempotency_key already finalized with different files")
 
 
 def _ensure_upload_initiator_matches(upload: CollectionUploadRecord, app: str) -> None:
@@ -1123,101 +1192,13 @@ def _ensure_event_context_matches(
         raise Conflict("event_context is immutable for an existing collection upload")
 
 
-def _find_matching_upload(
-    session: Session,
-    *,
-    upload_slug: str,
-    files: Sequence[_UploadManifestEntry],
-    upload_store: UploadStore,
-) -> CollectionUploadRecord | None:
-    stats = _collection_manifest_match_stats(CollectionUploadFileRecord, files)
-    upload = session.scalar(
-        select(CollectionUploadRecord)
-        .options(selectinload(CollectionUploadRecord.files))
-        .join(stats, stats.c.collection_id == CollectionUploadRecord.collection_id)
-        .where(
-            or_(
-                CollectionUploadRecord.state.is_(None),
-                ~CollectionUploadRecord.state.in_(("open", "canceled", "expired")),
-            ),
-            CollectionUploadRecord.slug == upload_slug,
-            stats.c.files_total == len(files),
-            stats.c.files_matching == len(files),
-        )
-        .order_by(CollectionUploadRecord.collection_id.asc())
-        .limit(1)
-    )
-    if upload is None:
-        return None
-    return _sync_and_expire_collection_upload(
-        session,
-        upload,
-        upload_store=upload_store,
-    )
-
-
-def _find_open_upload_session(
-    session: Session,
-    *,
-    upload_slug: str,
-) -> CollectionUploadRecord | None:
-    return session.scalar(
-        select(CollectionUploadRecord)
-        .options(selectinload(CollectionUploadRecord.files))
-        .where(
-            CollectionUploadRecord.state == "open",
-            CollectionUploadRecord.slug == upload_slug,
-        )
-        .order_by(CollectionUploadRecord.collection_id.asc())
-        .limit(1)
-    )
-
-
-def _require_slug(session: Session, slug: str) -> CollectionSlugRecord:
-    record = session.get(CollectionSlugRecord, slug)
-    if record is None:
-        raise NotFound(f"collection slug not found: {slug}")
-    return record
-
-
-def _collection_manifest_match_stats(
-    file_model: Any,
-    files: Sequence[_UploadManifestEntry],
-) -> Any:
-    matches_expected_file = or_(
-        *(
-            and_(
-                file_model.path == file["path"],
-                file_model.bytes == file["bytes"],
-                file_model.sha256 == file["sha256"],
-            )
-            for file in files
-        )
-    )
-    return (
-        select(
-            file_model.collection_id.label("collection_id"),
-            func.count(file_model.path).label("files_total"),
-            func.coalesce(
-                func.sum(case((matches_expected_file, 1), else_=0)),
-                0,
-            ).label("files_matching"),
-        )
-        .group_by(file_model.collection_id)
-        .subquery()
-    )
-
-
-def _mint_collection_id(upload_slug: str) -> str:
-    stamp = utc_now().replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ")
-    return collection_id_for_upload(upload_slug, stamp)
-
-
-def _ensure_collection_id_unused(session: Session, collection_id: str) -> None:
-    if session.get(CollectionRecord, collection_id) is not None:
-        raise Conflict(f"collection already exists: {collection_id}")
-    if session.get(CollectionUploadRecord, collection_id) is not None:
-        raise Conflict(f"collection upload already exists with different manifest: {collection_id}")
+def _require_tags(session: Session, tags: Sequence[str]) -> None:
+    if not tags:
+        return
+    existing = set(session.scalars(select(TagRecord.id).where(TagRecord.id.in_(tags))).all())
+    missing = sorted(set(tags) - existing)
+    if missing:
+        raise NotFound(f"tag not found: {missing[0]}")
 
 
 def _get_upload_file(
@@ -1231,7 +1212,7 @@ def _get_upload_file(
 
 def _get_upload_file_record(
     session: Session,
-    collection_id: str,
+    collection_id: int,
     path: str,
 ) -> CollectionUploadFileRecord:
     file_record = session.get(CollectionUploadFileRecord, (collection_id, path))
@@ -1266,7 +1247,7 @@ def _collection_upload_target_path(file_record: CollectionUploadFileRecord) -> s
 
 def _collection_upload_registration_target_path(
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     secret_envelope: str,
 ) -> str:
@@ -1277,7 +1258,7 @@ def _collection_upload_registration_target_path(
 def _new_collection_upload_file(
     config: RuntimeConfig,
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     file_order: int,
     bytes: int,
@@ -1475,7 +1456,7 @@ def _collection_upload_session_is_idle_expired(
 
 def _collection_upload_has_no_live_file_state(
     session: Session,
-    collection_id: str,
+    collection_id: int,
 ) -> bool:
     session.flush()
     has_live_state = session.scalar(
@@ -1525,7 +1506,7 @@ def _forget_collection_upload(
         list(executor.map(forget_target, targets))
 
 
-def _collection_upload_is_complete_for_session(session: Session, collection_id: str) -> bool:
+def _collection_upload_is_complete_for_session(session: Session, collection_id: int) -> bool:
     stats = _collection_upload_stats(session, collection_id)
     return stats["files_total"] > 0 and stats["files_uploaded"] == stats["files_total"]
 
@@ -1559,7 +1540,7 @@ def _collection_upload_event_details(
 
 def _collection_upload_stats(
     session: Session,
-    collection_id: str,
+    collection_id: int,
 ) -> _CollectionUploadStats:
     session.flush()
     uploaded = and_(
@@ -1635,6 +1616,7 @@ def _finalized_collection_upload_payload(
         ).get((collection.id, archive.store), (0, 0))[1]
     return {
         "collection_id": collection.id,
+        "tags": list(summary.tags),
         "ingest_source": collection.ingest_source,
         "archive_store": archive.store if archive is not None else archive_store,
         "state": "finalized",
@@ -1695,6 +1677,7 @@ def _collection_upload_payload(
     ).one()
     return {
         "collection_id": upload.collection_id,
+        "tags": list(_upload_tags(upload)),
         "ingest_source": upload.ingest_source,
         "archive_store": upload.archive_store,
         "state": state or _collection_upload_session_state(upload, stats),
@@ -1748,7 +1731,8 @@ def _collection_upload_file_payload(
 
 def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]:
     return {
-        "id": str(summary.id),
+        "id": summary.id,
+        "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,
         "archive_copies": [_archive_copy_payload(copy) for copy in summary.archive_copies],
@@ -1808,7 +1792,7 @@ def _safe_parse_utc_timestamp(value: str | None) -> datetime | None:
 def _collection_archive_status(
     archive: CollectionArchiveCopyRecord,
     *,
-    aggregates: dict[tuple[str, str], ArchiveCopyAggregate],
+    aggregates: dict[tuple[int, str], ArchiveCopyAggregate],
 ) -> ArchiveCopyStatus:
     object_count, stored_bytes = aggregates.get((archive.collection_id, archive.store), (0, 0))
     return ArchiveCopyStatus(

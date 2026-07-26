@@ -55,8 +55,8 @@ class MunchyJobRequest(BaseModel):
     input_upload_id: str = Field(min_length=1)
     workflow_mode: WorkflowMode
     handoff_destination: HandoffDestination
-    collection_slug: str = Field(min_length=1)
-    collection_timestamp: str = Field(min_length=1)
+    collection_tags: tuple[str, ...] = ()
+    run_id: str = Field(min_length=1)
     files: tuple[InputFileSpec, ...] = Field(min_length=1)
     groups: dict[str, EncodeProfile]
     storage_hint: StorageHint

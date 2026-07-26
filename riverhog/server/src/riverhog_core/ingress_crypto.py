@@ -34,7 +34,7 @@ class IngressEncryption:
 def create_ingress_encryption(
     config: RuntimeConfig,
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     plaintext_bytes: int,
 ) -> IngressEncryption:
@@ -65,7 +65,7 @@ def create_ingress_encryption(
 def ingress_encryption_descriptor(
     config: RuntimeConfig,
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     plaintext_bytes: int,
     ciphertext_bytes: int,
@@ -93,7 +93,7 @@ def iter_ingress_plaintext(
     upload_store: UploadStore,
     *,
     target_path: str,
-    collection_id: str,
+    collection_id: int,
     path: str,
     plaintext_bytes: int,
     secret_envelope: str,
@@ -162,14 +162,14 @@ def _envelope_key(config: RuntimeConfig) -> bytes:
     ).digest()
 
 
-def _aad(collection_id: str, path: str) -> bytes:
+def _aad(collection_id: int, path: str) -> bytes:
     return f"{collection_id}\0{path}".encode()
 
 
 def _wrap_secret(
     config: RuntimeConfig,
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     secret: str,
 ) -> str:
@@ -185,7 +185,7 @@ def _wrap_secret(
 def _unwrap_secret(
     config: RuntimeConfig,
     *,
-    collection_id: str,
+    collection_id: int,
     path: str,
     envelope: str,
 ) -> str:

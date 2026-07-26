@@ -10,12 +10,12 @@ runner = CliRunner()
 
 
 def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> None:
-    calls: list[tuple[str, str, str | None]] = []
+    calls: list[tuple[int, str, str | None]] = []
 
     class FakeClient:
         def create_or_resume_archive_copy(
             self,
-            collection_id: str,
+            collection_id: int,
             *,
             destination_store: str,
             source_store: str | None = None,
@@ -39,7 +39,7 @@ def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> No
         [
             "archive",
             "copy",
-            "docs/20260102T030405Z",
+            "1",
             "--from",
             "b2",
             "--to",
@@ -50,4 +50,4 @@ def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> No
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["state"] == "requested"
-    assert calls == [("docs/20260102T030405Z", "deep", "b2")]
+    assert calls == [(1, "deep", "b2")]

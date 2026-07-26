@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from riverhog_api.auth import require_application, require_permission
 from riverhog_core.app_permissions import (
     CATALOG_READ,
-    COLLECTIONS_UPLOAD,
+    COLLECTIONS_CREATE,
     KEYS_MANAGE,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
@@ -22,9 +22,10 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import (
     AppKeyRecord,
     CollectionRecord,
-    CollectionSlugRecord,
+    CollectionTagRecord,
     KeyDownloadReservationRecord,
     RetrievalJobRecord,
+    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
@@ -67,17 +68,17 @@ def create_key(
     )
 
 
-def seed_slug(
+def seed_tag(
     config: RuntimeConfig,
-    slug: str,
+    tag: str,
     *,
-    collection_id: str | None = None,
+    collection_id: int | None = None,
 ) -> None:
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         session.add(
-            CollectionSlugRecord(
-                id=slug,
+            TagRecord(
+                id=tag,
                 created_by_app="bootstrap",
                 created_by_key_id=None,
                 created_at="2026-07-24T00:00:00.000000Z",
@@ -87,8 +88,21 @@ def seed_slug(
             session.add(
                 CollectionRecord(
                     id=collection_id,
-                    slug=slug,
-                    manifest_etag="0" * 64,
+                    creation_idempotency_key=f"fixture-{collection_id}",
+                    content_etag="0" * 64,
+                    record_etag="1" * 64,
+                    metadata_revision=1,
+                    metadata_updated_at="2026-07-24T00:00:00.000000Z",
+                    created_by_app="fixture",
+                    created_at="2026-07-24T00:00:00.000000Z",
+                )
+            )
+            session.add(
+                CollectionTagRecord(
+                    collection_id=collection_id,
+                    tag_id=tag,
+                    assigned_by_app="fixture",
+                    assigned_at="2026-07-24T00:00:00.000000Z",
                 )
             )
 
@@ -115,8 +129,7 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
         record = session.get(AppKeyRecord, str(created["id"]))
         assert record is not None
         assert (
-            record.token_sha256
-            == hashlib.sha256(str(created["token"]).encode("utf-8")).hexdigest()
+            record.token_sha256 == hashlib.sha256(str(created["token"]).encode("utf-8")).hexdigest()
         )
         assert not hasattr(record, "token")
 
@@ -131,19 +144,19 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
     assert listed["keys"] == [{key: created[key] for key in created if key != "token"}]
 
 
-def test_action_specific_slug_access_does_not_leak_between_operations(tmp_path: Path) -> None:
+def test_action_specific_tag_access_does_not_leak_between_operations(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    seed_slug(config, "camera")
+    seed_tag(config, "camera")
     created = create_key(
         service,
         app="uploader",
-        access=(ApplicationAccess(COLLECTIONS_UPLOAD, "slug:camera"),),
+        access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:camera"),),
     )
     principal = service.authenticate(str(created["token"]))
     assert principal is not None
-    assert principal.allows_slug(COLLECTIONS_UPLOAD, "camera")
-    assert not principal.allows_slug(CATALOG_READ, "camera")
-    assert not principal.allows_slug(RETRIEVAL_MANAGE, "camera")
+    assert principal.allows_tag(COLLECTIONS_CREATE, "camera")
+    assert not principal.allows_tag(CATALOG_READ, "camera")
+    assert not principal.allows_tag(RETRIEVAL_MANAGE, "camera")
 
 
 def test_app_keys_rotate_revoke_expire_and_authenticate_without_restart(tmp_path: Path) -> None:
@@ -170,54 +183,45 @@ def test_app_keys_rotate_revoke_expire_and_authenticate_without_restart(tmp_path
 
 def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    collection_id = "docs/20260102T030405Z"
-    seed_slug(config, "docs", collection_id=collection_id)
-    seed_slug(config, "other")
+    collection_id = 1
+    seed_tag(config, "docs", collection_id=collection_id)
+    seed_tag(config, "other")
     manager = ApplicationPrincipal(
         app="manager",
         key_id="manager-key",
         access=frozenset(
             {
                 ApplicationAccess(KEYS_MANAGE),
-                ApplicationAccess(CATALOG_READ, "slug:docs"),
+                ApplicationAccess(CATALOG_READ, "tag:docs"),
             }
         ),
     )
 
-    delegated = create_key(
-        service,
-        app="reader",
-        access=(ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),),
-        grantor=manager,
-    )
-    assert delegated["access"] == [
-        {"permission": CATALOG_READ, "resource": f"collection:{collection_id}"}
-    ]
     with pytest.raises(Forbidden, match="cannot grant"):
         create_key(
             service,
             app="uploader",
-            access=(ApplicationAccess(COLLECTIONS_UPLOAD, "slug:docs"),),
+            access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:docs"),),
             grantor=manager,
         )
     with pytest.raises(Forbidden, match="cannot grant"):
         create_key(
             service,
             app="other-reader",
-            access=(ApplicationAccess(CATALOG_READ, "slug:other"),),
+            access=(ApplicationAccess(CATALOG_READ, "tag:other"),),
             grantor=manager,
         )
 
 
 def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    seed_slug(config, "photos")
+    seed_tag(config, "photos")
     created = create_key(
         service,
         app="review",
         access=(
-            ApplicationAccess(CATALOG_READ, "slug:photos"),
-            ApplicationAccess(RETRIEVAL_MANAGE, "slug:photos"),
+            ApplicationAccess(CATALOG_READ, "tag:photos"),
+            ApplicationAccess(RETRIEVAL_MANAGE, "tag:photos"),
         ),
     )
     factory = make_session_factory(config.database_url)
@@ -243,16 +247,16 @@ def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path)
         all_items=True,
     )
     assert listed["total"] == 1
-    assert listed["access"][0]["id"] == "retrieval:manage=slug:photos"
+    assert listed["access"][0]["id"] == "retrieval:manage=tag:photos"
 
 
 def test_access_targets_must_exist(tmp_path: Path) -> None:
     service, _config = app_keys(tmp_path)
-    with pytest.raises(NotFound, match="collection slug not found"):
+    with pytest.raises(NotFound, match="tag not found"):
         create_key(
             service,
             app="uploader",
-            access=(ApplicationAccess(COLLECTIONS_UPLOAD, "slug:missing"),),
+            access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:missing"),),
         )
 
 
@@ -351,5 +355,5 @@ def test_application_authentication_distinguishes_missing_and_forbidden_permissi
         require_application(None, container)
     assert missing.value.status_code == 401
     with pytest.raises(HTTPException) as forbidden:
-        require_permission(COLLECTIONS_UPLOAD)(credentials, container)
+        require_permission(COLLECTIONS_CREATE)(credentials, container)
     assert forbidden.value.status_code == 403

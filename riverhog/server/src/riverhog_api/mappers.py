@@ -52,7 +52,7 @@ def map_archive_usage_totals(summary: ArchiveUsageTotals) -> dict[str, object]:
 
 def map_archive_usage_collection(summary: ArchiveUsageCollection) -> dict[str, object]:
     return {
-        "id": str(summary.id),
+        "id": summary.id,
         "bytes": summary.bytes,
         "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
         "measured_storage_bytes": summary.measured_storage_bytes,
@@ -94,7 +94,8 @@ def map_archive_usage_report(summary: ArchiveUsageReport) -> dict[str, object]:
 
 def map_collection(summary: CollectionSummary) -> dict[str, object]:
     return {
-        "id": str(summary.id),
+        "id": summary.id,
+        "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,
         "archive_copies": [map_archive(copy) for copy in summary.archive_copies],

@@ -28,13 +28,13 @@ class CollectionManifestOut(RiverhogModel):
 
 
 class CreateArchiveCopyRequest(RiverhogModel):
-    collection_id: str
+    collection_id: int
     destination_store: str
     source_store: str | None = None
 
 
 class ArchiveCopyJobOut(RiverhogModel):
-    collection_id: str
+    collection_id: int
     source_store: str | None
     destination_store: str
     state: Literal["requested", "waiting", "copying", "completed", "failed"]
@@ -45,7 +45,7 @@ class ArchiveCopyJobOut(RiverhogModel):
 
 
 class ArchiveCopyRetirementRequest(RiverhogModel):
-    collection_id: str
+    collection_id: int
     store: str
 
 
@@ -54,7 +54,7 @@ class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
 
 
 class ArchiveCopyRetirementObjectOut(RiverhogModel):
-    kind: Literal["pack", "file", "segment", "manifest", "proof"]
+    kind: Literal["pack", "file", "segment", "manifest", "proof", "metadata"]
     object_path: str
     stored_bytes: int
 
@@ -74,7 +74,7 @@ class ArchiveCopyRetirementRetainedOut(RiverhogModel):
 
 class ArchiveCopyRetirementPlanOut(RiverhogModel):
     status: Literal["ready", "blocked", "retiring"]
-    collection_id: str
+    collection_id: int
     store: str
     warning: str
     expires_at: str
@@ -89,7 +89,7 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
 
 class ArchiveCopyRetirementResultOut(RiverhogModel):
     status: Literal["retired", "already_absent"]
-    collection_id: str
+    collection_id: int
     store: str
     remote_storage_bytes: int
     verified_store: str | None

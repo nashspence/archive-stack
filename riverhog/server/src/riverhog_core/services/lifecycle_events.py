@@ -138,7 +138,7 @@ class SqlAlchemyLifecycleEventService:
         self,
         *,
         type: str,
-        collection_id: str,
+        collection_id: int,
         details: Mapping[str, Any] | None = None,
         terminal: bool = False,
         initiator: ApplicationPrincipal | None = None,
@@ -177,7 +177,7 @@ class SqlAlchemyLifecycleEventService:
         if expires_at is not None and context_json is not None:
             self.expire_context(
                 owner_app=owner_app,
-                subject=collection_id,
+                subject=str(collection_id),
                 expires_at=expires_at,
                 session=session,
             )
@@ -190,7 +190,7 @@ class SqlAlchemyLifecycleEventService:
         return self.emit(
             owner_app=owner_app,
             type=type,
-            subject=collection_id,
+            subject=str(collection_id),
             data=data,
             context_json=context_json,
             context_expires_at=expires_at,

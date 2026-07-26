@@ -13,13 +13,13 @@ from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_core.app_permissions import (
     CATALOG_READ,
-    COLLECTIONS_UPLOAD,
+    COLLECTIONS_CREATE,
     KEYS_MANAGE,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
 )
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionRecord, CollectionSlugRecord
+from riverhog_core.catalog_models import CollectionRecord, TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
@@ -37,7 +37,7 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
     initialize_db(config.database_url)
     with session_scope(make_session_factory(config.database_url)) as session:
         session.add(
-            CollectionSlugRecord(
+            TagRecord(
                 id="docs",
                 created_by_app="bootstrap",
                 created_by_key_id=None,
@@ -46,9 +46,14 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
         )
         session.add(
             CollectionRecord(
-                id="docs/20260724T000000Z",
-                slug="docs",
-                manifest_etag="0" * 64,
+                id=1,
+                creation_idempotency_key="fixture-1",
+                content_etag="0" * 64,
+                record_etag="1" * 64,
+                metadata_revision=1,
+                metadata_updated_at="2026-07-24T00:00:00.000000Z",
+                created_by_app="fixture",
+                created_at="2026-07-24T00:00:00.000000Z",
             )
         )
     service = SqlAlchemyAppKeyService(config)
@@ -86,8 +91,8 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
                 json={
                     "access": [
                         {"permission": KEYS_MANAGE},
-                        {"permission": CATALOG_READ, "resource": "slug:docs"},
-                        {"permission": RETRIEVAL_MANAGE, "resource": "slug:docs"},
+                        {"permission": CATALOG_READ, "resource": "collection:1"},
+                        {"permission": RETRIEVAL_MANAGE, "resource": "collection:1"},
                     ],
                 },
                 headers=bootstrap_headers,
@@ -106,11 +111,11 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
                     "access": [
                         {
                             "permission": CATALOG_READ,
-                            "resource": "collection:docs/20260724T000000Z",
+                            "resource": "collection:1",
                         },
                         {
                             "permission": RETRIEVAL_MANAGE,
-                            "resource": "collection:docs/20260724T000000Z",
+                            "resource": "collection:1",
                         },
                     ],
                 },
@@ -122,24 +127,24 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             assert delegated_key["access"] == [
                 {
                     "permission": CATALOG_READ,
-                    "resource": "collection:docs/20260724T000000Z",
+                    "resource": "collection:1",
                 },
                 {
                     "permission": RETRIEVAL_MANAGE,
-                    "resource": "collection:docs/20260724T000000Z",
+                    "resource": "collection:1",
                 },
             ]
             outside_grant = await client.post(
                 "/v1/apps/reader/keys",
                 json={
-                    "access": [{"permission": CATALOG_READ, "resource": "slug:other"}],
+                    "access": [{"permission": CATALOG_READ, "resource": "tag:other"}],
                 },
                 headers=manager_headers,
             )
             assert outside_grant.status_code == 403
             forbidden = await client.post(
                 "/v1/apps/uploader/keys",
-                json={"access": [{"permission": COLLECTIONS_UPLOAD}]},
+                json={"access": [{"permission": COLLECTIONS_CREATE}]},
                 headers=manager_headers,
             )
             assert forbidden.status_code == 403

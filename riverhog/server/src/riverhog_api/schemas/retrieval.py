@@ -8,7 +8,7 @@ from riverhog_api.schemas.common import RiverhogModel
 
 
 class RetrievalFileIn(RiverhogModel):
-    collection_id: str
+    collection_id: int
     path: str
 
 
@@ -31,7 +31,7 @@ class RetrievalPlanObjectPlacementOut(RiverhogModel):
 
 
 class RetrievalPlanObjectOut(RiverhogModel):
-    collection_id: str
+    collection_id: int
     source_store: str
     object_id: str
     kind: Literal["pack", "file", "segment", "manifest", "proof"]

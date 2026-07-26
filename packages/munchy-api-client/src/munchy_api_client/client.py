@@ -71,8 +71,7 @@ class SubmissionUploadRequest:
     template: str
     files: tuple[SubmissionInputFile, ...]
     inputs: dict[str, str] = field(default_factory=dict)
-    collection_slug: str | None = None
-    collection_timestamp: str | None = None
+    collection_tags: tuple[str, ...] = ()
     run_id: str | None = None
     handoff_on_failure: str = "preserve_for_resume"
     event_context: dict[str, Any] = field(default_factory=dict)
@@ -120,11 +119,9 @@ def submission_payload(
     }
     if include_id:
         payload["submission_id"] = request.submission_id
-    for key, value in (
-        ("collection_slug", request.collection_slug),
-        ("collection_timestamp", request.collection_timestamp),
-        ("run_id", request.run_id),
-    ):
+    if request.collection_tags:
+        payload["collection_tags"] = list(request.collection_tags)
+    for key, value in (("run_id", request.run_id),):
         if value is not None:
             payload[key] = value
     if request.event_context:
@@ -789,7 +786,7 @@ def format_job_status_line(job: dict[str, Any]) -> str:
 
 def format_job_summary_line(job: dict[str, Any]) -> str:
     job_id = str(job.get("job_id") or job.get("id") or "unknown")
-    collection = str(job.get("collection_slug") or "").strip()
+    collection_tags = ", ".join(str(tag) for tag in job.get("collection_tags") or [])
     review = job.get("review")
     review_label = ""
     if isinstance(review, dict):
@@ -799,7 +796,7 @@ def format_job_summary_line(job: dict[str, Any]) -> str:
             review_label = f"{route_id}/{profile_id}"
         elif route_id:
             review_label = route_id
-    label = collection or review_label
+    label = collection_tags or review_label
     prefix = job_id if not label else f"{job_id} [{label}]"
     return f"{prefix} | {format_job_status_line(job)}"
 
@@ -866,9 +863,9 @@ def format_job_failure(job: dict[str, Any], *, label: str = "job") -> str:
     job_id = str(job.get("job_id") or job.get("id") or "").strip()
     if job_id:
         lines.append(f"- job: {job_id}")
-    collection = str(job.get("collection_slug") or "").strip()
-    if collection:
-        lines.append(f"- collection: {collection}")
+    collection_tags = [str(tag) for tag in job.get("collection_tags") or []]
+    if collection_tags:
+        lines.append(f"- collection tags: {', '.join(collection_tags)}")
     review = job.get("review")
     if isinstance(review, dict):
         route_id = str(review.get("route_id") or "").strip()

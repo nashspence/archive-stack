@@ -11,13 +11,14 @@ from riverhog_core.app_permissions import (
     ARCHIVES_MANAGE,
     ARCHIVES_READ,
     CATALOG_READ,
+    COLLECTION_TAGS_MANAGE,
+    COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
-    COLLECTIONS_UPLOAD,
     EVENTS_READ,
     KEYS_MANAGE,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
-    SLUGS_CREATE,
+    TAGS_CREATE,
     ApplicationAccess,
     ApplicationPrincipal,
 )
@@ -101,13 +102,17 @@ RetrievalManager = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(RETRIEVAL_MANAGE))),
 ]
-CollectionUploader = Annotated[
+CollectionCreator = Annotated[
     ApplicationPrincipal,
-    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_UPLOAD))),
+    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),
 ]
-SlugCreator = Annotated[
+CollectionTagManager = Annotated[
     ApplicationPrincipal,
-    Depends(cast(Callable[..., object], require_permission(SLUGS_CREATE))),
+    Depends(cast(Callable[..., object], require_permission(COLLECTION_TAGS_MANAGE))),
+]
+TagCreator = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(TAGS_CREATE))),
 ]
 CollectionDeleter = Annotated[
     ApplicationPrincipal,
@@ -140,13 +145,14 @@ __all__ = [
     "ArchiveReader",
     "BOOTSTRAP_TOKEN_ENV",
     "CatalogReader",
+    "CollectionCreator",
     "CollectionDeleter",
-    "CollectionUploader",
+    "CollectionTagManager",
     "EventsReader",
     "KeyManager",
     "QuotaManager",
     "RetrievalManager",
-    "SlugCreator",
+    "TagCreator",
     "authenticate_authorization_header",
     "authenticate_token",
     "require_application",

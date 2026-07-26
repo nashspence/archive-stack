@@ -8,18 +8,14 @@ from riverhog_protocol.errors import InvalidPath
 @pytest.mark.parametrize(
     ("raw", "canonical"),
     [
-        ("photos/", "photos/"),
+        ("12/", "12/"),
         (
-            "photos/20250712T213200Z/",
-            "photos/20250712T213200Z/",
+            "12/raw/",
+            "12/raw/",
         ),
         (
-            "photos/20250712T213200Z/raw/",
-            "photos/20250712T213200Z/raw/",
-        ),
-        (
-            "photos/20250712T213200Z/raw/file.jpg",
-            "photos/20250712T213200Z/raw/file.jpg",
+            "12/raw/file.jpg",
+            "12/raw/file.jpg",
         ),
     ],
 )
@@ -31,12 +27,12 @@ def test_parse_logical_path_valid(raw: str, canonical: str) -> None:
     "raw",
     [
         "",
-        "photos",
-        "photos/20250712T213200Z",
-        "photos/20250712T213200Z/./raw/",
-        "photos/20250712T213200Z/a/../b",
-        "photos/20250712T213200Z//raw/",
-        "/photos/20250712T213200Z/",
+        "12",
+        "photos/",
+        "12/./raw/",
+        "12/a/../b",
+        "12//raw/",
+        "/12/",
     ],
 )
 def test_parse_logical_path_invalid(raw: str) -> None:

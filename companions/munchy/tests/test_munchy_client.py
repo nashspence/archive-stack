@@ -102,7 +102,7 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     line = format_job_summary_line(
         {
             "job_id": "job-1",
-            "collection_slug": "example-q49",
+            "collection_tags": ["example-q49"],
             "state": "running",
             "phase": "eager_archive:pipeline=3/3",
             "upload_progress": {
@@ -572,7 +572,7 @@ def test_format_job_summary_line_includes_encoder_queue_position() -> None:
     line = format_job_summary_line(
         {
             "job_id": "job-2",
-            "collection_slug": "example-q49",
+            "collection_tags": ["example-q49"],
             "state": "queued",
             "phase": "queued",
             "queue": {
@@ -618,7 +618,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
     failure = format_job_failure(
         {
             "job_id": "job-1",
-            "collection_slug": "camera-collection-archive",
+            "collection_tags": ["camera-collection-archive"],
             "state": "failed",
             "phase": "handoff",
             "error": "rclone failed after many retries",
@@ -636,7 +636,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
 
     assert failure.startswith("review job did not succeed:")
     assert "- job: job-1" in failure
-    assert "- collection: camera-collection-archive" in failure
+    assert "- collection tags: camera-collection-archive" in failure
     assert "- status: job: failed" in failure
     assert "- error: rclone failed after many retries" in failure
     assert "- gpu statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
@@ -713,7 +713,7 @@ def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
             "state": "succeeded",
             "handoff": {"state": "transferring", "safe_to_delete": False},
             "handoff_progress": {
-                "external_id": "camera/20260101T000000Z",
+                "external_id": 42,
                 "state": "archiving",
                 "safe_to_delete": False,
             },
@@ -723,7 +723,7 @@ def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
             "state": "succeeded",
             "handoff": {"state": "complete", "safe_to_delete": True},
             "handoff_progress": {
-                "external_id": "camera/20260101T000000Z",
+                "external_id": 42,
                 "state": "finalized",
                 "safe_to_delete": True,
             },
@@ -749,7 +749,7 @@ def test_job_finished_cleanly_requires_safe_handoff() -> None:
             "state": "succeeded",
             "handoff": {"state": "transferring", "safe_to_delete": False},
             "handoff_progress": {
-                "external_id": "camera/20260101T000000Z",
+                "external_id": 42,
                 "state": "archiving",
                 "safe_to_delete": False,
             },

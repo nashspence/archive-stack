@@ -20,7 +20,7 @@ from riverhog_api.schemas.retrieval import (
 router = APIRouter(tags=["retrieval"])
 
 
-def _files(request: RetrievalPlanRequest) -> list[tuple[str, str]]:
+def _files(request: RetrievalPlanRequest) -> list[tuple[int, str]]:
     return [(item.collection_id, item.path) for item in request.files]
 
 
@@ -117,7 +117,7 @@ def get_retrieval_object_content(
     principal: RetrievalManager,
     container: ContainerDep,
     http_request: Request,
-    collection_id: str = Query(),
+    collection_id: int = Query(),
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
 ) -> Response:
     total_bytes, sha256 = container.retrieval.object_content_metadata(
@@ -163,7 +163,7 @@ def get_retrieval_content(
     principal: RetrievalManager,
     container: ContainerDep,
     http_request: Request,
-    collection_id: str = Query(),
+    collection_id: int = Query(),
     path: str = Query(),
     range_header: Annotated[str | None, Header(alias="Range")] = None,
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,

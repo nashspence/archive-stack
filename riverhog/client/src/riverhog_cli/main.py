@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import chain
@@ -33,9 +34,7 @@ from riverhog_api_client.ingress import (
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_protocol.paths import (
     PathNormalizationError,
-    collection_id_for_upload,
-    normalize_upload_slug,
-    normalize_upload_timestamp,
+    normalize_tag,
 )
 from time_formats import parse_duration, utc_timestamp_now
 
@@ -49,6 +48,7 @@ from riverhog_cli.output import (
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_summary,
+    format_collection_tags,
     format_collection_upload,
     format_collection_upload_plan,
     format_collections,
@@ -56,26 +56,28 @@ from riverhog_cli.output import (
     format_download_quotas,
     format_file_selectors,
     format_find,
-    format_slug,
-    format_slugs,
+    format_tag,
+    format_tags,
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
 
 app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
+collection_tag_app = typer.Typer(help="Collection tag assignments.")
 archive_app = typer.Typer(help="Archive-store operations.")
 application_app = typer.Typer(help="Application access.")
 app_key_app = typer.Typer(help="Application key management.")
 app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
-slug_app = typer.Typer(help="Collection slug catalog.")
+tag_app = typer.Typer(help="Collection tag catalog.")
 app_key_app.add_typer(app_key_access_app, name="access")
 app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
+collection_app.add_typer(collection_tag_app, name="tag")
 app.add_typer(archive_app, name="archive")
 app.add_typer(application_app, name="app")
-app.add_typer(slug_app, name="slug")
+app.add_typer(tag_app, name="tag")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -132,7 +134,7 @@ def _root(ctx: typer.Context) -> None:
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 _APP_KEY_ACCESS_SORT_FIELDS = {"permission", "resource", "created_at"}
-_SLUG_SORT_FIELDS = {"id", "created_at", "collections", "uploads"}
+_TAG_SORT_FIELDS = {"id", "created_at", "collections"}
 _APP_KEY_QUOTA_SORT_FIELDS = {
     "app",
     "key_id",
@@ -224,48 +226,48 @@ def app_list_cmd(
     emit(payload if json_mode else format_apps(payload), json_mode=json_mode)
 
 
-@slug_app.command("create")
-def slug_create_cmd(
-    slug: Annotated[str, typer.Argument(help="Canonical slug id")],
+@tag_app.command("create")
+def tag_create_cmd(
+    tag: Annotated[str, typer.Argument(help="Canonical tag id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Create a slug and grant this key upload access to it."""
+    """Create a tag and grant this key collection-creation access to it."""
 
-    payload = client().create_slug(slug)
-    emit(payload if json_mode else format_slug(payload), json_mode=json_mode)
+    payload = client().create_tag(tag)
+    emit(payload if json_mode else format_tag(payload), json_mode=json_mode)
 
 
-@slug_app.command("show")
-def slug_show_cmd(
-    slug: Annotated[str, typer.Argument(help="Slug id")],
+@tag_app.command("show")
+def tag_show_cmd(
+    tag: Annotated[str, typer.Argument(help="Tag id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Show one catalog-visible slug."""
+    """Show one catalog-visible tag."""
 
-    payload = client().get_slug(slug)
-    emit(payload if json_mode else format_slug(payload), json_mode=json_mode)
+    payload = client().get_tag(tag)
+    emit(payload if json_mode else format_tag(payload), json_mode=json_mode)
 
 
-@slug_app.command("list")
-def slug_list_cmd(
+@tag_app.command("list")
+def tag_list_cmd(
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Substring match over slug ids"),
+        typer.Option("--query", "-q", help="Substring match over tag ids"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching slug")] = False,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one slug id per line")] = False,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching tag")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one tag id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List catalog-visible slugs."""
+    """List catalog-visible tags."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    normalized_order = _list_order(sort, order, fields=_SLUG_SORT_FIELDS)
-    payload = client().list_slugs(
+    normalized_order = _list_order(sort, order, fields=_TAG_SORT_FIELDS)
+    payload = client().list_tags(
         page=page,
         per_page=per_page,
         q=query,
@@ -274,9 +276,41 @@ def slug_list_cmd(
         all_items=all_items,
     )
     if ids:
-        emit(format_list_ids(payload, "slugs"), json_mode=False)
+        emit(format_list_ids(payload, "tags"), json_mode=False)
         return
-    emit(payload if json_mode else format_slugs(payload), json_mode=json_mode)
+    emit(payload if json_mode else format_tags(payload), json_mode=json_mode)
+
+
+@collection_tag_app.command("list")
+def collection_tag_list_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one tag id per line")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List the tags assigned to one collection."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    payload = client().get_collection_tags(collection_id)
+    if ids:
+        emit("\n".join(str(tag) for tag in payload.get("tags", [])), json_mode=False)
+        return
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
+
+
+@collection_tag_app.command("replace")
+def collection_tag_replace_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tags: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Replacement tag; repeat to assign more than one"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Replace all tags assigned to one collection."""
+
+    payload = client().replace_collection_tags(collection_id, tags or [])
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
 
 
 @app_key_app.command("create")
@@ -744,20 +778,20 @@ def _retry_transient_upload_operation(
 
 def _create_or_resume_collection_upload(
     api: ApiClient,
-    slug: str,
+    idempotency_key: str,
+    tags: list[str],
     manifest: list[CollectionManifestEntry],
     *,
     ingest_source: str | None,
-    upload_timestamp: str | None,
     archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session create/resume",
         lambda: api.create_or_resume_collection_upload(
-            slug,
+            idempotency_key,
+            tags,
             manifest,
             ingest_source=ingest_source,
-            upload_timestamp=upload_timestamp,
             archive_store=archive_store,
         ),
     )
@@ -765,18 +799,18 @@ def _create_or_resume_collection_upload(
 
 def _create_or_resume_collection_upload_session(
     api: ApiClient,
-    slug: str,
+    idempotency_key: str,
+    tags: list[str],
     *,
     ingest_source: str | None,
-    upload_timestamp: str | None,
     archive_store: str | None = None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session open/resume",
         lambda: api.create_or_resume_collection_upload_session(
-            slug,
+            idempotency_key,
+            tags,
             ingest_source=ingest_source,
-            upload_timestamp=upload_timestamp,
             archive_store=archive_store,
         ),
     )
@@ -784,7 +818,7 @@ def _create_or_resume_collection_upload_session(
 
 def _register_collection_upload_session_file(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     file_payload: CollectionManifestEntry,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
@@ -795,7 +829,7 @@ def _register_collection_upload_session_file(
 
 def _complete_collection_upload_session(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session complete",
@@ -805,7 +839,7 @@ def _complete_collection_upload_session(
 
 def _create_or_resume_collection_file_upload(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     path_value: str,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
@@ -834,33 +868,26 @@ def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
 
 def _collection_upload_dry_run_plan(
     *,
-    slug: str,
+    idempotency_key: str,
+    tags: list[str],
     root: Path,
     manifest: list[CollectionManifestEntry],
-    upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
     session_mode: bool,
     archive_store: str | None = None,
 ) -> dict[str, object]:
     try:
-        normalized_slug = normalize_upload_slug(slug)
-        normalized_timestamp = (
-            normalize_upload_timestamp(upload_timestamp) if upload_timestamp is not None else None
-        )
+        normalized_tags = sorted({normalize_tag(tag) for tag in tags})
     except PathNormalizationError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    collection_id = (
-        collection_id_for_upload(normalized_slug, normalized_timestamp)
-        if normalized_timestamp is not None
-        else None
-    )
+    if len(normalized_tags) != len(tags):
+        raise typer.BadParameter("collection tags must not contain duplicates")
     return {
         "dry_run": True,
         "status": "would_upload",
-        "slug": slug,
-        "normalized_slug": normalized_slug,
-        "upload_timestamp": normalized_timestamp,
-        "collection_id": collection_id,
+        "idempotency_key": idempotency_key,
+        "tags": normalized_tags,
+        "collection_id": None,
         "root": str(root),
         "ingest_source": str(root),
         "files_total": len(manifest),
@@ -882,7 +909,7 @@ def _iter_local_collection_paths(root: Path) -> Iterator[Path]:
 
 def _upload_collection_file(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     source_path: Path,
     file_payload: Mapping[str, object],
     *,
@@ -1061,7 +1088,7 @@ def _upload_collection_file(
 
 def _upload_collection_files(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     resolved_root: Path,
     upload_files: list[CollectionUploadFilePayload],
     *,
@@ -1130,7 +1157,7 @@ def _upload_collection_files(
 
 
 def _finalized_collection_upload_payload(
-    collection_id: str,
+    collection_id: int,
     manifest: list[CollectionManifestEntry] | None,
     collection: dict[str, object],
 ) -> dict[str, object]:
@@ -1185,7 +1212,7 @@ def _finalized_collection_upload_payload(
 
 def _wait_for_collection_state(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     manifest: list[CollectionManifestEntry] | None,
     *,
     wait_mode: UploadWaitMode,
@@ -1292,7 +1319,7 @@ def _wait_for_collection_state(
 
 def _wait_for_finalized_collection(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     manifest: list[CollectionManifestEntry] | None,
     *,
     status: Callable[[str], None] | None = None,
@@ -1308,7 +1335,7 @@ def _wait_for_finalized_collection(
 
 def _wait_for_staged_collection(
     api: ApiClient,
-    collection_id: str,
+    collection_id: int,
     manifest: list[CollectionManifestEntry],
     *,
     status: Callable[[str], None] | None = None,
@@ -1324,11 +1351,11 @@ def _wait_for_staged_collection(
 
 def _upload_collection_via_session(
     api: ApiClient,
-    slug: str,
+    idempotency_key: str,
+    tags: list[str],
     resolved_root: Path,
     *,
     ingest_source: str | None,
-    upload_timestamp: str | None,
     wait_mode: UploadWaitMode,
     archive_store: str | None = None,
     json_mode: bool = False,
@@ -1344,12 +1371,12 @@ def _upload_collection_via_session(
     _log_upload(f"Opening incremental upload session for {resolved_root}")
     session_payload = _create_or_resume_collection_upload_session(
         api,
-        slug,
+        idempotency_key,
+        tags,
         ingest_source=ingest_source,
-        upload_timestamp=upload_timestamp,
         archive_store=archive_store,
     )
-    collection_id = str(session_payload["collection_id"])
+    collection_id = cast(int, session_payload["collection_id"])
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
 
     manifest_by_path: dict[str, CollectionManifestEntry] = {}
@@ -1706,13 +1733,16 @@ def collection_list_cmd(
 
 @collection_app.command("upload")
 def upload_cmd(
-    slug: Annotated[str, typer.Argument(help="Human-readable collection slug")],
     root: Annotated[Path, typer.Argument(help="Local collection root directory")],
-    upload_timestamp: Annotated[
+    tags: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Existing collection tag; repeat to assign more than one"),
+    ] = None,
+    idempotency_key: Annotated[
         str | None,
         typer.Option(
-            "--timestamp",
-            help="Use UTC upload timestamp YYYYMMDDTHHMMSSZ in the collection id",
+            "--idempotency-key",
+            help="Stable retry key; defaults to a new UUID for this invocation",
         ),
     ] = None,
     archive_store: Annotated[
@@ -1745,6 +1775,8 @@ def upload_cmd(
     """Upload a local directory as a collection."""
 
     wait_mode = _normalize_upload_wait_mode(wait)
+    resolved_idempotency_key = idempotency_key or uuid.uuid4().hex
+    resolved_tags = tags or []
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
         raise typer.BadParameter("collection source must be a directory")
@@ -1760,10 +1792,10 @@ def upload_cmd(
             f"in {time.monotonic() - manifest_started_at:.1f}s"
         )
         payload = _collection_upload_dry_run_plan(
-            slug=slug,
+            idempotency_key=resolved_idempotency_key,
+            tags=resolved_tags,
             root=resolved_root,
             manifest=manifest,
-            upload_timestamp=upload_timestamp,
             wait_mode=wait_mode,
             session_mode=session_mode,
             archive_store=archive_store,
@@ -1776,10 +1808,10 @@ def upload_cmd(
     if session_mode:
         payload = _upload_collection_via_session(
             api,
-            slug,
+            resolved_idempotency_key,
+            resolved_tags,
             resolved_root,
             ingest_source=str(resolved_root),
-            upload_timestamp=upload_timestamp,
             archive_store=archive_store,
             wait_mode=wait_mode,
             json_mode=json_mode,
@@ -1801,13 +1833,13 @@ def upload_cmd(
     )
     payload = _create_or_resume_collection_upload(
         api,
-        slug,
+        resolved_idempotency_key,
+        resolved_tags,
         manifest,
         ingest_source=str(resolved_root),
-        upload_timestamp=upload_timestamp,
         archive_store=archive_store,
     )
-    collection_id = str(payload["collection_id"])
+    collection_id = cast(int, payload["collection_id"])
     upload_files = _response_upload_files(payload)
     uploaded_bytes = sum(
         min(int(file_payload.get("uploaded_bytes", 0)), int(file_payload["bytes"]))
@@ -1889,7 +1921,7 @@ def upload_cmd(
 
 @collection_app.command("cancel")
 def upload_cancel_cmd(
-    collection_id: Annotated[str, typer.Argument(help="Open collection upload session id")],
+    collection_id: Annotated[int, typer.Argument(help="Open collection upload session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Cancel an open collection upload session."""
@@ -1901,7 +1933,7 @@ def upload_cancel_cmd(
 @collection_app.command("watch")
 def upload_watch_cmd(
     collection_id: Annotated[
-        str,
+        int,
         typer.Argument(help="Collection upload/session id to monitor until finalized"),
     ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1931,7 +1963,7 @@ def find_cmd(
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "logical_path",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     collection: Annotated[
-        str | None,
+        int | None,
         typer.Option("--collection", help="Restrict results to one collection"),
     ] = None,
     all_items: Annotated[
@@ -1973,7 +2005,7 @@ def find_cmd(
 
 @collection_app.command("show")
 def show_cmd(
-    collection: Annotated[str, typer.Argument(help="Collection id")],
+    collection: Annotated[int, typer.Argument(help="Collection id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Show collection storage and archive details."""
@@ -1990,7 +2022,7 @@ def show_cmd(
 
 @collection_app.command("delete")
 def collection_delete_cmd(
-    collection_id: Annotated[str, typer.Argument(help="Exact accepted collection id")],
+    collection_id: Annotated[int, typer.Argument(help="Exact accepted collection id")],
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -2038,7 +2070,7 @@ def collection_delete_cmd(
     challenge = plan.get("challenge")
     if not isinstance(challenge, str) or not challenge:
         raise typer.BadParameter("server did not return a collection deletion challenge")
-    typed_id = typer.prompt("Type the complete collection id to delete")
+    typed_id = typer.prompt("Type the complete collection id to delete", type=int)
     if typed_id != collection_id:
         typer.echo("Collection id did not match; nothing was deleted.", err=True)
         raise typer.Exit(1)
@@ -2048,7 +2080,7 @@ def collection_delete_cmd(
 
 @archive_app.command("copy")
 def archive_copy_cmd(
-    collection_id: Annotated[str, typer.Argument(help="Exact collection id")],
+    collection_id: Annotated[int, typer.Argument(help="Exact collection id")],
     destination_store: Annotated[
         str,
         typer.Option("--to", help="Destination archive store"),
@@ -2071,7 +2103,7 @@ def archive_copy_cmd(
 
 @archive_app.command("retire")
 def archive_retire_cmd(
-    collection_id: Annotated[str, typer.Argument(help="Exact collection id")],
+    collection_id: Annotated[int, typer.Argument(help="Exact collection id")],
     store: Annotated[
         str,
         typer.Option("--store", help="Archive store whose copy will be retired"),
@@ -2127,7 +2159,7 @@ def archive_retire_cmd(
     challenge = plan.get("challenge")
     if not isinstance(challenge, str) or not challenge:
         raise typer.BadParameter("server did not return an archive copy retirement challenge")
-    typed_id = typer.prompt("Type the complete collection id to retire from this store")
+    typed_id = typer.prompt("Type the complete collection id to retire from this store", type=int)
     if typed_id != collection_id:
         typer.echo("Collection id did not match; nothing was retired.", err=True)
         raise typer.Exit(1)

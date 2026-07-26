@@ -4,10 +4,9 @@ ATTEMPT_LIST_SORT_FIELDS = frozenset(
     {
         "attempt_number",
         "bytes",
-        "collection_slug",
-        "collection_timestamp",
         "created_at",
         "file_count",
+        "run_id",
         "target_submission_id",
         "state",
         "target",
@@ -18,7 +17,6 @@ ATTEMPT_LIST_SORT_FIELDS = frozenset(
 SOURCE_LIST_SORT_FIELDS = frozenset(
     {
         "cadence",
-        "collection_slug",
         "created_at",
         "enabled",
         "id",

@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 runner = CliRunner()
 
-_COLLECTION_ID = "docs/20260102T030405Z"
+_COLLECTION_ID = 1
 
 
 def _plan() -> dict[str, object]:
@@ -50,7 +50,7 @@ def _plan() -> dict[str, object]:
 def test_archive_retire_plan_emits_custody_warning_and_challenge(monkeypatch) -> None:
     class FakeClient:
         def plan_archive_copy_retirement(
-            self, collection_id: str, *, store: str
+            self, collection_id: int, *, store: str
         ) -> dict[str, object]:
             assert (collection_id, store) == (_COLLECTION_ID, "b2")
             return _plan()
@@ -59,7 +59,7 @@ def test_archive_retire_plan_emits_custody_warning_and_challenge(monkeypatch) ->
 
     result = runner.invoke(
         app,
-        ["archive", "retire", _COLLECTION_ID, "--store", "b2", "--plan"],
+        ["archive", "retire", str(_COLLECTION_ID), "--store", "b2", "--plan"],
     )
 
     assert result.exit_code == 0
@@ -69,17 +69,17 @@ def test_archive_retire_plan_emits_custody_warning_and_challenge(monkeypatch) ->
 
 
 def test_archive_retire_interactive_requires_exact_collection_and_store(monkeypatch) -> None:
-    calls: list[tuple[str, str, str]] = []
+    calls: list[tuple[int, str, str]] = []
 
     class FakeClient:
         def plan_archive_copy_retirement(
-            self, collection_id: str, *, store: str
+            self, collection_id: int, *, store: str
         ) -> dict[str, object]:
             return _plan()
 
         def retire_archive_copy(
             self,
-            collection_id: str,
+            collection_id: int,
             *,
             store: str,
             challenge: str,
@@ -97,7 +97,7 @@ def test_archive_retire_interactive_requires_exact_collection_and_store(monkeypa
 
     result = runner.invoke(
         app,
-        ["archive", "retire", _COLLECTION_ID, "--store", "b2"],
+        ["archive", "retire", str(_COLLECTION_ID), "--store", "b2"],
         input=f"{_COLLECTION_ID}\nb2\n",
     )
 
@@ -112,7 +112,7 @@ def test_archive_retire_noninteractive_uses_prior_challenge(monkeypatch) -> None
     class FakeClient:
         def retire_archive_copy(
             self,
-            collection_id: str,
+            collection_id: int,
             *,
             store: str,
             challenge: str,
@@ -133,7 +133,7 @@ def test_archive_retire_noninteractive_uses_prior_challenge(monkeypatch) -> None
         [
             "archive",
             "retire",
-            _COLLECTION_ID,
+            str(_COLLECTION_ID),
             "--store",
             "b2",
             "--confirm",

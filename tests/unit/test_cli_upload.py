@@ -22,7 +22,7 @@ from typer.testing import CliRunner
 from tests.unit.db_helpers import sqlite_url
 
 RUNNER = CliRunner()
-COLLECTION_ID = "collection/20250101T000000Z"
+COLLECTION_ID = "1"
 
 
 def _descriptor(tmp_path: Path, *, content: bytes) -> dict[str, object]:
@@ -86,10 +86,11 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
         [
             "collection",
             "upload",
-            "My Trip",
             str(root),
-            "--timestamp",
-            "20260713T120000Z",
+            "--tag",
+            "my-trip",
+            "--idempotency-key",
+            "test-upload",
             "--archive-store",
             "b2",
             "--dry-run",
@@ -99,7 +100,9 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["collection_id"] == "my-trip/20260713T120000Z"
+    assert payload["collection_id"] is None
+    assert payload["tags"] == ["my-trip"]
+    assert payload["idempotency_key"] == "test-upload"
     assert payload["archive_store"] == "b2"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
 
@@ -118,7 +121,7 @@ def test_upload_streams_client_encrypted_bytes_and_reports_plaintext_progress(
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, collection_id: str, path: str
+            self, collection_id: int, path: str
         ) -> dict[str, object]:
             assert (collection_id, path) == (COLLECTION_ID, "clip.bin")
             return {
@@ -174,7 +177,7 @@ def test_resumed_upload_reports_existing_plaintext_without_counting_it_as_new_pr
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, _collection_id: str, _path: str
+            self, _collection_id: int, _path: str
         ) -> dict[str, object]:
             return {
                 "upload_url": "https://uploads.test/opaque",
@@ -299,7 +302,7 @@ def test_upload_resumes_after_server_retains_a_partial_ciphertext_chunk(
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, _collection_id: str, _path: str
+            self, _collection_id: int, _path: str
         ) -> dict[str, object]:
             return {
                 "upload_url": "https://uploads.test/opaque",
@@ -367,7 +370,7 @@ def test_upload_resends_from_an_authoritative_storage_rollback(
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, _collection_id: str, _path: str
+            self, _collection_id: int, _path: str
         ) -> dict[str, object]:
             return {
                 "upload_url": "https://uploads.test/opaque",
@@ -417,7 +420,7 @@ def test_upload_stops_after_repeated_storage_rollbacks(
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, _collection_id: str, _path: str
+            self, _collection_id: int, _path: str
         ) -> dict[str, object]:
             return {
                 "upload_url": "https://uploads.test/opaque",
@@ -462,7 +465,7 @@ def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
 
     class Api:
         def create_or_resume_collection_file_upload(
-            self, _collection_id: str, _path: str
+            self, _collection_id: int, _path: str
         ) -> dict[str, object]:
             return {
                 "upload_url": "https://uploads.test/opaque",
@@ -525,10 +528,10 @@ def test_staged_wait_requires_authoritative_server_handoff(
     monkeypatch.setattr(riverhog_main.time, "sleep", sleeps.append)
 
     class Api:
-        def get_collection(self, _collection_id: str) -> dict[str, object]:
+        def get_collection(self, _collection_id: int) -> dict[str, object]:
             raise riverhog_main.NotFound("not finalized")
 
-        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             return payloads.pop(0)
 
@@ -550,18 +553,16 @@ def test_staged_wait_requires_authoritative_server_handoff(
 
 def test_staged_wait_accepts_a_collection_that_already_finalized() -> None:
     class Api:
-        def get_collection_upload(self, _collection_id: str) -> dict[str, object]:
+        def get_collection_upload(self, _collection_id: int) -> dict[str, object]:
             raise riverhog_main.NotFound("upload finalized")
 
-        def get_collection(self, collection_id: str) -> dict[str, object]:
+        def get_collection(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             return {
                 "id": collection_id,
                 "files": 1,
                 "bytes": 10,
-                "archive_copies": [
-                    {"store": "b2", "state": "uploaded", "stored_bytes": 12}
-                ],
+                "archive_copies": [{"store": "b2", "state": "uploaded", "stored_bytes": 12}],
             }
 
     payload, state = riverhog_main._wait_for_staged_collection(
@@ -630,7 +631,7 @@ def test_incremental_upload_uses_bounded_persistent_workers(
 
         def register_collection_upload_session_file(
             self,
-            collection_id: str,
+            collection_id: int,
             entry: dict[str, object],
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
@@ -638,12 +639,12 @@ def test_incremental_upload_uses_bounded_persistent_workers(
                 registered[str(entry["path"])] = dict(entry)
             return {"files": [{**entry, "upload_state": "pending", "uploaded_bytes": 0}]}
 
-        def get_collection_upload(self, collection_id: str) -> dict[str, object]:
+        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             with lock:
                 return {"files": list(registered.values())}
 
-        def complete_collection_upload_session(self, collection_id: str) -> dict[str, object]:
+        def complete_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             nonlocal complete_calls
             assert collection_id == COLLECTION_ID
             with lock:
@@ -663,7 +664,7 @@ def test_incremental_upload_uses_bounded_persistent_workers(
 
     def upload_file(
         _api: Api,
-        _collection_id: str,
+        _collection_id: int,
         _source_path: Path,
         file_payload: dict[str, object],
         *,
@@ -694,10 +695,10 @@ def test_incremental_upload_uses_bounded_persistent_workers(
     monkeypatch.setattr(riverhog_main, "_upload_collection_file", upload_file)
     payload = riverhog_main._upload_collection_via_session(
         main_api,  # type: ignore[arg-type]
-        "collection",
+        "test-upload",
+        ["collection"],
         root,
         ingest_source=str(root),
-        upload_timestamp="20250101T000000Z",
         wait_mode="staged",
         file_concurrency=concurrency,
         api_factory=api_factory,  # type: ignore[arg-type]
@@ -738,18 +739,18 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
 
         def register_collection_upload_session_file(
             self,
-            _collection_id: str,
+            _collection_id: int,
             entry: dict[str, object],
         ) -> dict[str, object]:
             with lock:
                 registered[str(entry["path"])] = dict(entry)
             return {"files": [{**entry, "upload_state": "pending", "uploaded_bytes": 0}]}
 
-        def get_collection_upload(self, _collection_id: str) -> dict[str, object]:
+        def get_collection_upload(self, _collection_id: int) -> dict[str, object]:
             with lock:
                 return {"files": list(registered.values())}
 
-        def complete_collection_upload_session(self, _collection_id: str) -> dict[str, object]:
+        def complete_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
             nonlocal complete_calls
             with lock:
                 assert uploaded == set(registered) == {"a.bin", "b.bin", "c.bin"}
@@ -763,7 +764,7 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
 
     def upload_file(
         _api: Api,
-        _collection_id: str,
+        _collection_id: int,
         _source_path: Path,
         file_payload: dict[str, object],
         **_kwargs: object,
@@ -785,10 +786,10 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
     with pytest.raises(RuntimeError, match="worker failed"):
         riverhog_main._upload_collection_via_session(
             api,  # type: ignore[arg-type]
-            "collection",
+            "test-upload",
+            ["collection"],
             root,
             ingest_source=str(root),
-            upload_timestamp="20250101T000000Z",
             wait_mode="staged",
             file_concurrency=2,
             api_factory=lambda: Api(),  # type: ignore[arg-type]
@@ -799,10 +800,10 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
     fail = False
     payload = riverhog_main._upload_collection_via_session(
         api,  # type: ignore[arg-type]
-        "collection",
+        "test-upload",
+        ["collection"],
         root,
         ingest_source=str(root),
-        upload_timestamp="20250101T000000Z",
         wait_mode="staged",
         file_concurrency=2,
         api_factory=lambda: Api(),  # type: ignore[arg-type]
