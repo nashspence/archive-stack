@@ -13,6 +13,7 @@ from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionRecord,
+    CollectionTagRecord,
     CollectionUploadRecord,
     LifecycleEventRecord,
     RetrievalJobRecord,
@@ -186,6 +187,18 @@ class SqlAlchemyLifecycleEventService:
             "actor": actor_data(app="riverhog"),
             "initiator": actor_data(app=owner_app, key_id=owner_key_id),
         }
+        if collection is not None:
+            data["collection_created_at"] = collection.created_at
+            data["collection_tags"] = list(
+                session.scalars(
+                    select(CollectionTagRecord.tag_id)
+                    .where(CollectionTagRecord.collection_id == collection_id)
+                    .order_by(CollectionTagRecord.tag_id)
+                )
+            )
+        elif upload is not None:
+            data["collection_created_at"] = upload.opened_at
+            data["collection_tags"] = sorted(json.loads(upload.tags_json))
         data.update(details or {})
         return self.emit(
             owner_app=owner_app,

@@ -18,6 +18,7 @@ from riverhog_core.catalog_models import CollectionMetadataPublicationRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.tags import SqlAlchemyTagService
 
 from tests.fixtures.crypto import FixtureProofStamper
@@ -116,6 +117,21 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
 
     assert tags.replace_collection(1, ("camera",), principal=manager)["metadata_revision"] == 2
     assert tags.replace_collection(1, ("reviewed",), principal=manager)["metadata_revision"] == 3
+
+    events = SqlAlchemyLifecycleEventService(config).page(
+        owner_app="operator",
+        after=None,
+        limit=100,
+    ).events
+    assert [event.data["collection_tags"] for event in events] == [
+        ["camera"],
+        ["reviewed"],
+    ]
+    assert all(
+        event.data["collection_created_at"] == "2026-07-15T00:00:00.000000Z"
+        for event in events
+    )
+    assert all("tags" not in event.data for event in events)
 
     archive_store = MemoryArchiveStore()
     publisher = SqlAlchemyArchiveUploadService(

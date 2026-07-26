@@ -37,6 +37,7 @@ class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
 
 class CollectionSummaryOut(RiverhogModel):
     id: int
+    created_at: str
     tags: list[str]
     files: int
     bytes: int
@@ -118,6 +119,7 @@ class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
 
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: int
+    created_at: str
     tags: list[str]
     ingest_source: str | None
     archive_store: str

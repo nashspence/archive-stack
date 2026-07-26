@@ -1578,6 +1578,7 @@ def _archive_wait_status(payload: dict[str, object]) -> str:
 
 _COLLECTION_SORT_FIELDS = {
     "id",
+    "created_at",
     "bytes",
     "files",
 }
@@ -1619,6 +1620,8 @@ def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str,
         key: collection[key]
         for key in (
             "id",
+            "created_at",
+            "tags",
             "files",
             "bytes",
         )

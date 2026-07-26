@@ -39,6 +39,8 @@ def test_collection_output_leads_with_archive_copy_state() -> None:
     rendered = format_collection_summary(
         {
             "id": 42,
+            "created_at": "2026-07-26T18:43:00.000000Z",
+            "tags": ["family", "sony-a6700"],
             "files": 2,
             "bytes": 100,
             "archive_copies": [
@@ -52,6 +54,8 @@ def test_collection_output_leads_with_archive_copy_state() -> None:
     )
 
     assert "collection 42" in rendered
+    assert "created: 2026-07-26T18:43:00.000000Z" in rendered
+    assert "tags: family, sony-a6700" in rendered
     assert "archive copies: deep=uploaded" in rendered
 
 
@@ -64,6 +68,8 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
             "collections": [
                 {
                     "id": 42,
+                    "created_at": "2026-07-26T18:43:00.000000Z",
+                    "tags": ["family"],
                     "files": 1,
                     "bytes": 10,
                     "archive_copies": [{"store": "deep", "state": "uploaded"}],
@@ -86,6 +92,8 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
     )
 
     assert "archive=deep=uploaded" in collections
+    assert "created=2026-07-26T18:43:00.000000Z" in collections
+    assert "tags=family" in collections
     assert "42/a.txt" in files
 
 

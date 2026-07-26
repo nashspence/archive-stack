@@ -12,6 +12,8 @@ from riverhog_cli import local as local_materialization
 from typer.testing import CliRunner
 
 COLLECTION_ID = 1
+CREATED_AT = "2026-07-19T20:55:09.123456Z"
+PROJECTION_NAME = "20260719T205509Z--1"
 CONTENT = b"locally materialized archive file\n"
 SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {
@@ -84,6 +86,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_api_client.client", "ApiClient"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
+        ("riverhog_protocol.paths", "normalize_tag"),
     }
 
 
@@ -95,6 +98,8 @@ class FakeApi:
         self.downloaded_objects: list[str] = []
         self.job_state = "ready"
         self.selection = [(COLLECTION_ID, "notes/one.txt")]
+        self.tags = ["docs"]
+        self.catalog_revision = 0
 
     def __enter__(self) -> FakeApi:
         return self
@@ -104,12 +109,20 @@ class FakeApi:
 
     def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
-        return MANIFEST
+        return {**MANIFEST, "tags": list(self.tags)}
+
+    def get_collection(self, collection_id: int) -> dict[str, Any]:
+        assert collection_id == COLLECTION_ID
+        return {
+            "id": collection_id,
+            "created_at": CREATED_AT,
+            "tags": list(self.tags),
+        }
 
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
-        if self.deleted and after < 1:
+        if self.deleted and after < self.catalog_revision + 1:
             return {
-                "cursor": 1,
+                "cursor": self.catalog_revision + 1,
                 "changes": [
                     {
                         "collection_id": COLLECTION_ID,
@@ -118,7 +131,22 @@ class FakeApi:
                     }
                 ],
             }
+        if after < self.catalog_revision:
+            return {
+                "cursor": self.catalog_revision,
+                "changes": [
+                    {
+                        "collection_id": COLLECTION_ID,
+                        "change": "updated",
+                        "etag": hashlib.sha256(b"updated").hexdigest(),
+                    }
+                ],
+            }
         return {"cursor": after, "changes": []}
+
+    def replace_tags(self, *tags: str) -> None:
+        self.tags = sorted(tags)
+        self.catalog_revision += 1
 
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)
@@ -202,8 +230,19 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     assert synced.exit_code == 0
     assert output.read_bytes() == CONTENT
     assert (target / str(COLLECTION_ID) / "notes/two.txt").read_bytes() == SECOND_CONTENT
+    projection = target / "by-tag" / "docs" / PROJECTION_NAME
+    assert projection.is_symlink()
+    assert projection.resolve() == target / str(COLLECTION_ID)
     assert api.downloaded_objects == ["data-000000"]
     assert api.acknowledged == ["job-1"]
+    assert runner.invoke(local_materialization.local_app, ["audit"]).exit_code == 0
+
+    projection.unlink()
+    audit = runner.invoke(local_materialization.local_app, ["audit"])
+    assert audit.exit_code == 1
+    assert f"projection missing: by-tag/docs/{PROJECTION_NAME}" in audit.stdout
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+    assert projection.is_symlink()
 
     output.write_bytes(b"unexpected local bytes")
     repaired = runner.invoke(local_materialization.local_app, ["repair"])
@@ -217,6 +256,7 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
 
     assert after_deletion.exit_code == 0
     assert output.read_bytes() == CONTENT
+    assert projection.is_symlink()
     assert "remote-deleted" in listed.stdout
 
 
@@ -238,6 +278,7 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     removed = runner.invoke(local_materialization.local_app, ["remove", str(COLLECTION_ID)])
 
     assert removed.exit_code == 0
+    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
     assert api.canceled == ["job-1"]
     assert runner.invoke(local_materialization.local_app, ["list"]).stdout == ""
 
@@ -269,6 +310,61 @@ def test_local_evict_removes_retained_nested_collection_tree(
 
     assert evicted.exit_code == 0
     assert not (target / str(COLLECTION_ID)).exists()
+    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
+
+
+def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+
+    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+    collection_dir = target / "1"
+
+    api.replace_tags("photos", "reviewed")
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+
+    assert collection_dir.joinpath("notes/one.txt").read_bytes() == CONTENT
+    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
+    for tag in ("photos", "reviewed"):
+        link = target / "by-tag" / tag / PROJECTION_NAME
+        assert link.is_symlink()
+        assert link.resolve() == collection_dir
+
+    api.replace_tags()
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+
+    assert not (target / "by-tag" / "photos" / PROJECTION_NAME).exists()
+    assert not (target / "by-tag" / "reviewed" / PROJECTION_NAME).exists()
+    untagged = target / "untagged" / PROJECTION_NAME
+    assert untagged.is_symlink()
+    assert untagged.resolve() == collection_dir
+
+
+def test_local_projection_refuses_an_unmanaged_root_symlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    elsewhere = tmp_path / "elsewhere"
+    target.mkdir()
+    elsewhere.mkdir()
+    (target / "by-tag").symlink_to(elsewhere, target_is_directory=True)
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+
+    result = CliRunner().invoke(local_materialization.local_app, ["sync"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert "projection root must not be a symlink" in str(result.exception)
 
 
 def test_local_materializer_assembles_sequential_archive_segments(tmp_path: Path) -> None:

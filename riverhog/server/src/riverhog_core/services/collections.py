@@ -77,6 +77,7 @@ _UPLOAD_FORGET_WORKERS = 4
 _UPLOAD_SYNC_WORKERS = 4
 _COLLECTION_SORT_FIELDS = {
     "id",
+    "created_at",
     "bytes",
     "files",
 }
@@ -1016,6 +1017,7 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),
         {
             "id": CollectionRecord.id,
+            "created_at": CollectionRecord.created_at,
             "bytes": bytes_total,
             "files": files,
         },
@@ -1030,6 +1032,7 @@ def _collection_summary_from_row(
     collection = row[0]
     return CollectionSummary(
         id=CollectionId(collection.id),
+        created_at=collection.created_at,
         tags=tuple(sorted(assignment.tag_id for assignment in collection.tags)),
         files=int(row.files),
         bytes=int(row.bytes),
@@ -1647,6 +1650,7 @@ def _finalized_collection_upload_payload(
         ).get((collection.id, archive.store), (0, 0))[1]
     return {
         "collection_id": collection.id,
+        "created_at": collection.created_at,
         "tags": list(summary.tags),
         "ingest_source": collection.ingest_source,
         "archive_store": archive.store if archive is not None else archive_store,
@@ -1708,6 +1712,7 @@ def _collection_upload_payload(
     ).one()
     return {
         "collection_id": upload.collection_id,
+        "created_at": upload.opened_at,
         "tags": list(_upload_tags(upload)),
         "ingest_source": upload.ingest_source,
         "archive_store": upload.archive_store,
@@ -1763,6 +1768,7 @@ def _collection_upload_file_payload(
 def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]:
     return {
         "id": summary.id,
+        "created_at": summary.created_at,
         "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,

@@ -62,3 +62,10 @@ def test_collection_file_preflight_requires_client_side_encryption() -> None:
     assert encryption["properties"]["format"]["const"] == "age-v1-scrypt-resumable"
     assert encryption["properties"]["passphrase"]["writeOnly"] is True
     assert {"encryption", "length", "offset", "archive_store"} <= set(response["required"])
+
+
+def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+
+    assert "created_at" in schemas["CollectionSummaryOut"]["required"]
+    assert "created_at" in schemas["CollectionUploadSessionOut"]["required"]

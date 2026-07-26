@@ -14,6 +14,7 @@ from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventServ
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
+    UPLOADED_AT,
     MemoryArchiveStore,
     as_archive_store,
     seed_archive_copy,
@@ -138,6 +139,8 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
         "app": "riverhog-client",
         "key_id": "client-key",
     }
+    assert event.data["collection_created_at"] == UPLOADED_AT
+    assert event.data["collection_tags"] == ["docs"]
     assert event.data["context"] == {"workflow": "direct-delete"}
     assert events.page(owner_app="munchy", after=None, limit=100).events == []
     assert events.page(owner_app="jeb", after=None, limit=100).events == []

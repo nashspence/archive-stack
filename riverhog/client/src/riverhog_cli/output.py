@@ -39,7 +39,9 @@ def format_collections(payload: Mapping[str, object]) -> str:
         tags = collection.get("tags")
         tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
         lines.append(
-            f"- {collection.get('id', 'unknown')}  files={collection.get('files', 0)}  "
+            f"- {collection.get('id', 'unknown')}  "
+            f"created={collection.get('created_at', 'unknown')}  "
+            f"files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
             f"tags={tag_text or 'none'}  "
             f"archive={_archive_copy_states(collection)}"
@@ -55,6 +57,7 @@ def format_collection_summary(
     tag_text = ", ".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
     lines = [
         f"collection {payload.get('id', 'unknown')}",
+        f"created: {payload.get('created_at', 'unknown')}",
         f"tags: {tag_text or 'none'}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",

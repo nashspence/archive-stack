@@ -630,7 +630,9 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
         subject=job_id,
         data={
             "job_id": job_id,
-            "collection_id": "2026/example",
+            "collection_id": 41,
+            "collection_created_at": "2026-06-05T12:00:00.000000Z",
+            "collection_tags": ["camera", "family"],
             "context": {"notification_recipient": "katie"},
         },
     )
@@ -644,6 +646,9 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
     assert event.type == "io.riverhog.jeb.attempt.target.archive.finalized"
     assert event.subject == attempt_id
     assert event.data["target_submission_id"] == job_id
+    assert event.data["collection_id"] == 41
+    assert event.data["collection_created_at"] == "2026-06-05T12:00:00.000000Z"
+    assert event.data["collection_tags"] == ["camera", "family"]
     assert event.data["context"] == {"notification_recipient": "katie"}
     assert event.data["cause"] == {
         "id": upstream.id,

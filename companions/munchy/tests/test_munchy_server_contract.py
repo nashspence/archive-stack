@@ -3544,7 +3544,12 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
         source="urn:riverhog",
         type="io.riverhog.riverhog.collection.finalized",
         subject=str(collection_id),
-        data={"collection_id": collection_id, "archive_store": "b2"},
+        data={
+            "collection_id": collection_id,
+            "collection_created_at": "2026-06-05T12:00:00.000000Z",
+            "collection_tags": ["camera", "family"],
+            "archive_store": "b2",
+        },
     )
 
     assert server.translate_riverhog_event(upstream)
@@ -3566,6 +3571,8 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     assert event.type == "io.riverhog.munchy.job.archive.finalized"
     assert event.subject == "job-1"
     assert event.data["collection_id"] == collection_id
+    assert event.data["collection_created_at"] == "2026-06-05T12:00:00.000000Z"
+    assert event.data["collection_tags"] == ["camera", "family"]
     assert event.data["initiator"] == {"app": "jeb", "key_id": "jeb-key"}
     assert event.data["cause"] == {
         "id": upstream.id,

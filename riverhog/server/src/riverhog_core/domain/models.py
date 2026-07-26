@@ -79,6 +79,7 @@ class ArchiveUsageReport:
 @dataclass(frozen=True)
 class CollectionSummary:
     id: CollectionId
+    created_at: str
     tags: tuple[str, ...]
     files: int
     bytes: int

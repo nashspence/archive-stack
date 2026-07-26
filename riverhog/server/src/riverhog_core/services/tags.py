@@ -284,16 +284,15 @@ class SqlAlchemyTagService:
                     record_etag=collection.record_etag,
                 )
             )
+            session.flush()
             self._lifecycle_events.emit_collection(
                 type="collection.tags_changed",
                 collection_id=collection_id,
-                details={"tags": list(normalized_tags)},
                 terminal=True,
                 initiator=principal,
                 event_context_json=normalized_context_json,
                 session=session,
             )
-            session.flush()
             return _collection_tags_payload(session, collection)
 
 

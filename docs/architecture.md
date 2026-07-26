@@ -104,8 +104,10 @@ presentation.
 - The official `riverhog` client is a separate API consumer. It contains no platform
   server implementation and carries no privileged in-process access.
 - The `riverhog local` client owns one local materialization, including its directory,
-  SQLite state, selection, repair, audit, and eviction. It uses the same permission-bearing
-  application API as every other Riverhog client.
+  SQLite state, selection, repair, audit, and eviction. Collection bytes stay in numeric
+  collection directories; rebuildable relative-symlink views project materialized
+  collections by their current tags. It uses the same permission-bearing application API
+  as every other Riverhog client.
 - Munchy is a companion application. Its server owns media discovery, routing,
   transformation, metadata projection, and assembly before handing completed artifacts to
   a named destination adapter; its client communicates through the Munchy API.

@@ -19,6 +19,8 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
             "collections": [
                 {
                     "id": 42,
+                    "created_at": "2026-07-26T18:43:00.000000Z",
+                    "tags": ["family", "sony-a6700"],
                     "files": 2,
                     "bytes": 100,
                     "archive_copies": [
@@ -38,6 +40,8 @@ def test_collection_list_json_keeps_collection_summaries_compact() -> None:
     assert payload["collections"] == [
         {
             "id": 42,
+            "created_at": "2026-07-26T18:43:00.000000Z",
+            "tags": ["family", "sony-a6700"],
             "files": 2,
             "bytes": 100,
             "archive_copies": [

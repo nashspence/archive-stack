@@ -13,7 +13,8 @@ from typing import Annotated, Any
 
 import typer
 from riverhog_api_client.client import ApiClient
-from riverhog_protocol.paths import normalize_collection_id, normalize_relpath
+from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from time_formats import parse_utc_timestamp
 
 local_app = typer.Typer(
     no_args_is_help=True,
@@ -48,6 +49,8 @@ def _connect(target: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS desired_collections (
             collection_id INTEGER PRIMARY KEY,
             record_etag TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
             remote_deleted INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS desired_files (
@@ -70,22 +73,44 @@ def _connect(target: Path) -> sqlite3.Connection:
     return db
 
 
-def _store_manifest(db: sqlite3.Connection, payload: dict[str, Any]) -> None:
+def _store_manifest(
+    db: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    created_at: str,
+) -> None:
     collection_id = normalize_collection_id(payload["collection"])
     files = payload.get("files")
-    if payload.get("format") != "riverhog-collection/v2" or not isinstance(files, list):
+    raw_tags = payload.get("tags")
+    if (
+        payload.get("format") != "riverhog-collection/v2"
+        or not isinstance(files, list)
+        or not isinstance(raw_tags, list)
+    ):
         raise RuntimeError("Riverhog returned an unsupported collection manifest")
+    parse_utc_timestamp(created_at)
+    tags = sorted({normalize_tag(str(tag)) for tag in raw_tags})
+    if tags != raw_tags:
+        raise RuntimeError("Riverhog returned non-canonical collection tags")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     etag = hashlib.sha256(canonical).hexdigest()
     db.execute(
         """
-        INSERT INTO desired_collections (collection_id, record_etag, remote_deleted)
-        VALUES (?, ?, 0)
+        INSERT INTO desired_collections (
+            collection_id,
+            record_etag,
+            created_at,
+            tags_json,
+            remote_deleted
+        )
+        VALUES (?, ?, ?, ?, 0)
         ON CONFLICT (collection_id) DO UPDATE SET
             record_etag = excluded.record_etag,
+            created_at = excluded.created_at,
+            tags_json = excluded.tags_json,
             remote_deleted = 0
         """,
-        (collection_id, etag),
+        (collection_id, etag, created_at, json.dumps(tags, separators=(",", ":"))),
     )
     db.execute("DELETE FROM desired_files WHERE collection_id = ?", (collection_id,))
     for current in files:
@@ -103,11 +128,130 @@ def _store_manifest(db: sqlite3.Connection, payload: dict[str, Any]) -> None:
         )
 
 
+def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: int) -> None:
+    summary = api.get_collection(collection_id)
+    if normalize_collection_id(summary["id"]) != collection_id:
+        raise RuntimeError("Riverhog returned the wrong collection summary")
+    _store_manifest(
+        db,
+        api.get_portable_collection_manifest(collection_id),
+        created_at=str(summary["created_at"]),
+    )
+
+
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
     output = (target / str(collection_id) / path).resolve()
     if not output.is_relative_to(target):
         raise RuntimeError("materialization path escapes RIVERHOG_LOCAL_ROOT")
     return output
+
+
+def _projection_name(collection_id: int, created_at: str) -> str:
+    timestamp = parse_utc_timestamp(created_at).strftime("%Y%m%dT%H%M%SZ")
+    return f"{timestamp}--{collection_id}"
+
+
+def _collection_is_materialized(
+    db: sqlite3.Connection,
+    target: Path,
+    collection_id: int,
+) -> bool:
+    paths = [
+        str(row["path"])
+        for row in db.execute(
+            "SELECT path FROM desired_files WHERE collection_id = ? ORDER BY path",
+            (collection_id,),
+        )
+    ]
+    collection_dir = target / str(collection_id)
+    if not paths:
+        return collection_dir.is_dir()
+    return all(_output_path(target, collection_id, path).is_file() for path in paths)
+
+
+def _expected_projection_links(
+    db: sqlite3.Connection,
+    target: Path,
+) -> dict[Path, str]:
+    expected: dict[Path, str] = {}
+    for row in db.execute(
+        """
+        SELECT collection_id, created_at, tags_json
+        FROM desired_collections
+        ORDER BY collection_id
+        """
+    ):
+        collection_id = normalize_collection_id(row["collection_id"])
+        if not _collection_is_materialized(db, target, collection_id):
+            continue
+        name = _projection_name(collection_id, str(row["created_at"]))
+        tags = json.loads(str(row["tags_json"]))
+        if not isinstance(tags, list):
+            raise RuntimeError(f"invalid local tag state for collection {collection_id}")
+        directories = (
+            [target / "by-tag" / normalize_tag(str(tag)) for tag in tags]
+            if tags
+            else [target / "untagged"]
+        )
+        collection_dir = target / str(collection_id)
+        for directory in directories:
+            link = directory / name
+            expected[link] = os.path.relpath(collection_dir, start=directory)
+    return expected
+
+
+def _actual_projection_links(
+    target: Path,
+    *,
+    create_roots: bool,
+) -> dict[Path, str]:
+    actual: dict[Path, str] = {}
+    for root in (target / "by-tag", target / "untagged"):
+        if root.is_symlink():
+            raise RuntimeError(f"local projection root must not be a symlink: {root}")
+        if root.exists() and not root.is_dir():
+            raise RuntimeError(f"local projection root is not a directory: {root}")
+        if create_roots:
+            root.mkdir(parents=True, exist_ok=True)
+        if not root.exists():
+            continue
+        for current in sorted(root.rglob("*")):
+            if current.is_symlink():
+                actual[current] = os.readlink(current)
+            elif not current.is_dir():
+                raise RuntimeError(f"local projection contains an unmanaged file: {current}")
+    return actual
+
+
+def _reconcile_projection(db: sqlite3.Connection, target: Path) -> None:
+    expected = _expected_projection_links(db, target)
+    actual = _actual_projection_links(target, create_roots=True)
+    for current, destination in actual.items():
+        if expected.get(current) != destination:
+            current.unlink()
+
+    for link, destination in sorted(expected.items()):
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() and os.readlink(link) == destination:
+            continue
+        if link.exists() or link.is_symlink():
+            raise RuntimeError(f"local projection path is occupied: {link}")
+        link.symlink_to(destination, target_is_directory=True)
+
+    for root in (target / "by-tag", target / "untagged"):
+        for directory in sorted(
+            (
+                current
+                for current in root.rglob("*")
+                if current.is_dir() and not current.is_symlink()
+            ),
+            key=lambda current: len(current.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
 
 
 def _sha256(path: Path) -> str:
@@ -216,7 +360,7 @@ def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
                 (collection_id,),
             )
         elif change["change"] in {"created", "updated"}:
-            _store_manifest(db, api.get_portable_collection_manifest(collection_id))
+            _refresh_collection(db, api, collection_id)
     db.execute(
         """
         INSERT INTO settings (key, value) VALUES ('catalog_cursor', ?)
@@ -382,6 +526,7 @@ def _sync(*, wait: bool, repair: bool) -> None:
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
+        _reconcile_projection(db, target)
         active = db.execute(
             "SELECT id FROM retrieval_jobs ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
@@ -392,6 +537,7 @@ def _sync(*, wait: bool, repair: bool) -> None:
                 active = None
             elif job["state"] == "ready":
                 count = _download_job(db, target, api, job)
+                _reconcile_projection(db, target)
                 db.commit()
                 typer.echo(f"materialized {count} file(s)")
                 return
@@ -424,6 +570,7 @@ def _sync(*, wait: bool, repair: bool) -> None:
             typer.echo(f"retrieval {job['id']} is {job['state']}; rerun sync later")
             return
         count = _download_job(db, target, api, job)
+        _reconcile_projection(db, target)
         db.commit()
         typer.echo(f"materialized {count} file(s)")
 
@@ -433,7 +580,7 @@ def add_collection(collection_id: Annotated[int, typer.Argument(help="Collection
     target = _target()
     normalized = normalize_collection_id(collection_id)
     with closing(_connect(target)) as db, ApiClient() as api:
-        _store_manifest(db, api.get_portable_collection_manifest(normalized))
+        _refresh_collection(db, api, normalized)
         db.commit()
     typer.echo(f"desired collection added: {normalized}")
 
@@ -447,6 +594,7 @@ def remove_collection(
     with closing(_connect(target)) as db, ApiClient() as api:
         _cancel_active_retrievals(db, api)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
+        _reconcile_projection(db, target)
         db.commit()
     typer.echo(f"desired collection removed; local files retained: {normalized}")
 
@@ -458,18 +606,24 @@ def list_collections() -> None:
         rows = list(
             db.execute(
                 """
-                SELECT c.collection_id, c.remote_deleted, COUNT(f.path) AS files,
+                SELECT c.collection_id, c.created_at, c.tags_json, c.remote_deleted,
+                       COUNT(f.path) AS files,
                        COALESCE(SUM(f.bytes), 0) AS bytes
                 FROM desired_collections AS c
                 LEFT JOIN desired_files AS f USING (collection_id)
-                GROUP BY c.collection_id, c.remote_deleted
+                GROUP BY c.collection_id, c.created_at, c.tags_json, c.remote_deleted
                 ORDER BY c.collection_id
                 """
             )
         )
     for row in rows:
         status = "remote-deleted" if row["remote_deleted"] else "desired"
-        typer.echo(f"{row['collection_id']}  {status}  {row['files']} files  {row['bytes']} bytes")
+        tags = json.loads(str(row["tags_json"]))
+        typer.echo(
+            f"{row['collection_id']}  {status}  "
+            f"{_projection_name(row['collection_id'], row['created_at'])}  "
+            f"tags={','.join(tags) or 'none'}  {row['files']} files  {row['bytes']} bytes"
+        )
 
 
 @local_app.command("sync")
@@ -502,6 +656,19 @@ def audit() -> None:
             elif not _matches(output, byte_count=row["bytes"], sha256=row["sha256"]):
                 typer.echo(f"mismatch: {row['collection_id']}/{row['path']}")
                 problems += 1
+        expected_links = _expected_projection_links(db, target)
+        actual_links = _actual_projection_links(target, create_roots=False)
+        for link in sorted(set(expected_links) | set(actual_links)):
+            relative = link.relative_to(target)
+            if link not in actual_links:
+                typer.echo(f"projection missing: {relative}")
+                problems += 1
+            elif link not in expected_links:
+                typer.echo(f"projection stale: {relative}")
+                problems += 1
+            elif actual_links[link] != expected_links[link]:
+                typer.echo(f"projection mismatch: {relative}")
+                problems += 1
     if problems:
         raise typer.Exit(1)
     typer.echo("materialization matches all desired files")
@@ -529,5 +696,6 @@ def evict(
         if collection_dir.exists():
             shutil.rmtree(collection_dir)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
+        _reconcile_projection(db, target)
         db.commit()
     typer.echo(f"evicted local collection: {normalized}")

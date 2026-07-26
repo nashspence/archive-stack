@@ -215,7 +215,7 @@ def _seed(path: Path) -> None:
                     metadata_revision=1,
                     metadata_updated_at="2026-01-01T00:00:00.000000Z",
                     created_by_app="fixture",
-                    created_at="2026-01-01T00:00:00.000000Z",
+                    created_at=f"2026-01-0{collection_id}T00:00:00.000000Z",
                 )
             )
             session.add(
@@ -248,6 +248,7 @@ def test_collection_summary_reports_each_archive_copy(tmp_path: Path) -> None:
 
     assert summary.files == 1
     assert summary.bytes == 10
+    assert summary.created_at == "2026-01-01T00:00:00.000000Z"
     assert [copy.store for copy in summary.archive_copies] == ["b2", "deep"]
 
 
@@ -268,6 +269,15 @@ def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) ->
         ("2", 1, 20),
         ("1", 1, 10),
     ]
+
+    by_creation = _service(path).list(
+        page=1,
+        per_page=25,
+        q=None,
+        sort="created_at",
+        order="asc",
+    )
+    assert [str(item.id) for item in by_creation.collections] == ["1", "2"]
 
 
 def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> None:
@@ -313,6 +323,7 @@ def test_finalized_upload_status_remains_visible_to_creating_application(
     payload = service.get_upload(1)
 
     assert payload["state"] == "finalized"
+    assert payload["created_at"] == "2026-01-01T00:00:00.000000Z"
     assert payload["collection_id"] == 1
     assert payload["tags"] == ["alpha"]
     assert payload["collection"] is not None

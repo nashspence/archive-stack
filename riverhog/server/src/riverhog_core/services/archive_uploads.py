@@ -765,7 +765,7 @@ class SqlAlchemyArchiveUploadService:
                     ingest_source=upload.ingest_source,
                     created_by_app=upload.initiated_by_app,
                     created_by_key_id=upload.initiated_by_key_id,
-                    created_at=now,
+                    created_at=upload.opened_at or now,
                 )
                 session.add(collection)
                 session.flush()
