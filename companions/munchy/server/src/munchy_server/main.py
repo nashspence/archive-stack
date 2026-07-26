@@ -6570,39 +6570,6 @@ def compact_riverhog_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in keep_keys if key in payload}
 
 
-def finalized_riverhog_payload_from_collection(
-    collection_id: int,
-    collection: dict[str, Any],
-) -> dict[str, Any]:
-    files_total = int(collection.get("files") or 0)
-    bytes_total = int(collection.get("bytes") or 0)
-    archive_copies = collection.get("archive_copies")
-    archive = archive_copies[0] if isinstance(archive_copies, list) and archive_copies else None
-    archived_bytes = 0
-    if isinstance(archive, dict):
-        archived_bytes = int(archive.get("stored_bytes") or 0)
-    return {
-        "collection_id": collection_id,
-        "state": "finalized",
-        "archive_store": archive.get("store") if isinstance(archive, dict) else None,
-        "files_total": files_total,
-        "files_pending": 0,
-        "files_partial": 0,
-        "files_uploaded": files_total,
-        "bytes_total": bytes_total,
-        "uploaded_bytes": bytes_total,
-        "missing_bytes": 0,
-        "upload_state_expires_at": None,
-        "latest_failure": None,
-        "archive_phase": "completed",
-        "archive_uploaded_bytes": archived_bytes or bytes_total,
-        "archive_total_bytes": archived_bytes or bytes_total,
-        "archive_uploaded_parts": None,
-        "archive_total_parts": None,
-        "collection": collection,
-    }
-
-
 def update_remote_state_from_payload(
     job: dict[str, Any],
     payload: dict[str, Any],
@@ -6669,11 +6636,7 @@ def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> di
         return None
     state = riverhog_session_state(job)
     state["collection_id"] = collection_id
-    try:
-        payload = api.get_collection_upload(collection_id)
-    except NotFound:
-        collection = api.get_collection(collection_id)
-        payload = finalized_riverhog_payload_from_collection(collection_id, collection)
+    payload = api.get_collection_upload(collection_id)
     update_remote_state_from_payload(job, payload)
     return payload
 
@@ -7697,9 +7660,10 @@ def wait_for_riverhog_finalized(
 ) -> dict[str, Any]:
     while True:
         raise_if_job_canceled(str(job["job_id"]))
-        try:
-            collection = api.get_collection(collection_id)
-            payload = finalized_riverhog_payload_from_collection(collection_id, collection)
+        payload = api.get_collection_upload(collection_id)
+        update_remote_state_from_payload(job, payload)
+        save_job(job)
+        if str(payload.get("state") or "") == "finalized":
             state = riverhog_session_state(job)
             state["remote_state"] = "finalized"
             state["state"] = "finalized"
@@ -7707,14 +7671,10 @@ def wait_for_riverhog_finalized(
             state["last_payload"] = compact_riverhog_payload(payload)
             save_job(job)
             return payload
-        except NotFound as exc:
-            payload = api.get_collection_upload(collection_id)
-            update_remote_state_from_payload(job, payload)
-            save_job(job)
-            if str(payload.get("state") or "") == "failed":
-                raise RuntimeError(
-                    f"riverhog collection upload failed: {payload.get('latest_failure')}"
-                ) from exc
+        if str(payload.get("state") or "") == "failed":
+            raise RuntimeError(
+                f"riverhog collection upload failed: {payload.get('latest_failure')}"
+            )
         retry_sleep(RIVERHOG_FINALIZE_POLL_SECONDS, job_id=str(job["job_id"]))
 
 

@@ -354,12 +354,27 @@ class SqlAlchemyCollectionService:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
-            if upload is None:
+            if upload is not None:
+                require_collection_create_access(
+                    principal,
+                    COLLECTIONS_CREATE,
+                    _upload_tags(upload),
+                )
+                return
+
+            collection = session.get(CollectionRecord, normalized_collection_id)
+            if collection is None or collection.created_by_app != principal.app:
                 raise NotFound(f"collection upload not found: {normalized_collection_id}")
             require_collection_create_access(
                 principal,
                 COLLECTIONS_CREATE,
-                _upload_tags(upload),
+                tuple(
+                    session.scalars(
+                        select(CollectionTagRecord.tag_id)
+                        .where(CollectionTagRecord.collection_id == collection.id)
+                        .order_by(CollectionTagRecord.tag_id)
+                    ).all()
+                ),
             )
 
     def create_or_resume_registered_file_upload(
@@ -621,7 +636,23 @@ class SqlAlchemyCollectionService:
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is None:
-                raise NotFound(f"collection upload not found: {normalized_collection_id}")
+                collection = session.scalar(
+                    select(CollectionRecord)
+                    .options(selectinload(CollectionRecord.archive_copies))
+                    .where(CollectionRecord.id == normalized_collection_id)
+                )
+                if collection is None:
+                    raise NotFound(f"collection upload not found: {normalized_collection_id}")
+                archive_store = (
+                    collection.archive_copies[0].store
+                    if collection.archive_copies
+                    else self._config.archive_write_store
+                )
+                return _finalized_collection_upload_payload(
+                    session,
+                    collection,
+                    archive_store=archive_store,
+                )
 
             upload = _sync_and_expire_collection_upload(
                 session,

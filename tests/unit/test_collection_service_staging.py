@@ -5,7 +5,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    CATALOG_READ,
+    COLLECTIONS_CREATE,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -288,6 +293,44 @@ def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> 
     assert _service(path).get("2", principal=principal).bytes == 20
     with pytest.raises(NotFound):
         _service(path).get("1", principal=principal)
+
+
+def test_finalized_upload_status_remains_visible_to_creating_application(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    service = _service(path)
+    creator = ApplicationPrincipal(
+        app="fixture",
+        key_id="replacement-key",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:alpha")}),
+    )
+
+    service.require_upload_access(1, creator)
+    payload = service.get_upload(1)
+
+    assert payload["state"] == "finalized"
+    assert payload["collection_id"] == 1
+    assert payload["tags"] == ["alpha"]
+    assert payload["collection"] is not None
+
+
+def test_finalized_upload_status_does_not_grant_cross_application_visibility(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    principal = ApplicationPrincipal(
+        app="other",
+        key_id="other-key",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:alpha")}),
+    )
+
+    with pytest.raises(NotFound, match="collection upload not found"):
+        _service(path).require_upload_access(1, principal)
 
 
 def test_idempotency_key_with_different_manifest_conflicts(tmp_path: Path) -> None:

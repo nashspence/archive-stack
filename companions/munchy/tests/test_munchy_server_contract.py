@@ -5885,15 +5885,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
         def get_collection_upload(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
-            return self.payload(state="open")
-
-        def get_collection(self, collection_id: int) -> dict[str, object]:
-            assert collection_id == 42
-            return {
-                "files": 2,
-                "bytes": 9,
-                "archive_copies": [{"store": "b2", "stored_bytes": 9}],
-            }
+            return self.payload(state="finalized" if self.completed else "open")
 
         def create_or_resume_registered_collection_file_upload(
             self,
@@ -6919,7 +6911,7 @@ def test_handoff_progress_uses_expected_archive_output_count(
     assert progress["percent_primary_files"] == 0.17
 
 
-def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
+def test_sync_riverhog_session_uses_durable_finalized_upload_status(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -6939,15 +6931,17 @@ def test_sync_riverhog_session_uses_finalized_collection_when_upload_is_gone(
     class FakeApi:
         def get_collection_upload(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
-            raise server.NotFound("already finalized")
-
-        def get_collection(self, collection_id: int) -> dict[str, object]:
-            assert collection_id == 42
             return {
-                "id": collection_id,
-                "files": 7,
-                "bytes": 1234,
-                "archive_copies": [{"store": "deep", "state": "uploaded", "stored_bytes": 567}],
+                "collection_id": collection_id,
+                "state": "finalized",
+                "files_total": 7,
+                "files_uploaded": 7,
+                "bytes_total": 1234,
+                "uploaded_bytes": 1234,
+                "archive_store": "deep",
+                "archive_phase": "completed",
+                "archive_uploaded_bytes": 567,
+                "archive_total_bytes": 567,
             }
 
     payload = server.sync_riverhog_session_from_remote(job, FakeApi())  # type: ignore[arg-type]
