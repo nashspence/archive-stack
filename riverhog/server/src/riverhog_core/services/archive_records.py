@@ -62,6 +62,7 @@ def apply_archive_receipt(
             plaintext_bytes=current.plaintext_bytes,
             stored_bytes=current.stored_bytes,
             sha256=current.sha256,
+            stored_sha256=current.stored_sha256,
             backend=current.backend,
             storage_class=current.storage_class,
             uploaded_at=current.uploaded_at,
@@ -109,6 +110,7 @@ def archive_copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiv
                 plaintext_bytes=current.plaintext_bytes,
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
+                stored_sha256=current.stored_sha256,
             )
             for current in sorted(copy.objects, key=lambda item: item.object_order)
         )
@@ -130,6 +132,7 @@ def archive_copy_owned_identity(copy: CollectionArchiveCopyRecord) -> Collection
                 plaintext_bytes=0,
                 stored_bytes=publication.stored_bytes or 0,
                 sha256=publication.stored_sha256 or "0" * 64,
+                stored_sha256=publication.stored_sha256 or "0" * 64,
             ),
         )
     )

@@ -155,6 +155,11 @@ class CollectionArchiveCopyRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    attestation: Mapped[CollectionArchiveAttestationRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class CollectionMetadataPublicationRecord(Base):
@@ -223,6 +228,37 @@ class CollectionProofMaturationRecord(Base):
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="proof_maturation")
 
 
+class CollectionArchiveAttestationRecord(Base):
+    __tablename__ = "collection_archive_attestations"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str] = mapped_column(String)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    matured_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_archive_attestations_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+        ),
+    )
+
+    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="attestation")
+
+
 class CollectionArchiveObjectRecord(Base):
     __tablename__ = "collection_archive_objects"
 
@@ -235,6 +271,7 @@ class CollectionArchiveObjectRecord(Base):
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
     stored_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
+    stored_sha256: Mapped[str] = mapped_column(String(64))
     backend: Mapped[str] = mapped_column(String)
     storage_class: Mapped[str] = mapped_column(String)
     uploaded_at: Mapped[str] = mapped_column(String)

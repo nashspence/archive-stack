@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG AGE_VERSION=v1.3.1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git minisign \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /usr/local/bin/

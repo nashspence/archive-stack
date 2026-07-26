@@ -4091,9 +4091,7 @@ def test_review_rclone_upload_excludes_platform_cruft(
     assert command[:2] == ["rclone", "copy"]
     assert str(source_dir) in command
     assert "remote:reviews/20260629T000000Z" in command
-    assert command.index(str(source_dir)) < command.index(
-        "remote:reviews/20260629T000000Z"
-    )
+    assert command.index(str(source_dir)) < command.index("remote:reviews/20260629T000000Z")
     assert command.count("--exclude") >= 4
     assert ".DS_Store" in command
     assert "**/._*" in command
@@ -7433,12 +7431,12 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
             "job_id": "job-1",
             "state": "running",
             "phase": "cancel_requested",
-                "collection_tags": ["camera-archive"],
-                "run_id": "20260101T000000Z",
-                "handoff": {"destination": "riverhog", "options": {}},
-                "handoff_adapter_state": {"collection_id": 42, "state": "open"},
-            }
-        )
+            "collection_tags": ["camera-archive"],
+            "run_id": "20260101T000000Z",
+            "handoff": {"destination": "riverhog", "options": {}},
+            "handoff_adapter_state": {"collection_id": 42, "state": "open"},
+        }
+    )
 
     class FakeRiverhogApi:
         def close(self) -> None:

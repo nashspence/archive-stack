@@ -4,6 +4,9 @@ _ARCHIVE_FILENAMES = {
     "manifest.yml.age",
     "manifest.yml.ots.age",
     "metadata.yml.age",
+    "SHA256SUMS",
+    "SHA256SUMS.minisig",
+    "SHA256SUMS.minisig.ots",
 }
 
 

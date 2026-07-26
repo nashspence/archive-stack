@@ -251,12 +251,7 @@ def _missing_files(
         if not repair:
             typer.echo(f"mismatch retained: {row['collection_id']}/{row['path']}", err=True)
             continue
-        quarantine = (
-            target
-            / ".riverhog-local-quarantine"
-            / str(row["collection_id"])
-            / row["path"]
-        )
+        quarantine = target / ".riverhog-local-quarantine" / str(row["collection_id"]) / row["path"]
         quarantine.parent.mkdir(parents=True, exist_ok=True)
         candidate = quarantine
         index = 1

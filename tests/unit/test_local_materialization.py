@@ -232,8 +232,7 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     runner = CliRunner()
 
     assert (
-        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code
-        == 0
+        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code == 0
     )
     assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
     removed = runner.invoke(local_materialization.local_app, ["remove", str(COLLECTION_ID)])
@@ -254,8 +253,7 @@ def test_local_evict_removes_retained_nested_collection_tree(
     runner = CliRunner()
 
     assert (
-        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code
-        == 0
+        runner.invoke(local_materialization.local_app, ["add", str(COLLECTION_ID)]).exit_code == 0
     )
     assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
     assert (

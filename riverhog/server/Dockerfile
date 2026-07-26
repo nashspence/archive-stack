@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.title="Riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates minisign \
     && rm -rf /var/lib/apt/lists/*
 
 RUN arch="$(dpkg --print-architecture)" \

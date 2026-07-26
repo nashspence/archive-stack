@@ -233,6 +233,7 @@ def _run(
                         plaintext_bytes=item.plaintext_bytes,
                         stored_bytes=item.stored_bytes,
                         sha256=item.sha256,
+                        stored_sha256=item.stored_sha256,
                     )
                     for item in receipt.objects
                 )

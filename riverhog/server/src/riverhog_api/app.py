@@ -136,7 +136,14 @@ def _process_proof_maturations(
         requeued = container.proof_maturations.requeue_interrupted_for_startup()
         if requeued:
             _LOG.info("startup requeued interrupted proof maturations: count=%s", requeued)
+        requeued_attestations = container.archive_attestations.requeue_interrupted_for_startup()
+        if requeued_attestations:
+            _LOG.info(
+                "startup requeued interrupted archive attestations: count=%s",
+                requeued_attestations,
+            )
     container.proof_maturations.process_due(limit=100)
+    container.archive_attestations.process_due(limit=100)
 
 
 def _abort_incomplete_archive_multipart_uploads(

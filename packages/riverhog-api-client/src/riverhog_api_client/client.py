@@ -455,8 +455,7 @@ class ApiClient(_HttpApiClient):
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-uploads/{str(collection_id)}/files/"
-            f"{quote(path, safe='/')}/upload",
+            f"/v1/collection-uploads/{str(collection_id)}/files/{quote(path, safe='/')}/upload",
         )
 
     def create_or_resume_registered_collection_file_upload(

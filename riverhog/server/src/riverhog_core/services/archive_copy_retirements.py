@@ -24,6 +24,7 @@ from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
+    CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionProofMaturationRecord,
@@ -397,6 +398,13 @@ def _build_plan(
             CollectionProofMaturationRecord.state == "upgrading",
         )
     )
+    attestation = db.scalar(
+        select(CollectionArchiveAttestationRecord.collection_id).where(
+            CollectionArchiveAttestationRecord.collection_id == collection_id,
+            CollectionArchiveAttestationRecord.store == store,
+            CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
+        )
+    )
     terminal_retrieval_ids = db.scalars(
         select(RetrievalJobRecord.id)
         .join(RetrievalJobObjectRecord)
@@ -422,6 +430,8 @@ def _build_plan(
     )
     if proof_maturation is not None:
         blockers.append(f"archive proof maturation is active: {store}")
+    if attestation is not None:
+        blockers.append(f"archive attestation is active: {store}")
     if not retained:
         blockers.append("retirement would remove the collection's last complete archive copy")
 

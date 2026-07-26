@@ -18,6 +18,7 @@ CURRENT_TABLES = {
     "archive_usage_snapshots",
     "catalog_events",
     "collection_archive_copies",
+    "collection_archive_attestations",
     "collection_archive_file_objects",
     "collection_archive_object_uploads",
     "collection_archive_objects",
@@ -86,6 +87,22 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "last_attempt_at",
         "matured_at",
         "failure",
+    }
+    assert {
+        column["name"] for column in inspector.get_columns("collection_archive_attestations")
+    } == {
+        "collection_id",
+        "store",
+        "state",
+        "attempt_count",
+        "next_attempt_at",
+        "last_attempt_at",
+        "published_at",
+        "matured_at",
+        "failure",
+    }
+    assert {column["name"] for column in inspector.get_columns("collection_archive_objects")} >= {
+        "stored_sha256"
     }
     assert {column["name"] for column in inspector.get_columns("app_keys")} == {
         "id",

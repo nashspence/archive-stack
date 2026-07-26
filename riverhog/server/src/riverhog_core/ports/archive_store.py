@@ -18,6 +18,7 @@ class ArchiveObjectUploadReceipt:
     plaintext_bytes: int
     stored_bytes: int
     sha256: str
+    stored_sha256: str
     backend: str
     storage_class: str
     uploaded_at: str
@@ -59,6 +60,7 @@ class ArchiveObjectIdentity:
     plaintext_bytes: int
     stored_bytes: int
     sha256: str
+    stored_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +217,38 @@ class ArchiveStore(Protocol):
     ) -> ArchiveArtifactRead: ...
 
     def replace_archive_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt: ...
+
+    def stored_archive_object_sha256(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> str: ...
+
+    def publish_archive_attestation(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        checksums: bytes,
+        signature: bytes,
+        proof: bytes,
+    ) -> CollectionArchiveUploadReceipt: ...
+
+    def read_archive_attestation_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead: ...
+
+    def replace_archive_attestation_proof(
         self,
         *,
         collection_id: int,

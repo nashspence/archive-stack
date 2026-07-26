@@ -12,6 +12,7 @@ from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
+from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
@@ -23,6 +24,7 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.interfaces import (
     AppKeyService,
+    ArchiveAttestationService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
     ArchiveReportingService,
@@ -57,6 +59,7 @@ class ServiceContainer:
     archive_uploads: ArchiveUploadService
     archive_copies: ArchiveCopyService
     proof_maturations: ProofMaturationService
+    archive_attestations: ArchiveAttestationService
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_reporting: ArchiveReportingService
     retrieval: RetrievalService
@@ -112,6 +115,13 @@ def default_container() -> ServiceContainer:
         proof_maturations=SqlAlchemyProofMaturationService(
             config,
             archive_stores,
+            proof_upgrader=proof_upgrader,
+            proof_verifier=proof_verifier,
+        ),
+        archive_attestations=SqlAlchemyArchiveAttestationService(
+            config,
+            archive_stores,
+            proof_stamper=proof_stamper,
             proof_upgrader=proof_upgrader,
             proof_verifier=proof_verifier,
         ),

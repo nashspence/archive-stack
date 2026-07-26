@@ -152,8 +152,7 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
     assert result == 42
     assert calls == [
         (
-            "/v1/retrieval-jobs/job-id/objects/data-000000/content?"
-            "collection_id=42",
+            "/v1/retrieval-jobs/job-id/objects/data-000000/content?collection_id=42",
             output,
         )
     ]

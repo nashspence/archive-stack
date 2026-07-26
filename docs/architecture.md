@@ -42,6 +42,12 @@ Riverhog periodically asks the OpenTimestamps calendars named by pending proofs 
 Bitcoin attestations. It replaces an encrypted proof only after binding the result to the
 exact archived manifest and rereading and reverifying the replacement.
 
+After that proof matures, Riverhog publishes a deterministic `SHA256SUMS` for the exact
+ciphertext objects in each archive copy, signs it with Minisign, and timestamps the
+signature. The signature and both plaintext verification artifacts travel with the copy;
+the mutable `metadata.yml.age` remains outside the signed immutable inventory. The signing
+key is age-encrypted at rest, while its public key can be distributed independently.
+
 Archive stores are the durable authority. A collection's archive-copy set can change only
 through guarded copy and retirement operations. An archive copy reads and verifies the
 source object set, writes and verifies an equivalent destination set, and records the copy

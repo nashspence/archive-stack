@@ -409,6 +409,7 @@ def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArch
                 plaintext_bytes=current.plaintext_bytes,
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
+                stored_sha256=current.stored_sha256,
             )
             for current in receipt.objects
         )

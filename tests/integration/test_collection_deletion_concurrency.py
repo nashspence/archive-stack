@@ -70,6 +70,7 @@ class BlockingArchiveStore:
             raise RuntimeError("timed out waiting to finish archive deletion")
         self.deleted.append(tuple(current.object_id for current in objects))
 
+
 class UnusedUploadStore:
     def cancel_upload(self, tus_url: str) -> None:
         raise AssertionError(tus_url)

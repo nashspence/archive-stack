@@ -80,6 +80,7 @@ def archive_receipt(
             plaintext_bytes=current.plaintext_bytes,
             stored_bytes=current.plaintext_bytes + 100,
             sha256=current.sha256,
+            stored_sha256=hashlib.sha256(b"".join(current.iter_plaintext())).hexdigest(),
             backend=backend,
             storage_class=storage_class,
             uploaded_at=UPLOADED_AT,
@@ -96,6 +97,7 @@ def archive_receipt(
                 plaintext_bytes=len(archive.manifest_bytes),
                 stored_bytes=len(archive.manifest_bytes) + 100,
                 sha256=archive.manifest_sha256,
+                stored_sha256=hashlib.sha256(archive.manifest_bytes).hexdigest(),
                 backend=backend,
                 storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
@@ -108,6 +110,7 @@ def archive_receipt(
                 plaintext_bytes=len(archive.proof_bytes),
                 stored_bytes=len(archive.proof_bytes) + 100,
                 sha256=archive.proof_sha256,
+                stored_sha256=hashlib.sha256(archive.proof_bytes).hexdigest(),
                 backend=backend,
                 storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
@@ -232,6 +235,7 @@ class MemoryArchiveStore:
         self.deleted: list[tuple[str, ...]] = []
         self.published_metadata: list[tuple[int, str, bytes]] = []
         self.replaced_proofs: list[bytes] = []
+        self.attestation_artifacts: dict[str, bytes] = {}
 
     def read_mode(self) -> str:
         return self._read_mode
@@ -359,6 +363,89 @@ class MemoryArchiveStore:
             prefix=object.object_path.rsplit("/", 1)[0],
         ).require_object("proof")
 
+    def stored_archive_object_sha256(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> str:
+        return hashlib.sha256(
+            b"".join(
+                self.iter_stored_archive_object(
+                    collection_id=collection_id,
+                    object=object,
+                )
+            )
+        ).hexdigest()
+
+    def publish_archive_attestation(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        checksums: bytes,
+        signature: bytes,
+        proof: bytes,
+    ) -> CollectionArchiveUploadReceipt:
+        assert collection_id == COLLECTION_ID
+        content_by_id = {
+            "checksums": checksums,
+            "signature": signature,
+            "signature-proof": proof,
+        }
+        self.attestation_artifacts.update(content_by_id)
+        filenames = {
+            "checksums": "SHA256SUMS",
+            "signature": "SHA256SUMS.minisig",
+            "signature-proof": "SHA256SUMS.minisig.ots",
+        }
+        return CollectionArchiveUploadReceipt(
+            objects=tuple(
+                _plaintext_receipt(
+                    object_id=object_id,
+                    object_path=f"{archive_storage_prefix}/{filenames[object_id]}",
+                    content=content,
+                    backend=self.backend,
+                )
+                for object_id, content in content_by_id.items()
+            )
+        )
+
+    def read_archive_attestation_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead:
+        assert collection_id == COLLECTION_ID
+        content = self.attestation_artifacts[object.object_id]
+        return ArchiveArtifactRead(
+            receipt=_plaintext_receipt(
+                object_id=object.object_id,
+                object_path=object.object_path,
+                content=content,
+                backend=self.backend,
+            ),
+            content=content,
+        )
+
+    def replace_archive_attestation_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt:
+        assert collection_id == COLLECTION_ID
+        assert object.object_id == "signature-proof"
+        self.attestation_artifacts[object.object_id] = proof_bytes
+        return _plaintext_receipt(
+            object_id=object.object_id,
+            object_path=object.object_path,
+            content=proof_bytes,
+            backend=self.backend,
+        )
+
     def prepare_archive_objects_read(
         self,
         *,
@@ -420,3 +507,26 @@ def as_archive_store(store: MemoryArchiveStore):
     from riverhog_core.ports.archive_store import ArchiveStore
 
     return cast(ArchiveStore, store)
+
+
+def _plaintext_receipt(
+    *,
+    object_id: str,
+    object_path: str,
+    content: bytes,
+    backend: str,
+) -> ArchiveObjectUploadReceipt:
+    digest = hashlib.sha256(content).hexdigest()
+    return ArchiveObjectUploadReceipt(
+        object_id=object_id,
+        kind=object_id,
+        object_path=object_path,
+        plaintext_bytes=len(content),
+        stored_bytes=len(content),
+        sha256=digest,
+        stored_sha256=digest,
+        backend=backend,
+        storage_class="STANDARD",
+        uploaded_at=UPLOADED_AT,
+        verified_at=UPLOADED_AT,
+    )

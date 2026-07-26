@@ -27,6 +27,10 @@ from riverhog_age import (
 )
 from time_formats import format_utc_timestamp, utc_timestamp_now
 
+from riverhog_core.archive_attestations import (
+    ATTESTATION_FILENAMES,
+    ATTESTATION_OBJECT_KINDS,
+)
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING, archive_agents_guidance
 from riverhog_core.archive_object_paths import archive_store_object_path
 from riverhog_core.archive_objects import (
@@ -59,6 +63,7 @@ COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
 ENCRYPTION_METADATA = "riverhog-encryption"
 PLAINTEXT_BYTES_METADATA = "riverhog-plaintext-bytes"
 PLAINTEXT_SHA256_METADATA = "riverhog-plaintext-sha256"
+STORED_SHA256_METADATA = "riverhog-stored-sha256"
 AGE_SCRYPT_ENCRYPTION = "age-v1-scrypt"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024
@@ -410,6 +415,7 @@ class S3ArchiveStore:
         head: dict[str, Any],
         expected_bytes: int,
         expected_sha256: str,
+        expected_stored_sha256: str,
         expected_storage_class: str,
         uploaded_at: str | None = None,
         ingestion_cache: RetrievalCacheReceipt | None = None,
@@ -429,6 +435,11 @@ class S3ArchiveStore:
         stored_bytes = int(head.get("ContentLength", 0))
         if stored_bytes > STORED_OBJECT_LIMIT:
             raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
+        if not _SHA256_RE.fullmatch(expected_stored_sha256):
+            raise ValueError("stored archive object sha256 is invalid")
+        metadata_stored_sha256 = _head_metadata(head).get(STORED_SHA256_METADATA)
+        if metadata_stored_sha256 is not None and metadata_stored_sha256 != expected_stored_sha256:
+            raise RuntimeError("stored archive object sha256 metadata mismatch")
         verified_at = utc_timestamp_now()
         return ArchiveObjectUploadReceipt(
             object_id=object_id,
@@ -437,6 +448,7 @@ class S3ArchiveStore:
             plaintext_bytes=expected_bytes,
             stored_bytes=stored_bytes,
             sha256=expected_sha256,
+            stored_sha256=expected_stored_sha256,
             backend=self._store.backend,
             storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
@@ -543,12 +555,20 @@ class S3ArchiveStore:
                     f"remote collection {expected.kind} object is missing"
                 )
             try:
-                _verify_remote_collection_object(
-                    object_key=expected.object_path,
-                    head=head,
-                    kind=expected.kind,
-                    expected=expected,
-                )
+                if expected.kind in ATTESTATION_OBJECT_KINDS:
+                    _verify_remote_plaintext_attestation(
+                        object_key=expected.object_path,
+                        head=head,
+                        kind=expected.kind,
+                        expected=expected,
+                    )
+                else:
+                    _verify_remote_collection_object(
+                        object_key=expected.object_path,
+                        head=head,
+                        kind=expected.kind,
+                        expected=expected,
+                    )
                 if self._uses_aws_restore_api():
                     _validate_aws_storage_class(
                         object_key=expected.object_path,
@@ -653,6 +673,7 @@ class S3ArchiveStore:
             head=head,
             expected_bytes=plaintext_bytes,
             expected_sha256=plaintext_sha256,
+            expected_stored_sha256=object.stored_sha256,
             expected_storage_class=storage_class,
         )
         current = ArchiveObjectIdentity(
@@ -662,6 +683,7 @@ class S3ArchiveStore:
             plaintext_bytes=receipt.plaintext_bytes,
             stored_bytes=receipt.stored_bytes,
             sha256=receipt.sha256,
+            stored_sha256=receipt.stored_sha256,
         )
         _verify_remote_collection_object(
             object_key=object.object_path,
@@ -712,6 +734,7 @@ class S3ArchiveStore:
                     head=existing,
                     expected_bytes=len(proof_bytes),
                     expected_sha256=proof_sha256,
+                    expected_stored_sha256=object.stored_sha256,
                     expected_storage_class="STANDARD",
                 )
                 _verify_remote_collection_object(
@@ -725,6 +748,7 @@ class S3ArchiveStore:
                         plaintext_bytes=receipt.plaintext_bytes,
                         stored_bytes=receipt.stored_bytes,
                         sha256=receipt.sha256,
+                        stored_sha256=receipt.stored_sha256,
                     ),
                 )
                 return receipt
@@ -736,6 +760,7 @@ class S3ArchiveStore:
             self._config.archive_passphrase,
             log_n=self._config.archive_scrypt_work_factor,
         )
+        stored_sha256 = hashlib.sha256(ciphertext).hexdigest()
         uploaded_at = utc_timestamp_now()
         self._client.put_object(
             Bucket=self._bucket,
@@ -752,6 +777,7 @@ class S3ArchiveStore:
                 PLAINTEXT_SHA256_METADATA: proof_sha256,
                 COLLECTION_BYTES_METADATA: str(len(proof_bytes)),
                 COLLECTION_SHA256_METADATA: proof_sha256,
+                STORED_SHA256_METADATA: stored_sha256,
             },
         )
         head = cast(
@@ -765,12 +791,176 @@ class S3ArchiveStore:
             head=head,
             expected_bytes=len(proof_bytes),
             expected_sha256=proof_sha256,
+            expected_stored_sha256=stored_sha256,
+            expected_storage_class="STANDARD",
+            uploaded_at=uploaded_at,
+        )
+
+    def publish_archive_attestation(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        checksums: bytes,
+        signature: bytes,
+        proof: bytes,
+    ) -> CollectionArchiveUploadReceipt:
+        _ = collection_id
+        self._put_archive_root_guidance()
+        rows = (
+            ("checksums", checksums, False),
+            ("signature", signature, False),
+            ("signature-proof", proof, True),
+        )
+        return CollectionArchiveUploadReceipt(
+            objects=tuple(
+                self._put_plaintext_attestation_artifact(
+                    object_id=object_id,
+                    object_key=(
+                        f"{archive_storage_prefix.strip('/')}/{ATTESTATION_FILENAMES[object_id]}"
+                    ),
+                    content=content,
+                    accept_existing=accept_existing,
+                )
+                for object_id, content, accept_existing in rows
+            )
+        )
+
+    def read_archive_attestation_artifact(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> ArchiveArtifactRead:
+        _ = collection_id
+        if object.kind not in ATTESTATION_OBJECT_KINDS:
+            raise ValueError("archive artifact is not an attestation artifact")
+        expected_filename = ATTESTATION_FILENAMES[object.object_id]
+        if not object.object_path.endswith(f"/{expected_filename}"):
+            raise ValueError("archive attestation artifact path is not canonical")
+        head = self._head_object(object_key=object.object_path)
+        if head is None:
+            raise RuntimeError(f"Archive object is missing: {object.object_path}")
+        _verify_remote_plaintext_attestation(
+            object_key=object.object_path,
+            head=head,
+            kind=object.kind,
+            expected=object,
+        )
+        content = b"".join(self._iter_s3_stored_object(object.object_path))
+        if len(content) != object.stored_bytes:
+            raise RuntimeError("archive attestation artifact byte count changed")
+        if hashlib.sha256(content).hexdigest() != object.stored_sha256:
+            raise RuntimeError("archive attestation artifact sha256 changed")
+        return ArchiveArtifactRead(
+            receipt=self._plaintext_attestation_receipt(
+                object_id=object.object_id,
+                object_key=object.object_path,
+                content=content,
+                head=head,
+            ),
+            content=content,
+        )
+
+    def replace_archive_attestation_proof(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+        proof_bytes: bytes,
+    ) -> ArchiveObjectUploadReceipt:
+        _ = collection_id
+        if object.object_id != "signature-proof" or object.kind != "signature-proof":
+            raise ValueError("archive attestation proof replacement requires its proof object")
+        if not object.object_path.endswith("/SHA256SUMS.minisig.ots"):
+            raise ValueError("archive attestation proof path is not canonical")
+        return self._put_plaintext_attestation_artifact(
+            object_id="signature-proof",
+            object_key=object.object_path,
+            content=proof_bytes,
+            accept_existing=False,
+            replace=True,
+        )
+
+    def _put_plaintext_attestation_artifact(
+        self,
+        *,
+        object_id: str,
+        object_key: str,
+        content: bytes,
+        accept_existing: bool,
+        replace: bool = False,
+    ) -> ArchiveObjectUploadReceipt:
+        sha256 = hashlib.sha256(content).hexdigest()
+        existing = self._head_object(object_key=object_key)
+        if existing is not None and not replace:
+            existing_content = b"".join(self._iter_s3_stored_object(object_key))
+            if not accept_existing and existing_content != content:
+                raise RuntimeError("archive attestation artifact differs from its durable copy")
+            return self._plaintext_attestation_receipt(
+                object_id=object_id,
+                object_key=object_key,
+                content=existing_content,
+                head=existing,
+            )
+        uploaded_at = utc_timestamp_now()
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=object_key,
+            Body=content,
+            ContentLength=len(content),
+            Metadata={
+                "riverhog-backend": self._store.backend,
+                "riverhog-storage-class": "STANDARD",
+                "riverhog-object-kind": f"collection-{object_id}",
+                "riverhog-object-id": object_id,
+                PLAINTEXT_BYTES_METADATA: str(len(content)),
+                PLAINTEXT_SHA256_METADATA: sha256,
+                COLLECTION_BYTES_METADATA: str(len(content)),
+                COLLECTION_SHA256_METADATA: sha256,
+                STORED_SHA256_METADATA: sha256,
+            },
+        )
+        head = cast(
+            dict[str, Any],
+            self._client.head_object(Bucket=self._bucket, Key=object_key),
+        )
+        receipt = self._plaintext_attestation_receipt(
+            object_id=object_id,
+            object_key=object_key,
+            content=content,
+            head=head,
+            uploaded_at=uploaded_at,
+        )
+        persisted = b"".join(self._iter_s3_stored_object(object_key))
+        if persisted != content:
+            raise RuntimeError("persisted archive attestation artifact differs from its input")
+        return receipt
+
+    def _plaintext_attestation_receipt(
+        self,
+        *,
+        object_id: str,
+        object_key: str,
+        content: bytes,
+        head: dict[str, Any],
+        uploaded_at: str | None = None,
+    ) -> ArchiveObjectUploadReceipt:
+        sha256 = hashlib.sha256(content).hexdigest()
+        return self._collection_receipt_from_head(
+            object_id=object_id,
+            kind=object_id,
+            object_key=object_key,
+            head=head,
+            expected_bytes=len(content),
+            expected_sha256=sha256,
+            expected_stored_sha256=sha256,
             expected_storage_class="STANDARD",
             uploaded_at=uploaded_at,
         )
 
     def _put_archive_root_guidance(self) -> None:
-        for filename, content, format_name in (
+        artifacts = [
             (
                 "README.md",
                 _bucket_recovery_readme().encode("utf-8"),
@@ -781,7 +971,19 @@ class S3ArchiveStore:
                 archive_agents_guidance().encode("utf-8"),
                 "encrypted-archive-agents-v1",
             ),
-        ):
+        ]
+        if self._config.attestation_public_key_file is not None:
+            public_key = self._config.attestation_public_key_file.read_bytes()
+            if not public_key.strip():
+                raise RuntimeError("attestation public key is empty")
+            artifacts.append(
+                (
+                    "minisign.pub",
+                    public_key,
+                    "riverhog-attestation-public-key-v1",
+                )
+            )
+        for filename, content, format_name in artifacts:
             self._client.put_object(
                 Bucket=self._bucket,
                 Key=archive_store_object_path(self._store.prefix, filename),
@@ -824,6 +1026,24 @@ class S3ArchiveStore:
                 raise RuntimeError(
                     "restore-required archive object exists without its ingestion cache receipt"
                 )
+            stored_sha256 = (
+                ingestion_cache.stored_sha256
+                if ingestion_cache is not None
+                else _head_metadata(existing).get(STORED_SHA256_METADATA)
+            )
+            if stored_sha256 is None:
+                stored_sha256 = self._hash_stored_archive_object(
+                    collection_id=collection_id,
+                    object=ArchiveObjectIdentity(
+                        object_id=object_id,
+                        kind=kind,
+                        object_path=object_key,
+                        plaintext_bytes=plaintext_bytes,
+                        stored_bytes=int(existing.get("ContentLength", 0)),
+                        sha256=sha256,
+                        stored_sha256="0" * 64,
+                    ),
+                )
             return self._collection_receipt_from_head(
                 object_id=object_id,
                 kind=kind,
@@ -831,11 +1051,13 @@ class S3ArchiveStore:
                 head=existing,
                 expected_bytes=plaintext_bytes,
                 expected_sha256=sha256,
+                expected_stored_sha256=stored_sha256,
                 expected_storage_class=storage_class,
                 ingestion_cache=ingestion_cache,
             )
 
         age_session: ResumableAgeScryptSession | None = None
+        stored_sha256 = ingestion_cache.stored_sha256 if ingestion_cache is not None else None
         if data_object is not None:
             if ingestion_cache is not None:
                 assert self._retrieval_cache is not None
@@ -886,6 +1108,7 @@ class S3ArchiveStore:
                 log_n=self._config.archive_scrypt_work_factor,
             )
             content_length = len(content)
+            stored_sha256 = hashlib.sha256(content).hexdigest()
         if content_length > STORED_OBJECT_LIMIT:
             raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
 
@@ -903,6 +1126,8 @@ class S3ArchiveStore:
                 COLLECTION_SHA256_METADATA: sha256,
             }
         }
+        if stored_sha256 is not None:
+            extra_args["Metadata"][STORED_SHA256_METADATA] = stored_sha256
         if (
             self._uses_aws_restore_api()
             and _configured_s3_storage_class(storage_class) != "STANDARD"
@@ -912,7 +1137,7 @@ class S3ArchiveStore:
             if data_object is not None and data_object.supports_ranges and not cache_required:
                 if age_session is None:
                     raise RuntimeError("encrypted object upload session was not initialized")
-                self._put_encrypted_object_multipart(
+                stored_sha256 = self._put_encrypted_object_multipart(
                     collection_id=collection_id,
                     object_id=object_id,
                     object_key=object_key,
@@ -924,7 +1149,7 @@ class S3ArchiveStore:
                     multipart_tracker=multipart_tracker,
                 )
             else:
-                self._put_archive_object_multipart(
+                stored_sha256 = self._put_archive_object_multipart(
                     collection_id=collection_id,
                     object_id=object_id,
                     object_key=object_key,
@@ -935,10 +1160,13 @@ class S3ArchiveStore:
                     multipart_tracker=multipart_tracker,
                 )
         else:
+            body = _single_put_body(content)
+            stored_sha256 = hashlib.sha256(body).hexdigest()
+            extra_args["Metadata"][STORED_SHA256_METADATA] = stored_sha256
             self._client.put_object(
                 Bucket=self._bucket,
                 Key=object_key,
-                Body=_single_put_body(content),
+                Body=body,
                 ContentLength=content_length,
                 **extra_args,
             )
@@ -946,6 +1174,8 @@ class S3ArchiveStore:
             dict[str, Any],
             self._client.head_object(Bucket=self._bucket, Key=object_key),
         )
+        if stored_sha256 is None:
+            raise RuntimeError("archive upload did not calculate the stored sha256")
         return self._collection_receipt_from_head(
             object_id=object_id,
             kind=kind,
@@ -953,6 +1183,7 @@ class S3ArchiveStore:
             head=head,
             expected_bytes=plaintext_bytes,
             expected_sha256=sha256,
+            expected_stored_sha256=stored_sha256,
             expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
             ingestion_cache=ingestion_cache,
@@ -969,7 +1200,7 @@ class S3ArchiveStore:
         sha256: str,
         extra_args: dict[str, Any],
         multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> None:
+    ) -> str:
         part_number = 1
         upload_state: ArchiveMultipartUploadState | None = None
         buffer = bytearray()
@@ -984,6 +1215,7 @@ class S3ArchiveStore:
         resumed_part_count = 0
         skip_bytes = 0
         completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
+        stored_hasher = hashlib.sha256()
 
         if multipart_tracker is not None:
             upload_state = multipart_tracker.load_multipart_upload(
@@ -1152,10 +1384,12 @@ class S3ArchiveStore:
                     if len(pending) >= multipart_concurrency:
                         drain_completed(return_when=FIRST_COMPLETED)
 
-                chunks = _iter_chunks_after_skipping(
-                    _iter_content_chunks(content),
-                    skip_bytes,
-                )
+                def hashing_chunks() -> Iterator[bytes]:
+                    for current in _iter_content_chunks(content):
+                        stored_hasher.update(current)
+                        yield current
+
+                chunks = _iter_chunks_after_skipping(hashing_chunks(), skip_bytes)
                 for chunk in chunks:
                     size += len(chunk)
                     chunk_view = memoryview(chunk)
@@ -1188,7 +1422,7 @@ class S3ArchiveStore:
                     ContentLength=0,
                     **extra_args,
                 )
-                return
+                return stored_hasher.hexdigest()
             remote_parts = self._list_uploaded_parts(
                 object_key=object_key,
                 upload_id=upload_state.upload_id,
@@ -1226,6 +1460,7 @@ class S3ArchiveStore:
                 len(completed_parts),
                 uploaded_bytes,
             )
+            return stored_hasher.hexdigest()
         except Exception:
             if upload_state is not None:
                 if multipart_tracker is None:
@@ -1259,7 +1494,7 @@ class S3ArchiveStore:
         initial_session: ResumableAgeScryptSession,
         extra_args: dict[str, Any],
         multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> None:
+    ) -> str:
         started = time.perf_counter()
         upload_state: ArchiveMultipartUploadState | None = None
         part_size = _multipart_part_size(
@@ -1277,6 +1512,7 @@ class S3ArchiveStore:
         preparation_seconds = 0.0
         upload_request_seconds = 0.0
         checkpoint_seconds = 0.0
+        stored_hasher = hashlib.sha256()
 
         def checkpoint(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
             nonlocal checkpoint_seconds
@@ -1478,7 +1714,7 @@ class S3ArchiveStore:
                             future.cancel()
                         raise error
 
-                for plan in plans[resumed_part_count:]:
+                for plan in plans:
                     preparation_started = time.perf_counter()
                     body = _encrypted_object_part_body(
                         object=object,
@@ -1486,6 +1722,9 @@ class S3ArchiveStore:
                         plan=plan,
                     )
                     preparation_seconds += time.perf_counter() - preparation_started
+                    stored_hasher.update(body)
+                    if plan.part_number <= resumed_part_count:
+                        continue
                     pending.add(executor.submit(upload_part_body, plan=plan, body=body))
                     if len(pending) >= multipart_concurrency:
                         drain_completed(return_when=FIRST_COMPLETED)
@@ -1548,6 +1787,7 @@ class S3ArchiveStore:
                         checkpoint_seconds=checkpoint_seconds,
                     )
                 )
+            return stored_hasher.hexdigest()
         except Exception:
             if upload_state is not None:
                 _LOG.warning(
@@ -1824,6 +2064,39 @@ class S3ArchiveStore:
             attribution=attribution,
         )
 
+    def stored_archive_object_sha256(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> str:
+        digest = self._hash_stored_archive_object(
+            collection_id=collection_id,
+            object=object,
+        )
+        if object.stored_sha256 and object.stored_sha256 != "0" * 64:
+            if digest != object.stored_sha256:
+                raise RuntimeError(f"Archive ciphertext sha256 mismatch: {object.object_path}")
+        return digest
+
+    def _hash_stored_archive_object(
+        self,
+        *,
+        collection_id: int,
+        object: ArchiveObjectIdentity,
+    ) -> str:
+        digest = hashlib.sha256()
+        byte_count = 0
+        for chunk in self.iter_stored_archive_object(
+            collection_id=collection_id,
+            object=object,
+        ):
+            byte_count += len(chunk)
+            digest.update(chunk)
+        if byte_count != object.stored_bytes:
+            raise RuntimeError(f"Archive ciphertext byte count mismatch: {object.object_path}")
+        return digest.hexdigest()
+
     def _iter_s3_stored_object(self, object_path: str) -> Iterator[bytes]:
         response = self._client.get_object(Bucket=self._bucket, Key=object_path)
         body = response["Body"]
@@ -1922,8 +2195,8 @@ do not reveal private collection names.
 
 - S3 credentials, token, or S3 login/session that can list and read this bucket or prefix.
 - The archive passphrase.
-- Standard recovery tools: an S3 CLI such as `aws`, `age`, `sha256sum`, `tar`, and
-  optionally `ots`.
+- Standard recovery tools: an S3 CLI such as `aws`, `age`, `sha256sum`, `minisign`,
+  `ots`, and `tar`.
 
 S3 credentials and the archive passphrase are different secrets. The `aws`
 commands below will fail until the CLI is authenticated with S3 access. Common
@@ -1972,6 +2245,25 @@ Optional timestamp proof verification:
 ```sh
 ots verify manifest.yml.ots -f manifest.yml
 ```
+
+## Verify the exact archive copy
+
+Each archive directory contains a plaintext checksum inventory signed by Riverhog's
+Minisign key. The signature has its own OpenTimestamps proof. Obtain the public key
+from an independently trusted source; the bucket-root `minisign.pub` is a convenient
+copy, not an independent trust anchor.
+
+```sh
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS .
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS.minisig .
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS.minisig.ots .
+minisign -Vm SHA256SUMS -x SHA256SUMS.minisig -p /path/to/trusted-minisign.pub
+ots verify SHA256SUMS.minisig.ots -f SHA256SUMS.minisig
+```
+
+After downloading the listed ciphertext paths beneath the archive directory, run
+`sha256sum -c SHA256SUMS` from that directory. The mutable `metadata.yml.age` is
+intentionally outside this immutable inventory.
 
 ## Recover files
 
@@ -2084,6 +2376,34 @@ def _verify_remote_collection_object(
         raise RuntimeError(f"Archive object plaintext sha256 changed: {object_key}")
     if metadata.get(ENCRYPTION_METADATA) != AGE_SCRYPT_ENCRYPTION:
         raise RuntimeError(f"Archive object encryption metadata changed: {object_key}")
+    if metadata.get("riverhog-object-kind") != f"collection-{kind}":
+        raise RuntimeError(f"Archive object kind metadata changed: {object_key}")
+
+
+def _verify_remote_plaintext_attestation(
+    *,
+    object_key: str,
+    head: dict[str, Any],
+    kind: str,
+    expected: ArchiveObjectIdentity,
+) -> None:
+    try:
+        stored_bytes = int(head["ContentLength"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"Archive object has invalid stored byte count: {object_key}") from exc
+    if stored_bytes != expected.stored_bytes or stored_bytes != expected.plaintext_bytes:
+        raise RuntimeError(f"Archive attestation artifact byte count changed: {object_key}")
+    _validate_uploaded_collection_metadata(
+        object_key=object_key,
+        head=head,
+        expected_bytes=expected.plaintext_bytes,
+        expected_sha256=expected.sha256,
+    )
+    metadata = _head_metadata(head)
+    if metadata.get(PLAINTEXT_SHA256_METADATA) != expected.sha256:
+        raise RuntimeError(f"Archive attestation artifact sha256 changed: {object_key}")
+    if metadata.get(STORED_SHA256_METADATA) != expected.stored_sha256:
+        raise RuntimeError(f"Archive attestation stored sha256 changed: {object_key}")
     if metadata.get("riverhog-object-kind") != f"collection-{kind}":
         raise RuntimeError(f"Archive object kind metadata changed: {object_key}")
 

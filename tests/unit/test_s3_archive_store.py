@@ -512,6 +512,7 @@ def _identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdent
                 plaintext_bytes=current.plaintext_bytes,
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
+                stored_sha256=current.stored_sha256,
             )
             for current in objects
         )
@@ -598,6 +599,7 @@ def test_archive_proof_replacement_is_encrypted_and_immediately_reverified(
             plaintext_bytes=receipt.plaintext_bytes,
             stored_bytes=receipt.stored_bytes,
             sha256=receipt.sha256,
+            stored_sha256=receipt.stored_sha256,
         ),
     )
 
@@ -644,6 +646,31 @@ def test_collection_metadata_manifest_is_independently_encrypted(
     assert "archives/ARCHIVE_ID/metadata.yml.age" in agents
 
 
+def test_archive_root_publishes_configured_attestation_public_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    public_key_path = tmp_path / "minisign.pub"
+    public_key_path.write_text("untrusted comment: test key\nRWQfixture\n", encoding="utf-8")
+    client = _FakeS3Client()
+    store = _store(
+        monkeypatch,
+        tmp_path,
+        client,
+        attestation_secret_key_file=tmp_path / "minisign.key.age",
+        attestation_public_key_file=public_key_path,
+    )
+
+    store.publish_collection_metadata(
+        collection_id=COLLECTION_ID,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        manifest=b"format: riverhog-collection-metadata/v1\ncollection: 1\n",
+    )
+
+    public_key = cast(bytes, client.objects["archive/minisign.pub"]["Body"])
+    assert public_key == public_key_path.read_bytes()
+
+
 def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -683,6 +710,7 @@ def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
     assert data.ingestion_cache is not None
     cached = cache.objects[(data.ingestion_cache.object_path, data.ingestion_cache.version_id)]
     assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
+    assert data.stored_sha256 == hashlib.sha256(cached).hexdigest()
     assert decrypt_age_scrypt(cached, config.archive_passphrase) == expected_plaintext
 
     client.objects.pop(data.object_path)
@@ -693,7 +721,9 @@ def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
         multipart_tracker=tracker,
     )
     assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
-    assert resumed.require_object("data-000000").ingestion_cache == data.ingestion_cache
+    resumed_data = resumed.require_object("data-000000")
+    assert resumed_data.ingestion_cache == data.ingestion_cache
+    assert resumed_data.stored_sha256 == hashlib.sha256(cached).hexdigest()
 
 
 def test_archive_download_uses_s3_when_cloudfront_is_unconfigured(
@@ -990,6 +1020,10 @@ def test_upload_resumes_each_data_object_independently(monkeypatch, tmp_path: Pa
         cast(bytes, client.objects[data.object_path]["Body"]),
         "test-archive-passphrase",
     ) == b"".join(archive.data_objects[0].iter_plaintext())
+    assert (
+        data.stored_sha256
+        == hashlib.sha256(cast(bytes, client.objects[data.object_path]["Body"])).hexdigest()
+    )
 
 
 def test_encrypted_multipart_upload_pipelines_bounded_provider_requests(
@@ -1030,6 +1064,7 @@ def test_encrypted_multipart_upload_pipelines_bounded_provider_requests(
     assert timings[0].elapsed_seconds >= 0
     encrypted = cast(bytes, client.objects[receipt.objects[0].object_path]["Body"])
     assert decrypt_age_scrypt(encrypted, "test-archive-passphrase") == b"x" * (16 * 1024 * 1024)
+    assert receipt.objects[0].stored_sha256 == hashlib.sha256(encrypted).hexdigest()
 
 
 def test_incomplete_multipart_sweep_aborts_only_stale_owned_uploads(

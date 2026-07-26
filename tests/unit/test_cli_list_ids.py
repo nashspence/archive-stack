@@ -59,9 +59,7 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
     result = runner.invoke(app, ["find", "-q", "invoice", "--all", "--selectors"])
 
     assert result.exit_code == 0
-    assert result.stdout == (
-        "41::tax/invoice.pdf\n42::tax/invoice.pdf\n"
-    )
+    assert result.stdout == ("41::tax/invoice.pdf\n42::tax/invoice.pdf\n")
 
 
 def test_riverhog_closes_its_shared_api_client(monkeypatch) -> None:

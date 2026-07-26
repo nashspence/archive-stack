@@ -242,6 +242,8 @@ class RuntimeConfig:
         "--no-default-whitelist",
     )
     ots_upgrade_command: tuple[str, ...] = ("ots",)
+    attestation_secret_key_file: Path | None = None
+    attestation_public_key_file: Path | None = None
     proof_maturation_retry_delay: timedelta = field(default_factory=lambda: timedelta(hours=6))
     proof_maturation_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
     public_base_url: str | None = None
@@ -257,6 +259,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_PROOF_MATURATION_RETRY_DELAY must be > 0")
         if self.proof_maturation_sweep_interval.total_seconds() <= 0:
             raise ValueError("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL must be > 0")
+        if bool(self.attestation_secret_key_file) != bool(self.attestation_public_key_file):
+            raise ValueError("Riverhog attestation key configuration is incomplete")
         if not self.database_url:
             object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
         log_level = self.log_level.strip().upper()
@@ -710,6 +714,16 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_OTS_UPGRADE_COMMAND", "ots"),
         name="RIVERHOG_OTS_UPGRADE_COMMAND",
     )
+    attestation_secret_key_file = (
+        Path(value)
+        if (value := os.getenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "").strip())
+        else None
+    )
+    attestation_public_key_file = (
+        Path(value)
+        if (value := os.getenv("RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE", "").strip())
+        else None
+    )
     archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ
     archive_passphrase = (
         os.getenv("RIVERHOG_ARCHIVE_PASSPHRASE", DEV_ARCHIVE_PASSPHRASE).strip()
@@ -790,6 +804,8 @@ def load_runtime_config() -> RuntimeConfig:
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         ots_upgrade_command=ots_upgrade_command,
+        attestation_secret_key_file=attestation_secret_key_file,
+        attestation_public_key_file=attestation_public_key_file,
         proof_maturation_retry_delay=parse_duration(
             os.getenv("RIVERHOG_PROOF_MATURATION_RETRY_DELAY", "6h")
         ),

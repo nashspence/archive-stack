@@ -179,6 +179,7 @@ def _archive_copy(store: str, *, stored_bytes: int) -> CollectionArchiveCopyReco
                 plaintext_bytes=max(0, size - 1),
                 stored_bytes=size,
                 sha256="c" * 64,
+                stored_sha256="c" * 64,
                 backend="s3",
                 storage_class="STANDARD",
                 uploaded_at=verified_at,

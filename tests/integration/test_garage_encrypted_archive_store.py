@@ -248,6 +248,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
                     plaintext_bytes=data.plaintext_bytes,
                     stored_bytes=data.stored_bytes,
                     sha256=data.sha256,
+                    stored_sha256=data.stored_sha256,
                 ),
             )
         )
@@ -262,6 +263,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
                     plaintext_bytes=manifest.plaintext_bytes,
                     stored_bytes=manifest.stored_bytes,
                     sha256=manifest.sha256,
+                    stored_sha256=manifest.stored_sha256,
                 ),
             )
         )
@@ -276,6 +278,7 @@ def test_encrypted_archive_multipart_resume_and_restore_against_garage(tmp_path:
                     plaintext_bytes=proof.plaintext_bytes,
                     stored_bytes=proof.stored_bytes,
                     sha256=proof.sha256,
+                    stored_sha256=proof.stored_sha256,
                 ),
             )
         )

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
+    CollectionArchiveAttestationRecord,
     CollectionDeletionRecord,
     CollectionProofMaturationRecord,
     CollectionRecord,
@@ -40,4 +41,17 @@ def require_collection_custody_idle(session: Session, collection_id: int) -> Non
     if maturation is not None:
         raise Conflict(
             f"archive proof maturation is in progress: {collection_id} in {maturation.store}"
+        )
+    attestation = session.scalar(
+        select(CollectionArchiveAttestationRecord)
+        .where(
+            CollectionArchiveAttestationRecord.collection_id == collection_id,
+            CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
+        )
+        .order_by(CollectionArchiveAttestationRecord.store)
+        .limit(1)
+    )
+    if attestation is not None:
+        raise Conflict(
+            f"archive attestation is in progress: {collection_id} in {attestation.store}"
         )

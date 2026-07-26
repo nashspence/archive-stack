@@ -91,6 +91,7 @@ def _seed(path: Path) -> None:
                     plaintext_bytes=size,
                     stored_bytes=size,
                     sha256=chr(ord("a") + order) * 64,
+                    stored_sha256=chr(ord("a") + order) * 64,
                     backend="s3",
                     storage_class="DEEP_ARCHIVE" if kind == "pack" else "STANDARD",
                     uploaded_at="2026-01-01T00:00:00.000000Z",
