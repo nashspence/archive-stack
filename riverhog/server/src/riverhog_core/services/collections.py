@@ -595,7 +595,7 @@ class SqlAlchemyCollectionService:
                 )
                 session.delete(upload)
                 return payload
-            if upload.state != "open":
+            if upload.state not in {"open", "uploading", None}:
                 raise Conflict(
                     "collection upload session cannot be canceled after completion handoff"
                 )

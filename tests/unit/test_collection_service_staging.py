@@ -415,6 +415,29 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     assert len(upload_store.deleted) == file_count
 
 
+def test_batch_collection_upload_can_be_canceled_before_all_bytes_arrive(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    upload_store = MissingTargetUploadStore()
+    _seed_tag(path, "cancel-batch")
+    service = _service(path, upload_store)
+    created = service.create_or_resume_upload(
+        idempotency_key="cancel-batch-upload",
+        tags=["cancel-batch"],
+        files=[{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
+    )
+    collection_id = str(created["collection_id"])
+    service.create_or_resume_file_upload(collection_id, "one.txt")
+
+    canceled = service.cancel_upload_session(collection_id)
+
+    assert canceled["state"] == "canceled"
+    assert len(upload_store.canceled) == 1
+    assert len(upload_store.deleted) == 1
+    with pytest.raises(NotFound, match="collection upload not found"):
+        service.get_upload(collection_id)
+
+
 def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     tmp_path: Path,
 ) -> None:
