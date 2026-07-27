@@ -6,7 +6,7 @@ from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
-from riverhog_core.archive_objects import CollectionArchive
+from riverhog_core.archive_objects import STORED_OBJECT_LIMIT, CollectionArchive
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
@@ -25,15 +25,7 @@ def apply_archive_receipt(
     receipt: CollectionArchiveUploadReceipt,
     archive: CollectionArchive,
 ) -> None:
-    if not receipt.objects:
-        raise ValueError("collection archive upload returned no objects")
-    receipt_by_id = {current.object_id: current for current in receipt.objects}
-    if set(receipt_by_id) != {
-        *(current.object_id for current in archive.data_objects),
-        "manifest",
-        "proof",
-    }:
-        raise ValueError("collection archive receipt objects do not match its manifest")
+    _validate_archive_receipt(receipt, archive)
 
     copy.state = "uploaded"
     copy.archive_storage_prefix = archive_storage_prefix_from_object_path(
@@ -87,6 +79,65 @@ def apply_archive_receipt(
                     member=placement.member,
                 )
             )
+
+
+def _validate_archive_receipt(
+    receipt: CollectionArchiveUploadReceipt,
+    archive: CollectionArchive,
+) -> None:
+    expected = {
+        current.object_id: (current.kind, current.plaintext_bytes, current.sha256)
+        for current in archive.data_objects
+    }
+    expected.update(
+        {
+            "manifest": ("manifest", len(archive.manifest_bytes), archive.manifest_sha256),
+            "proof": ("proof", len(archive.proof_bytes), archive.proof_sha256),
+        }
+    )
+    by_id = {current.object_id: current for current in receipt.objects}
+    if len(receipt.objects) != len(by_id) or set(by_id) != set(expected):
+        raise ValueError("collection archive receipt objects do not match its manifest")
+
+    manifest = by_id["manifest"]
+    archive_prefix = archive_storage_prefix_from_object_path(manifest.object_path)
+    if (
+        archive_prefix is None
+        or manifest.object_path != f"{archive_prefix}/manifest.yml.age"
+        or by_id["proof"].object_path != f"{archive_prefix}/manifest.yml.ots.age"
+    ):
+        raise ValueError("collection archive receipt has noncanonical manifest paths")
+    data_prefix = f"{archive_prefix}/objects/"
+    object_paths: set[str] = set()
+    for object_id, current in by_id.items():
+        kind, plaintext_bytes, sha256 = expected[object_id]
+        if (
+            current.kind != kind
+            or current.plaintext_bytes != plaintext_bytes
+            or current.sha256 != sha256
+        ):
+            raise ValueError(
+                f"collection archive receipt object does not match its manifest: {object_id}"
+            )
+        if not current.verified_at:
+            raise ValueError(f"collection archive receipt object is not verified: {object_id}")
+        if current.stored_bytes < 1 or current.stored_bytes > STORED_OBJECT_LIMIT:
+            raise ValueError(f"collection archive receipt object size is invalid: {object_id}")
+        if not _is_sha256(current.stored_sha256):
+            raise ValueError(
+                f"collection archive receipt stored digest is invalid: {object_id}"
+            )
+        if current.object_path in object_paths:
+            raise ValueError(f"collection archive receipt object path is duplicated: {object_id}")
+        object_paths.add(current.object_path)
+        if object_id not in {"manifest", "proof"} and not current.object_path.startswith(
+            data_prefix
+        ):
+            raise ValueError(f"collection archive receipt object is outside its copy: {object_id}")
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def archive_copy_is_complete(copy: CollectionArchiveCopyRecord) -> bool:

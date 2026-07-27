@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -12,12 +13,14 @@ from riverhog_core.catalog_models import (
     CollectionProofMaturationRecord,
 )
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
+from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
+    archive_receipt,
     as_archive_store,
     seed_archive_copy,
 )
@@ -133,3 +136,32 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
         assert job is not None and job.state == "waiting"
     assert source.prepared == [("data-000000",)]
     assert destination.archive is None
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ({"sha256": "f" * 64}, "does not match its manifest"),
+        ({"verified_at": None}, "is not verified"),
+        ({"object_path": "archives/other/data.age"}, "outside its copy"),
+    ],
+)
+def test_archive_receipt_requires_exact_verified_owned_objects(
+    tmp_path: Path,
+    replacement: dict[str, object],
+    message: str,
+) -> None:
+    _config, archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        FILES,
+    )
+    receipt = archive_receipt(archive, prefix="archives/b2/opaque-copy")
+    changed = replace(receipt.objects[0], **replacement)
+    mismatched = replace(receipt, objects=(changed, *receipt.objects[1:]))
+    copy = CollectionArchiveCopyRecord(collection_id=COLLECTION_ID, store="b2")
+
+    with pytest.raises(ValueError, match=message):
+        apply_archive_receipt(copy, mismatched, archive)
+
+    assert copy.state is None or copy.state == "pending"
+    assert copy.objects == []
