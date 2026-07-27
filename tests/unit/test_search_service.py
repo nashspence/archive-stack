@@ -80,7 +80,7 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
         collection="1",
         page=2,
         per_page=1,
-        sort="collection_path",
+        sort="path",
         order="asc",
     )
 
@@ -91,13 +91,13 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
         "per_page": 1,
         "total": 2,
         "pages": 2,
-        "sort": "collection_path",
+        "sort": "path",
         "order": "asc",
         "files": [
             {
-                "logical_path": ("1/tax/receipt.pdf"),
+                "file_ref": ("1/tax/receipt.pdf"),
                 "collection_id": 1,
-                "collection_path": "tax/receipt.pdf",
+                "path": "tax/receipt.pdf",
                 "bytes": 21,
                 "sha256": "c" * 64,
             }
@@ -114,7 +114,7 @@ def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:
         q="tax",
         page=9,
         per_page=1,
-        sort="collection_path",
+        sort="path",
         order="asc",
         all_items=True,
     )
@@ -123,7 +123,7 @@ def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:
     assert payload["per_page"] == 2
     assert payload["total"] == 2
     assert payload["pages"] == 1
-    assert [file["collection_path"] for file in payload["files"]] == [
+    assert [file["path"] for file in payload["files"]] == [
         "tax/invoice.pdf",
         "tax/receipt.pdf",
     ]
@@ -143,7 +143,7 @@ def test_search_applies_tag_grants_in_the_database(tmp_path: Path) -> None:
         q=None,
         page=1,
         per_page=25,
-        sort="logical_path",
+        sort="file_ref",
         order="asc",
         principal=principal,
     )

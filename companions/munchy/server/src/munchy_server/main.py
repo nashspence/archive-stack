@@ -127,6 +127,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from riverhog_api_client import Conflict, HashMismatch, NotFound, ServiceUnavailable
 from riverhog_api_client.client import ApiClient
 from riverhog_api_client.ingress import iter_ingress_upload_parts
+from riverhog_protocol.manifest import collection_content_etag
 from time_formats import (
     format_utc_timestamp,
     parse_duration,
@@ -6636,7 +6637,7 @@ def sync_riverhog_session_from_remote(job: dict[str, Any], api: ApiClient) -> di
         return None
     state = riverhog_session_state(job)
     state["collection_id"] = collection_id
-    payload = api.get_collection_upload(collection_id)
+    payload = api.get_collection_upload_session(collection_id)
     update_remote_state_from_payload(job, payload)
     return payload
 
@@ -7602,10 +7603,37 @@ def complete_riverhog_session(
 ) -> dict[str, Any]:
     collection_id = ensure_riverhog_session(job, api, archive_dir)
     try:
-        payload = api.complete_collection_upload_session(collection_id)
+        files = dict_or_empty(riverhog_session_state(job).get("files"))
+        manifest = [
+            (str(record["path"]), int(record["bytes"]), str(record["sha256"]))
+            for record in files.values()
+            if isinstance(record, dict)
+            and record.get("path")
+            and record.get("bytes") is not None
+            and record.get("sha256")
+        ]
+        if not manifest or len(manifest) != len(files):
+            raise HandoffFailed("riverhog upload manifest is incomplete")
+        payload = api.complete_collection_upload_session(
+            collection_id,
+            files_total=len(manifest),
+            content_etag=collection_content_etag(manifest),
+        )
     except Conflict:
-        payload = api.get_collection_upload(collection_id)
-        update_remote_state_from_payload(job, payload, authoritative_files=True)
+        payload = api.get_collection_upload_session(collection_id)
+        update_remote_state_from_payload(job, payload)
+        page = 1
+        while True:
+            file_page = api.list_collection_upload_session_files(
+                collection_id,
+                page=page,
+                per_page=100,
+            )
+            update_remote_state_from_payload(job, file_page, authoritative_files=True)
+            pages = max(1, int(file_page.get("pages") or 1))
+            if page >= pages:
+                break
+            page += 1
         files = dict_or_empty(riverhog_session_state(job).get("files"))
         missing_paths = [
             str(path)
@@ -7660,7 +7688,7 @@ def wait_for_riverhog_finalized(
 ) -> dict[str, Any]:
     while True:
         raise_if_job_canceled(str(job["job_id"]))
-        payload = api.get_collection_upload(collection_id)
+        payload = api.get_collection_upload_session(collection_id)
         update_remote_state_from_payload(job, payload)
         save_job(job)
         if str(payload.get("state") or "") == "finalized":

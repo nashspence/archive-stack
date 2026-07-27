@@ -296,7 +296,11 @@ class ApiClient(_HttpApiClient):
                     "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
                 }
             )
-        return {"cursor": int(root.attrib.get("data-cursor", after)), "changes": changes}
+        return {
+            "cursor": int(root.attrib.get("data-cursor", after)),
+            "has_more": root.attrib.get("data-has-more", "false") == "true",
+            "changes": changes,
+        }
 
     def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
         return self._json(
@@ -379,29 +383,6 @@ class ApiClient(_HttpApiClient):
         )
         return int(result)
 
-    def create_or_resume_collection_upload(
-        self,
-        idempotency_key: str,
-        tags: Sequence[str],
-        files: Sequence[Mapping[str, Any]],
-        *,
-        ingest_source: str | None = None,
-        archive_store: str | None = None,
-        event_context: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "idempotency_key": idempotency_key,
-            "tags": list(tags),
-            "files": [dict(file) for file in files],
-        }
-        if ingest_source is not None:
-            payload["ingest_source"] = ingest_source
-        if archive_store is not None:
-            payload["archive_store"] = archive_store
-        if event_context is not None:
-            payload["event_context"] = dict(event_context)
-        return self._json("POST", "/v1/collection-uploads", json=payload)
-
     def create_or_resume_collection_upload_session(
         self,
         idempotency_key: str,
@@ -423,21 +404,46 @@ class ApiClient(_HttpApiClient):
             payload["event_context"] = dict(event_context)
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
 
-    def register_collection_upload_session_file(
+    def register_collection_upload_session_files(
         self,
         collection_id: int,
-        file: Mapping[str, Any],
+        files: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(collection_id)}/files",
-            json=dict(file),
+            json={"files": [dict(file) for file in files]},
         )
 
-    def complete_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
+    def list_collection_upload_session_files(
+        self,
+        collection_id: int,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/files",
+            params={
+                "page": page,
+                "per_page": per_page,
+                "all": str(all_items).lower(),
+            },
+        )
+
+    def complete_collection_upload_session(
+        self,
+        collection_id: int,
+        *,
+        files_total: int,
+        content_etag: str,
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(collection_id)}/complete",
+            json={"files_total": files_total, "content_etag": content_etag},
         )
 
     def cancel_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
@@ -447,15 +453,16 @@ class ApiClient(_HttpApiClient):
             timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
-    def get_collection_upload(self, collection_id: int) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collection-uploads/{str(collection_id)}")
+    def get_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
+        return self._json("GET", f"/v1/collection-upload-sessions/{str(collection_id)}")
 
     def create_or_resume_collection_file_upload(
         self, collection_id: int, path: str
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collection-uploads/{str(collection_id)}/files/{quote(path, safe='/')}/upload",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/files/"
+            f"{quote(path, safe='/')}/upload",
         )
 
     def create_or_resume_registered_collection_file_upload(
@@ -475,7 +482,7 @@ class ApiClient(_HttpApiClient):
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "logical_path",
+        sort: str = "file_ref",
         order: str = "asc",
         collection: int | None = None,
         all_items: bool = False,

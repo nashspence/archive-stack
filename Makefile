@@ -5,7 +5,7 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= companions packages riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py
+POSTGRES_TESTS ?= tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py
 TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
@@ -58,7 +58,7 @@ help:
 		'  make lint              Run ruff, then mypy.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
-		'  make postgres-concurrency Run collection deletion race tests against disposable Postgres.' \
+		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make archive-throughput  Measure, verify, and delete an archive upload probe.' \
 		'  make archive-download-smoke  Verify signed CloudFront download and probe cleanup.' \
@@ -80,7 +80,7 @@ help:
 		"  FILES='...'            Narrow ruff, ruff-fix, or format to specific files." \
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
-		"  POSTGRES_TESTS='...'   Select the disposable Postgres test file." \
+		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
 		'  ARCHIVE_SOURCE=/path   Existing file for make archive-throughput.' \
 		'  ARCHIVE_STORE=deep     Optional store for make archive-download-smoke.' \
@@ -112,7 +112,7 @@ spec:
 	$(call UV_CMD,python -m pytest -q $(SPEC_TESTS) $(args))
 
 postgres-concurrency:
-	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_collection_deletion_concurrency.sh
+	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_concurrency.sh
 
 tus-throughput:
 	@if [[ -z "$(TUS_URL)" ]]; then \
@@ -151,7 +151,7 @@ build-munchy-server:
 	@docker compose --file companions/munchy/server/compose.yaml build munchy-server
 
 build-munchy-av1-nvenc:
-	@docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build api
+	@MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev SOURCE_REVISION=development docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build api
 
 build-test:
 	@./scripts/build_test.sh

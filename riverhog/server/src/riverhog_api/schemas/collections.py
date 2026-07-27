@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from riverhog_api.schemas.archive import ArchiveCopyOut
+from riverhog_api.schemas.archive import ArchiveCopyOut, ArchiveOwnedObjectKind
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -12,15 +12,6 @@ class CollectionUploadFileIn(RiverhogModel):
     path: str
     bytes: int
     sha256: str
-
-
-class CreateOrResumeCollectionUploadRequest(RiverhogModel):
-    idempotency_key: str
-    tags: list[str]
-    files: list[CollectionUploadFileIn]
-    ingest_source: str | None = None
-    archive_store: str | None = None
-    event_context: dict[str, Any] | None = None
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -31,8 +22,13 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     event_context: dict[str, Any] | None = None
 
 
-class RegisterCollectionUploadSessionFileRequest(CollectionUploadFileIn):
-    pass
+class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
+    files: list[CollectionUploadFileIn] = Field(min_length=1, max_length=100)
+
+
+class CompleteCollectionUploadSessionRequest(RiverhogModel):
+    files_total: int = Field(ge=1)
+    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionSummaryOut(RiverhogModel):
@@ -59,7 +55,7 @@ class CollectionDeletionFileOut(RiverhogModel):
 
 class CollectionDeletionObjectOut(RiverhogModel):
     store: str
-    kind: Literal["pack", "file", "segment", "manifest", "proof", "metadata"]
+    kind: ArchiveOwnedObjectKind
     object_path: str
     stored_bytes: int
 
@@ -109,12 +105,20 @@ class CollectionUploadFileOut(RiverhogModel):
     upload_state_expires_at: str | None
 
 
-class CollectionUploadSessionFileRegistrationOut(RiverhogModel):
+class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     collection_id: int
     ingest_source: str | None
     archive_store: str
     state: Literal["open", "uploading"]
-    file: CollectionUploadFileOut
+    files: list[CollectionUploadFileOut]
+
+
+class ListCollectionUploadSessionFilesResponse(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    files: list[CollectionUploadFileOut]
 
 
 class CollectionUploadSessionOut(RiverhogModel):
@@ -140,7 +144,6 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_total_bytes: int | None = None
     archive_uploaded_parts: int | None = None
     archive_total_parts: int | None = None
-    files: list[CollectionUploadFileOut]
     collection: CollectionSummaryOut | None
 
 

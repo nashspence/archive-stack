@@ -45,11 +45,11 @@ class _FakeApi:
     def create_or_resume_collection_upload_session(self, *_args: Any, **_kwargs: Any):
         return {"collection_id": 1}
 
-    def register_collection_upload_session_file(
-        self, _collection_id: int, file: dict[str, object]
+    def register_collection_upload_session_files(
+        self, _collection_id: int, files: list[dict[str, object]]
     ) -> dict[str, object]:
-        self.registered.append(file)
-        return {"files": [file]}
+        self.registered.extend(files)
+        return {"files": files}
 
     def create_or_resume_collection_file_upload(
         self, _collection_id: int, path: str

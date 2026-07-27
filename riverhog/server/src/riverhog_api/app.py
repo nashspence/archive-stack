@@ -63,7 +63,7 @@ class _RiverhogAccessLogFilter(logging.Filter):
             ):
                 return False
             if (
-                path.startswith("/v1/collection-uploads/")
+                path.startswith("/v1/collection-upload-sessions/")
                 and "/files/" in path
                 and path.endswith("/upload")
             ):

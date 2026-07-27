@@ -5,19 +5,7 @@ import json
 from collections.abc import Iterable, Sequence
 
 import yaml
-
-
-def collection_content_etag(files: Iterable[tuple[str, int, str]]) -> str:
-    canonical = _canonical_json(
-        {
-            "format": "riverhog-collection-content/v1",
-            "files": [
-                {"path": path, "bytes": byte_count, "sha256": sha256}
-                for path, byte_count, sha256 in sorted(files)
-            ],
-        }
-    )
-    return hashlib.sha256(canonical).hexdigest()
+from riverhog_protocol.manifest import collection_content_etag
 
 
 def collection_record_manifest(

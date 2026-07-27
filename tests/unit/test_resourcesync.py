@@ -26,6 +26,7 @@ class RetrievalStub:
         assert principal == "app"
         return {
             "cursor": 3,
+            "has_more": False,
             "changes": [
                 {
                     "change": "created",
@@ -81,6 +82,7 @@ def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None
     assert str(COLLECTION_ID) in resources.body.decode()
     assert f"sha-256:{ETAG}" in resources.body.decode()
     assert change_root.attrib["data-cursor"] == "3"
+    assert change_root.attrib["data-has-more"] == "false"
     assert len(resource_root) == len(change_root) == 1
 
 
@@ -107,6 +109,7 @@ def test_cli_parses_resourcesync_cursor_and_collection_change() -> None:
 
     assert Client(base_url="https://riverhog.example.test").catalog_changes(after=2) == {
         "cursor": 3,
+        "has_more": False,
         "changes": [
             {
                 "collection_id": COLLECTION_ID,

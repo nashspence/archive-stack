@@ -81,6 +81,7 @@ def resourcesync_change_list(
     payload = container.retrieval.change_list(after=after, principal=principal)
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
     root.set("data-cursor", str(payload["cursor"]))
+    root.set("data-has-more", str(bool(payload["has_more"])).lower())
     for change in cast(list[dict[str, object]], payload["changes"]):
         url = SubElement(root, "url")
         SubElement(url, "loc").text = _url(

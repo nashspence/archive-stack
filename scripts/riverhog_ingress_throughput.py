@@ -29,10 +29,10 @@ class _Api(Protocol):
         archive_store: str | None,
     ) -> dict[str, Any]: ...
 
-    def register_collection_upload_session_file(
+    def register_collection_upload_session_files(
         self,
         collection_id: int,
-        file: dict[str, object],
+        files: Sequence[dict[str, object]],
     ) -> dict[str, Any]: ...
 
     def create_or_resume_collection_file_upload(
@@ -109,17 +109,18 @@ def _prepare_uploads(
     prepared: list[_PreparedUpload] = []
     declared_plaintext_bytes = bytes_per_file + INCOMPLETE_PLAINTEXT_BYTES
     try:
-        for index in range(files):
-            path = f"probe-{index + 1:04d}.bin"
-            api.register_collection_upload_session_file(
-                collection_id,
-                {
-                    "path": path,
-                    "bytes": declared_plaintext_bytes,
-                    # The session is deliberately canceled before completion or validation.
-                    "sha256": "0" * 64,
-                },
-            )
+        file_payloads = [
+            {
+                "path": f"probe-{index + 1:04d}.bin",
+                "bytes": declared_plaintext_bytes,
+                # The session is deliberately canceled before completion or validation.
+                "sha256": "0" * 64,
+            }
+            for index in range(files)
+        ]
+        api.register_collection_upload_session_files(collection_id, file_payloads)
+        for payload in file_payloads:
+            path = str(payload["path"])
             upload = api.create_or_resume_collection_file_upload(collection_id, path)
             if int(upload["offset"]) != 0:
                 raise RuntimeError(f"throughput probe upload is not empty: {path}")

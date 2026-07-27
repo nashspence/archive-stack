@@ -135,39 +135,41 @@ class SqlAlchemyRetrievalService:
         if limit < 1 or limit > 10_000:
             raise BadRequest("catalog change limit must be between 1 and 10000")
         with session_scope(self._session_factory) as session:
-            scanned = (
+            scanned_sequences = list(
+                session.scalars(
+                    select(CatalogEventRecord.sequence)
+                    .where(CatalogEventRecord.sequence > after)
+                    .order_by(CatalogEventRecord.sequence)
+                    .limit(limit + 1)
+                ).all()
+            )
+            has_more = len(scanned_sequences) > limit
+            page_sequences = scanned_sequences[:limit]
+            cursor = int(page_sequences[-1]) if page_sequences else after
+            if not page_sequences:
+                return {"cursor": cursor, "has_more": False, "changes": []}
+            rows = session.scalars(
                 select(CatalogEventRecord)
-                .where(CatalogEventRecord.sequence > after)
+                .where(
+                    CatalogEventRecord.sequence.in_(page_sequences),
+                    collection_access_filter(
+                        CatalogEventRecord.collection_id,
+                        principal,
+                        CATALOG_READ,
+                    ),
+                )
                 .order_by(CatalogEventRecord.sequence)
-                .limit(limit)
-                .subquery()
-            )
-            cursor = int(
-                session.scalar(
-                    select(scanned.c.sequence).order_by(scanned.c.sequence.desc()).limit(1)
-                )
-                or after
-            )
-            rows = (
-                session.execute(
-                    select(scanned)
-                    .where(
-                        collection_access_filter(scanned.c.collection_id, principal, CATALOG_READ)
-                    )
-                    .order_by(scanned.c.sequence)
-                )
-                .mappings()
-                .all()
-            )
+            ).all()
             return {
                 "cursor": cursor,
+                "has_more": has_more,
                 "changes": [
                     {
-                        "sequence": row["sequence"],
-                        "change": row["change"],
-                        "collection_id": row["collection_id"],
-                        "occurred_at": row["occurred_at"],
-                        "etag": row["record_etag"],
+                        "sequence": row.sequence,
+                        "change": row.change,
+                        "collection_id": row.collection_id,
+                        "occurred_at": row.occurred_at,
+                        "etag": row.record_etag,
                     }
                     for row in rows
                 ],

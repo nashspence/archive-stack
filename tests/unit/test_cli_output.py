@@ -84,7 +84,7 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
             "total": 1,
             "files": [
                 {
-                    "logical_path": "42/a.txt",
+                    "file_ref": "42/a.txt",
                     "bytes": 10,
                 }
             ],

@@ -29,7 +29,7 @@ def _archive_copy_states(payload: Mapping[str, object]) -> str:
 def format_find(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "files")]
     for file in _items(payload, "files"):
-        lines.append(f"- {file.get('logical_path', 'unknown')}  {_bytes(file.get('bytes'))}")
+        lines.append(f"- {file.get('file_ref', 'unknown')}  {_bytes(file.get('bytes'))}")
     return "\n".join(lines)
 
 
@@ -338,8 +338,7 @@ def format_file_selectors(
     key: str = "files",
 ) -> str:
     return "\n".join(
-        f"{item['collection_id']}::{item['collection_path']}"
+        f"{item['collection_id']}::{item['path']}"
         for item in _items(payload, key)
-        if item.get("collection_id") not in {None, ""}
-        and item.get("collection_path") not in {None, ""}
+        if item.get("collection_id") not in {None, ""} and item.get("path") not in {None, ""}
     )

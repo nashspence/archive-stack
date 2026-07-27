@@ -4,6 +4,18 @@ from typing import Literal
 
 from riverhog_api.schemas.common import RiverhogModel
 
+type ArchiveOwnedObjectKind = Literal[
+    "pack",
+    "file",
+    "segment",
+    "manifest",
+    "proof",
+    "checksums",
+    "signature",
+    "signature-proof",
+    "metadata",
+]
+
 
 class ArchiveCopyOut(RiverhogModel):
     store: str
@@ -54,7 +66,7 @@ class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
 
 
 class ArchiveCopyRetirementObjectOut(RiverhogModel):
-    kind: Literal["pack", "file", "segment", "manifest", "proof", "metadata"]
+    kind: ArchiveOwnedObjectKind
     object_path: str
     stored_bytes: int
 

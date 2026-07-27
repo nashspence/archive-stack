@@ -158,6 +158,7 @@ def _seed(database_url: str) -> None:
                     plaintext_bytes=stored_bytes - 1,
                     stored_bytes=stored_bytes,
                     sha256=chr(ord("a") + order) * 64,
+                    stored_sha256=chr(ord("d") + order) * 64,
                     backend="s3",
                     storage_class="STANDARD",
                     uploaded_at="2026-07-18T00:00:00.000000Z",

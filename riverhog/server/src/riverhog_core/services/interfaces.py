@@ -13,17 +13,6 @@ JsonObject = dict[str, object]
 
 
 class CollectionService(Protocol):
-    def create_or_resume_upload(
-        self,
-        *,
-        idempotency_key: str,
-        tags: Sequence[str],
-        files: list[dict[str, object]],
-        ingest_source: str | None = None,
-        archive_store: str | None = None,
-        initiator: ApplicationPrincipal | None = None,
-        event_context: dict[str, object] | None = None,
-    ) -> JsonObject: ...
     def create_or_resume_upload_session(
         self,
         *,
@@ -39,10 +28,18 @@ class CollectionService(Protocol):
         collection_id: int,
         principal: ApplicationPrincipal,
     ) -> None: ...
-    def register_upload_session_file(
+    def register_upload_session_files(
         self,
         collection_id: int,
-        file: dict[str, object],
+        files: list[dict[str, object]],
+    ) -> JsonObject: ...
+    def list_upload_session_files(
+        self,
+        collection_id: int,
+        *,
+        page: int,
+        per_page: int,
+        all_items: bool,
     ) -> JsonObject: ...
     def create_or_resume_registered_file_upload(
         self,
@@ -51,7 +48,13 @@ class CollectionService(Protocol):
     ) -> JsonObject: ...
     def collection_id_for_upload_id(self, upload_id: str) -> int | None: ...
     def sync_finished_upload_id(self, upload_id: str) -> JsonObject | None: ...
-    def complete_upload_session(self, collection_id: int) -> JsonObject: ...
+    def complete_upload_session(
+        self,
+        collection_id: int,
+        *,
+        files_total: int,
+        content_etag: str,
+    ) -> JsonObject: ...
     def cancel_upload_session(self, collection_id: int) -> JsonObject: ...
     def get_upload(self, collection_id: int) -> JsonObject: ...
     def create_or_resume_file_upload(self, collection_id: int, path: str) -> JsonObject: ...

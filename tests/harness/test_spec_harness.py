@@ -90,7 +90,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
         q="readme",
         page=1,
         per_page=25,
-        sort="logical_path",
+        sort="file_ref",
         order="asc",
     )
     archive = harness.archive_reporting.get_report()
@@ -108,7 +108,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
     assert [(copy.store, copy.state.value) for copy in collection.archive_copies] == [
         ("deep", "uploaded")
     ]
-    assert search["files"][0]["logical_path"] == f"{COLLECTION_ID}/readme.txt"
+    assert search["files"][0]["file_ref"] == f"{COLLECTION_ID}/readme.txt"
     assert archive.totals.uploaded_collections == 1
     assert str(COLLECTION_ID).encode() in resources.body
 

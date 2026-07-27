@@ -3639,6 +3639,7 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
                 "camera/a.webm": {
                     "path": "camera/a.webm",
                     "bytes": 10,
+                    "sha256": "a" * 64,
                     "uploaded_bytes": 10,
                     "state": "deleted",
                 }
@@ -3648,15 +3649,22 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
     server.save_job(job)
 
     class MissingApi:
-        def complete_collection_upload_session(self, requested: str):
+        def complete_collection_upload_session(self, requested: str, **_kwargs: object):
             assert requested == collection_id
             raise server.Conflict("collection upload session still has missing file bytes")
 
-        def get_collection_upload(self, requested: str):
+        def get_collection_upload_session(self, requested: str):
             assert requested == collection_id
             return {
                 "collection_id": collection_id,
                 "state": "open",
+            }
+
+        def list_collection_upload_session_files(self, requested: str, **_kwargs: object):
+            assert requested == collection_id
+            return {
+                "page": 1,
+                "pages": 1,
                 "files": [
                     {
                         "path": "camera/a.webm",
@@ -5914,7 +5922,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             assert event_context == {"workflow": "desktop-archive"}
             return self.payload(state="open")
 
-        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
             return self.payload(state="finalized" if self.completed else "open")
 
@@ -5968,7 +5976,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                 },
             }
 
-        def complete_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+        def complete_collection_upload_session(
+            self,
+            collection_id: int,
+            **_kwargs: object,
+        ) -> dict[str, object]:
             assert collection_id == 42
             self.completed = True
             return self.payload(state="archiving")
@@ -6960,7 +6972,7 @@ def test_sync_riverhog_session_uses_durable_finalized_upload_status(
     }
 
     class FakeApi:
-        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
             return {
                 "collection_id": collection_id,
@@ -7005,7 +7017,7 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
     server.save_job(job)
 
     class FakeApi:
-        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
             return {
                 "collection_id": collection_id,

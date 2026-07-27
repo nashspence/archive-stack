@@ -45,11 +45,11 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
                 "files": [
                     {
                         "collection_id": 41,
-                        "collection_path": "tax/invoice.pdf",
+                        "path": "tax/invoice.pdf",
                     },
                     {
                         "collection_id": 42,
-                        "collection_path": "tax/invoice.pdf",
+                        "path": "tax/invoice.pdf",
                     },
                 ]
             }

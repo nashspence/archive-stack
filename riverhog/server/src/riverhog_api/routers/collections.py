@@ -11,14 +11,16 @@ from riverhog_api.schemas.collections import (
     CollectionDeletionResultOut,
     CollectionFileUploadSessionOut,
     CollectionSummaryOut,
-    CollectionUploadSessionFileRegistrationOut,
+    CollectionUploadFileIn,
+    CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionFileUploadOut,
     CollectionUploadSessionOut,
-    CreateOrResumeCollectionUploadRequest,
+    CompleteCollectionUploadSessionRequest,
     CreateOrResumeCollectionUploadSessionRequest,
     DeleteCollectionRequest,
     ListCollectionsResponse,
-    RegisterCollectionUploadSessionFileRequest,
+    ListCollectionUploadSessionFilesResponse,
+    RegisterCollectionUploadSessionFilesRequest,
 )
 from riverhog_api.tus import (
     tus_upload_headers,
@@ -51,24 +53,6 @@ def list_collections(
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 
 
-@router.post("/collection-uploads", response_model=CollectionUploadSessionOut)
-def create_or_resume_collection_upload(
-    request: CreateOrResumeCollectionUploadRequest,
-    container: ContainerDep,
-    principal: CollectionCreator,
-) -> CollectionUploadSessionOut:
-    payload = container.collections.create_or_resume_upload(
-        idempotency_key=request.idempotency_key,
-        tags=request.tags,
-        files=[item.model_dump() for item in request.files],
-        ingest_source=request.ingest_source,
-        archive_store=request.archive_store,
-        initiator=principal,
-        event_context=request.event_context,
-    )
-    return CollectionUploadSessionOut.model_validate(payload)
-
-
 @router.post("/collection-upload-sessions", response_model=CollectionUploadSessionOut)
 def create_or_resume_collection_upload_session(
     request: CreateOrResumeCollectionUploadSessionRequest,
@@ -88,20 +72,42 @@ def create_or_resume_collection_upload_session(
 
 @router.post(
     "/collection-upload-sessions/{collection_id}/files",
-    response_model=CollectionUploadSessionFileRegistrationOut,
+    response_model=CollectionUploadSessionFilesRegistrationOut,
 )
-def register_collection_upload_session_file(
+def register_collection_upload_session_files(
     collection_id: int,
-    request: RegisterCollectionUploadSessionFileRequest,
+    request: RegisterCollectionUploadSessionFilesRequest,
     container: ContainerDep,
     principal: CollectionCreator,
-) -> CollectionUploadSessionFileRegistrationOut:
+) -> CollectionUploadSessionFilesRegistrationOut:
     container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.register_upload_session_file(
+    payload = container.collections.register_upload_session_files(
         collection_id,
-        request.model_dump(),
+        [item.model_dump() for item in request.files],
     )
-    return CollectionUploadSessionFileRegistrationOut.model_validate(payload)
+    return CollectionUploadSessionFilesRegistrationOut.model_validate(payload)
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/files",
+    response_model=ListCollectionUploadSessionFilesResponse,
+)
+def list_collection_upload_session_files(
+    collection_id: int,
+    container: ContainerDep,
+    principal: CollectionCreator,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    all_items: bool = Query(False, alias="all"),
+) -> ListCollectionUploadSessionFilesResponse:
+    container.collections.require_upload_access(collection_id, principal)
+    payload = container.collections.list_upload_session_files(
+        collection_id,
+        page=page,
+        per_page=per_page,
+        all_items=all_items,
+    )
+    return ListCollectionUploadSessionFilesResponse.model_validate(payload)
 
 
 @router.post(
@@ -110,7 +116,7 @@ def register_collection_upload_session_file(
 )
 def create_or_resume_registered_collection_file_upload(
     collection_id: int,
-    request: RegisterCollectionUploadSessionFileRequest,
+    request: CollectionUploadFileIn,
     req: Request,
     response: Response,
     container: ContainerDep,
@@ -137,11 +143,16 @@ def create_or_resume_registered_collection_file_upload(
 )
 def complete_collection_upload_session(
     collection_id: int,
+    request: CompleteCollectionUploadSessionRequest,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
     container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.complete_upload_session(collection_id)
+    payload = container.collections.complete_upload_session(
+        collection_id,
+        files_total=request.files_total,
+        content_etag=request.content_etag,
+    )
     return CollectionUploadSessionOut.model_validate(payload)
 
 
@@ -159,8 +170,10 @@ def cancel_collection_upload_session(
     return CollectionUploadSessionOut.model_validate(payload)
 
 
-@router.get("/collection-uploads/{collection_id}", response_model=CollectionUploadSessionOut)
-def get_collection_upload(
+@router.get(
+    "/collection-upload-sessions/{collection_id}", response_model=CollectionUploadSessionOut
+)
+def get_collection_upload_session(
     collection_id: int,
     container: ContainerDep,
     principal: CollectionCreator,
@@ -171,7 +184,7 @@ def get_collection_upload(
 
 
 @router.post(
-    "/collection-uploads/{collection_id}/files/{path:path}/upload",
+    "/collection-upload-sessions/{collection_id}/files/{path:path}/upload",
     response_model=CollectionFileUploadSessionOut,
 )
 def create_or_resume_collection_file_upload(

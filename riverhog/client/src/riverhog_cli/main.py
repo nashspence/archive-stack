@@ -32,6 +32,7 @@ from riverhog_api_client.ingress import (
     iter_ingress_upload_parts,
 )
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
+from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_tag,
@@ -85,6 +86,7 @@ UPLOAD_CHUNK_BYTES = DEFAULT_INGRESS_PART_BYTES
 UPLOAD_FILE_CONCURRENCY = 8
 UPLOAD_FILE_CONCURRENCY_MAX = 64
 UPLOAD_FILE_WINDOW_MAX = 256
+UPLOAD_REGISTRATION_BATCH_MAX = 16
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
@@ -776,27 +778,6 @@ def _retry_transient_upload_operation(
             delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
 
 
-def _create_or_resume_collection_upload(
-    api: ApiClient,
-    idempotency_key: str,
-    tags: list[str],
-    manifest: list[CollectionManifestEntry],
-    *,
-    ingest_source: str | None,
-    archive_store: str | None = None,
-) -> dict[str, Any]:
-    return _retry_transient_upload_operation(
-        "Upload session create/resume",
-        lambda: api.create_or_resume_collection_upload(
-            idempotency_key,
-            tags,
-            manifest,
-            ingest_source=ingest_source,
-            archive_store=archive_store,
-        ),
-    )
-
-
 def _create_or_resume_collection_upload_session(
     api: ApiClient,
     idempotency_key: str,
@@ -816,24 +797,31 @@ def _create_or_resume_collection_upload_session(
     )
 
 
-def _register_collection_upload_session_file(
+def _register_collection_upload_session_files(
     api: ApiClient,
     collection_id: int,
-    file_payload: CollectionManifestEntry,
+    file_payloads: list[CollectionManifestEntry],
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
-        f"Upload session register file {file_payload['path']}",
-        lambda: api.register_collection_upload_session_file(collection_id, file_payload),
+        f"Upload session register {len(file_payloads)} file(s)",
+        lambda: api.register_collection_upload_session_files(collection_id, file_payloads),
     )
 
 
 def _complete_collection_upload_session(
     api: ApiClient,
     collection_id: int,
+    manifest: list[CollectionManifestEntry],
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session complete",
-        lambda: api.complete_collection_upload_session(collection_id),
+        lambda: api.complete_collection_upload_session(
+            collection_id,
+            files_total=len(manifest),
+            content_etag=collection_content_etag(
+                (item["path"], item["bytes"], item["sha256"]) for item in manifest
+            ),
+        ),
     )
 
 
@@ -873,7 +861,6 @@ def _collection_upload_dry_run_plan(
     root: Path,
     manifest: list[CollectionManifestEntry],
     wait_mode: UploadWaitMode,
-    session_mode: bool,
     archive_store: str | None = None,
 ) -> dict[str, object]:
     try:
@@ -893,7 +880,6 @@ def _collection_upload_dry_run_plan(
         "files_total": len(manifest),
         "bytes_total": sum(item["bytes"] for item in manifest),
         "wait_mode": wait_mode,
-        "session": session_mode,
         "archive_store": archive_store,
         "server_validation": "not_run",
         "created_at": utc_timestamp_now(),
@@ -1241,7 +1227,7 @@ def _wait_for_collection_state(
             )
         except NotFound:
             try:
-                last_payload = api.get_collection_upload(collection_id)
+                last_payload = api.get_collection_upload_session(collection_id)
             except NotFound:
                 last_payload = None
             except Exception as exc:
@@ -1383,6 +1369,10 @@ def _upload_collection_via_session(
     total_discovered_bytes = 0
     chunk_bytes = _upload_chunk_bytes()
     file_window = _upload_file_window(file_concurrency)
+    registration_batch_size = min(
+        UPLOAD_REGISTRATION_BATCH_MAX,
+        max(1, file_window // file_concurrency),
+    )
 
     upload_progress = make_collection_upload_progress(
         collection_id=collection_id,
@@ -1397,7 +1387,10 @@ def _upload_collection_via_session(
         interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
 
-    work: Queue[tuple[Path, str, int] | None] = Queue(maxsize=file_window)
+    type UploadWorkItem = tuple[Path, str, int]
+    work: Queue[list[UploadWorkItem] | None] = Queue(
+        maxsize=max(1, file_window // registration_batch_size)
+    )
     manifest_lock = threading.Lock()
     failure_lock = threading.Lock()
     failures: list[BaseException] = []
@@ -1419,46 +1412,52 @@ def _upload_collection_via_session(
                         return
                     if failures:
                         continue
-                    source_path, rel_path, byte_count = item
-                    if byte_count >= _upload_file_log_bytes():
-                        _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
-                    entry: CollectionManifestEntry = {
-                        "path": rel_path,
-                        "bytes": byte_count,
-                        "sha256": _file_sha256(source_path),
+                    batch: list[tuple[Path, CollectionManifestEntry]] = []
+                    for source_path, rel_path, byte_count in item:
+                        if byte_count >= _upload_file_log_bytes():
+                            _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
+                        entry: CollectionManifestEntry = {
+                            "path": rel_path,
+                            "bytes": byte_count,
+                            "sha256": _file_sha256(source_path),
+                        }
+                        batch.append((source_path, entry))
+                        upload_progress.hashed_file()
+                    registered_payload = _register_collection_upload_session_files(
+                        worker_api,
+                        collection_id,
+                        [entry for _, entry in batch],
+                    )
+                    registered_by_path = {
+                        str(current.get("path")): current
+                        for current in _response_upload_files(registered_payload)
+                        if isinstance(current, dict) and current.get("path")
                     }
-                    upload_progress.hashed_file()
-                    registered_payload = _register_collection_upload_session_file(
-                        worker_api,
-                        collection_id,
-                        entry,
-                    )
-                    upload_progress.registered_file()
-                    file_payload = next(
-                        (
-                            current
-                            for current in _response_upload_files(registered_payload)
-                            if isinstance(current, dict) and current.get("path") == rel_path
-                        ),
-                        CollectionUploadFilePayload(
-                            path=rel_path,
-                            bytes=byte_count,
-                            sha256=entry["sha256"],
-                            upload_state="pending",
-                            uploaded_bytes=0,
-                        ),
-                    )
-                    _upload_collection_file(
-                        worker_api,
-                        collection_id,
-                        source_path,
-                        file_payload,
-                        progress=upload_progress.uploaded,
-                        resumed=upload_progress.resumed,
-                    )
-                    with manifest_lock:
-                        manifest_by_path[rel_path] = entry
-                    upload_progress.complete_file()
+                    for _ in batch:
+                        upload_progress.registered_file()
+                    for source_path, entry in batch:
+                        rel_path = entry["path"]
+                        file_payload = registered_by_path.get(
+                            rel_path,
+                            CollectionUploadFilePayload(
+                                path=rel_path,
+                                bytes=entry["bytes"],
+                                sha256=entry["sha256"],
+                                upload_state="pending",
+                                uploaded_bytes=0,
+                            ),
+                        )
+                        _upload_collection_file(
+                            worker_api,
+                            collection_id,
+                            source_path,
+                            file_payload,
+                            progress=upload_progress.uploaded,
+                            resumed=upload_progress.resumed,
+                        )
+                        with manifest_lock:
+                            manifest_by_path[rel_path] = entry
+                        upload_progress.complete_file()
                 except BaseException as exc:
                     record_failure(exc)
                 finally:
@@ -1471,6 +1470,7 @@ def _upload_collection_via_session(
         with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
             futures = [executor.submit(upload_worker) for _ in range(file_concurrency)]
             discovery_complete = True
+            pending_batch: list[UploadWorkItem] = []
             try:
                 for source_path in chain((first_source_path,), local_path_iter):
                     if failures:
@@ -1483,11 +1483,16 @@ def _upload_collection_via_session(
                         files_total=upload_progress.files_total + 1,
                         bytes_total=total_discovered_bytes,
                     )
-                    work.put((source_path, rel_path, byte_count))
+                    pending_batch.append((source_path, rel_path, byte_count))
+                    if len(pending_batch) >= registration_batch_size:
+                        work.put(pending_batch)
+                        pending_batch = []
             except BaseException as exc:
                 discovery_complete = False
                 record_failure(exc)
             finally:
+                if pending_batch and not failures:
+                    work.put(pending_batch)
                 if discovery_complete:
                     upload_progress.finish_discovery()
                 for _ in futures:
@@ -1506,28 +1511,8 @@ def _upload_collection_via_session(
         if len(manifest) != upload_progress.files_total:
             raise RuntimeError("incremental upload workers did not return every discovered file")
 
-        upload_progress.notice("Reconciling the complete discovered file set", phase="reconciling")
-        latest_payload = api.get_collection_upload(collection_id)
-        local_path_set = {item["path"] for item in manifest}
-        registered_paths = {
-            str(item.get("path"))
-            for item in _response_upload_files(latest_payload)
-            if isinstance(item, dict)
-        }
-        if registered_paths != local_path_set:
-            extra = sorted(registered_paths - local_path_set)
-            missing = sorted(local_path_set - registered_paths)
-            details: list[str] = []
-            if extra:
-                details.append(f"extra server files: {', '.join(extra[:5])}")
-            if missing:
-                details.append(f"missing server files: {', '.join(missing[:5])}")
-            raise RuntimeError(
-                "incremental upload session file set differs from local tree; "
-                "not completing session" + (f" ({'; '.join(details)})" if details else "")
-            )
-
-        complete_payload = _complete_collection_upload_session(api, collection_id)
+        upload_progress.notice("Verifying the complete discovered file set", phase="verifying")
+        complete_payload = _complete_collection_upload_session(api, collection_id, manifest)
         upload_progress.notice(
             "All files uploaded; collection finalization will continue in the background",
             phase="finalizing",
@@ -1583,9 +1568,9 @@ _COLLECTION_SORT_FIELDS = {
     "files",
 }
 _FIND_SORT_FIELDS = {
-    "logical_path",
+    "file_ref",
     "collection_id",
-    "collection_path",
+    "path",
     "bytes",
 }
 
@@ -1760,13 +1745,6 @@ def upload_cmd(
         ),
     ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-    session_mode: Annotated[
-        bool,
-        typer.Option(
-            "--session",
-            help="Register and upload files incrementally before explicitly completing",
-        ),
-    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1800,7 +1778,6 @@ def upload_cmd(
             root=resolved_root,
             manifest=manifest,
             wait_mode=wait_mode,
-            session_mode=session_mode,
             archive_store=archive_store,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
@@ -1808,118 +1785,23 @@ def upload_cmd(
 
     api = client()
     file_concurrency = _upload_file_concurrency()
-    if session_mode:
-        payload = _upload_collection_via_session(
-            api,
-            resolved_idempotency_key,
-            resolved_tags,
-            resolved_root,
-            ingest_source=str(resolved_root),
-            archive_store=archive_store,
-            wait_mode=wait_mode,
-            json_mode=json_mode,
-            file_concurrency=file_concurrency,
-        )
-        emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
-        if payload.get("state") == "failed":
-            raise typer.Exit(1)
-        return
-
-    _log_upload(f"Hashing collection manifest from {resolved_root}")
-    manifest_started_at = time.monotonic()
-    manifest = _local_collection_manifest(resolved_root)
-    manifest_bytes = sum(item["bytes"] for item in manifest)
-    _log_upload(
-        "Manifest hashed: "
-        f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
-        f"in {time.monotonic() - manifest_started_at:.1f}s"
-    )
-    payload = _create_or_resume_collection_upload(
+    payload = _upload_collection_via_session(
         api,
         resolved_idempotency_key,
         resolved_tags,
-        manifest,
+        resolved_root,
         ingest_source=str(resolved_root),
         archive_store=archive_store,
-    )
-    collection_id = cast(int, payload["collection_id"])
-    upload_files = _response_upload_files(payload)
-    uploaded_bytes = sum(
-        min(int(file_payload.get("uploaded_bytes", 0)), int(file_payload["bytes"]))
-        for file_payload in upload_files
-    )
-    uploaded_files = sum(
-        1 for file_payload in upload_files if file_payload["upload_state"] == "uploaded"
-    )
-    _log_upload(
-        f"Upload session {collection_id}: "
-        f"{uploaded_files}/{len(upload_files)} files already uploaded, "
-        f"{_format_bytes(uploaded_bytes)} / {_format_bytes(manifest_bytes)}"
-    )
-    chunk_bytes = _upload_chunk_bytes()
-    upload_progress = make_collection_upload_progress(
-        collection_id=collection_id,
-        files_total=len(upload_files),
-        bytes_total=manifest_bytes,
-        files_uploaded=uploaded_files,
-        uploaded_bytes=uploaded_bytes,
+        wait_mode=wait_mode,
+        json_mode=json_mode,
         file_concurrency=file_concurrency,
-        chunk_bytes=chunk_bytes,
-        json_mode=json_mode,
-        interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
-
-    def note_uploaded(delta: int) -> None:
-        upload_progress.uploaded(delta)
-
-    with upload_progress:
-        _upload_collection_files(
-            api,
-            collection_id,
-            resolved_root,
-            upload_files,
-            progress=note_uploaded,
-            file_complete=upload_progress.complete_file,
-            file_concurrency=file_concurrency,
-        )
-
-        if wait_mode == "finalized":
-            final_payload, completion_state = _wait_for_finalized_collection(
-                api,
-                collection_id,
-                manifest,
-                status=lambda message: upload_progress.notice(message, phase="finalizing"),
-            )
-            if completion_state == "timeout":
-                upload_progress.notice("Timed out waiting for finalization", phase="timeout")
-            elif completion_state == "failed":
-                upload_progress.notice("Collection finalization failed", phase="failed")
-            else:
-                upload_progress.notice("Collection finalized", phase="finalized")
-        else:
-            final_payload, completion_state = _wait_for_staged_collection(
-                api,
-                collection_id,
-                manifest,
-                status=lambda message: upload_progress.notice(message, phase="finalizing"),
-            )
-            if completion_state == "timeout":
-                upload_progress.notice("Timed out waiting for server handoff", phase="timeout")
-            elif completion_state == "failed":
-                upload_progress.notice("Collection finalization failed", phase="failed")
-            else:
-                upload_progress.notice(
-                    "Collection staged for background finalization",
-                    phase="staged",
-                )
     emit(
-        final_payload if json_mode else format_collection_upload(final_payload),
+        payload if json_mode else format_collection_upload(payload),
         json_mode=json_mode,
     )
-    if completion_state == "failed":
+    if payload.get("state") == "failed":
         raise typer.Exit(1)
-    if completion_state == "timeout":
-        raise typer.Exit(124)
 
 
 @collection_app.command("cancel")
@@ -1959,11 +1841,11 @@ def upload_watch_cmd(
 def find_cmd(
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Substring match over logical file paths"),
+        typer.Option("--query", "-q", help="Substring match over collection file references"),
     ] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "logical_path",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "file_ref",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     collection: Annotated[
         int | None,
@@ -1979,7 +1861,7 @@ def find_cmd(
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Search logical files across collections."""
+    """Search files across collections."""
 
     if selectors and json_mode:
         raise typer.BadParameter("--selectors and --json cannot be used together")

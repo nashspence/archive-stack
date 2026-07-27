@@ -531,7 +531,7 @@ def test_staged_wait_requires_authoritative_server_handoff(
         def get_collection(self, _collection_id: int) -> dict[str, object]:
             raise riverhog_main.NotFound("not finalized")
 
-        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             return payloads.pop(0)
 
@@ -553,7 +553,7 @@ def test_staged_wait_requires_authoritative_server_handoff(
 
 def test_staged_wait_accepts_a_collection_that_already_finalized() -> None:
     class Api:
-        def get_collection_upload(self, _collection_id: int) -> dict[str, object]:
+        def get_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
             raise riverhog_main.NotFound("upload finalized")
 
         def get_collection(self, collection_id: int) -> dict[str, object]:
@@ -615,6 +615,7 @@ def test_incremental_upload_uses_bounded_persistent_workers(
     overlap = threading.Barrier(2) if concurrency > 1 else None
     second_finished = threading.Event()
     registered: dict[str, dict[str, object]] = {}
+    registration_batch_sizes: list[int] = []
     completion_order: list[str] = []
     active = 0
     max_active = 0
@@ -629,24 +630,33 @@ def test_incremental_upload_uses_bounded_persistent_workers(
         def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             return {"collection_id": COLLECTION_ID}
 
-        def register_collection_upload_session_file(
+        def register_collection_upload_session_files(
             self,
             collection_id: int,
-            entry: dict[str, object],
+            entries: list[dict[str, object]],
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             with lock:
-                registered[str(entry["path"])] = dict(entry)
-            return {"files": [{**entry, "upload_state": "pending", "uploaded_bytes": 0}]}
+                registration_batch_sizes.append(len(entries))
+                for entry in entries:
+                    registered[str(entry["path"])] = dict(entry)
+            return {
+                "files": [
+                    {**entry, "upload_state": "pending", "uploaded_bytes": 0} for entry in entries
+                ]
+            }
 
-        def get_collection_upload(self, collection_id: int) -> dict[str, object]:
-            assert collection_id == COLLECTION_ID
-            with lock:
-                return {"files": list(registered.values())}
-
-        def complete_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+        def complete_collection_upload_session(
+            self,
+            collection_id: int,
+            *,
+            files_total: int,
+            content_etag: str,
+        ) -> dict[str, object]:
             nonlocal complete_calls
             assert collection_id == COLLECTION_ID
+            assert files_total == 3
+            assert len(content_etag) == 64
             with lock:
                 assert set(completion_order) == set(registered) == {"a.bin", "b.bin", "c.bin"}
                 complete_calls += 1
@@ -678,7 +688,7 @@ def test_incremental_upload_uses_bounded_persistent_workers(
             active += 1
             max_active = max(max_active, active)
         try:
-            if overlap is not None and path in {"a.bin", "b.bin"}:
+            if overlap is not None and path in {"a.bin", "c.bin"}:
                 overlap.wait(timeout=2)
                 if path == "a.bin":
                     assert second_finished.wait(timeout=2)
@@ -706,9 +716,10 @@ def test_incremental_upload_uses_bounded_persistent_workers(
 
     assert payload["state"] == "archiving"
     assert max_active == expected_overlap
+    assert max(registration_batch_sizes) > 1
     assert complete_calls == 1
     if concurrency > 1:
-        assert completion_order.index("b.bin") < completion_order.index("a.bin")
+        assert completion_order.index("c.bin") < completion_order.index("a.bin")
         assert len(workers) == concurrency
         assert all(worker.closed for worker in workers)
     else:
@@ -737,21 +748,30 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
         def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             return {"collection_id": COLLECTION_ID}
 
-        def register_collection_upload_session_file(
+        def register_collection_upload_session_files(
             self,
             _collection_id: int,
-            entry: dict[str, object],
+            entries: list[dict[str, object]],
         ) -> dict[str, object]:
             with lock:
-                registered[str(entry["path"])] = dict(entry)
-            return {"files": [{**entry, "upload_state": "pending", "uploaded_bytes": 0}]}
+                for entry in entries:
+                    registered[str(entry["path"])] = dict(entry)
+            return {
+                "files": [
+                    {**entry, "upload_state": "pending", "uploaded_bytes": 0} for entry in entries
+                ]
+            }
 
-        def get_collection_upload(self, _collection_id: int) -> dict[str, object]:
-            with lock:
-                return {"files": list(registered.values())}
-
-        def complete_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
+        def complete_collection_upload_session(
+            self,
+            _collection_id: int,
+            *,
+            files_total: int,
+            content_etag: str,
+        ) -> dict[str, object]:
             nonlocal complete_calls
+            assert files_total == 3
+            assert len(content_etag) == 64
             with lock:
                 assert uploaded == set(registered) == {"a.bin", "b.bin", "c.bin"}
                 complete_calls += 1
@@ -775,7 +795,7 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
             already_uploaded = path in uploaded
         if already_uploaded:
             return
-        if fail and path in {"a.bin", "b.bin"}:
+        if fail and path in {"a.bin", "c.bin"}:
             first_pair.wait(timeout=2)
             if path == "a.bin":
                 raise RuntimeError("worker failed")
@@ -796,7 +816,7 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
         )
 
     assert complete_calls == 0
-    assert "b.bin" in uploaded
+    assert "c.bin" in uploaded
     fail = False
     payload = riverhog_main._upload_collection_via_session(
         api,  # type: ignore[arg-type]
@@ -812,7 +832,7 @@ def test_incremental_upload_failure_leaves_session_resumable_and_never_completes
     assert payload["state"] == "archiving"
     assert complete_calls == 1
     assert uploaded == {"a.bin", "b.bin", "c.bin"}
-    assert attempts["b.bin"] == 2
+    assert attempts["c.bin"] == 2
 
 
 def test_incremental_progress_does_not_report_a_final_percentage_during_discovery() -> None:

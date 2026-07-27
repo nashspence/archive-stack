@@ -24,6 +24,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_protocol.errors import Conflict, NotFound
+from riverhog_protocol.manifest import collection_content_etag
 from sqlalchemy import select
 
 from tests.unit.db_helpers import sqlite_url
@@ -345,24 +346,27 @@ def test_finalized_upload_status_does_not_grant_cross_application_visibility(
         _service(path).require_upload_access(1, principal)
 
 
-def test_idempotency_key_with_different_manifest_conflicts(tmp_path: Path) -> None:
+def test_registered_file_metadata_is_immutable(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed_tag(path, "photos")
     service = _service(path)
 
-    first = service.create_or_resume_upload(
+    created = service.create_or_resume_upload_session(
         idempotency_key="photos-upload",
         tags=["photos"],
-        files=[{"path": "one.jpg", "bytes": 1, "sha256": "a" * 64}],
+    )
+    collection_id = int(created["collection_id"])
+    first = service.register_upload_session_files(
+        collection_id,
+        [{"path": "one.jpg", "bytes": 1, "sha256": "a" * 64}],
     )
 
-    assert first["collection_id"] == 1
-    with pytest.raises(Conflict, match="files are immutable"):
-        service.create_or_resume_upload(
-            idempotency_key="photos-upload",
-            tags=["photos"],
-            files=[{"path": "two.jpg", "bytes": 1, "sha256": "b" * 64}],
+    assert first["collection_id"] == collection_id
+    with pytest.raises(Conflict, match="different metadata"):
+        service.register_upload_session_files(
+            collection_id,
+            [{"path": "one.jpg", "bytes": 1, "sha256": "b" * 64}],
         )
 
 
@@ -374,6 +378,50 @@ def test_collection_upload_requires_registered_tags(tmp_path: Path) -> None:
         _service(path).create_or_resume_upload_session(
             idempotency_key="photos-upload",
             tags=["photos"],
+        )
+
+
+def test_upload_session_status_is_aggregate_and_file_inspection_is_paginated(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed_tag(path, "bounded")
+    service = _service(path)
+    created = service.create_or_resume_upload_session(
+        idempotency_key="bounded-upload",
+        tags=["bounded"],
+    )
+    collection_id = int(created["collection_id"])
+
+    registered = service.register_upload_session_files(
+        collection_id,
+        [
+            {"path": "a.txt", "bytes": 1, "sha256": "a" * 64},
+            {"path": "b.txt", "bytes": 2, "sha256": "b" * 64},
+        ],
+    )
+    status = service.get_upload(collection_id)
+    first_page = service.list_upload_session_files(
+        collection_id,
+        page=1,
+        per_page=1,
+        all_items=False,
+    )
+
+    assert [item["path"] for item in registered["files"]] == ["a.txt", "b.txt"]
+    assert "files" not in created
+    assert "files" not in status
+    assert status["files_total"] == 2
+    assert first_page["total"] == 2
+    assert first_page["pages"] == 2
+    assert [item["path"] for item in first_page["files"]] == ["a.txt"]
+
+    with pytest.raises(Conflict, match="manifest differs"):
+        service.complete_upload_session(
+            collection_id,
+            files_total=2,
+            content_etag="f" * 64,
         )
 
 
@@ -390,9 +438,9 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
         tags=["encrypted"],
     )
     collection_id = str(created["collection_id"])
-    service.register_upload_session_file(
+    service.register_upload_session_files(
         collection_id,
-        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+        [{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
     )
 
     preflight = service.create_or_resume_file_upload(collection_id, "one.txt")
@@ -428,9 +476,9 @@ def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: P
             tags=["repeat"],
         )
         collection_id = str(created["collection_id"])
-        service.register_upload_session_file(
+        service.register_upload_session_files(
             collection_id,
-            {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+            [{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
         )
         with session_scope(make_session_factory(sqlite_url(path))) as session:
             record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
@@ -456,9 +504,9 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     collection_id = str(created["collection_id"])
     for index in range(file_count):
         file_path = f"file-{index}.txt"
-        service.register_upload_session_file(
+        service.register_upload_session_files(
             collection_id,
-            {"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64},
+            [{"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64}],
         )
         service.create_or_resume_file_upload(collection_id, file_path)
 
@@ -470,18 +518,21 @@ def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Pa
     assert len(upload_store.deleted) == file_count
 
 
-def test_batch_collection_upload_can_be_canceled_before_all_bytes_arrive(tmp_path: Path) -> None:
+def test_collection_upload_can_be_canceled_before_all_bytes_arrive(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     upload_store = MissingTargetUploadStore()
     _seed_tag(path, "cancel-batch")
     service = _service(path, upload_store)
-    created = service.create_or_resume_upload(
+    created = service.create_or_resume_upload_session(
         idempotency_key="cancel-batch-upload",
         tags=["cancel-batch"],
-        files=[{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
     )
     collection_id = str(created["collection_id"])
+    service.register_upload_session_files(
+        collection_id,
+        [{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
+    )
     service.create_or_resume_file_upload(collection_id, "one.txt")
 
     canceled = service.cancel_upload_session(collection_id)
@@ -510,9 +561,9 @@ def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     collection_id = str(created["collection_id"])
     for index in range(file_count):
         file_path = f"file-{index}.txt"
-        service.register_upload_session_file(
+        service.register_upload_session_files(
             collection_id,
-            {"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64},
+            [{"path": file_path, "bytes": 10, "sha256": f"{index:x}" * 64}],
         )
         service.create_or_resume_file_upload(collection_id, file_path)
 
@@ -528,7 +579,12 @@ def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
             record.ingress_uploaded_bytes = record.ingress_bytes
             record.upload_expires_at = None
 
-    completed = service.complete_upload_session(collection_id)
+    manifest = [(f"file-{index}.txt", 10, f"{index:x}" * 64) for index in range(file_count)]
+    completed = service.complete_upload_session(
+        collection_id,
+        files_total=file_count,
+        content_etag=collection_content_etag(manifest),
+    )
 
     assert completed["state"] == "archiving"
     assert upload_store.max_active == worker_count
@@ -546,9 +602,9 @@ def test_collection_upload_completion_persists_missing_target_state(tmp_path: Pa
         tags=["missing-target"],
     )
     collection_id = str(created["collection_id"])
-    service.register_upload_session_file(
+    service.register_upload_session_files(
         collection_id,
-        {"path": "one.txt", "bytes": 10, "sha256": "a" * 64},
+        [{"path": "one.txt", "bytes": 10, "sha256": "a" * 64}],
     )
     service.create_or_resume_file_upload(collection_id, "one.txt")
 
@@ -559,7 +615,11 @@ def test_collection_upload_completion_persists_missing_target_state(tmp_path: Pa
         record.upload_expires_at = None
 
     with pytest.raises(Conflict, match="still has missing file bytes"):
-        service.complete_upload_session(collection_id)
+        service.complete_upload_session(
+            collection_id,
+            files_total=1,
+            content_etag=collection_content_etag([("one.txt", 10, "a" * 64)]),
+        )
 
     with session_scope(make_session_factory(sqlite_url(path))) as session:
         record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))

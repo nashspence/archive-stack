@@ -14,7 +14,7 @@ from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"logical_path", "collection_id", "collection_path", "bytes"}
+_SORT_FIELDS = {"file_ref", "collection_id", "path", "bytes"}
 
 
 def _like_pattern(value: str) -> str:
@@ -27,7 +27,7 @@ def _order_expressions(
     order: str,
 ) -> tuple[ColumnElement[Any], ...]:
     direction = desc if order == "desc" else asc
-    if sort == "logical_path":
+    if sort == "file_ref":
         return (
             direction(CollectionFileRecord.collection_id),
             direction(CollectionFileRecord.path),
@@ -37,7 +37,7 @@ def _order_expressions(
             direction(CollectionFileRecord.collection_id),
             asc(CollectionFileRecord.path),
         )
-    if sort == "collection_path":
+    if sort == "path":
         return (
             direction(CollectionFileRecord.path),
             asc(CollectionFileRecord.collection_id),
@@ -83,7 +83,7 @@ class SqlAlchemySearchService:
             except PathNormalizationError as exc:
                 raise BadRequest(str(exc)) from exc
 
-        logical_path_expr = (
+        file_ref_expr = (
             cast(CollectionFileRecord.collection_id, String)
             + literal("/")
             + CollectionFileRecord.path
@@ -94,7 +94,7 @@ class SqlAlchemySearchService:
         query = q.strip() if q is not None else None
         if query:
             filters.append(
-                func.lower(logical_path_expr).like(
+                func.lower(file_ref_expr).like(
                     _like_pattern(query.casefold()),
                     escape="\\",
                 )
@@ -144,9 +144,9 @@ class SqlAlchemySearchService:
             "order": order,
             "files": [
                 {
-                    "logical_path": f"{row.collection_id}/{row.path}",
+                    "file_ref": f"{row.collection_id}/{row.path}",
                     "collection_id": row.collection_id,
-                    "collection_path": row.path,
+                    "path": row.path,
                     "bytes": row.bytes,
                     "sha256": row.sha256,
                 }

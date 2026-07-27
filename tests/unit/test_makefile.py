@@ -514,6 +514,7 @@ def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) ->
     assert " up --detach --wait postgres" in docker_log
     assert "RIVERHOG_TEST_POSTGRES_URL=postgresql+psycopg://" in docker_log
     assert "tests/integration/test_collection_deletion_concurrency.py" in docker_log
+    assert "tests/integration/test_download_allowance_concurrency.py" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 
@@ -628,6 +629,10 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "ARG SOURCE_REVISION=unknown" in dockerfile
     assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
     assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
+    assert "MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:latest" in compose
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert "MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev" in makefile
+    assert "SOURCE_REVISION=development" in makefile
 
 
 def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:

@@ -345,29 +345,36 @@ def _place_raw_object(
 def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
     row = db.execute("SELECT value FROM settings WHERE key = 'catalog_cursor'").fetchone()
     after = int(row["value"]) if row is not None else 0
-    changes = api.catalog_changes(after=after)
-    for change in changes["changes"]:
-        collection_id = normalize_collection_id(change["collection_id"])
-        desired = db.execute(
-            "SELECT 1 FROM desired_collections WHERE collection_id = ?",
-            (collection_id,),
-        ).fetchone()
-        if desired is None:
-            continue
-        if change["change"] == "deleted":
-            db.execute(
-                "UPDATE desired_collections SET remote_deleted = 1 WHERE collection_id = ?",
+    while True:
+        changes = api.catalog_changes(after=after)
+        for change in changes["changes"]:
+            collection_id = normalize_collection_id(change["collection_id"])
+            desired = db.execute(
+                "SELECT 1 FROM desired_collections WHERE collection_id = ?",
                 (collection_id,),
-            )
-        elif change["change"] in {"created", "updated"}:
-            _refresh_collection(db, api, collection_id)
-    db.execute(
-        """
-        INSERT INTO settings (key, value) VALUES ('catalog_cursor', ?)
-        ON CONFLICT (key) DO UPDATE SET value = excluded.value
-        """,
-        (str(changes["cursor"]),),
-    )
+            ).fetchone()
+            if desired is None:
+                continue
+            if change["change"] == "deleted":
+                db.execute(
+                    "UPDATE desired_collections SET remote_deleted = 1 WHERE collection_id = ?",
+                    (collection_id,),
+                )
+            elif change["change"] in {"created", "updated"}:
+                _refresh_collection(db, api, collection_id)
+        cursor = int(changes["cursor"])
+        db.execute(
+            """
+            INSERT INTO settings (key, value) VALUES ('catalog_cursor', ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value
+            """,
+            (str(cursor),),
+        )
+        if not changes.get("has_more"):
+            return
+        if cursor <= after:
+            raise RuntimeError("ResourceSync cursor did not advance while changes remained")
+        after = cursor
 
 
 def _missing_files(

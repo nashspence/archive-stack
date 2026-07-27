@@ -9,8 +9,8 @@ stores hold encrypted bytes.
 
 A collection is the deletion unit. PostgreSQL assigns its immutable positive-integer id when
 an idempotent upload session is opened. Existing tags may be assigned at creation and changed
-later without changing identity. Each file has an immutable relative path, size, SHA-256 digest,
-and optional portable metadata supplied by the client.
+later without changing identity. Each file has an immutable relative path, size, and SHA-256
+digest.
 
 Authenticated preflight creates a random per-file ingress secret and returns it to that
 client once as part of the upload descriptor. The secret is envelope-encrypted in the

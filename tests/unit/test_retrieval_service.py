@@ -403,8 +403,9 @@ def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) ->
     first = service.change_list(after=0, limit=1, principal=principal)
     second = service.change_list(after=int(first["cursor"]), limit=1, principal=principal)
 
-    assert first == {"cursor": 1, "changes": []}
+    assert first == {"cursor": 1, "has_more": True, "changes": []}
     assert second["cursor"] == 2
+    assert second["has_more"] is False
     assert [change["collection_id"] for change in second["changes"]] == [COLLECTION_ID]
 
 

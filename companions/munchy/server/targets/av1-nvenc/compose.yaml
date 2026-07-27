@@ -5,7 +5,7 @@ services:
       dockerfile: companions/munchy/server/targets/av1-nvenc/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-    image: munchy-av1-nvenc-target:latest
+    image: ${MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:latest}
     mem_limit: "24g"
     memswap_limit: "24g"
     oom_kill_disable: false

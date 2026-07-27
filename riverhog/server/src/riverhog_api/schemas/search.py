@@ -6,9 +6,9 @@ from riverhog_api.schemas.common import RiverhogModel
 
 
 class SearchFileOut(RiverhogModel):
-    logical_path: str
+    file_ref: str
     collection_id: int
-    collection_path: str
+    path: str
     bytes: int
     sha256: str
 
@@ -20,6 +20,6 @@ class SearchResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: Literal["logical_path", "collection_id", "collection_path", "bytes"]
+    sort: Literal["file_ref", "collection_id", "path", "bytes"]
     order: Literal["asc", "desc"]
     files: list[SearchFileOut]

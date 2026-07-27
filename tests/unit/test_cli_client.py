@@ -22,7 +22,7 @@ def test_search_uses_current_collection_filters() -> None:
     client.search(
         "tax",
         collection="1",
-        sort="collection_path",
+        sort="path",
         order="desc",
         all_items=True,
     )
@@ -35,7 +35,7 @@ def test_search_uses_current_collection_filters() -> None:
                 "params": {
                     "page": 1,
                     "per_page": 25,
-                    "sort": "collection_path",
+                    "sort": "path",
                     "order": "desc",
                     "q": "tax",
                     "collection": "1",
@@ -49,19 +49,24 @@ def test_search_uses_current_collection_filters() -> None:
 def test_collection_upload_selects_archive_store_without_materialization_policy() -> None:
     client = RecordingClient()
 
-    client.create_or_resume_collection_upload("upload-one", ["docs"], [], archive_store="b2")
-    client.create_or_resume_collection_upload_session("upload-two", ["docs"], archive_store="b2")
+    client.create_or_resume_collection_upload_session("upload-one", ["docs"], archive_store="b2")
+    client.register_collection_upload_session_files(
+        1,
+        [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
+    )
+    client.complete_collection_upload_session(1, files_total=1, content_etag="b" * 64)
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
         "tags": ["docs"],
-        "files": [],
         "archive_store": "b2",
     }
     assert client.calls[1][2]["json"] == {
-        "idempotency_key": "upload-two",
-        "tags": ["docs"],
-        "archive_store": "b2",
+        "files": [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
+    }
+    assert client.calls[2][2]["json"] == {
+        "files_total": 1,
+        "content_etag": "b" * 64,
     }
 
 
@@ -164,7 +169,7 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
     client = ApiClient()
     assert client.token == "application-token"
     assert callable(client.plan_retrieval)
-    assert callable(client.create_or_resume_collection_upload)
+    assert callable(client.create_or_resume_collection_upload_session)
     assert callable(client.create_app_key)
 
 
