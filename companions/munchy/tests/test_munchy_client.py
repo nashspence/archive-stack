@@ -18,6 +18,7 @@ from munchy_api_client.client import (
     SubmissionUploadRequest,
     UploadProgress,
     UploadRetryReporter,
+    compact_job_failure,
     format_encode_progress,
     format_handoff_progress,
     format_job_failure,
@@ -648,6 +649,29 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
     assert "- gpu statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
     assert "eager_archive" not in failure
     assert len(failure) < 700
+
+
+def test_compact_job_failure_is_single_line_and_prefers_root_error() -> None:
+    failure = compact_job_failure(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "routing",
+            "error": "routing failed for camera/clip.wav: no matching route",
+            "gpu_statuses": {"large": ["payload"] * 100},
+        }
+    )
+
+    assert failure == (
+        "Munchy job failed: routing failed for camera/clip.wav: no matching route"
+    )
+    assert "\n" not in failure
+
+
+def test_compact_job_failure_falls_back_to_state_and_phase() -> None:
+    assert compact_job_failure({"state": "canceled", "phase": "handoff"}) == (
+        "Munchy job did not finish safely (canceled during handoff)"
+    )
 
 
 def test_server_client_list_jobs_validates_response() -> None:

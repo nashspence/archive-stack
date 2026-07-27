@@ -327,7 +327,9 @@ def test_finalized_upload_status_remains_visible_to_creating_application(
     assert payload["created_at"] == "2026-01-01T00:00:00.000000Z"
     assert payload["collection_id"] == 1
     assert payload["tags"] == ["alpha"]
-    assert payload["collection"] is not None
+    collection_payload = payload["collection"]
+    assert isinstance(collection_payload, dict)
+    assert collection_payload["remote_storage_bytes"] == 16
 
 
 def test_finalized_upload_status_does_not_grant_cross_application_visibility(

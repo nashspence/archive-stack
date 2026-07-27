@@ -1770,6 +1770,7 @@ def _collection_summary_payload(summary: CollectionSummary) -> dict[str, object]
         "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,
+        "remote_storage_bytes": summary.remote_storage_bytes,
         "archive_copies": [_archive_copy_payload(copy) for copy in summary.archive_copies],
     }
 

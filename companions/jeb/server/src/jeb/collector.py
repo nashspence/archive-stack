@@ -39,6 +39,7 @@ from munchy_api_client.client import (
     MunchyClient,
     SubmissionInputFile,
     SubmissionUploadRequest,
+    compact_job_failure,
     job_finished_cleanly,
 )
 from munchy_api_client.client import (
@@ -2954,7 +2955,7 @@ class MunchyTargetAdapter:
                     if job_finished_cleanly(exc.job):
                         collector.set_attempt_state(attempt_id, "target_complete")
                         return
-                    raise UnrecoverableJebError(str(exc)) from exc
+                    raise UnrecoverableJebError(compact_job_failure(exc.job)) from exc
                 collector.set_attempt_state(attempt_id, "target_uploaded")
                 state = "target_uploaded"
             if state == "target_uploaded":
@@ -2968,7 +2969,7 @@ class MunchyTargetAdapter:
                         f"Munchy submission returned invalid job state: {submission}"
                     )
                 if not job_finished_cleanly(job):
-                    raise UnrecoverableJebError(f"Munchy submission did not finish cleanly: {job}")
+                    raise UnrecoverableJebError(compact_job_failure(job))
                 collector.set_attempt_state(attempt_id, "target_complete")
         finally:
             client.close()

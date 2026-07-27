@@ -889,6 +889,15 @@ def format_job_failure(job: dict[str, Any], *, label: str = "job") -> str:
     return "\n".join(lines)
 
 
+def compact_job_failure(job: dict[str, Any], *, label: str = "Munchy job") -> str:
+    for _path, detail in _job_failure_details(job, limit=1):
+        return f"{label} failed: {detail}"
+    state = str(job.get("state") or "unknown").strip()
+    phase = str(job.get("phase") or "").strip()
+    status = state + (f" during {phase}" if phase else "")
+    return f"{label} did not finish safely ({status})"
+
+
 class ProgressRenderer:
     include_job: bool
     is_live: bool = False
