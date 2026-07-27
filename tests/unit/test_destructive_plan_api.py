@@ -89,7 +89,7 @@ class _ArchiveCopyRetirements:
                 "objects": _objects(include_store=False),
             },
             "retained_copies": [],
-            "retired_restore_records": [],
+            "retired_retrieval_jobs": [],
             "blockers": ["retirement would remove the last copy"],
             "verification_note": "A retained copy is verified before retirement.",
             "billing_note": "Provider billing can lag.",

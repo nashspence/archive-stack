@@ -40,7 +40,7 @@ def _plan() -> dict[str, object]:
                 "remote_storage_bytes": 28,
             }
         ],
-        "retired_restore_records": [],
+        "retired_retrieval_jobs": [],
         "blockers": [],
         "verification_note": "Another store must pass remote verification.",
         "billing_note": "Provider billing may lag.",

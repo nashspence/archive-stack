@@ -93,7 +93,7 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
     challenge: str | None
     target_copy: ArchiveCopyRetirementTargetOut
     retained_copies: list[ArchiveCopyRetirementRetainedOut]
-    retired_restore_records: list[str]
+    retired_retrieval_jobs: list[str]
     blockers: list[str]
     verification_note: str
     billing_note: str

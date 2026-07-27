@@ -72,6 +72,7 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
         "proof",
     ]
     assert [current["store"] for current in plan["retained_copies"]] == ["b2"]
+    assert plan["retired_retrieval_jobs"] == []
     assert plan["challenge"]
 
 
