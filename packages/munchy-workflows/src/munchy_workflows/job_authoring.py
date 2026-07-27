@@ -350,7 +350,7 @@ def render_job_template(
     values = {
         "job_id": str(job.get("job_id") or ""),
         "run_id": str(job.get("run_id") or ""),
-        "device_id": str(review.get("device_id") or ""),
+        "template_id": str(job.get("template_id") or ""),
         "route_id": str(review.get("route_id") or ""),
         "profile_id": str(review.get("profile_id") or ""),
     }
@@ -437,9 +437,8 @@ def hash_local_candidates(
 def build_submission_upload_request(
     *,
     source: Path,
-    template: str,
+    template_id: str,
     inputs: Mapping[str, str] | None = None,
-    collection_tags: Sequence[str] | None = None,
     run_id: str | None = None,
     submission_id: str | None = None,
     destination_prefix: str | None = None,
@@ -449,11 +448,10 @@ def build_submission_upload_request(
     hash_cache: Path | None = None,
     use_hash_cache: bool = True,
 ) -> SubmissionUploadRequest:
-    template_name = template.strip()
+    template_name = template_id.strip()
     if not template_name:
         raise MunchyJobAuthoringError("--template must not be blank")
     resolved_run_id = (run_id or run_id_now()).strip()
-    tags = tuple(dict.fromkeys(tag.strip() for tag in collection_tags or () if tag.strip()))
     identifier = (submission_id or safe_id(f"{template_name}-{resolved_run_id}")).strip()
     if not identifier:
         raise MunchyJobAuthoringError("submission id must not be blank")
@@ -475,10 +473,9 @@ def build_submission_upload_request(
     )
     return SubmissionUploadRequest(
         submission_id=identifier,
-        template=template_name,
+        template_id=template_name,
         files=tuple(files),
         inputs={str(name): str(value) for name, value in (inputs or {}).items()},
-        collection_tags=tags,
         run_id=resolved_run_id,
         handoff_on_failure=failure_action,
         upload_workers=upload_workers,
@@ -496,10 +493,14 @@ def _configured_destination_prefix(defaults: Mapping[str, Any], override: str | 
 def build_review_sweep_plan(
     *,
     source: Path,
+    template_id: str,
     config_path: Path | None = None,
     config: Mapping[str, Any] | None = None,
     destination_prefix: str | None = None,
 ) -> dict[str, Any]:
+    normalized_template_id = template_id.strip()
+    if not normalized_template_id:
+        raise MunchyJobAuthoringError("template_id must not be blank")
     if config_path is not None and config is not None:
         raise MunchyJobAuthoringError("config_path and config are mutually exclusive")
     loaded_config = load_munchy_job_config(config_path) if config_path is not None else config or {}
@@ -543,6 +544,7 @@ def build_review_sweep_plan(
     job_id = str(defaults.get("job_id") or safe_id(f"review-{run_id}")).strip()
     job_context = {
         "job_id": job_id,
+        "template_id": normalized_template_id,
         "run_id": run_id,
         "review": review,
     }
@@ -662,7 +664,7 @@ def build_review_sweep_plan(
         "workflow_mode": "review",
         "job_id": job_id,
         "run_id": run_id,
-        "device_id": str(review.get("device_id") or ""),
+        "template_id": normalized_template_id,
         "handoff": {
             "destination": str(handoff.get("destination") or ""),
             "location_template": location_template or None,

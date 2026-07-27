@@ -37,7 +37,7 @@ class SourceConfig:
     stable_seconds: int
     include_extensions: frozenset[str]
     target: str
-    template: str
+    target_config: dict[str, Any]
     threshold_bytes: int
     cleanup: Cleanup
     cadence: Cadence
@@ -53,7 +53,7 @@ class SourceConfig:
             "stable_seconds": self.stable_seconds,
             "include_extensions": sorted(self.include_extensions),
             "target": self.target,
-            "template": self.template,
+            "target_config": self.target_config,
             "threshold_bytes": self.threshold_bytes,
             "cleanup": self.cleanup,
             "cadence": self.cadence,
@@ -100,7 +100,7 @@ class SourceRegistry:
                     stable_seconds INTEGER NOT NULL,
                     include_extensions_json TEXT NOT NULL,
                     target TEXT NOT NULL,
-                    template TEXT NOT NULL,
+                    target_config_json TEXT NOT NULL,
                     threshold_bytes INTEGER NOT NULL,
                     cleanup TEXT NOT NULL,
                     cadence TEXT NOT NULL,
@@ -119,7 +119,7 @@ class SourceRegistry:
         source_id: str,
         *,
         adapters: Sequence[str],
-        template: str,
+        target_config: Mapping[str, Any],
         credential: str | None = None,
         enabled: bool = True,
         stable_seconds: int = 600,
@@ -144,7 +144,7 @@ class SourceRegistry:
             minute=minute,
         )
         normalized_extensions = _extensions(include_extensions)
-        normalized_template = _template(template)
+        normalized_target_config = _target_config(target_config)
         secret = credential or secrets.token_urlsafe(24)
         if not secret or "\n" in secret or "\r" in secret:
             raise SourceRegistryError("credential must be non-empty and single-line")
@@ -155,7 +155,7 @@ class SourceRegistry:
                     """
                     INSERT INTO sources(
                         id, enabled, adapters_json, password_hash, upload_signing_key,
-                        stable_seconds, include_extensions_json, target, template,
+                        stable_seconds, include_extensions_json, target, target_config_json,
                         threshold_bytes, cleanup, cadence, weekday, hour, minute,
                         created_at, updated_at
                     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -169,7 +169,7 @@ class SourceRegistry:
                         stable_seconds,
                         _json(sorted(normalized_extensions)),
                         target.strip() or "munchy",
-                        normalized_template,
+                        _json(normalized_target_config),
                         threshold_bytes,
                         cleanup,
                         cadence,
@@ -229,7 +229,7 @@ class SourceRegistry:
                 (
                     lower(id) LIKE ? ESCAPE '\\'
                     OR lower(target) LIKE ? ESCAPE '\\'
-                    OR lower(template) LIKE ? ESCAPE '\\'
+                    OR lower(target_config_json) LIKE ? ESCAPE '\\'
                     OR lower(cadence) LIKE ? ESCAPE '\\'
                     OR lower(adapters_json) LIKE ? ESCAPE '\\'
                 )
@@ -253,7 +253,6 @@ class SourceRegistry:
             "enabled": "enabled",
             "id": "id",
             "target": "target",
-            "template": "template",
             "updated_at": "updated_at",
         }[sort]
         order_sql = order.upper()
@@ -264,7 +263,7 @@ class SourceRegistry:
                 adapters_json,
                 target,
                 cadence,
-                template,
+                target_config_json,
                 created_at,
                 updated_at
             FROM sources
@@ -307,7 +306,7 @@ class SourceRegistry:
                     "adapters": list(json.loads(row["adapters_json"])),
                     "target": str(row["target"]),
                     "cadence": str(row["cadence"]),
-                    "template": str(row["template"]),
+                    "target_config": dict(json.loads(row["target_config_json"])),
                     "created_at": str(row["created_at"]),
                     "updated_at": str(row["updated_at"]),
                 }
@@ -351,7 +350,7 @@ class SourceRegistry:
             "weekday",
             "hour",
             "minute",
-            "template",
+            "target_config",
         }
         unknown = sorted(set(changes) - allowed)
         if unknown:
@@ -376,14 +375,14 @@ class SourceRegistry:
             hour=hour,
             minute=minute,
         )
-        template = _template(str(values["template"]))
+        target_config = _target_config(cast(Mapping[str, Any], values["target_config"]))
         now = format_utc_timestamp(utc_now())
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE sources
                 SET adapters_json = ?, stable_seconds = ?, include_extensions_json = ?,
-                    target = ?, template = ?, threshold_bytes = ?,
+                    target = ?, target_config_json = ?, threshold_bytes = ?,
                     cleanup = ?, cadence = ?, weekday = ?, hour = ?, minute = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -393,7 +392,7 @@ class SourceRegistry:
                     stable_seconds,
                     _json(sorted(extensions)),
                     str(values["target"]).strip() or current.target,
-                    template,
+                    _json(target_config),
                     threshold_bytes,
                     cleanup,
                     cadence,
@@ -523,7 +522,7 @@ class SourceRegistry:
             stable_seconds=int(row["stable_seconds"]),
             include_extensions=frozenset(json.loads(row["include_extensions_json"])),
             target=str(row["target"]),
-            template=str(row["template"]),
+            target_config=dict(json.loads(row["target_config_json"])),
             threshold_bytes=int(row["threshold_bytes"]),
             cleanup=cast(Cleanup, str(row["cleanup"])),
             cadence=cast(Cadence, str(row["cadence"])),
@@ -540,11 +539,16 @@ def _source_id(value: str) -> str:
     return normalized
 
 
-def _template(value: str) -> str:
-    normalized = value.strip()
-    if not SOURCE_ID.fullmatch(normalized):
-        raise SourceRegistryError(f"template must be a safe id: {value!r}")
-    return normalized
+def _target_config(value: Mapping[str, Any]) -> dict[str, Any]:
+    if any(not isinstance(key, str) or not key.strip() for key in value):
+        raise SourceRegistryError("target_config keys must be non-blank strings")
+    try:
+        normalized = json.loads(json.dumps(dict(value), sort_keys=True))
+    except (TypeError, ValueError) as exc:
+        raise SourceRegistryError("target_config must contain JSON values") from exc
+    if not isinstance(normalized, dict):
+        raise SourceRegistryError("target_config must be an object")
+    return cast(dict[str, Any], normalized)
 
 
 def _adapters(values: Sequence[Any]) -> tuple[str, ...]:

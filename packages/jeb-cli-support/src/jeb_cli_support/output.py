@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 
 from cli_support.output import (
@@ -33,10 +34,18 @@ def format_sources(payload: Mapping[str, object]) -> str:
             if isinstance(raw_adapters, Sequence) and not isinstance(raw_adapters, (str, bytes))
             else "none"
         )
+        target = str(source.get("target", "unknown"))
+        raw_target_config = source.get("target_config")
+        if isinstance(raw_target_config, Mapping) and raw_target_config:
+            rendered_config = ",".join(
+                f"{name}={json.dumps(value, separators=(',', ':'))}"
+                for name, value in sorted(raw_target_config.items())
+            )
+            target = f"{target}({rendered_config})"
         lines.append(
             f"- {source.get('id', 'unknown')}  "
             f"state={'enabled' if source.get('enabled') else 'disabled'}  "
-            f"adapters={adapters}  target={source.get('target', 'unknown')}"
+            f"adapters={adapters}  target={target}"
         )
     return "\n".join(lines)
 

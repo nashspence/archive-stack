@@ -53,7 +53,7 @@ def collector_from_env(
         collector.add_source(
             source_id,
             adapters=("ftp", "tus"),
-            template=(templates or {}).get(source_id, TEST_TEMPLATE),
+            target_config={"template_id": (templates or {}).get(source_id, TEST_TEMPLATE)},
             credential=f"{source_id}-password",
             stable_seconds=0,
             include_extensions=(".txt", ".mp4", ".xml"),
@@ -111,23 +111,26 @@ def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Pa
     assert collector.config.collector.batch_dir == tmp_path / "landing" / ".jeb-batches"
     sources = collector.source_registry.list()
     assert [source.id for source in sources] == ["camera", "phone"]
-    assert [source.template for source in sources] == [TEST_TEMPLATE, TEST_TEMPLATE]
+    assert [source.target_config for source in sources] == [
+        {"template_id": TEST_TEMPLATE},
+        {"template_id": TEST_TEMPLATE},
+    ]
 
     with pytest.raises(SourceRegistryError, match="source already exists: camera"):
         collector.add_source(
             "camera",
             adapters=("tus",),
-            template=TEST_TEMPLATE,
+            target_config={"template_id": TEST_TEMPLATE},
             credential="replacement-password",
         )
 
 
-def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
+def test_source_target_config_and_ftp_projection_are_registry_owned(tmp_path: Path) -> None:
     collector = collector_from_env(env_for(tmp_path, sources="camera"))
     source = collector.source_registry.get("camera")
     ftp_home = tmp_path / "landing" / "camera"
 
-    assert source.template == TEST_TEMPLATE
+    assert source.target_config == {"template_id": TEST_TEMPLATE}
     assert ftp_home.is_dir()
     assert ftp_home.stat().st_uid == os.getuid()
     assert ftp_home.stat().st_gid == os.getgid()
@@ -143,12 +146,12 @@ def test_source_template_and_ftp_projection_are_registry_owned(tmp_path: Path) -
         "camera",
         {
             "cadence": "manual",
-            "template": "camera-review",
+            "target_config": {"template_id": "camera-review"},
         },
     )
 
     assert updated.cadence == "manual"
-    assert updated.template == "camera-review"
+    assert updated.target_config == {"template_id": "camera-review"}
 
 
 def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> None:
@@ -174,7 +177,7 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
     assert page["pages"] == 2
     assert page["per_page"] == 1
     assert [source["id"] for source in page["sources"]] == ["phone"]
-    assert page["sources"][0]["template"] == TEST_TEMPLATE
+    assert page["sources"][0]["target_config"] == {"template_id": TEST_TEMPLATE}
 
     filtered = collector.source_registry.list_page(
         query="REVIEW",
@@ -326,7 +329,7 @@ def test_source_registry_requires_safe_source_ids(tmp_path: Path) -> None:
         collector.add_source(
             "phone/raw",
             adapters=("tus",),
-            template=TEST_TEMPLATE,
+            target_config={"template_id": TEST_TEMPLATE},
         )
 
 
@@ -338,7 +341,7 @@ def test_cleanup_after_success_requires_safe_munchy_target(tmp_path: Path) -> No
         collector.add_source(
             "camera",
             adapters=("ftp",),
-            template=TEST_TEMPLATE,
+            target_config={"template_id": TEST_TEMPLATE},
             cleanup="after_target_success",
         )
 
@@ -537,7 +540,7 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     )
 
     assert request.submission_id == collector.load_attempt(batch_id)["target_submission_id"]
-    assert request.template == "camera-review"
+    assert request.template_id == "camera-review"
     assert request.run_id == "20260719T160102Z"
     assert request.event_context == {"initiator": {"app": "jeb", "attempt_id": batch_id}}
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]

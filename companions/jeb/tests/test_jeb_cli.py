@@ -27,7 +27,7 @@ def enroll(env: dict[str, str]) -> dict[str, str]:
         collector.add_source(
             source_id,
             adapters=("tus",),
-            template="camera-archive",
+            target_config={"template_id": "camera-archive"},
             credential=f"{source_id}-password",
             stable_seconds=0,
             include_extensions=(".txt",),

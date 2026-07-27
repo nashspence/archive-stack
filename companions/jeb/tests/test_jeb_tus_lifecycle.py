@@ -29,7 +29,7 @@ def collector_for(env: dict[str, str]) -> Collector:
     collector.add_source(
         "phone",
         adapters=("tus",),
-        template="phone-archive",
+        target_config={"template_id": "phone-archive"},
         credential="phone-password",
         cadence="manual",
     )

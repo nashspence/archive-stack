@@ -285,6 +285,19 @@ class TargetAdapter(Protocol):
     def cancel(self, collector: Collector, attempt_id: str) -> None: ...
 
 
+class TargetContractAdapter(Protocol):
+    def normalize_source_config(self, config: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def preflight(
+        self,
+        collector: Collector,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        *,
+        record_failures: bool,
+    ) -> tuple[list[EligibleFile] | None, dict[str, Any]]: ...
+
+
 class Collector:
     def __init__(
         self,
@@ -297,9 +310,11 @@ class Collector:
         self.sleep = sleep
         self.event_log = SQLiteLifecycleEventLog(self.connect)
         self.event_cursors = SQLiteEventCursorStore(self.connect)
-        self.target_adapters: dict[str, TargetAdapter] = {
-            "munchy": MunchyTargetAdapter(),
+        munchy_adapter = MunchyTargetAdapter()
+        self.target_contract_adapters: dict[str, TargetContractAdapter] = {
+            "munchy": munchy_adapter
         }
+        self.target_adapters: dict[str, TargetAdapter] = {"munchy": munchy_adapter}
         if target_adapters:
             self.target_adapters.update(target_adapters)
         self.source_registry = SourceRegistry(
@@ -975,6 +990,7 @@ class Collector:
                 "stable_seconds": source.stable_seconds,
                 "include_extensions": sorted(source.include_extensions),
                 "target": source.target,
+                "target_config": source.target_config,
                 "cleanup": source.cleanup,
                 "cadence": source.cadence,
                 "threshold_bytes": source.threshold_bytes,
@@ -1036,7 +1052,7 @@ class Collector:
         source_id: str,
         *,
         adapters: Sequence[str],
-        template: str,
+        target_config: Mapping[str, Any],
         credential: str | None = None,
         enabled: bool = True,
         stable_seconds: int = 600,
@@ -1050,10 +1066,14 @@ class Collector:
         minute: int = 0,
     ) -> tuple[SourceConfig, str | None]:
         self.init_db()
-        self._validate_source_target(target=target, cleanup=cleanup)
+        normalized_target_config = self._validate_source_target(
+            target=target,
+            target_config=target_config,
+            cleanup=cleanup,
+        )
         kwargs: dict[str, Any] = {
             "adapters": adapters,
-            "template": template,
+            "target_config": normalized_target_config,
             "credential": credential,
             "enabled": enabled,
             "stable_seconds": stable_seconds,
@@ -1073,26 +1093,39 @@ class Collector:
         self.init_db()
         current = self.source_registry.get(source_id)
         target = str(changes.get("target", current.target))
+        target_config = changes.get("target_config", current.target_config)
+        if not isinstance(target_config, Mapping):
+            raise SourceRegistryError("target_config must be an object")
         cleanup = str(changes.get("cleanup", current.cleanup))
         if cleanup not in {"never", "after_target_success"}:
             raise SourceRegistryError("cleanup must be never or after_target_success")
-        self._validate_source_target(
+        normalized_target_config = self._validate_source_target(
             target=target,
+            target_config=target_config,
             cleanup=cast(Literal["never", "after_target_success"], cleanup),
         )
-        return self.source_registry.update(source_id, changes)
+        normalized_changes = dict(changes)
+        normalized_changes["target_config"] = normalized_target_config
+        return self.source_registry.update(source_id, normalized_changes)
 
     def _validate_source_target(
         self,
         *,
         target: str,
+        target_config: Mapping[str, Any],
         cleanup: Literal["never", "after_target_success"],
-    ) -> None:
+    ) -> dict[str, Any]:
         configured = self.target_by_name(target)
+        try:
+            adapter = self.target_contract_adapters[target]
+        except KeyError as exc:
+            raise SourceRegistryError(f"target has no source-option contract: {target}") from exc
+        normalized = adapter.normalize_source_config(target_config)
         if cleanup == "after_target_success" and not configured.wait_for_safe_delete:
             raise SourceRegistryError(
                 "cleanup=after_target_success requires target safe-delete waiting"
             )
+        return normalized
 
     def source_removal_plan(
         self,
@@ -1684,83 +1717,18 @@ class Collector:
         *,
         record_failures: bool,
     ) -> tuple[list[EligibleFile] | None, dict[str, Any]]:
-        if not files:
-            return [], {
-                "ok": True,
-                "status": "no_files",
-                "file_count": 0,
-                "template": source.template,
-            }
-        target = self.target_by_name(source.target)
-        request = SubmissionUploadRequest(
-            submission_id=f"preflight-{source.id}",
-            template=source.template,
-            files=tuple(
-                SubmissionInputFile(
-                    source=item.path,
-                    rel_path=item.target_path,
-                    bytes=item.bytes,
-                    sha256="",
-                )
-                for item in files
-            ),
-            run_id=run_id_for(),
-        )
-        client = MunchyClient(target.url, token=target.token)
         try:
-            try:
-                result = client.preflight_submission(request)
-            except Exception as exc:
-                if is_transient_error(exc):
-                    LOG.warning(
-                        "source %s target preflight hit a transient issue; will retry later: %s",
-                        source.id,
-                        exc,
-                    )
-                    return None, {
-                        "ok": False,
-                        "status": "transient_error",
-                        "file_count": len(files),
-                        "template": source.template,
-                        "error": str(exc),
-                    }
-                if record_failures:
-                    self.record_target_preflight_failure(
-                        source=source,
-                        files=files,
-                        error=exc,
-                    )
-                    self.emit_target_preflight_failures(source_id=source.id)
-                return None, {
-                    "ok": False,
-                    "status": "rejected",
-                    "file_count": len(files),
-                    "template": source.template,
-                    "error": str(exc),
-                }
-            accepted = bool(result.get("accepted"))
-            summary = {
-                "ok": accepted,
-                "status": "accepted" if accepted else "rejected",
-                "file_count": len(files),
-                "template": source.template,
-                "result": result,
-            }
-            if accepted:
-                if record_failures:
-                    self.clear_target_preflight_failure(source.id)
-                return list(files), summary
-            error = UnrecoverableJebError("target rejected submission preflight")
-            if record_failures:
-                self.record_target_preflight_failure(
-                    source=source,
-                    files=files,
-                    error=error,
-                )
-                self.emit_target_preflight_failures(source_id=source.id)
-            return None, summary
-        finally:
-            client.close()
+            adapter = self.target_contract_adapters[source.target]
+        except KeyError as exc:
+            raise UnrecoverableJebError(
+                f"target has no preflight contract: {source.target}"
+            ) from exc
+        return adapter.preflight(
+            self,
+            source,
+            files,
+            record_failures=record_failures,
+        )
 
     def record_target_preflight_failure(
         self,
@@ -1779,7 +1747,7 @@ class Collector:
         }
         fingerprint_payload = {
             "source_id": source.id,
-            "template": source.template,
+            "target_config": source.target_config,
             "error": error_text[:500],
             "error_type": error.__class__.__name__,
             "status": status,
@@ -2866,6 +2834,104 @@ class MunchyTargetAdapter:
         "cleanup_failed",
     }
 
+    def normalize_source_config(self, config: Mapping[str, Any]) -> dict[str, Any]:
+        unknown = sorted(set(config) - {"template_id"})
+        if unknown:
+            raise SourceRegistryError(
+                "unknown Munchy target option(s): " + ", ".join(unknown)
+            )
+        template_id = str(config.get("template_id") or "").strip()
+        if not template_id or len(template_id) > 160 or not SAFE_NAME.fullmatch(template_id):
+            raise SourceRegistryError("Munchy target option template_id must be a safe ID")
+        return {"template_id": template_id}
+
+    def preflight(
+        self,
+        collector: Collector,
+        source: SourceConfig,
+        files: Sequence[EligibleFile],
+        *,
+        record_failures: bool,
+    ) -> tuple[list[EligibleFile] | None, dict[str, Any]]:
+        config = self.normalize_source_config(source.target_config)
+        if not files:
+            return [], {
+                "ok": True,
+                "status": "no_files",
+                "file_count": 0,
+                "target_config": config,
+            }
+        target = collector.target_by_name(source.target)
+        request = SubmissionUploadRequest(
+            submission_id=f"preflight-{source.id}",
+            template_id=str(config["template_id"]),
+            files=tuple(
+                SubmissionInputFile(
+                    source=item.path,
+                    rel_path=item.target_path,
+                    bytes=item.bytes,
+                    sha256="",
+                )
+                for item in files
+            ),
+            run_id=run_id_for(),
+        )
+        client = MunchyClient(target.url, token=target.token)
+        try:
+            try:
+                result = client.preflight_submission(request)
+            except Exception as exc:
+                if is_transient_error(exc):
+                    LOG.warning(
+                        "source %s target preflight hit a transient issue; will retry later: %s",
+                        source.id,
+                        exc,
+                    )
+                    return None, {
+                        "ok": False,
+                        "status": "transient_error",
+                        "file_count": len(files),
+                        "target_config": config,
+                        "error": str(exc),
+                    }
+                if record_failures:
+                    collector.record_target_preflight_failure(
+                        source=source,
+                        files=files,
+                        error=exc,
+                    )
+                    collector.emit_target_preflight_failures(source_id=source.id)
+                return None, {
+                    "ok": False,
+                    "status": "rejected",
+                    "file_count": len(files),
+                    "target_config": config,
+                    "error": str(exc),
+                }
+            accepted = bool(result.get("accepted"))
+            summary = {
+                "ok": accepted,
+                "status": "accepted" if accepted else "rejected",
+                "file_count": len(files),
+                "target_config": config,
+                "result": result,
+            }
+            if accepted:
+                if record_failures:
+                    collector.clear_target_preflight_failure(source.id)
+                return list(files), summary
+            error = UnrecoverableJebError("target rejected submission preflight")
+            if record_failures:
+                collector.record_target_preflight_failure(
+                    source=source,
+                    files=files,
+                    error=error,
+                )
+                collector.emit_target_preflight_failures(source_id=source.id)
+            return None, summary
+        finally:
+            client.close()
+
     def advance(self, collector: Collector, attempt_id: str) -> None:
         attempt = collector.load_attempt(attempt_id)
         if attempt["state"] == "target_complete":
@@ -2931,6 +2997,9 @@ def munchy_submission_request(
 ) -> SubmissionUploadRequest:
     attempt = collector.load_attempt(attempt_id)
     source = collector.source_by_id(str(attempt["source_id"]))
+    config = collector.target_contract_adapters[source.target].normalize_source_config(
+        source.target_config
+    )
     rows = collector.attempt_files(attempt_id)
     files = tuple(
         SubmissionInputFile(
@@ -2944,7 +3013,7 @@ def munchy_submission_request(
     )
     return SubmissionUploadRequest(
         submission_id=str(attempt["target_submission_id"]),
-        template=source.template,
+        template_id=str(config["template_id"]),
         files=files,
         run_id=str(attempt["run_id"]),
         event_context={

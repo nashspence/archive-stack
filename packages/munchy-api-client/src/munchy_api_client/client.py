@@ -13,6 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any
@@ -68,10 +69,9 @@ class SubmissionInputFile:
 @dataclass(frozen=True)
 class SubmissionUploadRequest:
     submission_id: str
-    template: str
+    template_id: str
     files: tuple[SubmissionInputFile, ...]
     inputs: dict[str, str] = field(default_factory=dict)
-    collection_tags: tuple[str, ...] = ()
     run_id: str | None = None
     handoff_on_failure: str = "preserve_for_resume"
     event_context: dict[str, Any] = field(default_factory=dict)
@@ -104,7 +104,7 @@ def submission_payload(
     include_id: bool,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "template": request.template,
+        "template_id": request.template_id,
         "inputs": request.inputs,
         "files": [
             {
@@ -119,8 +119,6 @@ def submission_payload(
     }
     if include_id:
         payload["submission_id"] = request.submission_id
-    if request.collection_tags:
-        payload["collection_tags"] = list(request.collection_tags)
     for key, value in (("run_id", request.run_id),):
         if value is not None:
             payload[key] = value
@@ -784,20 +782,27 @@ def format_job_status_line(job: dict[str, Any]) -> str:
     return " | ".join(pieces)
 
 
+def format_job_created_timestamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown-time"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def format_job_identity(job: dict[str, Any]) -> str:
+    template_id = str(job.get("template_id") or "unknown-template")
+    return f"{template_id} · {format_job_created_timestamp(job.get('created_at'))}"
+
+
 def format_job_summary_line(job: dict[str, Any]) -> str:
     job_id = str(job.get("job_id") or job.get("id") or "unknown")
-    collection_tags = ", ".join(str(tag) for tag in job.get("collection_tags") or [])
-    review = job.get("review")
-    review_label = ""
-    if isinstance(review, dict):
-        route_id = str(review.get("route_id") or "").strip()
-        profile_id = str(review.get("profile_id") or "").strip()
-        if route_id and profile_id:
-            review_label = f"{route_id}/{profile_id}"
-        elif route_id:
-            review_label = route_id
-    label = collection_tags or review_label
-    prefix = job_id if not label else f"{job_id} [{label}]"
+    prefix = f"{format_job_identity(job)} [job {job_id}]"
     return f"{prefix} | {format_job_status_line(job)}"
 
 
@@ -863,9 +868,7 @@ def format_job_failure(job: dict[str, Any], *, label: str = "job") -> str:
     job_id = str(job.get("job_id") or job.get("id") or "").strip()
     if job_id:
         lines.append(f"- job: {job_id}")
-    collection_tags = [str(tag) for tag in job.get("collection_tags") or []]
-    if collection_tags:
-        lines.append(f"- collection tags: {', '.join(collection_tags)}")
+    lines.append(f"- identity: {format_job_identity(job)}")
     review = job.get("review")
     if isinstance(review, dict):
         route_id = str(review.get("route_id") or "").strip()
@@ -2091,7 +2094,7 @@ class MunchyAdminClient(MunchyClient):
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "name",
+        sort: str = "template_id",
         order: str = "asc",
         query: str | None = None,
         enabled: bool | None = None,
@@ -2119,26 +2122,26 @@ class MunchyAdminClient(MunchyClient):
         payload["templates"] = [item for item in templates if isinstance(item, dict)]
         return payload
 
-    def get_job_template(self, name: str) -> dict[str, Any]:
+    def get_job_template(self, template_id: str) -> dict[str, Any]:
         return self.json(
             "GET",
-            f"/v1/admin/job-templates/{urllib.parse.quote(name)}",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}",
         )
 
     def validate_job_template(
         self,
-        name: str,
+        template_id: str,
         definition: dict[str, Any],
     ) -> dict[str, Any]:
         return self.json(
             "POST",
             "/v1/admin/job-templates/validate",
-            payload={"name": name, "definition": definition},
+            payload={"template_id": template_id, "definition": definition},
         )
 
     def create_job_template(
         self,
-        name: str,
+        template_id: str,
         definition: dict[str, Any],
         *,
         enabled: bool = True,
@@ -2146,13 +2149,13 @@ class MunchyAdminClient(MunchyClient):
         return self.json(
             "POST",
             "/v1/admin/job-templates",
-            payload={"name": name, "definition": definition, "enabled": enabled},
+            payload={"template_id": template_id, "definition": definition, "enabled": enabled},
             expect={201},
         )
 
     def replace_job_template(
         self,
-        name: str,
+        template_id: str,
         definition: dict[str, Any],
         *,
         expected_revision: int,
@@ -2160,7 +2163,7 @@ class MunchyAdminClient(MunchyClient):
     ) -> dict[str, Any]:
         return self.json(
             "PUT",
-            f"/v1/admin/job-templates/{urllib.parse.quote(name)}",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}",
             payload={
                 "definition": definition,
                 "enabled": enabled,
@@ -2170,7 +2173,7 @@ class MunchyAdminClient(MunchyClient):
 
     def set_job_template_enabled(
         self,
-        name: str,
+        template_id: str,
         *,
         enabled: bool,
         expected_revision: int,
@@ -2178,13 +2181,13 @@ class MunchyAdminClient(MunchyClient):
         action = "enable" if enabled else "disable"
         return self.json(
             "POST",
-            f"/v1/admin/job-templates/{urllib.parse.quote(name)}/{action}",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}/{action}",
             payload={"expected_revision": expected_revision},
         )
 
-    def delete_job_template(self, name: str, *, expected_revision: int) -> dict[str, Any]:
+    def delete_job_template(self, template_id: str, *, expected_revision: int) -> dict[str, Any]:
         query = urllib.parse.urlencode({"expected_revision": expected_revision})
         return self.json(
             "DELETE",
-            f"/v1/admin/job-templates/{urllib.parse.quote(name)}?{query}",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}?{query}",
         )

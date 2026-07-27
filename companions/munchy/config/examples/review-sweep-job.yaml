@@ -5,9 +5,8 @@ job:
   handoff:
     destination: rclone
     options:
-      location: "review-remote:munchy/reviews/{device_id}/{route_id}/{profile_id}/{run_id}"
+      location: "review-remote:munchy/reviews/{template_id}/{route_id}/{profile_id}/{run_id}"
   review:
-    device_id: example-camera
     clip_plan:
       target_seconds: 90
     sweep:

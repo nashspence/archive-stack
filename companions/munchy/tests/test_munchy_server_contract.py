@@ -132,7 +132,7 @@ def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monk
             conn.execute(
                 """
                 INSERT INTO job_templates(
-                    name, definition, resolved_job, digest, revision, enabled,
+                    template_id, definition, resolved_job, digest, revision, enabled,
                     created_at, updated_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -283,11 +283,14 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
     with TestClient(server.app) as client:
         created_response = client.post(
             "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": job_template_definition()},
+            json={
+                "template_id": "camera-archive",
+                "definition": job_template_definition(),
+            },
         )
         assert created_response.status_code == 201
         created = created_response.json()
-        assert created["name"] == "camera-archive"
+        assert created["template_id"] == "camera-archive"
         assert created["revision"] == 1
         assert created["enabled"] is True
         assert created["resolved_job"]["workflow_mode"] == "collection_archive"
@@ -295,7 +298,10 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
         assert (
             client.post(
                 "/v1/admin/job-templates",
-                json={"name": "phone-archive", "definition": job_template_definition()},
+                json={
+                    "template_id": "phone-archive",
+                    "definition": job_template_definition(),
+                },
             ).status_code
             == 201
         )
@@ -307,7 +313,7 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
         assert all_templates["page"] == 1
         assert all_templates["pages"] == 1
         assert all_templates["per_page"] == 2
-        assert [item["name"] for item in all_templates["templates"]] == [
+        assert [item["template_id"] for item in all_templates["templates"]] == [
             "camera-archive",
             "phone-archive",
         ]
@@ -317,7 +323,7 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
             params={"q": "camera", "sort": "revision", "order": "desc"},
         ).json()
         assert listed["total"] == 1
-        assert [item["name"] for item in listed["templates"]] == ["camera-archive"]
+        assert [item["template_id"] for item in listed["templates"]] == ["camera-archive"]
         assert "definition" not in listed["templates"][0]
 
         replaced_response = client.put(
@@ -356,7 +362,7 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
             params={"expected_revision": 3},
         )
         assert removed.status_code == 200
-        assert removed.json() == {"name": "camera-archive", "state": "removed"}
+        assert removed.json() == {"template_id": "camera-archive", "state": "removed"}
         assert client.get("/v1/admin/job-templates/camera-archive").status_code == 404
 
 
@@ -368,29 +374,29 @@ def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatc
     with TestClient(server.app) as client:
         response = client.post(
             "/v1/admin/job-templates",
-            json={"name": "invalid", "definition": definition},
+            json={"template_id": "invalid", "definition": definition},
         )
 
     assert response.status_code == 422
     assert "submission-owned" in response.json()["detail"]
 
 
-def test_job_template_owns_default_collection_tags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_riverhog_handoff_template_owns_tags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
     monkeypatch.setattr(server, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
     definition = job_template_definition()
-    definition["job"]["collection_tags"] = ["camera-archive"]  # type: ignore[index]
+    definition["job"]["handoff"]["options"]["tags"] = ["camera"]  # type: ignore[index]
 
     with TestClient(server.app) as client:
         created = client.post(
             "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": definition},
+            json={"template_id": "camera-archive", "definition": definition},
         )
         submitted = client.post(
             "/v1/submissions",
             json={
                 "submission_id": "submission-1",
-                "template": "camera-archive",
+                "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
             },
@@ -398,7 +404,7 @@ def test_job_template_owns_default_collection_tags(tmp_path: Path, monkeypatch) 
 
     assert created.status_code == 201, created.json()
     assert submitted.status_code == 202, submitted.json()
-    assert server.load_job("submission-1")["collection_tags"] == ["camera-archive"]
+    assert server.load_job("submission-1")["handoff"]["options"]["tags"] == ["camera"]
 
 
 def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -425,7 +431,7 @@ def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -
     with TestClient(server.app) as client:
         response = client.post(
             "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": definition},
+            json={"template_id": "camera-archive", "definition": definition},
         )
         created = response.json()
         replaced = client.put(
@@ -469,7 +475,6 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
                 },
             },
             "review": {
-                "device_id": "camera",
                 "route_id": "{{route}}",
                 "profile_id": "webm-q42",
             },
@@ -481,7 +486,7 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
         assert (
             client.post(
                 "/v1/admin/job-templates",
-                json={"name": "camera-review", "definition": definition},
+                json={"template_id": "camera-review", "definition": definition},
             ).status_code
             == 201
         )
@@ -489,7 +494,7 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
             "/v1/submissions",
             json={
                 "submission_id": "submission-1",
-                "template": "camera-review",
+                "template_id": "camera-review",
                 "inputs": {"route": "camera-telephoto"},
                 "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "review/a.mp4", "bytes": 4}],
@@ -511,15 +516,17 @@ def test_submission_preflight_resolves_template_without_creating_state(
         assert (
             client.post(
                 "/v1/admin/job-templates",
-                json={"name": "camera-archive", "definition": job_template_definition()},
+                json={
+                    "template_id": "camera-archive",
+                    "definition": job_template_definition(),
+                },
             ).status_code
             == 201
         )
         response = client.post(
             "/v1/submissions/preflight",
             json={
-                "template": "camera-archive",
-                "collection_tags": ["camera"],
+                "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
             },
@@ -528,7 +535,8 @@ def test_submission_preflight_resolves_template_without_creating_state(
     assert response.status_code == 200
     payload = response.json()
     assert payload["accepted"] is True
-    assert payload["template"]["revision"] == 1
+    assert payload["template_id"] == "camera-archive"
+    assert payload["template_revision"] == 1
     assert payload["content_inspection"] == "after_upload"
     assert payload["files_total"] == 1
     assert server.list_states("job") == []
@@ -543,8 +551,7 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
     monkeypatch.setattr(server, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
     request = {
         "submission_id": "submission-1",
-        "template": "camera-archive",
-        "collection_tags": ["camera"],
+        "template_id": "camera-archive",
         "run_id": "20260101T000000.123456Z",
         "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
     }
@@ -552,17 +559,18 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
     with TestClient(server.app) as client:
         created_template = client.post(
             "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": job_template_definition()},
+            json={
+                "template_id": "camera-archive",
+                "definition": job_template_definition(),
+            },
         ).json()
         created_response = client.post("/v1/submissions", json=request)
         assert created_response.status_code == 202
         created = created_response.json()
         assert created["submission_id"] == "submission-1"
-        assert created["template"] == {
-            "name": "camera-archive",
-            "revision": 1,
-            "digest": created_template["digest"],
-        }
+        assert created["template_id"] == "camera-archive"
+        assert created["template_revision"] == 1
+        assert created["template_digest"] == created_template["digest"]
         assert created["upload"]["files_total"] == 1
 
         replaced = client.put(
@@ -577,7 +585,7 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
 
         retried = client.post("/v1/submissions", json=request)
         assert retried.status_code == 202
-        assert retried.json()["template"]["revision"] == 1
+        assert retried.json()["template_revision"] == 1
 
         conflict_request = dict(request)
         conflict_request["files"] = [{"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}]
@@ -586,7 +594,8 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         assert conflict.json()["detail"]["error"] == "submission_conflict"
 
     job = server.load_job("submission-1")
-    assert job["job_template"]["revision"] == 1
+    assert job["template_id"] == "camera-archive"
+    assert job["template_revision"] == 1
     assert job["handoff"]["options"] == {"archive_store": "b2"}
 
 
@@ -602,14 +611,16 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
     with TestClient(server.app) as client:
         client.post(
             "/v1/admin/job-templates",
-            json={"name": "camera-archive", "definition": job_template_definition()},
+            json={
+                "template_id": "camera-archive",
+                "definition": job_template_definition(),
+            },
         )
         client.post(
             "/v1/submissions",
             json={
                 "submission_id": "submission-1",
-                "template": "camera-archive",
-                "collection_tags": ["camera"],
+                "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
                 "files": [{"path": "video/a.mp4", "bytes": 4}],
             },
@@ -677,7 +688,6 @@ def test_handoff_failure_policy_is_runtime_job_option(
     job = server.create_job_state_from_request(
         server.CreateJobRequest(
             input_upload_id="upload-1",
-            collection_tags=["collection"],
             run_id="20260101T000000Z",
             tasks=["archive_video"],
             handoff={
@@ -797,7 +807,6 @@ def test_review_job_request_accepts_clip_plan_config(
             "options": {"location": "review-remote:reviews"},
         },
         review={
-            "device_id": "camera",
             "route_id": "camera-main-video",
             "profile_id": "webm-q42",
             "clip_plan": {"target_seconds": 90},
@@ -819,7 +828,6 @@ def test_review_job_request_accepts_clip_plan_config(
                 "options": {"location": "review-remote:reviews"},
             },
             review={
-                "device_id": "camera",
                 "route_id": "camera-main-video",
                 "profile_id": "webm-q42",
                 "clip_plan": {"min_seconds": 10, "max_seconds": 9},
@@ -846,7 +854,6 @@ def test_review_job_request_accepts_general_sweep_config(
             "photo": {"output_mode": "preserve", "tasks": []},
         },
         review={
-            "device_id": "camera",
             "sweep": {
                 "axes": {
                     "archive.max_height": [720, 1080],
@@ -895,7 +902,6 @@ def test_review_job_storage_hint_uses_handoff_destination(
             }
         },
         review={
-            "device_id": "camera",
             "route_id": "camera-main-video",
             "profile_id": "webm-q42",
         },
@@ -928,7 +934,6 @@ def test_create_job_request_accepts_full_metadata_projection_config(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_tags=["phone-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -974,7 +979,6 @@ def test_create_job_request_accepts_disabled_group_metadata_projection(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -995,7 +999,6 @@ def test_create_job_request_accepts_routing_extra_exiftool_tags(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1032,7 +1035,6 @@ def test_create_job_request_accepts_sidecar_fact_extractors(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_tags=["camera-collection-archive"],
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1196,7 +1198,7 @@ def test_routing_manifest_records_actual_route_and_output(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["phone-collection-archive"],
+        "template_id": "phone-archive",
         "run_id": "20260628T000000Z",
         "routing": {
             "routes": [
@@ -1301,7 +1303,7 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["phone-collection-archive"],
+        "template_id": "phone-archive",
         "run_id": "20260628T000000Z",
         "routing": {
             "sidecars": [
@@ -1401,7 +1403,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["phone-collection-archive"],
+        "template_id": "phone-archive",
     }
     server.save_job(job)
     groups = {
@@ -1439,7 +1441,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert 'geo:lat="37.3317"' in xmp
     assert "<rdf:li>Example Operator</rdf:li>" in xmp
     assert "<rdf:li>iphone-se2</rdf:li>" in xmp
-    assert "<rdf:li>munchy/collection/phone-collection-archive</rdf:li>" in xmp
+    assert "<rdf:li>munchy/template/phone-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/video</rdf:li>" in xmp
     assert "<rdf:li>munchy/route/iphone-video</rdf:li>" in xmp
     assert "<rdf:li>munchy/output/iphone/video</rdf:li>" in xmp
@@ -1535,7 +1537,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
         {
             "job_id": "job-1",
             "input_upload_id": "upload-1",
-            "collection_tags": ["phone-collection-archive"],
+            "template_id": "phone-archive",
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {
                 "state": "open",
@@ -1553,7 +1555,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     stale_job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["phone-collection-archive"],
+        "template_id": "phone-archive",
         "handoff": {"destination": "riverhog", "options": {}},
     }
 
@@ -1670,7 +1672,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["phone-collection-archive"],
+        "template_id": "phone-archive",
     }
     server.save_job(job)
     groups = {
@@ -1697,7 +1699,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     assert "<rdf:li>existing-tag</rdf:li>" in xmp
     assert 'exif:DateTimeOriginal="2026-06-28T20:30:40-07:00"' in xmp
     assert 'tiff:Make="Apple"' in xmp
-    assert "<rdf:li>munchy/collection/phone-collection-archive</rdf:li>" in xmp
+    assert "<rdf:li>munchy/template/phone-archive</rdf:li>" in xmp
     assert updated["files"][0]["metadata_projection_sidecar"] == "photos/IMG_0001.HEIC.xmp"
     assert "metadata_projection_sidecar" not in updated["files"][1]
 
@@ -2122,7 +2124,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         tasks=["archive_video"],
     )
     payload = server.build_eager_gpu_payload(
-        {"job_id": "job-1", "collection_tags": ["phone-collection-archive"]},
+        {"job_id": "job-1", "template_id": "phone-archive"},
         batch_id="batch-1",
         group_name="camera",
         group_config=group_config,
@@ -2172,7 +2174,7 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
-        "collection_tags": ["camera-archive"],
+        "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
     }
     server.save_job(job)
@@ -2266,7 +2268,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     job = {
         "job_id": "job-1",
         "input_upload_id": upload_id,
-        "collection_tags": ["camera-archive"],
+        "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
     }
     server.save_job(job)
@@ -3117,7 +3119,7 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_tags": ["voice-collection-archive"],
+        "template_id": "voice-archive",
     }
     server.save_job(job)
     archive_dir = tmp_path / "archive"
@@ -3392,7 +3394,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     job = {
         "job_id": "job-voice",
         "input_upload_id": upload_id,
-        "collection_tags": ["esonic-collection-archive"],
+        "template_id": "esonic-archive",
     }
     server.save_job(job)
 
@@ -3413,7 +3415,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_cust
     assert "geo:lat=" not in xmp
     assert "<rdf:li>Example Operator</rdf:li>" in xmp
     assert "<rdf:li>device/esonic-memoq-sr600-example</rdf:li>" in xmp
-    assert "<rdf:li>munchy/collection/esonic-collection-archive</rdf:li>" in xmp
+    assert "<rdf:li>munchy/template/esonic-archive</rdf:li>" in xmp
     assert "<rdf:li>munchy/group/voice</rdf:li>" in xmp
     assert updated["files"][0]["metadata_projection_sidecar"] == (
         "voice/memo/R-00013_2606222246_REC.opus.xmp"
@@ -3471,7 +3473,6 @@ def test_submission_accepts_bounded_lifecycle_event_context(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.CreateJobRequest(
-        collection_tags=["collection"],
         handoff={"destination": "riverhog"},
         event_context={"workflow": "desktop-archive", "run": 3},
     )
@@ -3488,6 +3489,10 @@ def test_job_lifecycle_event_is_a_structured_cloudevent(
     server.init_state_store()
     job = {
         "job_id": "job-1",
+        "template_id": "camera-archive",
+        "template_revision": 3,
+        "template_digest": "a" * 64,
+        "created_at": "2026-07-27T12:34:56.123456Z",
         "initiated_by_app": "desktop-client",
         "initiated_by_key_id": "desktop-key",
         "state": "queued",
@@ -3511,6 +3516,10 @@ def test_job_lifecycle_event_is_a_structured_cloudevent(
     assert event.source == "urn:munchy"
     assert event.type == "io.riverhog.munchy.job.received"
     assert event.subject == "job-1"
+    assert event.data["template_id"] == "camera-archive"
+    assert event.data["template_revision"] == 3
+    assert event.data["template_digest"] == "a" * 64
+    assert event.data["job_created_at"] == "2026-07-27T12:34:56.123456Z"
     assert event.data["context"] == {"workflow": "desktop-archive"}
     assert event.data["initiator"] == {
         "app": "desktop-client",
@@ -3534,7 +3543,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
             "state": "running",
             "phase": "handoff",
             "workflow_mode": "collection_archive",
-            "collection_tags": ["collection"],
+            "template_id": "camera-archive",
             "run_id": "20260605T120000Z",
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {"collection_id": collection_id},
@@ -3598,7 +3607,7 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
             {
                 "job_id": job_id,
                 "created_at": created_at,
-                "collection_tags": ["collection"],
+                "template_id": "camera-archive",
                 "run_id": "20260605T120000Z",
                 "handoff_adapter_state": {"collection_id": collection_id},
             }
@@ -3630,7 +3639,7 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
         "job_id": "job-1",
         "state": "running",
         "phase": "handoff",
-        "collection_tags": ["collection"],
+        "template_id": "camera-archive",
         "run_id": "20260605T120000Z",
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {
@@ -3693,7 +3702,7 @@ def test_job_issue_event_carries_operational_facts_without_presentation(
     server.init_state_store()
     job = {
         "job_id": "job-1",
-        "collection_tags": ["collection"],
+        "template_id": "camera-archive",
         "run_id": "20260605T120000Z",
         "phase": "queued",
         "state": "queued",
@@ -3726,10 +3735,9 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
     result = server.record_preflight_failure(
         server.ClientPreflightFailureRequest(
             message="Local media preflight failed for camera.",
-            device_id="camera",
+            template_id="camera-archive",
             workflow_mode="collection_archive",
             group="camera-video",
-            collection_tags=["camera-collection-archive"],
             run_id="20260606T120000Z",
             input_upload_id="upload-1",
             job_id="job-1",
@@ -3752,6 +3760,7 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
     assert event.type == "io.riverhog.munchy.submission.preflight_failed"
     assert event.subject == "job-1"
     assert event.data["component"] == "preflight"
+    assert event.data["template_id"] == "camera-archive"
     assert event.data["error"] == "bad atom (bad.mp4)"
     assert event.data["failed_file_count"] == 1
     assert event.data["context"] == {"workflow": "desktop-archive"}
@@ -3767,7 +3776,7 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
     server.init_state_store()
     job = {
         "job_id": "job-1",
-        "collection_tags": ["camera-collection-archive"],
+        "template_id": "camera-archive",
         "run_id": "20260606T120000Z",
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
@@ -4026,7 +4035,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             "state": "failed",
             "phase": "copying_preserve:preserve",
             "input_upload_id": "upload-1",
-            "collection_tags": ["weekly-device-artifacts"],
+            "template_id": "weekly-device-artifacts-archive",
             "run_id": "20260615T030000Z",
             "workflow_mode": "collection_archive",
             "handoff": {"destination": "riverhog", "options": {}},
@@ -4082,7 +4091,7 @@ def test_review_rclone_upload_excludes_platform_cruft(
     result = server.run_external_handoff(
         {
             "job_id": "job-1",
-            "collection_tags": ["collection-archive"],
+            "template_id": "collection-archive",
             "run_id": "20260629T000000Z",
         },
         source_dir,
@@ -5652,10 +5661,10 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "state": "queued",
             "phase": "queued",
             "workflow_mode": "review",
+            "template_id": "camera-review",
             "input_upload_id": "upload-1",
             "handoff": {"destination": "command", "options": {}},
             "review": {
-                "device_id": "camera",
                 "route_id": "camera",
                 "profile_id": "webm-q42",
             },
@@ -5738,8 +5747,8 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     server.save_job(
         {
             "job_id": "job-1",
+            "template_id": "camera-review-q42",
             "review": {
-                "device_id": "camera",
                 "route_id": "camera",
                 "profile_id": "webm-q42",
             },
@@ -5749,8 +5758,8 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     server.save_job(
         {
             "job_id": "job-2",
+            "template_id": "camera-review-q44",
             "review": {
-                "device_id": "camera",
                 "route_id": "camera",
                 "profile_id": "webm-q44",
             },
@@ -5816,7 +5825,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "phase": "queued",
             "workflow_mode": "collection_archive",
             "input_upload_id": "upload-1",
-            "collection_tags": ["camera-archive"],
+            "template_id": "camera-archive",
             "run_id": "20260101T000000Z",
             "groups": {
                 "camera": {
@@ -5885,9 +5894,12 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "phase": "handoff",
         "workflow_mode": "collection_archive",
         "input_upload_id": "upload-1",
-        "collection_tags": ["camera-archive"],
+        "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
-        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff": {
+            "destination": "riverhog",
+            "options": {"tags": ["camera-archive"]},
+        },
         "event_context": {"workflow": "desktop-archive"},
     }
     server.save_job(job)
@@ -6122,7 +6134,6 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
     job = server.create_job_state_from_request(
         server.CreateJobRequest(
             input_upload_id="upload-1",
-            collection_tags=["camera"],
             run_id="20260101T000000Z",
             tasks=["archive_video"],
             groups={"video": {"output_mode": "video", "tasks": ["archive_video"]}},
@@ -7450,7 +7461,7 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
             "job_id": "job-1",
             "state": "running",
             "phase": "cancel_requested",
-            "collection_tags": ["camera-archive"],
+            "template_id": "camera-archive",
             "run_id": "20260101T000000Z",
             "handoff": {"destination": "riverhog", "options": {}},
             "handoff_adapter_state": {"collection_id": 42, "state": "open"},
@@ -7533,10 +7544,10 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "state": "queued",
             "phase": "queued",
             "workflow_mode": "review",
+            "template_id": "camera-review",
             "input_upload_id": "upload-1",
             "handoff": {"destination": "command", "options": {}},
             "review": {
-                "device_id": "camera",
                 "route_id": "camera",
                 "profile_id": "webm-q42",
             },
@@ -7612,10 +7623,10 @@ def test_run_job_reuses_stored_shared_review_plan(
             "state": "queued",
             "phase": "queued",
             "workflow_mode": "review",
+            "template_id": "camera-review",
             "input_upload_id": "upload-1",
             "handoff": {"destination": "command", "options": {}},
             "review": {
-                "device_id": "camera",
                 "route_id": "camera",
                 "profile_id": "webm-q43",
                 "clip_plan": {
@@ -7702,6 +7713,7 @@ def test_run_job_runs_review_sweep_as_one_job(
             "state": "queued",
             "phase": "queued",
             "workflow_mode": "review",
+            "template_id": "camera-review-sweep",
             "input_upload_id": "upload-1",
             "handoff": {
                 "destination": "rclone",
@@ -7710,7 +7722,6 @@ def test_run_job_runs_review_sweep_as_one_job(
                 },
             },
             "review": {
-                "device_id": "camera",
                 "sweep": {"quality": [24, 28], "route_ids": ["video-4k"]},
             },
             "groups": {
@@ -8347,7 +8358,7 @@ def test_compact_job_response_keeps_operational_fields_only(
         "state": "running",
         "phase": "eager_archive:pipeline=1/3",
         "input_upload_id": "upload-1",
-        "collection_tags": ["camera-collection-archive"],
+        "template_id": "camera-archive",
         "handoff": {"destination": "command", "options": {}},
         "eager_archive": {
             "files": {},
@@ -8429,7 +8440,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "job_id": "job-1",
             "state": "running",
             "phase": "encoding",
-            "collection_tags": ["front-camera"],
+            "template_id": "front-camera-archive",
             "input_upload_id": "upload-1",
             "workflow_mode": "collection_archive",
             "created_at": "2026-01-01T00:00:00Z",
@@ -8443,10 +8454,10 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "state": "queued",
             "phase": "queued",
             "input_upload_id": "upload-2",
+            "template_id": "back-camera-review",
             "workflow_mode": "review",
             "handoff": {"destination": "command", "options": {}},
             "review": {
-                "device_id": "back-camera",
                 "route_id": "back-camera",
                 "profile_id": "webm-q42",
             },
@@ -8459,7 +8470,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "job_id": "job-3",
             "state": "succeeded",
             "phase": "done",
-            "collection_tags": ["front-camera"],
+            "template_id": "front-camera-archive",
             "input_upload_id": "upload-3",
             "workflow_mode": "collection_archive",
             "created_at": "2026-01-03T00:00:00Z",

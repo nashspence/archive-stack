@@ -357,10 +357,10 @@ JOB_LIST_SORT_COLUMNS = {
 }
 JOB_LIST_TERMINAL_FILTERS = {"active", "all", "terminal"}
 JOB_SEARCH_TOKEN_RE = re.compile(r"[0-9A-Za-z]+")
-JOB_TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
+JOB_TEMPLATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 JOB_TEMPLATE_LIST_SORT_COLUMNS = {
     "created_at": "created_at",
-    "name": "name",
+    "template_id": "template_id",
     "revision": "revision",
     "updated_at": "updated_at",
 }
@@ -641,6 +641,17 @@ class RiverhogHandoffOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archive_store: str | None = None
+    tags: list[str] | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        tags = list(dict.fromkeys(str(tag).strip() for tag in value))
+        if any(not tag for tag in tags):
+            raise ValueError("riverhog handoff tags must not contain blanks")
+        return tags
 
 
 class CommandHandoffOptions(BaseModel):
@@ -765,7 +776,6 @@ class ReviewSweepConfig(BaseModel):
 class ReviewConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    device_id: str = Field(min_length=1, max_length=180)
     route_id: str | None = Field(default=None, min_length=1, max_length=180)
     profile_id: str | None = Field(default=None, min_length=1, max_length=180)
     clip_plan: ReviewClipPlanConfig | None = None
@@ -802,10 +812,9 @@ class ClientPreflightFailureRequest(BaseModel):
 
     source: str = Field(default="client", min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=1000)
-    device_id: str = Field(min_length=1, max_length=180)
+    template_id: str = Field(min_length=1, max_length=160)
     workflow_mode: WorkflowMode
     group: str = Field(min_length=1, max_length=180)
-    collection_tags: list[str] = Field(default_factory=list)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     route_id: str | None = Field(default=None, min_length=1, max_length=180)
     profile_id: str | None = Field(default=None, min_length=1, max_length=180)
@@ -1245,7 +1254,6 @@ class CreateJobRequest(BaseModel):
     job_id: str | None = Field(default=None, min_length=1, max_length=180)
     input_upload_id: str | None = Field(default=None, min_length=1, max_length=180)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
-    collection_tags: list[str] = Field(default_factory=list)
     workflow_mode: WorkflowMode = "collection_archive"
     output_mode: OutputMode = "video"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
@@ -1332,20 +1340,20 @@ class CreateJobRequest(BaseModel):
 class JobTemplateCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=160)
+    template_id: str = Field(min_length=1, max_length=160)
     definition: dict[str, Any]
     enabled: bool = True
 
-    @field_validator("name")
+    @field_validator("template_id")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        name = value.strip()
-        if not JOB_TEMPLATE_NAME_RE.fullmatch(name):
+        template_id = value.strip()
+        if not JOB_TEMPLATE_ID_RE.fullmatch(template_id):
             raise ValueError(
-                "name must start with an alphanumeric character and contain only "
+                "template_id must start with an alphanumeric character and contain only "
                 "letters, digits, dots, underscores, and dashes"
             )
-        return name
+        return template_id
 
 
 class JobTemplateReplaceRequest(BaseModel):
@@ -1365,20 +1373,19 @@ class JobTemplateEnabledRequest(BaseModel):
 class SubmissionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    template: str = Field(min_length=1, max_length=160)
+    template_id: str = Field(min_length=1, max_length=160)
     inputs: dict[str, str] = Field(default_factory=dict)
     files: list[InputFileSpec]
-    collection_tags: list[str] = Field(default_factory=list)
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     handoff_on_failure: HandoffFailureAction = "preserve_for_resume"
     event_context: dict[str, Any] | None = None
 
-    @field_validator("template")
+    @field_validator("template_id")
     @classmethod
     def validate_template(cls, value: str) -> str:
         name = value.strip()
-        if not JOB_TEMPLATE_NAME_RE.fullmatch(name):
-            raise ValueError("template is not a valid job-template name")
+        if not JOB_TEMPLATE_ID_RE.fullmatch(name):
+            raise ValueError("template_id is not a valid job-template ID")
         return name
 
     @field_validator("files")
@@ -1465,7 +1472,7 @@ def init_state_store() -> None:
                 started_at TEXT NOT NULL,
                 finished_at TEXT NOT NULL,
                 input_upload_id TEXT NOT NULL,
-                collection_tags_json TEXT NOT NULL,
+                template_id TEXT NOT NULL,
                 run_id TEXT NOT NULL,
                 workflow_mode TEXT NOT NULL,
                 handoff_destination TEXT NOT NULL,
@@ -1531,7 +1538,7 @@ def job_template_row_payload(
     include_definition: bool,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "name": str(row["name"]),
+        "template_id": str(row["template_id"]),
         "enabled": bool(row["enabled"]),
         "revision": int(row["revision"]),
         "digest": str(row["digest"]),
@@ -1544,17 +1551,17 @@ def job_template_row_payload(
     return payload
 
 
-def load_job_template(name: str, *, require_enabled: bool = False) -> dict[str, Any]:
+def load_job_template(template_id: str, *, require_enabled: bool = False) -> dict[str, Any]:
     with closing(state_db()) as conn:
         row = conn.execute(
-            "SELECT * FROM job_templates WHERE name = ?",
-            (name,),
+            "SELECT * FROM job_templates WHERE template_id = ?",
+            (template_id,),
         ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+        raise HTTPException(status_code=404, detail=f"unknown job template: {template_id}")
     payload = job_template_row_payload(row, include_definition=True)
     if require_enabled and not payload["enabled"]:
-        raise HTTPException(status_code=409, detail=f"job template is disabled: {name}")
+        raise HTTPException(status_code=409, detail=f"job template is disabled: {template_id}")
     return payload
 
 
@@ -1566,12 +1573,12 @@ def create_job_template_record(req: JobTemplateCreateRequest) -> dict[str, Any]:
             conn.execute(
                 """
                 INSERT INTO job_templates(
-                    name, definition, resolved_job, digest, revision, enabled,
+                    template_id, definition, resolved_job, digest, revision, enabled,
                     created_at, updated_at
                 ) VALUES(?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
-                    req.name,
+                    req.template_id,
                     json.dumps(definition, sort_keys=True),
                     json.dumps(resolved_job, sort_keys=True),
                     digest,
@@ -1584,13 +1591,13 @@ def create_job_template_record(req: JobTemplateCreateRequest) -> dict[str, Any]:
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
             status_code=409,
-            detail=f"job template already exists: {req.name}",
+            detail=f"job template already exists: {req.template_id}",
         ) from exc
-    return load_job_template(req.name)
+    return load_job_template(req.template_id)
 
 
 def replace_job_template_record(
-    name: str,
+    template_id: str,
     req: JobTemplateReplaceRequest,
 ) -> dict[str, Any]:
     definition, resolved_job, digest = validated_job_template_definition(req.definition)
@@ -1601,7 +1608,7 @@ def replace_job_template_record(
             UPDATE job_templates
             SET definition = ?, resolved_job = ?, digest = ?, revision = revision + 1,
                 enabled = ?, updated_at = ?
-            WHERE name = ? AND revision = ?
+            WHERE template_id = ? AND revision = ?
             """,
             (
                 json.dumps(definition, sort_keys=True),
@@ -1609,32 +1616,32 @@ def replace_job_template_record(
                 digest,
                 bool_int(req.enabled),
                 now,
-                name,
+                template_id,
                 req.expected_revision,
             ),
         ).rowcount
         if not changed:
             exists = conn.execute(
-                "SELECT revision FROM job_templates WHERE name = ?",
-                (name,),
+                "SELECT revision FROM job_templates WHERE template_id = ?",
+                (template_id,),
             ).fetchone()
             if exists is None:
-                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+                raise HTTPException(status_code=404, detail=f"unknown job template: {template_id}")
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "job_template_revision_conflict",
-                    "name": name,
+                    "template_id": template_id,
                     "expected_revision": req.expected_revision,
                     "current_revision": int(exists["revision"]),
                 },
             )
         conn.commit()
-    return load_job_template(name)
+    return load_job_template(template_id)
 
 
 def set_job_template_enabled_record(
-    name: str,
+    template_id: str,
     *,
     enabled: bool,
     expected_revision: int,
@@ -1645,54 +1652,54 @@ def set_job_template_enabled_record(
             """
             UPDATE job_templates
             SET enabled = ?, revision = revision + 1, updated_at = ?
-            WHERE name = ? AND revision = ?
+            WHERE template_id = ? AND revision = ?
             """,
-            (bool_int(enabled), now, name, expected_revision),
+            (bool_int(enabled), now, template_id, expected_revision),
         ).rowcount
         if not changed:
             exists = conn.execute(
-                "SELECT revision FROM job_templates WHERE name = ?",
-                (name,),
+                "SELECT revision FROM job_templates WHERE template_id = ?",
+                (template_id,),
             ).fetchone()
             if exists is None:
-                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+                raise HTTPException(status_code=404, detail=f"unknown job template: {template_id}")
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "job_template_revision_conflict",
-                    "name": name,
+                    "template_id": template_id,
                     "expected_revision": expected_revision,
                     "current_revision": int(exists["revision"]),
                 },
             )
         conn.commit()
-    return load_job_template(name)
+    return load_job_template(template_id)
 
 
-def delete_job_template_record(name: str, *, expected_revision: int) -> dict[str, Any]:
+def delete_job_template_record(template_id: str, *, expected_revision: int) -> dict[str, Any]:
     with closing(state_db()) as conn:
         changed = conn.execute(
-            "DELETE FROM job_templates WHERE name = ? AND revision = ?",
-            (name, expected_revision),
+            "DELETE FROM job_templates WHERE template_id = ? AND revision = ?",
+            (template_id, expected_revision),
         ).rowcount
         if not changed:
             exists = conn.execute(
-                "SELECT revision FROM job_templates WHERE name = ?",
-                (name,),
+                "SELECT revision FROM job_templates WHERE template_id = ?",
+                (template_id,),
             ).fetchone()
             if exists is None:
-                raise HTTPException(status_code=404, detail=f"unknown job template: {name}")
+                raise HTTPException(status_code=404, detail=f"unknown job template: {template_id}")
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "job_template_revision_conflict",
-                    "name": name,
+                    "template_id": template_id,
                     "expected_revision": expected_revision,
                     "current_revision": int(exists["revision"]),
                 },
             )
         conn.commit()
-    return {"name": name, "state": "removed"}
+    return {"template_id": template_id, "state": "removed"}
 
 
 def list_job_templates_page(
@@ -1720,7 +1727,7 @@ def list_job_templates_page(
     params: list[Any] = []
     if query:
         escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where.append("lower(name) LIKE ? ESCAPE '\\'")
+        where.append("lower(template_id) LIKE ? ESCAPE '\\'")
         params.append(f"%{escaped}%")
     if enabled is not None:
         where.append("enabled = ?")
@@ -1742,7 +1749,7 @@ def list_job_templates_page(
             f"""
             SELECT * FROM job_templates
             {where_sql}
-            ORDER BY {sort_column} {direction}, name ASC
+            ORDER BY {sort_column} {direction}, template_id ASC
             {limit_sql}
             """,
             row_params,
@@ -1776,7 +1783,7 @@ def resolved_submission(
     *,
     submission_id: str,
 ) -> tuple[dict[str, Any], CreateJobRequest, InputUploadStorageHint]:
-    template = load_job_template(req.template, require_enabled=True)
+    template = load_job_template(req.template_id, require_enabled=True)
     try:
         raw_job = render_job_template_inputs(
             dict(template["definition"]),
@@ -1790,8 +1797,6 @@ def resolved_submission(
     raw_job["handoff"] = handoff
     raw_job.update({"job_id": submission_id, "input_upload_id": submission_id})
     raw_job["event_context"] = req.event_context
-    if req.collection_tags:
-        raw_job["collection_tags"] = req.collection_tags
     for key, value in (("run_id", req.run_id),):
         if value is not None:
             raw_job[key] = value
@@ -1808,10 +1813,11 @@ def resolved_submission(
 
 
 def submission_template_summary(job: Mapping[str, Any]) -> dict[str, Any]:
-    raw = job.get("job_template")
-    if not isinstance(raw, Mapping):
-        return {}
-    return {key: raw[key] for key in ("name", "revision", "digest") if key in raw}
+    return {
+        key: job[key]
+        for key in ("template_id", "template_revision", "template_digest")
+        if key in job
+    }
 
 
 def submission_response(job: dict[str, Any]) -> dict[str, Any]:
@@ -1827,7 +1833,7 @@ def submission_response(job: dict[str, Any]) -> dict[str, Any]:
         "submission_id": submission_id,
         "state": str(job.get("state") or "unknown"),
         "phase": str(job.get("phase") or ""),
-        "template": submission_template_summary(job),
+        **submission_template_summary(job),
         "inputs": dict(job.get("submission_inputs") or {}),
         "upload": upload,
         "job": compact_job_response(job),
@@ -1872,11 +1878,9 @@ def create_submission_state(
             upload["submission_id"] = submission_id
             upload["submission_inputs"] = dict(req.inputs)
             upload["submission_request_digest"] = digest
-            upload["job_template"] = {
-                "name": template["name"],
-                "revision": template["revision"],
-                "digest": template["digest"],
-            }
+            upload["template_id"] = template["template_id"]
+            upload["template_revision"] = template["revision"]
+            upload["template_digest"] = template["digest"]
             save_input_upload_raw(upload)
         job = create_job_state_from_request(
             job_request,
@@ -1886,11 +1890,9 @@ def create_submission_state(
         job["submission_id"] = submission_id
         job["submission_inputs"] = dict(req.inputs)
         job["submission_request_digest"] = digest
-        job["job_template"] = {
-            "name": template["name"],
-            "revision": template["revision"],
-            "digest": template["digest"],
-        }
+        job["template_id"] = template["template_id"]
+        job["template_revision"] = template["revision"]
+        job["template_digest"] = template["digest"]
         job = save_job(job)
     except Exception:
         if upload_created:
@@ -1967,7 +1969,7 @@ def bool_int(value: Any) -> int:
 def job_summary_search_text(job: dict[str, Any]) -> str:
     values = [
         job.get("job_id"),
-        *(job.get("collection_tags") or []),
+        job.get("template_id"),
         job.get("run_id"),
         job.get("input_upload_id"),
         job.get("state"),
@@ -1994,7 +1996,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
         "started_at": str(job.get("started_at") or ""),
         "finished_at": str(job.get("finished_at") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
-        "collection_tags_json": json.dumps(job.get("collection_tags") or []),
+        "template_id": str(job.get("template_id") or ""),
         "run_id": str(job.get("run_id") or ""),
         "workflow_mode": str(job.get("workflow_mode") or ""),
         "handoff_destination": handoff_destination,
@@ -2015,7 +2017,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             started_at,
             finished_at,
             input_upload_id,
-            collection_tags_json,
+            template_id,
             run_id,
             workflow_mode,
             handoff_destination,
@@ -2034,7 +2036,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             :started_at,
             :finished_at,
             :input_upload_id,
-            :collection_tags_json,
+            :template_id,
             :run_id,
             :workflow_mode,
             :handoff_destination,
@@ -2052,7 +2054,7 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
             started_at = excluded.started_at,
             finished_at = excluded.finished_at,
             input_upload_id = excluded.input_upload_id,
-            collection_tags_json = excluded.collection_tags_json,
+            template_id = excluded.template_id,
             run_id = excluded.run_id,
             workflow_mode = excluded.workflow_mode,
             handoff_destination = excluded.handoff_destination,
@@ -4940,7 +4942,7 @@ def write_routing_manifest(
         "created_at": utc_timestamp_now(),
         "job_id": str(job.get("job_id") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
-        "collection_tags": list(job.get("collection_tags") or []),
+        **submission_template_summary(job),
         "run_id": str(job.get("run_id") or ""),
         "files": sorted(files, key=lambda item: str(item["source"]["path"])),
     }
@@ -5386,11 +5388,9 @@ def metadata_projection_tags_for_file(
     if not config["include_context_tags"]:
         return dedup_metadata_projection_tags(tags)
 
-    tags.extend(
-        f"munchy/collection/{collection_tag}"
-        for collection_tag in job.get("collection_tags") or []
-        if str(collection_tag).strip()
-    )
+    template_id = str(job.get("template_id") or "").strip()
+    if template_id:
+        tags.append(f"munchy/template/{template_id}")
     if group_name:
         tags.append(f"munchy/group/{group_name}")
     route_id = str(file_state.get("route_id") or "").strip()
@@ -6153,10 +6153,13 @@ def emit_job_event(
     owner = str(job.get("initiated_by_app") or "munchy")
     data: dict[str, Any] = {
         "job_id": job_id,
+        "template_id": str(job.get("template_id") or ""),
+        "template_revision": job.get("template_revision"),
+        "template_digest": str(job.get("template_digest") or ""),
+        "job_created_at": str(job.get("created_at") or ""),
         "state": str(job.get("state") or "unknown"),
         "phase": str(job.get("phase") or "unknown"),
         "workflow_mode": str(job.get("workflow_mode") or ""),
-        "collection_tags": list(job.get("collection_tags") or []),
         "run_id": str(job.get("run_id") or ""),
         "severity": severity,
         "actor": {"app": "munchy"},
@@ -6686,7 +6689,7 @@ def ensure_riverhog_session(
 
         payload = api.create_or_resume_collection_upload_session(
             str(job.get("submission_id") or job["job_id"]),
-            [str(tag) for tag in job.get("collection_tags") or []],
+            [str(tag) for tag in riverhog_handoff_options(job).get("tags") or []],
             ingest_source=str(archive_dir),
             archive_store=cast(
                 str | None,
@@ -7893,7 +7896,7 @@ def render_job_template(
     mapping = {
         "job_id": str(job.get("job_id") or ""),
         "run_id": str(job.get("run_id") or ""),
-        "device_id": str(review.get("device_id") or ""),
+        "template_id": str(job.get("template_id") or ""),
         "route_id": str(review.get("route_id") or ""),
         "profile_id": str(review.get("profile_id") or ""),
     }
@@ -8047,17 +8050,16 @@ def run_external_handoff(
     env["MUNCHY_HANDOFF_SOURCE"] = str(source_dir)
     env["MUNCHY_HANDOFF_SOURCE_LABEL"] = source_label
     env["MUNCHY_JOB_ID"] = str(job["job_id"])
-    env["MUNCHY_COLLECTION_TAGS"] = json.dumps(job.get("collection_tags") or [])
     env["MUNCHY_RUN_ID"] = str(job.get("run_id") or "")
     review = dict_or_empty(job.get("review"))
     review_context = {
-        "device_id": str(review.get("device_id") or ""),
+        "template_id": str(job.get("template_id") or ""),
         "route_id": str(review.get("route_id") or ""),
         "profile_id": str(review.get("profile_id") or ""),
     }
     if template_context is not None:
         review_context.update({str(key): str(value) for key, value in template_context.items()})
-    env["MUNCHY_REVIEW_DEVICE_ID"] = review_context["device_id"]
+    env["MUNCHY_TEMPLATE_ID"] = review_context["template_id"]
     env["MUNCHY_REVIEW_ROUTE_ID"] = review_context["route_id"]
     env["MUNCHY_REVIEW_PROFILE_ID"] = review_context["profile_id"]
 
@@ -8573,7 +8575,6 @@ def run_review_sweep_job(
                     "review_dir": gpu_runtime_container_path(variant_review_dir),
                     "profile": profile_id,
                     "tasks": tasks,
-                    "collection_tags": list(job.get("collection_tags") or []),
                     "run_id": job.get("run_id"),
                     "container_metadata_required": gpu_tasks_require_container_metadata(
                         tasks,
@@ -9412,8 +9413,10 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "started_at",
         "finished_at",
         "input_upload_id",
+        "template_id",
+        "template_revision",
+        "template_digest",
         "run_id",
-        "collection_tags",
         "workflow_mode",
         "handoff",
         "review",
@@ -9606,7 +9609,6 @@ def build_eager_gpu_payload(
         "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
         "profile": group_config.get("profile", "av1-nvenc-high"),
         "tasks": tasks,
-        "collection_tags": list(job.get("collection_tags") or []),
         "run_id": job.get("run_id"),
         "container_metadata_required": gpu_tasks_require_container_metadata(tasks, group_config),
     }
@@ -10290,7 +10292,6 @@ def run_job(job_id: str) -> None:
                         "review_dir": gpu_runtime_container_path(review_dir / group_name),
                         "profile": group_config.get("profile", "av1-nvenc-high"),
                         "tasks": tasks,
-                        "collection_tags": list(job.get("collection_tags") or []),
                         "run_id": job.get("run_id"),
                         "container_metadata_required": gpu_tasks_require_container_metadata(
                             tasks,
@@ -10529,12 +10530,12 @@ def capabilities() -> dict[str, Any]:
             "destinations": {
                 "command": {"options": ["exclude"]},
                 "rclone": {"options": ["location", "mode", "exclude"]},
-                "riverhog": {"options": ["archive_store"]},
+                "riverhog": {"options": ["archive_store", "tags"]},
             },
             "failure_actions": ["preserve_for_resume", "cancel"],
             "template_fields": [
                 "job_id",
-                "device_id",
+                "template_id",
                 "route_id",
                 "profile_id",
                 "run_id",
@@ -10690,7 +10691,7 @@ def record_preflight_failure(
         "component": "preflight",
         "error": first_issue or req.message,
         "client_source": req.source,
-        "device_id": req.device_id,
+        "template_id": req.template_id,
         "workflow_mode": req.workflow_mode,
         "group": req.group,
         "run_id": req.run_id or "",
@@ -10732,7 +10733,7 @@ def record_preflight_failure(
 def validate_job_template(req: JobTemplateCreateRequest) -> dict[str, Any]:
     definition, resolved_job, digest = validated_job_template_definition(req.definition)
     return {
-        "name": req.name,
+        "template_id": req.template_id,
         "valid": True,
         "digest": digest,
         "definition": definition,
@@ -10823,7 +10824,7 @@ def revoke_application_key(app_name: str, key_id: str) -> dict[str, object]:
 def list_job_templates(
     page: int = 1,
     per_page: int = 25,
-    sort: str = "name",
+    sort: str = "template_id",
     order: str = "asc",
     q: str | None = None,
     query: str | None = None,
@@ -10846,42 +10847,42 @@ def create_job_template(req: JobTemplateCreateRequest) -> dict[str, Any]:
     return create_job_template_record(req)
 
 
-@app.get("/v1/admin/job-templates/{name}")
-def get_job_template(name: str) -> dict[str, Any]:
-    return load_job_template(name)
+@app.get("/v1/admin/job-templates/{template_id}")
+def get_job_template(template_id: str) -> dict[str, Any]:
+    return load_job_template(template_id)
 
 
-@app.put("/v1/admin/job-templates/{name}")
+@app.put("/v1/admin/job-templates/{template_id}")
 def replace_job_template(
-    name: str,
+    template_id: str,
     req: JobTemplateReplaceRequest,
 ) -> dict[str, Any]:
-    return replace_job_template_record(name, req)
+    return replace_job_template_record(template_id, req)
 
 
-@app.post("/v1/admin/job-templates/{name}/enable")
-def enable_job_template(name: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
+@app.post("/v1/admin/job-templates/{template_id}/enable")
+def enable_job_template(template_id: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
     return set_job_template_enabled_record(
-        name,
+        template_id,
         enabled=True,
         expected_revision=req.expected_revision,
     )
 
 
-@app.post("/v1/admin/job-templates/{name}/disable")
-def disable_job_template(name: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
+@app.post("/v1/admin/job-templates/{template_id}/disable")
+def disable_job_template(template_id: str, req: JobTemplateEnabledRequest) -> dict[str, Any]:
     return set_job_template_enabled_record(
-        name,
+        template_id,
         enabled=False,
         expected_revision=req.expected_revision,
     )
 
 
-@app.delete("/v1/admin/job-templates/{name}")
-def delete_job_template(name: str, expected_revision: int) -> dict[str, Any]:
+@app.delete("/v1/admin/job-templates/{template_id}")
+def delete_job_template(template_id: str, expected_revision: int) -> dict[str, Any]:
     if expected_revision < 1:
         raise HTTPException(status_code=400, detail="expected_revision must be >= 1")
-    return delete_job_template_record(name, expected_revision=expected_revision)
+    return delete_job_template_record(template_id, expected_revision=expected_revision)
 
 
 def load_submission(submission_id: str) -> dict[str, Any]:
@@ -10901,11 +10902,9 @@ def preflight_submission(req: SubmissionSpec) -> dict[str, Any]:
     require_input_upload_capacity(req.files, storage_hint)
     return {
         "accepted": True,
-        "template": {
-            "name": template["name"],
-            "revision": template["revision"],
-            "digest": template["digest"],
-        },
+        "template_id": template["template_id"],
+        "template_revision": template["revision"],
+        "template_digest": template["digest"],
         "workflow_mode": job_request.workflow_mode,
         "files_total": len(req.files),
         "bytes_total": sum(item.bytes for item in req.files),
@@ -11174,7 +11173,6 @@ def create_job_state_from_request(
         "initiated_by_key_id": initiated_by_key_id,
         "input_upload_id": req.input_upload_id,
         "run_id": req.run_id or "",
-        "collection_tags": req.collection_tags,
         "workflow_mode": req.workflow_mode,
         "output_mode": req.output_mode,
         "tasks": grouped_task_union(groups) if req.groups else req.tasks,

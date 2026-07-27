@@ -13,7 +13,7 @@ from pathlib import Path
 from munchy.job_templates import JobTemplateError, job_template_digest, normalize_job_template
 
 JOB_TEMPLATE_COLUMNS = (
-    "name",
+    "template_id",
     "definition",
     "resolved_job",
     "digest",
@@ -22,7 +22,7 @@ JOB_TEMPLATE_COLUMNS = (
     "created_at",
     "updated_at",
 )
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 class TemplateRegistryError(ValueError):
@@ -33,7 +33,7 @@ def ensure_template_registry_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS job_templates (
-            name TEXT PRIMARY KEY,
+            template_id TEXT PRIMARY KEY,
             definition TEXT NOT NULL,
             resolved_job TEXT NOT NULL,
             digest TEXT NOT NULL,
@@ -45,10 +45,12 @@ def ensure_template_registry_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS job_templates_enabled_name ON job_templates(enabled, name)"
+        "CREATE INDEX IF NOT EXISTS job_templates_enabled_id "
+        "ON job_templates(enabled, template_id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS job_templates_updated_name ON job_templates(updated_at, name)"
+        "CREATE INDEX IF NOT EXISTS job_templates_updated_id "
+        "ON job_templates(updated_at, template_id)"
     )
 
 
@@ -76,40 +78,48 @@ def _require_template_schema(conn: sqlite3.Connection, *, label: str) -> None:
 
 def _validate_template_rows(conn: sqlite3.Connection, *, label: str) -> int:
     count = 0
-    query = "SELECT " + ", ".join(JOB_TEMPLATE_COLUMNS) + " FROM job_templates ORDER BY name"
+    query = (
+        "SELECT " + ", ".join(JOB_TEMPLATE_COLUMNS) + " FROM job_templates ORDER BY template_id"
+    )
     for row in conn.execute(query):
-        name = str(row[0]).strip()
-        if not name:
-            raise TemplateRegistryError(f"{label} contains a blank template name")
+        template_id = str(row[0]).strip()
+        if not template_id:
+            raise TemplateRegistryError(f"{label} contains a blank template ID")
         try:
             definition = json.loads(str(row[1]))
             resolved_job = json.loads(str(row[2]))
         except json.JSONDecodeError as exc:
-            raise TemplateRegistryError(f"{label} template {name} contains invalid JSON") from exc
+            raise TemplateRegistryError(
+                f"{label} template {template_id} contains invalid JSON"
+            ) from exc
         if not isinstance(definition, Mapping) or not isinstance(resolved_job, Mapping):
             raise TemplateRegistryError(
-                f"{label} template {name} definition and resolved job must be objects"
+                f"{label} template {template_id} definition and resolved job must be objects"
             )
         try:
             normalized_definition, expected_resolved_job = normalize_job_template(definition)
         except JobTemplateError as exc:
             raise TemplateRegistryError(
-                f"{label} template {name} does not satisfy the current job-template contract"
+                f"{label} template {template_id} does not satisfy the current job-template contract"
             ) from exc
         if normalized_definition != definition:
-            raise TemplateRegistryError(f"{label} template {name} definition is not canonical")
+            raise TemplateRegistryError(
+                f"{label} template {template_id} definition is not canonical"
+            )
         if expected_resolved_job != resolved_job:
             raise TemplateRegistryError(
-                f"{label} template {name} resolved job does not match its definition"
+                f"{label} template {template_id} resolved job does not match its definition"
             )
         if str(row[3]) != job_template_digest(definition):
-            raise TemplateRegistryError(f"{label} template {name} has an invalid digest")
+            raise TemplateRegistryError(f"{label} template {template_id} has an invalid digest")
         if int(row[4]) < 1:
-            raise TemplateRegistryError(f"{label} template {name} has an invalid revision")
+            raise TemplateRegistryError(f"{label} template {template_id} has an invalid revision")
         if int(row[5]) not in (0, 1):
-            raise TemplateRegistryError(f"{label} template {name} has an invalid enabled state")
+            raise TemplateRegistryError(
+                f"{label} template {template_id} has an invalid enabled state"
+            )
         if not str(row[6]).strip() or not str(row[7]).strip():
-            raise TemplateRegistryError(f"{label} template {name} has a blank timestamp")
+            raise TemplateRegistryError(f"{label} template {template_id} has a blank timestamp")
         count += 1
     return count
 
@@ -165,7 +175,7 @@ def create_template_registry_snapshot(source_db: Path, snapshot_db: Path) -> int
             columns = ", ".join(JOB_TEMPLATE_COLUMNS)
             snapshot.execute(
                 f"INSERT INTO main.job_templates({columns}) "
-                f"SELECT {columns} FROM server.job_templates ORDER BY name"
+                f"SELECT {columns} FROM server.job_templates ORDER BY template_id"
             )
             snapshot.commit()
             snapshot.execute("DETACH DATABASE server")
@@ -223,7 +233,7 @@ def restore_template_registry_snapshot(
             columns = ", ".join(JOB_TEMPLATE_COLUMNS)
             target.execute(
                 f"INSERT INTO main.job_templates({columns}) "
-                f"SELECT {columns} FROM snapshot.job_templates ORDER BY name"
+                f"SELECT {columns} FROM snapshot.job_templates ORDER BY template_id"
             )
             restored_count = int(
                 target.execute("SELECT COUNT(*) FROM main.job_templates").fetchone()[0]

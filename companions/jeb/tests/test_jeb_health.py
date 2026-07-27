@@ -93,7 +93,7 @@ def collector_for(
     collector.add_source(
         "phone",
         adapters=("tus",),
-        template="camera-archive",
+        target_config={"template_id": "camera-archive"},
         credential="phone-password",
         stable_seconds=0,
         include_extensions=(".txt",),
@@ -195,7 +195,7 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
             {
                 "id": "phone",
                 "adapters": ["ftp", "tus"],
-                "template": "camera-archive",
+                "target_config": {"template_id": "camera-archive"},
                 "credential": "phone-password",
                 "cadence": "manual",
             },
@@ -209,7 +209,9 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
         assert listed["per_page"] == 25
         assert listed["total"] == 1
         assert listed["pages"] == 1
-        assert listed["sources"][0]["template"] == "camera-archive"
+        assert listed["sources"][0]["target_config"] == {
+            "template_id": "camera-archive"
+        }
         filtered = read_json(
             f"{base}?q=PHO&enabled=true&adapter=tus&target=munchy"
             "&sort=updated_at&order=desc&all=true"

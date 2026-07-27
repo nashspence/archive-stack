@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,21 @@ def source_credential(args: argparse.Namespace) -> str | None:
     return credential
 
 
+def parse_target_config(items: list[str] | None) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    for item in items or []:
+        name, separator, raw_value = item.partition("=")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError("target config values must use NAME=JSON")
+        try:
+            value = json.loads(raw_value)
+        except json.JSONDecodeError:
+            value = raw_value
+        config[name] = value
+    return config
+
+
 def cmd_source_list(args: argparse.Namespace) -> int:
     payload = client().list_sources(
         page=args.page,
@@ -145,7 +161,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     payload: dict[str, Any] = {
         "id": args.source,
         "adapters": args.adapter,
-        "template": args.template,
+        "target_config": parse_target_config(args.target_config),
         "enabled": not args.disabled,
         "stable_seconds": args.stable_seconds,
         "target": args.target,
@@ -168,8 +184,8 @@ def cmd_source_add(args: argparse.Namespace) -> int:
 
 def cmd_source_set(args: argparse.Namespace) -> int:
     changes = load_object(args.changes, label="source changes") if args.changes is not None else {}
-    if args.template is not None:
-        changes["template"] = args.template
+    if args.target_config is not None:
+        changes["target_config"] = parse_target_config(args.target_config)
     payload = client().update_source(args.source, changes)
     emit(payload, json_mode=True)
     return 0
@@ -320,7 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
         sort_fields=SOURCE_LIST_SORT_FIELDS,
         default_sort="id",
         default_order="asc",
-        query_help="Search source, target, template, cadence, or adapter.",
+        query_help="Search source, target config, cadence, or adapter.",
     )
     source_state = source_list.add_mutually_exclusive_group()
     source_state.add_argument(
@@ -358,7 +374,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Enable an ingress adapter; repeat for more than one.",
     )
-    source_add.add_argument("--template", required=True, help="Target job-template name.")
+    source_add.add_argument(
+        "--target-config",
+        action="append",
+        required=True,
+        metavar="NAME=JSON",
+        help="Adapter-specific target setting; repeat for more than one.",
+    )
     source_add.add_argument(
         "--credential-stdin",
         action="store_true",
@@ -387,7 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
     source_set.add_argument("source")
     source_set_input = source_set.add_mutually_exclusive_group(required=True)
     source_set_input.add_argument("--changes", help="Source changes JSON/YAML file.")
-    source_set_input.add_argument("--template", help="Replacement target job-template name.")
+    source_set_input.add_argument(
+        "--target-config",
+        action="append",
+        metavar="NAME=JSON",
+        help="Replace adapter-specific target settings; repeat for more than one.",
+    )
     source_set.set_defaults(func=cmd_source_set)
     for action, enabled in (("enable", True), ("disable", False)):
         source_enabled = source_sub.add_parser(action, help=f"{action} a source")

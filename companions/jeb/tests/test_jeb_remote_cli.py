@@ -278,8 +278,8 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> N
                 "camera",
                 "--adapter",
                 "ftp",
-                "--template",
-                "camera-review",
+                "--target-config",
+                "template_id=camera-review",
             ]
         )
         == 0
@@ -293,7 +293,7 @@ def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> N
             {
                 "id": "camera",
                 "adapters": ["ftp"],
-                "template": "camera-review",
+                "target_config": {"template_id": "camera-review"},
                 "enabled": True,
                 "stable_seconds": 600,
                 "target": "munchy",

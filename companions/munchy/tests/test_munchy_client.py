@@ -102,7 +102,8 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     line = format_job_summary_line(
         {
             "job_id": "job-1",
-            "collection_tags": ["example-q49"],
+            "template_id": "example-q49",
+            "created_at": "2026-07-27T12:34:56.987654Z",
             "state": "running",
             "phase": "eager_archive:pipeline=3/3",
             "upload_progress": {
@@ -125,7 +126,10 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
         }
     )
 
-    assert line.startswith("job-1 [example-q49] | job: running | eager_archive:pipeline=3/3")
+    assert line.startswith(
+        "example-q49 · 20260727T123456Z [job job-1] | "
+        "job: running | eager_archive:pipeline=3/3"
+    )
     assert "remote upload 10/20 files" in line
     assert "remote encode 4/20 files" in line
     assert "batches 1/3" in line
@@ -572,7 +576,8 @@ def test_format_job_summary_line_includes_encoder_queue_position() -> None:
     line = format_job_summary_line(
         {
             "job_id": "job-2",
-            "collection_tags": ["example-q49"],
+            "template_id": "example-q49",
+            "created_at": "2026-07-27T12:34:56Z",
             "state": "queued",
             "phase": "queued",
             "queue": {
@@ -618,7 +623,8 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
     failure = format_job_failure(
         {
             "job_id": "job-1",
-            "collection_tags": ["camera-collection-archive"],
+            "template_id": "camera-archive",
+            "created_at": "2026-07-27T12:34:56Z",
             "state": "failed",
             "phase": "handoff",
             "error": "rclone failed after many retries",
@@ -636,7 +642,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
 
     assert failure.startswith("review job did not succeed:")
     assert "- job: job-1" in failure
-    assert "- collection tags: camera-collection-archive" in failure
+    assert "- identity: camera-archive · 20260727T123456Z" in failure
     assert "- status: job: failed" in failure
     assert "- error: rclone failed after many retries" in failure
     assert "- gpu statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
@@ -1105,7 +1111,7 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
         )
     request = SubmissionUploadRequest(
         submission_id="submission-1",
-        template="test-template",
+        template_id="test-template",
         files=tuple(files),
         upload_workers=3,
         upload_chunk_mib=9,
@@ -1163,7 +1169,7 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
     )
     request = SubmissionUploadRequest(
         submission_id="submission-1",
-        template="test-template",
+        template_id="test-template",
         files=(file,),
         upload_workers=1,
         upload_chunk_mib=9,

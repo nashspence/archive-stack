@@ -258,7 +258,12 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
         def list_job_templates(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["all_items"] is True
             assert kwargs["enabled"] is False
-            return {"templates": [{"name": "archive"}, {"name": "review"}]}
+            return {
+                "templates": [
+                    {"template_id": "archive"},
+                    {"template_id": "review"},
+                ]
+            }
 
     monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
 
@@ -394,7 +399,8 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             assert compact is True
             return {
                 "job_id": "job-1",
-                "collection_tags": ["camera"],
+                "template_id": "camera-archive",
+                "created_at": "2026-07-27T12:34:56Z",
                 "state": "running",
                 "phase": "encoding",
             }
@@ -408,7 +414,7 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 
     assert result.exit_code == 0
     assert "job-1" in result.stdout
-    assert "camera" in result.stdout
+    assert "camera-archive · 20260727T123456Z" in result.stdout
     assert "encoding" in result.stdout
 
 
@@ -481,7 +487,9 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             seen["request"] = request
             return {
                 "accepted": True,
-                "template": {"name": request.template, "revision": 3, "digest": "digest"},
+                "template_id": request.template_id,
+                "template_revision": 3,
+                "template_digest": "digest",
                 "workflow_mode": "collection_archive",
                 "content_inspection": "after_upload",
             }
@@ -524,8 +532,6 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             "route=camera-main",
             "--server-url",
             "http://munchy.test",
-            "--tag",
-            "camera",
             "--run-id",
             "20260621T120000.123456Z",
             "--no-hash-cache",
@@ -537,9 +543,8 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
 
     assert result.exit_code == 0
     request = seen["request"]
-    assert request.template == "camera-archive"
+    assert request.template_id == "camera-archive"
     assert request.inputs == {"route": "camera-main"}
-    assert request.collection_tags == ("camera",)
     assert request.run_id == "20260621T120000.123456Z"
     assert [item.rel_path for item in request.files] == ["clip.mp4"]
     assert seen["uploaded"] == request.submission_id
@@ -567,7 +572,9 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
             seen["request"] = request
             return {
                 "accepted": True,
-                "template": {"name": request.template, "revision": 2, "digest": "digest"},
+                "template_id": request.template_id,
+                "template_revision": 2,
+                "template_digest": "digest",
                 "workflow_mode": "review",
                 "content_inspection": "after_upload",
             }
@@ -597,7 +604,7 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
     assert [item.rel_path for item in request.files] == ["IMG_0001.MOV"]
     payload = json.loads(result.stdout)
     assert payload["status"] == "would_submit"
-    assert payload["template"] == "phone-review"
+    assert payload["template_id"] == "phone-review"
     assert payload["template_revision"] == 2
     assert payload["workflow_mode"] == "review"
 
@@ -616,9 +623,8 @@ job:
   handoff:
     destination: rclone
     options:
-      location: review-remote:reviews/{device_id}/{route_id}/{profile_id}/{run_id}
+      location: review-remote:reviews/{template_id}/{route_id}/{profile_id}/{run_id}
   review:
-    device_id: camera
     sweep:
       route_ids:
         - camera-video
@@ -666,6 +672,8 @@ groups:
             "job",
             "plan-review-sweep",
             str(source_dir),
+            "--template",
+            "camera-review-sweep",
             "--config",
             str(config),
             "--json",
@@ -675,6 +683,7 @@ groups:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["kind"] == "munchy.review-sweep-plan"
+    assert payload["template_id"] == "camera-review-sweep"
     assert payload["ok"] is True
     assert payload["requested_route_ids"] == ["camera-video"]
     assert payload["routes_total"] == 1
@@ -685,7 +694,7 @@ groups:
     assert route["tasks"] == ["qcut_video"]
     assert [variant["profile_id"] for variant in route["variants"]] == ["q24", "q28"]
     assert route["variants"][1]["location"] == (
-        "review-remote:reviews/camera/camera-video/q28/20260712T120000Z"
+        "review-remote:reviews/camera-review-sweep/camera-video/q28/20260712T120000Z"
     )
 
 

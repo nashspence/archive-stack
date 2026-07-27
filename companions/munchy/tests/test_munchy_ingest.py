@@ -29,10 +29,10 @@ def test_job_requires_every_uploaded_group_to_be_configured() -> None:
     with pytest.raises(ValidationError, match="undefined group"):
         MunchyJobRequest(
             job_id="job-1",
+            template_id="camera-archive",
             input_upload_id="upload-1",
             workflow_mode="collection_archive",
             handoff_destination="riverhog",
-            collection_tags=("example",),
             run_id="20260605T120000Z",
             files=files,
             groups={"video": EncodeProfile()},
@@ -48,10 +48,10 @@ def test_job_accepts_all_declared_groups() -> None:
 
     request = MunchyJobRequest(
         job_id="job-1",
+        template_id="camera-review",
         input_upload_id="upload-1",
         workflow_mode="review",
         handoff_destination="rclone",
-        collection_tags=("example",),
         run_id="20260605T120000Z",
         files=files,
         groups={"video": EncodeProfile(), "slowmo": EncodeProfile()},

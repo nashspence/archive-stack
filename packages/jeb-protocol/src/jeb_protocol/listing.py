@@ -20,7 +20,6 @@ SOURCE_LIST_SORT_FIELDS = frozenset(
         "created_at",
         "enabled",
         "id",
-        "template",
         "target",
         "updated_at",
     }

@@ -176,7 +176,6 @@ GROUP_SCHEMA: dict[str, Any] = {
 DEVICE_PROFILE_SECTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "collection_tags": STRING_LIST,
         "destination_prefix": {"type": "string"},
         "file_extensions": STRING_LIST,
         "file_include_globs": STRING_LIST,
@@ -251,6 +250,7 @@ HANDOFF_SCHEMA: dict[str, Any] = {
                     "type": "object",
                     "properties": {
                         "archive_store": {"type": "string", "minLength": 1},
+                        "tags": STRING_LIST,
                     },
                     "additionalProperties": False,
                 },
@@ -297,7 +297,6 @@ JOB_SCHEMA: dict[str, Any] = {
     "properties": {
         "job_id": {"type": "string"},
         "input_upload_id": {"type": "string"},
-        "collection_tags": STRING_LIST,
         "run_id": {"type": "string"},
         "destination_prefix": {"type": "string"},
         "workflow_mode": {"enum": ["collection_archive", "review"]},

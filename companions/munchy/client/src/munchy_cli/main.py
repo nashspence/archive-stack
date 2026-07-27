@@ -25,6 +25,7 @@ from munchy_api_client.client import (
     SubmissionUploadRequest,
     format_bytes,
     format_job_failure,
+    format_job_identity,
     format_job_status_line,
     format_job_summary_line,
     job_finished_cleanly,
@@ -305,12 +306,12 @@ def format_jobs(payload: Mapping[str, Any]) -> Any:
         return _plain_jobs(payload)
 
     jobs = [job for job in _sequence(payload.get("jobs")) if isinstance(job, Mapping)]
-    table = _quiet_table("Job", "Tags", "State", "Phase", "Progress")
+    table = _quiet_table("Job", "Internal ID", "State", "Phase", "Progress")
     for job in jobs:
         job_id = str(job.get("job_id") or job.get("id") or "unknown")
         table.add_row(
-            _entity_text(job_id),
-            ", ".join(str(tag) for tag in job.get("collection_tags") or []),
+            _entity_text(format_job_identity(dict(job))),
+            job_id,
             _attention_text(job.get("state", "unknown")),
             str(job.get("phase") or ""),
             format_job_status_line(dict(job)),
@@ -342,7 +343,7 @@ def format_job_templates(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         lines = [_template_page_header(payload)]
         lines.extend(
-            f"- {item.get('name')} revision={item.get('revision')} "
+            f"- {item.get('template_id')} revision={item.get('revision')} "
             f"enabled={str(bool(item.get('enabled'))).lower()} digest={item.get('digest')}"
             for item in templates
         )
@@ -352,7 +353,7 @@ def format_job_templates(payload: Mapping[str, Any]) -> Any:
     table = _quiet_table("Template", "Revision", "Enabled", "Digest", "Updated")
     for item in templates:
         table.add_row(
-            _entity_text(item.get("name", "")),
+            _entity_text(item.get("template_id", "")),
             str(item.get("revision", "")),
             str(bool(item.get("enabled"))).lower(),
             str(item.get("digest", ""))[:12],
@@ -367,7 +368,7 @@ def format_job_template(payload: Mapping[str, Any]) -> Any:
     if not _rich_enabled():
         return "\n".join(
             [
-                f"template: {payload.get('name', 'unknown')}",
+                f"template: {payload.get('template_id', 'unknown')}",
                 f"revision: {payload.get('revision', 'unknown')}",
                 f"enabled: {str(bool(payload.get('enabled'))).lower()}",
                 f"digest: {payload.get('digest', 'unknown')}",
@@ -375,7 +376,7 @@ def format_job_template(payload: Mapping[str, Any]) -> Any:
             ]
         )
     table = _detail_table()
-    table.add_row("template", _entity_text(payload.get("name", "unknown")))
+    table.add_row("template", _entity_text(payload.get("template_id", "unknown")))
     table.add_row("revision", str(payload.get("revision", "unknown")))
     table.add_row("enabled", str(bool(payload.get("enabled"))).lower())
     table.add_row("digest", str(payload.get("digest", "unknown")))
@@ -384,10 +385,10 @@ def format_job_template(payload: Mapping[str, Any]) -> Any:
 
 
 def _plain_job(job: Mapping[str, Any]) -> str:
-    collection_tags = ", ".join(str(tag) for tag in job.get("collection_tags") or [])
     lines = [
+        f"identity: {format_job_identity(dict(job))}",
         f"job: {job.get('job_id', 'unknown')}",
-        f"collection tags: {collection_tags or 'none'}",
+        f"template: {job.get('template_id', 'unknown')}",
         f"state: {job.get('state', 'unknown')}",
     ]
     if job.get("phase"):
@@ -405,11 +406,9 @@ def format_job(job: Mapping[str, Any]) -> Any:
         return _plain_job(job)
 
     table = _detail_table()
+    table.add_row("identity", _entity_text(format_job_identity(dict(job))))
     table.add_row("job", _entity_text(job.get("job_id", "unknown")))
-    table.add_row(
-        "collection tags",
-        ", ".join(str(tag) for tag in job.get("collection_tags") or []) or "none",
-    )
+    table.add_row("template", str(job.get("template_id", "unknown")))
     table.add_row("state", _attention_text(job.get("state", "unknown")))
     if job.get("phase"):
         table.add_row("phase", str(job.get("phase")))
@@ -512,7 +511,7 @@ def _submission_summary(
         return "\n".join(
             [
                 f"submission: {request.submission_id}",
-                f"template: {request.template}",
+                f"template: {request.template_id}",
                 f"files: {len(request.files)}",
                 f"bytes: {total_bytes}",
                 f"state: {state}",
@@ -520,7 +519,7 @@ def _submission_summary(
         )
     table = _detail_table()
     table.add_row("submission", _entity_text(request.submission_id))
-    table.add_row("template", request.template)
+    table.add_row("template", request.template_id)
     table.add_row("files", str(len(request.files)))
     table.add_row("bytes", format_bytes(total_bytes))
     table.add_row("state", _attention_text(state))
@@ -535,18 +534,16 @@ def _submission_plan_payload(
     server_url: str,
     preflight: Mapping[str, Any],
 ) -> dict[str, Any]:
-    template = _mapping(preflight.get("template"), label="template")
     return {
         "dry_run": True,
         "status": "would_submit",
         "server_url": server_url,
         "submission_id": request.submission_id,
-        "template": request.template,
-        "template_revision": template.get("revision"),
-        "template_digest": template.get("digest"),
+        "template_id": request.template_id,
+        "template_revision": preflight.get("template_revision"),
+        "template_digest": preflight.get("template_digest"),
         "files_total": len(request.files),
         "bytes_total": sum(item.bytes for item in request.files),
-        "collection_tags": list(request.collection_tags),
         "run_id": request.run_id,
         "workflow_mode": preflight.get("workflow_mode"),
         "content_inspection": preflight.get("content_inspection"),
@@ -560,13 +557,9 @@ def format_submission_plan(payload: Mapping[str, Any]) -> Any:
         ("status", str(payload.get("status", "unknown"))),
         ("server", str(payload.get("server_url", "unknown"))),
         ("submission", str(payload.get("submission_id", "unknown"))),
-        ("template", str(payload.get("template", "unknown"))),
+        ("template", str(payload.get("template_id", "unknown"))),
         ("template revision", str(payload.get("template_revision") or "unknown")),
         ("workflow", str(payload.get("workflow_mode", "unknown"))),
-        (
-            "collection tags",
-            ", ".join(str(tag) for tag in payload.get("collection_tags") or []) or "none",
-        ),
         ("files", str(payload.get("files_total", 0))),
         ("bytes", format_bytes(int(payload.get("bytes_total", 0) or 0))),
         ("content inspection", str(payload.get("content_inspection") or "unknown")),
@@ -589,6 +582,7 @@ def _plain_review_sweep_plan(plan: Mapping[str, Any]) -> str:
             f"variants={plan.get('variants_total', 0)}"
         )
     ]
+    lines.append(f"template: {plan.get('template_id', 'unknown')}")
     handoff = _mapping(plan.get("handoff"), label="handoff")
     if handoff.get("location_template"):
         lines.append(f"handoff: {handoff.get('destination')} {handoff.get('location_template')}")
@@ -621,6 +615,7 @@ def format_review_sweep_plan(plan: Mapping[str, Any]) -> Any:
     state = "ok" if plan.get("ok") else "failed"
     detail = _detail_table()
     detail.add_row("state", _attention_text(state))
+    detail.add_row("template", _entity_text(plan.get("template_id", "")))
     detail.add_row("routes", str(plan.get("routes_total", 0)))
     detail.add_row("files", str(plan.get("files_total", 0)))
     detail.add_row("variants", str(plan.get("variants_total", 0)))
@@ -809,7 +804,7 @@ def list_job_templates(
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "template_id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[str | None, typer.Option("--query", "-q")] = None,
     enabled: Annotated[
@@ -822,7 +817,7 @@ def list_job_templates(
     ] = False,
     ids: Annotated[
         bool,
-        typer.Option("--ids", help="Emit one job-template name per line"),
+        typer.Option("--ids", help="Emit one job-template ID per line"),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -843,21 +838,21 @@ def list_job_templates(
     except Exception as exc:
         _exit_server_error(exc)
     if ids:
-        emit(format_list_ids(payload, "templates", id_key="name"), json_mode=False)
+        emit(format_list_ids(payload, "templates", id_key="template_id"), json_mode=False)
         return
     emit(payload if json_mode else format_job_templates(payload), json_mode=json_mode)
 
 
 @template_app.command("show")
 def show_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit full JSON")] = False,
 ) -> None:
     """Show one server-owned job template."""
 
     try:
-        payload = _admin_client(server_url).get_job_template(name)
+        payload = _admin_client(server_url).get_job_template(template_id)
     except Exception as exc:
         _exit_server_error(exc)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
@@ -865,7 +860,7 @@ def show_job_template(
 
 @template_app.command("check")
 def check_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     json_mode: Annotated[bool, typer.Option("--json")] = False,
@@ -874,15 +869,18 @@ def check_job_template(
 
     definition = _job_template_definition(path)
     try:
-        payload = _admin_client(server_url).validate_job_template(name, definition)
+        payload = _admin_client(server_url).validate_job_template(template_id, definition)
     except Exception as exc:
         _exit_server_error(exc)
-    emit(payload if json_mode else f"{name}: ok ({payload.get('digest')})", json_mode=json_mode)
+    emit(
+        payload if json_mode else f"{template_id}: ok ({payload.get('digest')})",
+        json_mode=json_mode,
+    )
 
 
 @template_app.command("create")
 def create_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     disabled: Annotated[bool, typer.Option("--disabled")] = False,
@@ -893,7 +891,7 @@ def create_job_template(
     definition = _job_template_definition(path)
     try:
         payload = _admin_client(server_url).create_job_template(
-            name,
+            template_id,
             definition,
             enabled=not disabled,
         )
@@ -904,7 +902,7 @@ def create_job_template(
 
 @template_app.command("replace")
 def replace_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     disabled: Annotated[bool, typer.Option("--disabled")] = False,
@@ -915,9 +913,9 @@ def replace_job_template(
     definition = _job_template_definition(path)
     client = _admin_client(server_url)
     try:
-        current = client.get_job_template(name)
+        current = client.get_job_template(template_id)
         payload = client.replace_job_template(
-            name,
+            template_id,
             definition,
             expected_revision=int(current["revision"]),
             enabled=not disabled,
@@ -928,7 +926,7 @@ def replace_job_template(
 
 
 def _set_job_template_enabled(
-    name: str,
+    template_id: str,
     *,
     server_url: str | None,
     enabled: bool,
@@ -936,9 +934,9 @@ def _set_job_template_enabled(
 ) -> None:
     client = _admin_client(server_url)
     try:
-        current = client.get_job_template(name)
+        current = client.get_job_template(template_id)
         payload = client.set_job_template_enabled(
-            name,
+            template_id,
             enabled=enabled,
             expected_revision=int(current["revision"]),
         )
@@ -949,38 +947,42 @@ def _set_job_template_enabled(
 
 @template_app.command("enable")
 def enable_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     json_mode: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Enable a job template for new submissions."""
 
-    _set_job_template_enabled(name, server_url=server_url, enabled=True, json_mode=json_mode)
+    _set_job_template_enabled(
+        template_id, server_url=server_url, enabled=True, json_mode=json_mode
+    )
 
 
 @template_app.command("disable")
 def disable_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
     json_mode: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Disable a job template for new submissions."""
 
-    _set_job_template_enabled(name, server_url=server_url, enabled=False, json_mode=json_mode)
+    _set_job_template_enabled(
+        template_id, server_url=server_url, enabled=False, json_mode=json_mode
+    )
 
 
 @template_app.command("remove")
 def remove_job_template(
-    name: Annotated[str, typer.Argument(help="Job-template name")],
+    template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
 ) -> None:
     """Remove a job template without changing accepted jobs."""
 
     client = _admin_client(server_url)
     try:
-        current = client.get_job_template(name)
+        current = client.get_job_template(template_id)
         payload = client.delete_job_template(
-            name,
+            template_id,
             expected_revision=int(current["revision"]),
         )
     except Exception as exc:
@@ -1042,6 +1044,10 @@ def plan_review_sweep(
             help="Local file or directory to dry-run against the configured review sweep",
         ),
     ],
+    template_id: Annotated[
+        str,
+        typer.Option("--template", help="Server-owned job-template ID"),
+    ],
     config: Annotated[
         Path | None,
         typer.Option(
@@ -1075,6 +1081,7 @@ def plan_review_sweep(
     try:
         plan = build_review_sweep_plan(
             source=source,
+            template_id=template_id,
             config_path=config_path,
             destination_prefix=destination_prefix,
         )
@@ -1095,9 +1102,9 @@ def submit(
             help="Local file or directory to upload",
         ),
     ],
-    template: Annotated[
+    template_id: Annotated[
         str,
-        typer.Option("--template", help="Server-owned job-template name"),
+        typer.Option("--template", help="Server-owned job-template ID"),
     ],
     inputs: Annotated[
         list[str] | None,
@@ -1106,10 +1113,6 @@ def submit(
     server_url: Annotated[
         str | None,
         typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
-    ] = None,
-    collection_tags: Annotated[
-        list[str] | None,
-        typer.Option("--tag", help="Collection tag; repeat to assign more than one"),
     ] = None,
     run_id: Annotated[
         str | None,
@@ -1163,9 +1166,8 @@ def submit(
         try:
             request = build_submission_upload_request(
                 source=source,
-                template=template,
+                template_id=template_id,
                 inputs=_template_inputs(inputs or []),
-                collection_tags=collection_tags,
                 run_id=run_id,
                 submission_id=submission_id,
                 destination_prefix=destination_prefix,

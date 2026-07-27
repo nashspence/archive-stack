@@ -13,7 +13,6 @@ from munchy_config.schema import MUNCHY_DEVICE_PROFILE_SCHEMA
 _PARAMETER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 _JOB_SECTION_KEYS = {
-    "collection_tags",
     "destination_prefix",
     "output_mode",
     "tasks",
