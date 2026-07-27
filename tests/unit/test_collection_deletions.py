@@ -4,10 +4,15 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from riverhog_api.schemas.collections import CollectionDeletionPlanOut
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
-from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
+from riverhog_core.catalog_models import (
+    CatalogEventRecord,
+    CollectionMetadataPublicationRecord,
+    CollectionRecord,
+)
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -56,14 +61,38 @@ def test_deletion_plan_uses_catalog_object_and_file_aggregates(tmp_path: Path) -
     assert plan["status"] == "ready"
     assert plan["file_count"] == 2
     assert plan["bytes"] == sum(map(len, FILES.values()))
-    assert [current["kind"] for current in plan["archive_objects"]] == [
-        "pack",
-        "manifest",
-        "proof",
+    assert plan["archive_object_count"] == 3
+    assert plan["archive_copies"] == [
+        {
+            "store": "deep",
+            "objects": 3,
+            "stored_bytes": plan["remote_storage_bytes"],
+        }
     ]
-    assert plan["remote_storage_bytes"] == sum(
-        int(current["stored_bytes"]) for current in plan["archive_objects"]
-    )
+    assert plan["upload_file_count"] == 0
+    CollectionDeletionPlanOut.model_validate(plan)
+
+
+def test_active_metadata_publication_blocks_collection_deletion(tmp_path: Path) -> None:
+    config, _archive_store, service = _service(tmp_path / "catalog.sqlite3")
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add(
+            CollectionMetadataPublicationRecord(
+                collection_id=COLLECTION_ID,
+                store="deep",
+                desired_revision=1,
+                state="publishing",
+                attempt_count=1,
+                next_attempt_at=UPLOADED_AT,
+                last_attempt_at=UPLOADED_AT,
+            )
+        )
+
+    plan = service.plan(COLLECTION_ID)
+
+    assert plan["status"] == "blocked"
+    assert plan["challenge"] is None
+    assert plan["blockers"] == ["collection metadata publication is active: deep"]
 
 
 def test_confirmed_deletion_removes_archive_and_catalog_record(

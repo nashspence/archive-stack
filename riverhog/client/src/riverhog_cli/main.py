@@ -44,8 +44,11 @@ from riverhog_cli.output import (
     format_app_access,
     format_app_access_set,
     format_archive_copy_job,
+    format_archive_copy_jobs,
     format_archive_copy_retirement_plan,
     format_archive_copy_retirement_result,
+    format_archive_store,
+    format_archive_stores,
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_summary,
@@ -66,6 +69,8 @@ app = typer.Typer(help="Riverhog collection archive CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 collection_tag_app = typer.Typer(help="Collection tag assignments.")
 archive_app = typer.Typer(help="Archive-store operations.")
+archive_store_app = typer.Typer(help="Configured archive stores.")
+archive_copy_app = typer.Typer(help="Archive-copy jobs.")
 application_app = typer.Typer(help="Application access.")
 app_key_app = typer.Typer(help="Application key management.")
 app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
@@ -77,6 +82,8 @@ application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 collection_app.add_typer(collection_tag_app, name="tag")
 app.add_typer(archive_app, name="archive")
+archive_app.add_typer(archive_store_app, name="store")
+archive_app.add_typer(archive_copy_app, name="copy")
 app.add_typer(application_app, name="app")
 app.add_typer(tag_app, name="tag")
 app.add_typer(local_app, name="local")
@@ -1575,73 +1582,6 @@ _FIND_SORT_FIELDS = {
 }
 
 
-def _collection_list_archive_copies_payload(
-    collection: Mapping[str, object],
-) -> list[dict[str, object]]:
-    copies = collection.get("archive_copies")
-    if not isinstance(copies, list):
-        return []
-    return [
-        {
-            key: copy[key]
-            for key in (
-                "store",
-                "state",
-                "storage_class",
-                "stored_bytes",
-                "last_uploaded_at",
-                "last_verified_at",
-                "failure",
-            )
-            if key in copy
-        }
-        for copy in copies
-        if isinstance(copy, Mapping)
-    ]
-
-
-def _collection_list_item_payload(collection: Mapping[str, object]) -> dict[str, object]:
-    payload: dict[str, object] = {
-        key: collection[key]
-        for key in (
-            "id",
-            "created_at",
-            "tags",
-            "files",
-            "bytes",
-        )
-        if key in collection
-    }
-    payload["archive_copies"] = _collection_list_archive_copies_payload(collection)
-    return payload
-
-
-def _compact_collection_page(payload: Mapping[str, object]) -> dict[str, object]:
-    collections = payload.get("collections")
-    compact_collections: list[dict[str, object]] = []
-    if isinstance(collections, list):
-        compact_collections = [
-            _collection_list_item_payload(collection)
-            for collection in collections
-            if isinstance(collection, Mapping)
-        ]
-    page_payload = {
-        key: payload[key]
-        for key in (
-            "page",
-            "per_page",
-            "total",
-            "pages",
-            "sort",
-            "order",
-            "query",
-        )
-        if key in payload
-    }
-    page_payload["collections"] = compact_collections
-    return page_payload
-
-
 def _sorted_collection_page(
     api: ApiClient,
     *,
@@ -1661,7 +1601,7 @@ def _sorted_collection_page(
     if normalized_order not in {"asc", "desc"}:
         raise typer.BadParameter("order must be asc or desc", param_hint="--order")
 
-    payload = api.list_collections(
+    return api.list_collections(
         page=page,
         per_page=per_page,
         q=query,
@@ -1669,12 +1609,6 @@ def _sorted_collection_page(
         order=normalized_order,
         all_items=all_items,
     )
-    return {
-        **payload,
-        "sort": sort,
-        "order": normalized_order,
-        "query": query,
-    }
 
 
 @collection_app.command("list")
@@ -1713,10 +1647,7 @@ def collection_list_cmd(
     if ids:
         emit(format_list_ids(payload, "collections"), json_mode=False)
         return
-    emit(
-        _compact_collection_page(payload) if json_mode else format_collections(payload),
-        json_mode=json_mode,
-    )
+    emit(payload if json_mode else format_collections(payload), json_mode=json_mode)
 
 
 @collection_app.command("upload")
@@ -1895,14 +1826,69 @@ def show_cmd(
 ) -> None:
     """Show collection storage and archive details."""
 
-    api = client()
-    if json_mode:
-        payload = api.get_collection(collection)
-        emit(payload, json_mode=True)
+    payload = client().get_collection(collection)
+    emit(payload if json_mode else format_collection_summary(payload), json_mode=json_mode)
+
+
+_ARCHIVE_STORE_SORT_FIELDS = {
+    "store",
+    "backend",
+    "storage_class",
+    "read_mode",
+    "collections",
+    "objects",
+    "stored_bytes",
+}
+
+
+@archive_store_app.command("list")
+def archive_store_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "store",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over store configuration"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching archive store"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one archive store name per line"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List configured archive stores and their current storage totals."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_ARCHIVE_STORE_SORT_FIELDS)
+    payload = client().list_archive_stores(
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if ids:
+        emit(format_list_ids(payload, "stores", id_key="store"), json_mode=False)
         return
-    payload = api.get_collection(collection)
-    archive_payload = api.get_archive_report(collection=collection)
-    emit(format_collection_summary(payload, archive_payload), json_mode=False)
+    emit(payload if json_mode else format_archive_stores(payload), json_mode=json_mode)
+
+
+@archive_store_app.command("show")
+def archive_store_show_cmd(
+    store: Annotated[str, typer.Argument(help="Archive store name")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one archive store and its current storage totals."""
+
+    payload = client().get_archive_store(store)
+    emit(payload if json_mode else format_archive_store(payload), json_mode=json_mode)
 
 
 @collection_app.command("delete")
@@ -1963,7 +1949,7 @@ def collection_delete_cmd(
     emit(format_collection_deletion_result(payload), json_mode=False)
 
 
-@archive_app.command("copy")
+@archive_copy_app.command("start")
 def archive_copy_cmd(
     collection_id: Annotated[int, typer.Argument(help="Exact collection id")],
     destination_store: Annotated[
@@ -1982,6 +1968,60 @@ def archive_copy_cmd(
         collection_id,
         destination_store=destination_store,
         source_store=source_store,
+    )
+    emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
+
+
+_ARCHIVE_COPY_SORT_FIELDS = {
+    "collection_id",
+    "source_store",
+    "destination_store",
+    "state",
+    "requested_at",
+}
+
+
+@archive_copy_app.command("list")
+def archive_copy_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "requested_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over archive-copy jobs"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching archive-copy job"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List current and terminal archive-copy jobs."""
+
+    normalized_order = _list_order(sort, order, fields=_ARCHIVE_COPY_SORT_FIELDS)
+    payload = client().list_archive_copy_jobs(
+        page=page,
+        per_page=per_page,
+        q=query,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    emit(payload if json_mode else format_archive_copy_jobs(payload), json_mode=json_mode)
+
+
+@archive_copy_app.command("show")
+def archive_copy_show_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Exact collection id")],
+    destination_store: Annotated[str, typer.Argument(help="Destination archive store")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one archive-copy job."""
+
+    payload = client().get_archive_copy_job(
+        collection_id,
+        destination_store=destination_store,
     )
     emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
 

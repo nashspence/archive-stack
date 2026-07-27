@@ -51,7 +51,6 @@ def format_collections(payload: Mapping[str, object]) -> str:
 
 def format_collection_summary(
     payload: Mapping[str, object],
-    archive_report: Mapping[str, object] | None = None,
 ) -> str:
     tags = payload.get("tags")
     tag_text = ", ".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
@@ -61,6 +60,7 @@ def format_collection_summary(
         f"tags: {tag_text or 'none'}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
+        f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
         f"archive copies: {_archive_copy_states(payload)}",
     ]
     for archive in _items(payload, "archive_copies"):
@@ -69,20 +69,10 @@ def format_collection_summary(
             lines.append(f"{store} storage class: {archive['storage_class']}")
         if archive.get("last_verified_at"):
             lines.append(f"{store} verified: {archive['last_verified_at']}")
-    if archive_report is not None:
-        totals = archive_report.get("totals")
-        if isinstance(totals, Mapping):
-            lines.append(f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}")
     return "\n".join(lines)
 
 
 def format_collection_deletion_plan(payload: Mapping[str, object]) -> str:
-    archive_objects = payload.get("archive_objects")
-    archive_object_count = (
-        len(archive_objects)
-        if isinstance(archive_objects, Sequence) and not isinstance(archive_objects, (str, bytes))
-        else 0
-    )
     lines = [
         str(payload.get("warning", "DANGER: This collection deletion is permanent.")),
         "",
@@ -90,7 +80,7 @@ def format_collection_deletion_plan(payload: Mapping[str, object]) -> str:
         f"status: {payload.get('status', 'unknown')}",
         f"files: {payload.get('file_count', 0)} ({_bytes(payload.get('bytes'))})",
         f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
-        f"archive objects: {archive_object_count}",
+        f"archive objects: {payload.get('archive_object_count', 0)}",
     ]
     blockers = payload.get("blockers")
     if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
@@ -119,12 +109,6 @@ def format_archive_copy_retirement_plan(payload: Mapping[str, object]) -> str:
     target = payload.get("target_copy")
     target_copy = target if isinstance(target, Mapping) else {}
     retained = _items(payload, "retained_copies")
-    objects = target_copy.get("objects")
-    object_count = (
-        len(objects)
-        if isinstance(objects, Sequence) and not isinstance(objects, (str, bytes))
-        else 0
-    )
     lines = [
         str(payload.get("warning", "DANGER: This archive copy retirement is permanent.")),
         "",
@@ -132,7 +116,7 @@ def format_archive_copy_retirement_plan(payload: Mapping[str, object]) -> str:
         f"store: {payload.get('store', 'unknown')}",
         f"status: {payload.get('status', 'unknown')}",
         f"remote storage: {_bytes(target_copy.get('remote_storage_bytes'))}",
-        f"archive objects: {object_count}",
+        f"archive objects: {target_copy.get('object_count', 0)}",
         "retained copies: "
         + (
             ", ".join(str(copy.get("store", "unknown")) for copy in retained)
@@ -299,21 +283,42 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def format_archive_report(payload: Mapping[str, object]) -> str:
-    totals = payload.get("totals")
-    totals = totals if isinstance(totals, Mapping) else {}
+def format_archive_store(payload: Mapping[str, object]) -> str:
     lines = [
-        f"archive report: {payload.get('scope', 'all')}",
-        f"collections: {totals.get('uploaded_collections', 0)}/{totals.get('collections', 0)}",
-        f"remote storage: {_bytes(totals.get('measured_storage_bytes'))}",
+        f"archive store {payload.get('store', 'unknown')}",
+        f"backend: {payload.get('backend', 'unknown')}",
+        f"storage class: {payload.get('storage_class', 'unknown')}",
+        f"read mode: {payload.get('read_mode', 'unknown')}",
+        f"write target: {'yes' if payload.get('write_target') else 'no'}",
+        f"collections: {payload.get('collections', 0)}",
+        f"objects: {payload.get('objects', 0)}",
+        f"stored: {_bytes(payload.get('stored_bytes'))}",
     ]
-    for allowance in _items(payload, "download_allowances"):
+    allowance = payload.get("download_allowance")
+    if isinstance(allowance, Mapping):
+        lines.extend(
+            (
+                f"download allowance: {_bytes(allowance.get('accounted_bytes'))} used + "
+                f"{_bytes(allowance.get('reserved_bytes'))} reserved / "
+                f"{_bytes(allowance.get('effective_limit_bytes'))}",
+                f"download allowance resets: {allowance.get('resets_at', 'unknown')}",
+            )
+        )
+    return "\n".join(lines)
+
+
+def format_archive_stores(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "stores")]
+    for store in _items(payload, "stores"):
         lines.append(
-            f"download {allowance.get('store', 'unknown')}: "
-            f"{_bytes(allowance.get('accounted_bytes'))} used + "
-            f"{_bytes(allowance.get('reserved_bytes'))} reserved / "
-            f"{_bytes(allowance.get('effective_limit_bytes'))}; "
-            f"resets {allowance.get('resets_at', 'unknown')}"
+            f"- {store.get('store', 'unknown')}  "
+            f"backend={store.get('backend', 'unknown')}  "
+            f"class={store.get('storage_class', 'unknown')}  "
+            f"read={store.get('read_mode', 'unknown')}  "
+            f"write={'yes' if store.get('write_target') else 'no'}  "
+            f"collections={store.get('collections', 0)}  "
+            f"objects={store.get('objects', 0)}  "
+            f"stored={_bytes(store.get('stored_bytes'))}"
         )
     return "\n".join(lines)
 
@@ -328,8 +333,28 @@ def format_archive_copy_job(payload: Mapping[str, object]) -> str:
         f"route: {route}",
         f"state: {payload.get('state', 'unknown')}",
     ]
+    if payload.get("initiated_by_app"):
+        initiator = str(payload["initiated_by_app"])
+        if payload.get("initiated_by_key_id"):
+            initiator += f"/{payload['initiated_by_key_id']}"
+        lines.append(f"initiator: {initiator}")
+    if payload.get("completed_at"):
+        lines.append(f"completed: {payload['completed_at']}")
     if payload.get("failure"):
         lines.append(f"failure: {payload['failure']}")
+    return "\n".join(lines)
+
+
+def format_archive_copy_jobs(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "copies")]
+    for copy in _items(payload, "copies"):
+        lines.append(
+            f"- {copy.get('collection_id', 'unknown')}  "
+            f"{copy.get('source_store', 'automatic')} -> "
+            f"{copy.get('destination_store', 'unknown')}  "
+            f"state={copy.get('state', 'unknown')}  "
+            f"requested={copy.get('requested_at', 'unknown')}"
+        )
     return "\n".join(lines)
 
 

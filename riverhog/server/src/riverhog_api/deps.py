@@ -17,7 +17,7 @@ from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
+from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
@@ -27,7 +27,7 @@ from riverhog_core.services.interfaces import (
     ArchiveAttestationService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
-    ArchiveReportingService,
+    ArchiveStoreService,
     ArchiveUploadService,
     CollectionDeletionService,
     CollectionService,
@@ -61,7 +61,7 @@ class ServiceContainer:
     proof_maturations: ProofMaturationService
     archive_attestations: ArchiveAttestationService
     archive_copy_retirements: ArchiveCopyRetirementService
-    archive_reporting: ArchiveReportingService
+    archive_stores: ArchiveStoreService
     retrieval: RetrievalService
     lifecycle_events: LifecycleEventService
     download_quotas: DownloadAllowance
@@ -129,7 +129,7 @@ def default_container() -> ServiceContainer:
             config,
             archive_stores,
         ),
-        archive_reporting=SqlAlchemyArchiveReportingService(
+        archive_stores=SqlAlchemyArchiveStoreService(
             config,
             download_allowance=download_allowance,
         ),

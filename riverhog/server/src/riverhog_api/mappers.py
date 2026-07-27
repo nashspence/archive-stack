@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
-    ArchiveUsageCollection,
-    ArchiveUsageReport,
-    ArchiveUsageSnapshot,
-    ArchiveUsageTotals,
+    ArchiveDownloadAllowance,
+    ArchiveStoreListPage,
+    ArchiveStoreSummary,
     CollectionListPage,
     CollectionManifestStatus,
     CollectionSummary,
@@ -42,53 +41,49 @@ def map_collection_manifest(
     }
 
 
-def map_archive_usage_totals(summary: ArchiveUsageTotals) -> dict[str, object]:
+def map_archive_download_allowance(
+    summary: ArchiveDownloadAllowance | None,
+) -> dict[str, object] | None:
+    if summary is None:
+        return None
     return {
+        "store": summary.store,
+        "state": summary.state,
+        "month_started_at": summary.month_started_at,
+        "resets_at": summary.resets_at,
+        "allowance_bytes": summary.allowance_bytes,
+        "safety_buffer_bytes": summary.safety_buffer_bytes,
+        "effective_limit_bytes": summary.effective_limit_bytes,
+        "accounted_bytes": summary.accounted_bytes,
+        "reserved_bytes": summary.reserved_bytes,
+        "remaining_bytes": summary.remaining_bytes,
+    }
+
+
+def map_archive_store(summary: ArchiveStoreSummary) -> dict[str, object]:
+    return {
+        "store": summary.store,
+        "backend": summary.backend,
+        "storage_class": summary.storage_class,
+        "read_mode": summary.read_mode,
+        "write_target": summary.write_target,
         "collections": summary.collections,
-        "uploaded_collections": summary.uploaded_collections,
-        "measured_storage_bytes": summary.measured_storage_bytes,
+        "objects": summary.objects,
+        "stored_bytes": summary.stored_bytes,
+        "download_allowance": map_archive_download_allowance(summary.download_allowance),
     }
 
 
-def map_archive_usage_collection(summary: ArchiveUsageCollection) -> dict[str, object]:
+def map_archive_store_list(summary: ArchiveStoreListPage) -> dict[str, object]:
     return {
-        "id": summary.id,
-        "bytes": summary.bytes,
-        "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
-        "measured_storage_bytes": summary.measured_storage_bytes,
-    }
-
-
-def map_archive_usage_snapshot(summary: ArchiveUsageSnapshot) -> dict[str, object]:
-    return {
-        "captured_at": summary.captured_at,
-        "uploaded_collections": summary.uploaded_collections,
-        "measured_storage_bytes": summary.measured_storage_bytes,
-    }
-
-
-def map_archive_usage_report(summary: ArchiveUsageReport) -> dict[str, object]:
-    return {
-        "scope": summary.scope,
-        "measured_at": summary.measured_at,
-        "totals": map_archive_usage_totals(summary.totals),
-        "collections": [map_archive_usage_collection(item) for item in summary.collections],
-        "history": [map_archive_usage_snapshot(item) for item in summary.history],
-        "download_allowances": [
-            {
-                "store": item.store,
-                "state": item.state,
-                "month_started_at": item.month_started_at,
-                "resets_at": item.resets_at,
-                "allowance_bytes": item.allowance_bytes,
-                "safety_buffer_bytes": item.safety_buffer_bytes,
-                "effective_limit_bytes": item.effective_limit_bytes,
-                "accounted_bytes": item.accounted_bytes,
-                "reserved_bytes": item.reserved_bytes,
-                "remaining_bytes": item.remaining_bytes,
-            }
-            for item in summary.download_allowances
-        ],
+        "page": summary.page,
+        "per_page": summary.per_page,
+        "total": summary.total,
+        "pages": summary.pages,
+        "sort": summary.sort,
+        "order": summary.order,
+        "query": summary.query,
+        "stores": [map_archive_store(item) for item in summary.stores],
     }
 
 
@@ -99,6 +94,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "tags": list(summary.tags),
         "files": summary.files,
         "bytes": summary.bytes,
+        "remote_storage_bytes": summary.remote_storage_bytes,
         "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
     }
 
@@ -109,5 +105,8 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "per_page": summary.per_page,
         "total": summary.total,
         "pages": summary.pages,
+        "sort": summary.sort,
+        "order": summary.order,
+        "query": summary.query,
         "collections": [map_collection(collection) for collection in summary.collections],
     }

@@ -22,9 +22,11 @@ from riverhog_core.archive_objects import (
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyRetirementRecord,
     CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
@@ -55,7 +57,6 @@ from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import apply_archive_receipt
-from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import (
     _collection_upload_stats,
     _collection_upload_target_path,
@@ -211,8 +212,11 @@ class SqlAlchemyArchiveUploadService:
     def _claim_due_metadata_publication(self) -> tuple[int, str, int] | None:
         now = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
-            publication = session.scalar(
-                select(CollectionMetadataPublicationRecord)
+            candidate = session.execute(
+                select(
+                    CollectionMetadataPublicationRecord.collection_id,
+                    CollectionMetadataPublicationRecord.store,
+                )
                 .where(
                     CollectionMetadataPublicationRecord.state.in_(("pending", "retry_wait")),
                     CollectionMetadataPublicationRecord.next_attempt_at <= now,
@@ -222,10 +226,41 @@ class SqlAlchemyArchiveUploadService:
                     CollectionMetadataPublicationRecord.collection_id,
                     CollectionMetadataPublicationRecord.store,
                 )
-                .with_for_update(skip_locked=True)
                 .limit(1)
+            ).one_or_none()
+            if candidate is None:
+                return None
+            collection = session.scalar(
+                select(CollectionRecord)
+                .where(CollectionRecord.id == candidate.collection_id)
+                .with_for_update(skip_locked=True)
             )
-            if publication is None:
+            if collection is None:
+                return None
+            publication = session.scalar(
+                select(CollectionMetadataPublicationRecord)
+                .where(
+                    CollectionMetadataPublicationRecord.collection_id
+                    == candidate.collection_id,
+                    CollectionMetadataPublicationRecord.store == candidate.store,
+                )
+                .with_for_update()
+            )
+            if (
+                publication is None
+                or publication.state not in {"pending", "retry_wait"}
+                or publication.next_attempt_at > now
+            ):
+                return None
+            if session.get(CollectionDeletionRecord, publication.collection_id) is not None:
+                return None
+            if (
+                session.get(
+                    ArchiveCopyRetirementRecord,
+                    (publication.collection_id, publication.store),
+                )
+                is not None
+            ):
                 return None
             publication.state = "publishing"
             publication.attempt_count += 1
@@ -859,7 +894,6 @@ class SqlAlchemyArchiveUploadService:
                     )
                 )
             session.delete(upload)
-            record_archive_usage_snapshot(session, config=self._config)
 
     def _record_ingestion_cache(
         self,

@@ -553,15 +553,30 @@ class ApiClient(_HttpApiClient):
             params["all"] = True
         return self._json("GET", "/v1/collections", params=params)
 
-    def get_archive_report(
+    def list_archive_stores(
         self,
         *,
-        collection: int | None = None,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "store",
+        order: str = "asc",
+        all_items: bool = False,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if collection:
-            params["collection"] = collection
-        return self._json("GET", "/v1/archive", params=params)
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/archive/stores", params=params)
+
+    def get_archive_store(self, store: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/archive/stores/{quote(store, safe='')}")
 
     def list_apps(
         self,
@@ -782,6 +797,7 @@ class ApiClient(_HttpApiClient):
         *,
         destination_store: str,
         source_store: str | None = None,
+        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "collection_id": collection_id,
@@ -789,7 +805,42 @@ class ApiClient(_HttpApiClient):
         }
         if source_store is not None:
             payload["source_store"] = source_store
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
         return self._json("POST", "/v1/archive/copies", json=payload)
+
+    def list_archive_copy_jobs(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        sort: str = "requested_at",
+        order: str = "desc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/archive/copies", params=params)
+
+    def get_archive_copy_job(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/archive/copies/{collection_id}/{quote(destination_store, safe='')}",
+        )
 
     def plan_archive_copy_retirement(
         self,

@@ -27,6 +27,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
+    CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
     CollectionRecord,
     RetrievalJobObjectRecord,
@@ -40,7 +41,6 @@ from riverhog_core.services.archive_records import (
     archive_copy_is_complete,
     archive_copy_owned_identity,
 )
-from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
 
 _PLAN_TTL = timedelta(minutes=15)
@@ -316,7 +316,6 @@ class SqlAlchemyArchiveCopyRetirementService:
             if target is not None:
                 session.delete(target)
                 session.flush()
-            record_archive_usage_snapshot(session, config=self._config)
         return _result(plan, status="retired", verified_store=verified_store)
 
     def _clear_active(self, collection_id: int, store: str, challenge: str) -> None:
@@ -405,6 +404,13 @@ def _build_plan(
             CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
         )
     )
+    metadata_publication = db.scalar(
+        select(CollectionMetadataPublicationRecord.collection_id).where(
+            CollectionMetadataPublicationRecord.collection_id == collection_id,
+            CollectionMetadataPublicationRecord.store == store,
+            CollectionMetadataPublicationRecord.state == "publishing",
+        )
+    )
     terminal_retrieval_ids = db.scalars(
         select(RetrievalJobRecord.id)
         .join(RetrievalJobObjectRecord)
@@ -432,18 +438,16 @@ def _build_plan(
         blockers.append(f"archive proof maturation is active: {store}")
     if attestation is not None:
         blockers.append(f"archive attestation is active: {store}")
+    if metadata_publication is not None:
+        blockers.append(f"collection metadata publication is active: {store}")
     if not retained:
         blockers.append("retirement would remove the collection's last complete archive copy")
 
-    target_objects = [
-        {
-            "kind": current.kind,
-            "object_path": current.object_path,
-            "stored_bytes": current.stored_bytes,
-        }
-        for current in archive_copy_owned_identity(target).objects
-    ]
     aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
+    target_object_count, target_stored_bytes = aggregates.get(
+        (collection_id, target.store),
+        (0, 0),
+    )
     return {
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
@@ -453,8 +457,8 @@ def _build_plan(
         "target_copy": {
             "store": target.store,
             "last_verified_at": target.last_verified_at,
-            "remote_storage_bytes": aggregates.get((collection_id, target.store), (0, 0))[1],
-            "objects": target_objects,
+            "remote_storage_bytes": target_stored_bytes,
+            "object_count": target_object_count,
         },
         "retained_copies": [
             {
@@ -464,7 +468,7 @@ def _build_plan(
             }
             for copy in retained
         ],
-        "retired_retrieval_jobs": list(terminal_retrieval_ids),
+        "retired_retrieval_job_count": len(terminal_retrieval_ids),
         "blockers": blockers,
         "verification_note": (
             "Execution requires a different retained copy to pass current remote "

@@ -25,6 +25,7 @@ from riverhog_core.archive_objects import (
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyRetirementRecord,
     CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
@@ -258,6 +259,25 @@ class SqlAlchemyRetrievalService:
                         raise NotFound(f"collection not found: {collection_id}")
                     if session.get(CollectionDeletionRecord, collection_id) is not None:
                         raise Conflict(f"collection deletion is active: {collection_id}")
+                planned_sources = {
+                    (
+                        cast(int, current["collection_id"]),
+                        str(current["source_store"]),
+                    )
+                    for current in planned_objects
+                }
+                for collection_id, source_store in sorted(planned_sources):
+                    if (
+                        session.get(
+                            ArchiveCopyRetirementRecord,
+                            (collection_id, source_store),
+                        )
+                        is not None
+                    ):
+                        raise Conflict(
+                            "archive copy retirement is active: "
+                            f"{collection_id} in {source_store}"
+                        )
                 record = RetrievalJobRecord(
                     id=job_id,
                     app=app,
@@ -323,8 +343,6 @@ class SqlAlchemyRetrievalService:
             if key_id is not None and self._download_allowance is not None:
                 self._download_allowance.release_retrieval(job_id=job_id)
             raise
-        if requested:
-            self._request_job_objects(job_id)
         return self.get(app=app, key_id=key_id, job_id=job_id)
 
     def get(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
@@ -747,6 +765,13 @@ class SqlAlchemyRetrievalService:
         }
 
     def _select_copy(self, session: Session, collection_id: int) -> CollectionArchiveCopyRecord:
+        retiring_stores = set(
+            session.scalars(
+                select(ArchiveCopyRetirementRecord.store).where(
+                    ArchiveCopyRetirementRecord.collection_id == collection_id
+                )
+            ).all()
+        )
         copies = {
             copy.store: copy
             for copy in session.scalars(
@@ -754,7 +779,7 @@ class SqlAlchemyRetrievalService:
                     CollectionArchiveCopyRecord.collection_id == collection_id
                 )
             )
-            if archive_copy_is_complete(copy)
+            if archive_copy_is_complete(copy) and copy.store not in retiring_stores
         }
         for store in self._config.archive_read_order:
             if store in copies:
@@ -831,33 +856,13 @@ class SqlAlchemyRetrievalService:
             attribution=attribution,
         )
 
-    def _request_job_objects(self, job_id: str) -> None:
-        with session_scope(self._session_factory) as session:
-            job = session.get(RetrievalJobRecord, job_id)
-            if job is None or job.state != "requested":
-                return
-            groups = self._missing_groups(session, job)
-            requested_at = job.requested_at or job.created_at
-        estimated_ready = format_utc_timestamp(
-            parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
-        )
-        for (store_name, collection_id), objects in groups.items():
-            self._archive_stores.require(store_name).prepare_archive_objects_read(
-                collection_id=collection_id,
-                objects=objects,
-                retrieval_tier=self._config.retrieval_tier,
-                hold_days=max(1, self._config.retrieval_max_lease.days),
-                requested_at=requested_at,
-                estimated_ready_at=estimated_ready,
-            )
-
     def _process_one(self, job_id: str) -> None:
         with session_scope(self._session_factory) as session:
             job = session.get(RetrievalJobRecord, job_id)
             if job is None or job.state != "requested":
                 return
             groups = self._missing_groups(session, job)
-            requested_at = job.requested_at or job.created_at
+            restore_requested_at = job.restore_requested_at
             plan = json.loads(job.constraints_json)
             attribution = _download_attribution(job)
             lease_seconds = int(plan["lease_seconds"])
@@ -884,11 +889,43 @@ class SqlAlchemyRetrievalService:
                         object_id=current.object_id,
                         expires_at=pending_expires_at,
                     )
-        estimated_ready = format_utc_timestamp(
-            parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
-        )
-        all_ready = True
         try:
+            if groups and restore_requested_at is None:
+                restore_requested_at = format_utc_timestamp(utc_now())
+                estimated_ready = format_utc_timestamp(
+                    parse_utc_timestamp(restore_requested_at)
+                    + self._config.retrieval_estimated_latency
+                )
+                for (store_name, collection_id), objects in groups.items():
+                    self._archive_stores.require(
+                        store_name
+                    ).prepare_archive_objects_read(
+                        collection_id=collection_id,
+                        objects=objects,
+                        retrieval_tier=self._config.retrieval_tier,
+                        hold_days=max(1, self._config.retrieval_max_lease.days),
+                        requested_at=restore_requested_at,
+                        estimated_ready_at=estimated_ready,
+                    )
+                with session_scope(self._session_factory) as session:
+                    job = session.scalar(
+                        select(RetrievalJobRecord)
+                        .where(RetrievalJobRecord.id == job_id)
+                        .with_for_update()
+                    )
+                    if job is None or job.state != "requested":
+                        return
+                    if job.restore_requested_at is None:
+                        job.restore_requested_at = restore_requested_at
+                        job.failure = None
+                    else:
+                        restore_requested_at = job.restore_requested_at
+
+            requested_at = restore_requested_at or format_utc_timestamp(utc_now())
+            estimated_ready = format_utc_timestamp(
+                parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
+            )
+            all_ready = True
             for (store_name, collection_id), objects in groups.items():
                 store = self._archive_stores.require(store_name)
                 status = store.get_archive_objects_read_status(
@@ -1147,6 +1184,7 @@ def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
         "plan_etag": record.plan_etag,
         "created_at": record.created_at,
         "requested_at": record.requested_at,
+        "restore_requested_at": record.restore_requested_at,
         "ready_at": record.ready_at,
         "expires_at": record.expires_at,
         "completed_at": record.completed_at,

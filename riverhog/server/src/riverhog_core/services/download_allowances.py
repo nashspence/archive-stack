@@ -712,15 +712,56 @@ class SqlAlchemyDownloadAllowance:
 
     def _status(self, policy: ArchiveStoreConfig) -> ArchiveDownloadAllowance:
         now = self._current_time()
+        now_text = format_utc_timestamp(now)
+        month_started_at = format_utc_timestamp(_month_start(now))
         with self._locks[policy.name]:
             with session_scope(self._session_factory) as session:
-                usage = self._locked_usage(session, store=policy.name, now=now)
-                self._reap_expired(session, usage=usage, now=now)
-                reserved_bytes = self._reserved_bytes(session, store=policy.name)
+                usage = session.get(ArchiveDownloadUsageRecord, policy.name)
+                accounted_bytes = (
+                    usage.accounted_bytes
+                    if usage is not None and usage.month_started_at == month_started_at
+                    else 0
+                )
+                expired_bytes, reserved_bytes = session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        ArchiveDownloadReservationRecord.expires_at
+                                        <= now_text,
+                                        ArchiveDownloadReservationRecord.reserved_bytes,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        ArchiveDownloadReservationRecord.expires_at
+                                        > now_text,
+                                        ArchiveDownloadReservationRecord.reserved_bytes,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                    ).where(
+                        ArchiveDownloadReservationRecord.store == policy.name,
+                        ArchiveDownloadReservationRecord.month_started_at
+                        == month_started_at,
+                    )
+                ).one()
+                accounted_bytes += int(expired_bytes)
+                reserved_bytes = int(reserved_bytes)
                 effective_limit = _effective_limit(policy)
                 remaining_bytes = max(
                     0,
-                    effective_limit - usage.accounted_bytes - reserved_bytes,
+                    effective_limit - accounted_bytes - reserved_bytes,
                 )
                 allowance = policy.monthly_download_allowance_bytes
                 if allowance is None:
@@ -728,12 +769,12 @@ class SqlAlchemyDownloadAllowance:
                 return ArchiveDownloadAllowance(
                     store=policy.name,
                     state="open" if remaining_bytes > 0 else "closed",
-                    month_started_at=usage.month_started_at,
+                    month_started_at=month_started_at,
                     resets_at=format_utc_timestamp(_next_month_start(now)),
                     allowance_bytes=allowance,
                     safety_buffer_bytes=policy.download_safety_buffer_bytes,
                     effective_limit_bytes=effective_limit,
-                    accounted_bytes=usage.accounted_bytes,
+                    accounted_bytes=accounted_bytes,
                     reserved_bytes=reserved_bytes,
                     remaining_bytes=remaining_bytes,
                 )

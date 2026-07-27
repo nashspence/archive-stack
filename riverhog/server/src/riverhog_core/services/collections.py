@@ -1012,6 +1012,9 @@ class SqlAlchemyCollectionService:
                 per_page=total if all_items else per_page,
                 total=total,
                 pages=(1 if total else 0) if all_items else pages,
+                sort=sort,
+                order=order,
+                query=q,
                 collections=[
                     _collection_summary_from_row(row, aggregates=aggregates) for row in rows
                 ],
@@ -1056,16 +1059,18 @@ def _collection_summary_from_row(
     aggregates: dict[tuple[int, str], ArchiveCopyAggregate],
 ) -> CollectionSummary:
     collection = row[0]
+    archive_copies = tuple(
+        _collection_archive_status(copy, aggregates=aggregates)
+        for copy in sorted(collection.archive_copies, key=lambda item: item.store)
+    )
     return CollectionSummary(
         id=CollectionId(collection.id),
         created_at=collection.created_at,
         tags=tuple(sorted(assignment.tag_id for assignment in collection.tags)),
         files=int(row.files),
         bytes=int(row.bytes),
-        archive_copies=tuple(
-            _collection_archive_status(copy, aggregates=aggregates)
-            for copy in sorted(collection.archive_copies, key=lambda item: item.store)
-        ),
+        remote_storage_bytes=sum(copy.stored_bytes or 0 for copy in archive_copies),
+        archive_copies=archive_copies,
     )
 
 

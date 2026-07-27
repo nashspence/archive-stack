@@ -41,7 +41,6 @@ from riverhog_core.proofs import (
     ProofVerifier,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collection_custody import require_collection_custody_idle
 
 _LOG = logging.getLogger(__name__)
@@ -480,7 +479,6 @@ class SqlAlchemyArchiveAttestationService:
                 copy.last_uploaded_at or now,
                 *(current.uploaded_at for current in receipt.objects),
             )
-            record_archive_usage_snapshot(session, config=self._config)
 
     def _record_waiting(self, *, collection_id: int, store: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -532,7 +530,6 @@ class SqlAlchemyArchiveAttestationService:
                 copy.last_uploaded_at or receipt.uploaded_at,
                 receipt.uploaded_at,
             )
-            record_archive_usage_snapshot(session, config=self._config)
 
 
 def _identity_from_record(record: CollectionArchiveObjectRecord) -> ArchiveObjectIdentity:

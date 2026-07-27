@@ -25,7 +25,6 @@ from riverhog_core.proofs import (
     ProofVerifier,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collection_custody import require_collection_custody_idle
 
 _LOG = logging.getLogger(__name__)
@@ -310,7 +309,6 @@ class SqlAlchemyProofMaturationService:
             record.next_attempt_at = receipt.verified_at or receipt.uploaded_at
             record.matured_at = receipt.verified_at or receipt.uploaded_at
             record.failure = None
-            record_archive_usage_snapshot(session, config=self._config)
 
 
 def _identity_from_record(record: CollectionArchiveObjectRecord) -> ArchiveObjectIdentity:

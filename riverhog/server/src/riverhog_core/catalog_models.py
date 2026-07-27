@@ -337,14 +337,6 @@ class CollectionArchiveFileObjectRecord(Base):
     object: Mapped[CollectionArchiveObjectRecord] = relationship(back_populates="placements")
 
 
-class ArchiveUsageSnapshotRecord(Base):
-    __tablename__ = "archive_usage_snapshots"
-
-    captured_at: Mapped[str] = mapped_column(String, primary_key=True)
-    uploaded_collections: Mapped[int] = mapped_column(Integer)
-    measured_storage_bytes: Mapped[int] = mapped_column(BigInteger)
-
-
 class ArchiveDownloadUsageRecord(Base):
     __tablename__ = "archive_download_usage"
 
@@ -381,12 +373,16 @@ class ArchiveCopyJobRecord(Base):
     destination_store: Mapped[str] = mapped_column(String, primary_key=True)
     destination_storage_prefix: Mapped[str] = mapped_column(String)
     source_store: Mapped[str] = mapped_column(String)
+    initiated_by_app: Mapped[str] = mapped_column(String)
+    initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String)
     requested_at: Mapped[str] = mapped_column(String)
     read_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     failure: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
@@ -511,6 +507,7 @@ class RetrievalJobRecord(Base):
     constraints_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String)
     requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    restore_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     next_poll_at: Mapped[str | None] = mapped_column(String, nullable=True)

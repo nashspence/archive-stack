@@ -13,8 +13,10 @@ def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
         "/.well-known/resourcesync",
         "/resourcesync/resourcelist.xml",
         "/resourcesync/changelist.xml",
-        "/v1/archive",
+        "/v1/archive/stores",
+        "/v1/archive/stores/{store}",
         "/v1/archive/copies",
+        "/v1/archive/copies/{collection_id}/{destination_store}",
         "/v1/apps",
         "/v1/apps/{app}/keys",
         "/v1/apps/{app}/keys/{key_id}/access",
@@ -57,7 +59,7 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
         "objects",
         "etag",
     }
-    assert {"id", "state", "plan_etag", "files", "objects"} <= set(
+    assert {"id", "state", "plan_etag", "restore_requested_at", "files", "objects"} <= set(
         schemas["RetrievalJobOut"]["required"]
     )
 
@@ -76,6 +78,7 @@ def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
 
     assert "created_at" in schemas["CollectionSummaryOut"]["required"]
+    assert "remote_storage_bytes" in schemas["CollectionSummaryOut"]["required"]
     assert "created_at" in schemas["CollectionUploadSessionOut"]["required"]
 
     mapped = map_collection(

@@ -22,7 +22,6 @@ from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
-    CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
@@ -38,6 +37,7 @@ from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import (
+    archive_copy_aggregates,
     archive_copy_is_complete,
     archive_copy_owned_identity,
 )
@@ -186,7 +186,7 @@ class SqlAlchemyCollectionDeletionService:
     def _delete_archive_objects(self, plan: dict[str, object]) -> None:
         collection_id = cast(int, plan["collection_id"])
         stores = {
-            str(item["store"]) for item in cast(list[dict[str, object]], plan["archive_objects"])
+            str(item["store"]) for item in cast(list[dict[str, object]], plan["archive_copies"])
         }
         for store_name in sorted(stores):
             with session_scope(self._session_factory) as session:
@@ -289,35 +289,23 @@ def _build_plan(
         raise InvalidState(
             f"collection archive copies are not completely uploaded and verified: {collection_id}"
         )
-    files = list(
-        session.scalars(
-            select(CollectionFileRecord)
-            .where(CollectionFileRecord.collection_id == collection_id)
-            .order_by(CollectionFileRecord.path)
-        )
-    )
     file_count, file_bytes = session.execute(
         select(
             func.count(CollectionFileRecord.path),
             func.coalesce(func.sum(CollectionFileRecord.bytes), 0),
         ).where(CollectionFileRecord.collection_id == collection_id)
     ).one()
-    remote_storage_bytes = int(
-        session.scalar(
-            select(func.coalesce(func.sum(CollectionArchiveObjectRecord.stored_bytes), 0)).where(
-                CollectionArchiveObjectRecord.collection_id == collection_id
-            )
-        )
-        or 0
-    )
-    remote_storage_bytes += int(
-        session.scalar(
-            select(
-                func.coalesce(func.sum(CollectionMetadataPublicationRecord.stored_bytes), 0)
-            ).where(CollectionMetadataPublicationRecord.collection_id == collection_id)
-        )
-        or 0
-    )
+    aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
+    archive_copies: list[dict[str, str | int]] = [
+        {
+            "store": archive.store,
+            "objects": aggregates.get((collection_id, archive.store), (0, 0))[0],
+            "stored_bytes": aggregates.get((collection_id, archive.store), (0, 0))[1],
+        }
+        for archive in archives
+    ]
+    archive_object_count = sum(int(copy["objects"]) for copy in archive_copies)
+    remote_storage_bytes = sum(int(copy["stored_bytes"]) for copy in archive_copies)
     upload = session.get(CollectionUploadRecord, collection_id)
     upload_file_count = int(
         session.scalar(
@@ -330,59 +318,33 @@ def _build_plan(
     blockers = _active_blockers(session, collection_id)
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
-    archive_objects = [
-        {
-            "store": archive.store,
-            "kind": current.kind,
-            "object_path": current.object_path,
-            "stored_bytes": current.stored_bytes,
-        }
-        for archive in archives
-        for current in sorted(archive.objects, key=lambda item: item.object_order)
-    ]
-    archive_objects.extend(
-        {
-            "store": publication.store,
-            "kind": "metadata",
-            "object_path": publication.object_path,
-            "stored_bytes": publication.stored_bytes or 0,
-        }
-        for publication in session.scalars(
-            select(CollectionMetadataPublicationRecord)
-            .where(
+    metadata_publication_count = int(
+        session.scalar(
+            select(func.count()).select_from(CollectionMetadataPublicationRecord).where(
                 CollectionMetadataPublicationRecord.collection_id == collection_id,
                 CollectionMetadataPublicationRecord.object_path.is_not(None),
             )
-            .order_by(CollectionMetadataPublicationRecord.store)
         )
+        or 0
     )
     return {
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
         "warning": ARCHIVE_CUSTODY_WARNING,
         "expires_at": format_utc_timestamp(expires_at),
-        "files": [{"path": file.path, "bytes": file.bytes} for file in files],
         "file_count": int(file_count),
         "bytes": int(file_bytes),
-        "archive_objects": archive_objects,
+        "archive_copies": archive_copies,
+        "archive_object_count": archive_object_count,
         "remote_storage_bytes": remote_storage_bytes,
-        "upload_files": [
-            {"path": row.path, "bytes": row.bytes}
-            for row in session.scalars(
-                select(CollectionUploadFileRecord)
-                .where(CollectionUploadFileRecord.collection_id == collection_id)
-                .order_by(CollectionUploadFileRecord.file_order)
-            )
-        ],
+        "upload_file_count": upload_file_count,
         "record_etag": collection.record_etag,
         "metadata_rows": {
             "collections": 1,
             "collection_files": int(file_count),
             "collection_archive_copies": len(archives),
             "collection_tags": len(collection.tags),
-            "collection_metadata_publications": len(
-                [item for item in archive_objects if item["kind"] == "metadata"]
-            ),
+            "collection_metadata_publications": metadata_publication_count,
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
         },
@@ -422,7 +384,10 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
     copy_jobs = list(
         session.execute(
             select(ArchiveCopyJobRecord.source_store, ArchiveCopyJobRecord.destination_store)
-            .where(ArchiveCopyJobRecord.collection_id == collection_id)
+            .where(
+                ArchiveCopyJobRecord.collection_id == collection_id,
+                ArchiveCopyJobRecord.state.in_({"requested", "waiting", "copying"}),
+            )
             .order_by(ArchiveCopyJobRecord.destination_store)
         )
     )
@@ -459,6 +424,20 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
         )
     )
     blockers.extend(f"archive attestation is active: {store}" for store in attestations)
+    metadata_publications = list(
+        session.scalars(
+            select(CollectionMetadataPublicationRecord.store)
+            .where(
+                CollectionMetadataPublicationRecord.collection_id == collection_id,
+                CollectionMetadataPublicationRecord.state == "publishing",
+            )
+            .order_by(CollectionMetadataPublicationRecord.store)
+        )
+    )
+    blockers.extend(
+        f"collection metadata publication is active: {store}"
+        for store in metadata_publications
+    )
     return blockers
 
 

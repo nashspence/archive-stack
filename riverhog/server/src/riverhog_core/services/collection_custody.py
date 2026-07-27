@@ -55,3 +55,21 @@ def require_collection_custody_idle(session: Session, collection_id: int) -> Non
         raise Conflict(
             f"archive attestation is in progress: {collection_id} in {attestation.store}"
         )
+
+
+def require_collection_mutation_allowed(session: Session, collection_id: int) -> None:
+    session.scalar(
+        select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
+    )
+    if session.get(CollectionDeletionRecord, collection_id) is not None:
+        raise Conflict(f"collection deletion is in progress: {collection_id}")
+    retirement = session.scalar(
+        select(ArchiveCopyRetirementRecord)
+        .where(ArchiveCopyRetirementRecord.collection_id == collection_id)
+        .order_by(ArchiveCopyRetirementRecord.store)
+        .limit(1)
+    )
+    if retirement is not None:
+        raise Conflict(
+            f"archive copy retirement is in progress: {collection_id} in {retirement.store}"
+        )

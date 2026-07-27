@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from riverhog_core.catalog_models import (
-    ArchiveUsageSnapshotRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
@@ -17,7 +16,6 @@ from sqlalchemy.orm import DeclarativeBase
         (CollectionFileRecord, "bytes"),
         (CollectionArchiveObjectRecord, "plaintext_bytes"),
         (CollectionArchiveObjectRecord, "stored_bytes"),
-        (ArchiveUsageSnapshotRecord, "measured_storage_bytes"),
         (CollectionUploadFileRecord, "bytes"),
         (CollectionUploadFileRecord, "ingress_bytes"),
         (CollectionUploadFileRecord, "ingress_uploaded_bytes"),

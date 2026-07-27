@@ -13,7 +13,7 @@ class RetrievalFileIn(RiverhogModel):
 
 
 class RetrievalPlanRequest(RiverhogModel):
-    files: list[RetrievalFileIn] = Field(min_length=1)
+    files: list[RetrievalFileIn] = Field(min_length=1, max_length=10_000)
     lease_seconds: int | None = Field(default=None, ge=1)
 
 
@@ -60,6 +60,7 @@ class RetrievalJobOut(RiverhogModel):
     plan_etag: str
     created_at: str
     requested_at: str | None
+    restore_requested_at: str | None
     ready_at: str | None
     expires_at: str | None
     completed_at: str | None

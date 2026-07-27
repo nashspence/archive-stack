@@ -31,28 +31,6 @@ class CollectionManifestStatus:
 
 
 @dataclass(frozen=True)
-class ArchiveUsageTotals:
-    collections: int
-    uploaded_collections: int
-    measured_storage_bytes: int
-
-
-@dataclass(frozen=True)
-class ArchiveUsageCollection:
-    id: CollectionId
-    bytes: int
-    measured_storage_bytes: int
-    archive_copies: tuple[ArchiveCopyStatus, ...] = ()
-
-
-@dataclass(frozen=True)
-class ArchiveUsageSnapshot:
-    captured_at: str
-    uploaded_collections: int
-    measured_storage_bytes: int
-
-
-@dataclass(frozen=True)
 class ArchiveDownloadAllowance:
     store: str
     state: str
@@ -67,13 +45,28 @@ class ArchiveDownloadAllowance:
 
 
 @dataclass(frozen=True)
-class ArchiveUsageReport:
-    scope: str
-    measured_at: str
-    totals: ArchiveUsageTotals
-    collections: tuple[ArchiveUsageCollection, ...]
-    history: tuple[ArchiveUsageSnapshot, ...] = ()
-    download_allowances: tuple[ArchiveDownloadAllowance, ...] = ()
+class ArchiveStoreSummary:
+    store: str
+    backend: str
+    storage_class: str
+    read_mode: str
+    write_target: bool
+    collections: int
+    objects: int
+    stored_bytes: int
+    download_allowance: ArchiveDownloadAllowance | None = None
+
+
+@dataclass(frozen=True)
+class ArchiveStoreListPage:
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: str
+    order: str
+    query: str | None
+    stores: list[ArchiveStoreSummary]
 
 
 @dataclass(frozen=True)
@@ -83,6 +76,7 @@ class CollectionSummary:
     tags: tuple[str, ...]
     files: int
     bytes: int
+    remote_storage_bytes: int = 0
     archive_copies: tuple[ArchiveCopyStatus, ...] = ()
 
 
@@ -92,6 +86,9 @@ class CollectionListPage:
     per_page: int
     total: int
     pages: int
+    sort: str
+    order: str
+    query: str | None
     collections: list[CollectionSummary]
 
 

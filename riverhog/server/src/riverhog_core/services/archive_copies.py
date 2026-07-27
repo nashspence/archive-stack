@@ -4,10 +4,11 @@ import logging
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
+from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_objects import CollectionArchiveFile, load_collection_archive
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -19,6 +20,7 @@ from riverhog_core.catalog_models import (
     CollectionProofMaturationRecord,
     CollectionRecord,
 )
+from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     CollectionArchiveIdentity,
@@ -31,10 +33,21 @@ from riverhog_core.services.archive_records import (
     archive_copy_identity,
     archive_copy_is_complete,
 )
-from riverhog_core.services.archive_reporting import record_archive_usage_snapshot
 from riverhog_core.services.collection_custody import require_collection_custody_idle
+from riverhog_core.services.lifecycle_events import (
+    SqlAlchemyLifecycleEventService,
+    event_context_json,
+)
 
 _LOG = logging.getLogger(__name__)
+_ACTIVE_STATES = {"requested", "waiting", "copying"}
+_SORT_FIELDS = {
+    "collection_id",
+    "source_store",
+    "destination_store",
+    "state",
+    "requested_at",
+}
 
 
 class SqlAlchemyArchiveCopyService:
@@ -49,6 +62,7 @@ class SqlAlchemyArchiveCopyService:
         self._archive_stores = archive_stores
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._session_factory = make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
     def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int:
         if limit < 1:
@@ -73,6 +87,8 @@ class SqlAlchemyArchiveCopyService:
         *,
         destination_store: str,
         source_store: str | None = None,
+        initiator: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id(collection_id)
         destination = self._configured_store(destination_store)
@@ -81,6 +97,7 @@ class SqlAlchemyArchiveCopyService:
             raise BadRequest("archive copy source and destination stores must differ")
         destination_archive_store = self._archive_stores.require(destination)
         current_text = format_utc_timestamp(utc_now())
+        normalized_context_json = event_context_json(event_context)
         with session_scope(self._session_factory) as session:
             require_collection_custody_idle(session, normalized_collection_id)
             collection = session.get(CollectionRecord, normalized_collection_id)
@@ -107,17 +124,150 @@ class SqlAlchemyArchiveCopyService:
                     destination_storage_prefix=(
                         destination_archive_store.new_collection_archive_storage_prefix()
                     ),
+                    initiated_by_app=initiator.app,
+                    initiated_by_key_id=initiator.key_id,
+                    event_context_json=normalized_context_json,
                     state="requested",
                     requested_at=current_text,
                     next_attempt_at=current_text,
                 )
                 session.add(job)
-            elif job.state not in {"requested", "waiting", "copying"}:
+                self._emit(job, type="archive_copy.requested", session=session)
+            elif job.state not in _ACTIVE_STATES:
                 job.source_store = source_copy.store
+                job.initiated_by_app = initiator.app
+                job.initiated_by_key_id = initiator.key_id
+                job.event_context_json = normalized_context_json
                 job.state = "requested"
+                job.requested_at = current_text
                 job.next_attempt_at = current_text
+                job.completed_at = None
                 job.failure = None
+                self._emit(job, type="archive_copy.requested", session=session)
             return _job_payload(job)
+
+    def get(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        normalized_collection_id = _normalize_collection_id(collection_id)
+        destination = self._configured_store(destination_store)
+        with session_scope(self._session_factory) as session:
+            job = session.scalar(
+                select(ArchiveCopyJobRecord).where(
+                    ArchiveCopyJobRecord.collection_id == normalized_collection_id,
+                    ArchiveCopyJobRecord.destination_store == destination,
+                    collection_access_filter(
+                        ArchiveCopyJobRecord.collection_id,
+                        principal,
+                        ARCHIVES_MANAGE,
+                    ),
+                )
+            )
+            if job is None:
+                raise NotFound(
+                    f"archive copy job not found: {normalized_collection_id} to {destination}"
+                )
+            return _job_payload(job)
+
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        if page < 1:
+            raise BadRequest("page must be at least 1")
+        if per_page < 1:
+            raise BadRequest("per_page must be at least 1")
+        if sort not in _SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        query = q.strip().casefold() if q and q.strip() else None
+        filters = [
+            collection_access_filter(
+                ArchiveCopyJobRecord.collection_id,
+                principal,
+                ARCHIVES_MANAGE,
+            )
+        ]
+        if query is not None:
+            escaped = (
+                query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
+            filters.append(
+                or_(
+                    cast(ArchiveCopyJobRecord.collection_id, String).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                    func.lower(ArchiveCopyJobRecord.source_store).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                    func.lower(ArchiveCopyJobRecord.destination_store).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                    func.lower(ArchiveCopyJobRecord.state).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                )
+            )
+        sort_columns = {
+            "collection_id": ArchiveCopyJobRecord.collection_id,
+            "source_store": ArchiveCopyJobRecord.source_store,
+            "destination_store": ArchiveCopyJobRecord.destination_store,
+            "state": ArchiveCopyJobRecord.state,
+            "requested_at": ArchiveCopyJobRecord.requested_at,
+        }
+        direction = (
+            sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
+        )
+        statement = (
+            select(ArchiveCopyJobRecord)
+            .where(*filters)
+            .order_by(
+                direction,
+                ArchiveCopyJobRecord.collection_id.asc(),
+                ArchiveCopyJobRecord.destination_store.asc(),
+            )
+        )
+        with session_scope(self._session_factory) as session:
+            total = int(
+                session.scalar(
+                    select(func.count()).select_from(ArchiveCopyJobRecord).where(*filters)
+                )
+                or 0
+            )
+            if not all_items:
+                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            jobs = [_job_payload(job) for job in session.scalars(statement)]
+        return {
+            "page": 1 if all_items else page,
+            "per_page": total if all_items else per_page,
+            "total": total,
+            "pages": (
+                (1 if total else 0)
+                if all_items
+                else ((total + per_page - 1) // per_page if total else 0)
+            ),
+            "sort": sort,
+            "order": order,
+            "query": query,
+            "copies": jobs,
+        }
 
     def process_due(self, *, limit: int = 1) -> int:
         if limit < 1:
@@ -300,8 +450,16 @@ class SqlAlchemyArchiveCopyService:
                     next_attempt_at=format_utc_timestamp(utc_now()),
                 )
             )
-            session.delete(job)
-            record_archive_usage_snapshot(session, config=self._config)
+            job.state = "completed"
+            job.completed_at = format_utc_timestamp(utc_now())
+            job.next_attempt_at = None
+            job.failure = None
+            self._emit(
+                job,
+                type="archive_copy.completed",
+                terminal=True,
+                session=session,
+            )
         source_store.cleanup_archive_objects_read(
             collection_id=collection_id,
             objects=data_objects,
@@ -333,6 +491,13 @@ class SqlAlchemyArchiveCopyService:
             job.state = "failed"
             job.next_attempt_at = None
             job.failure = f"{type(exc).__name__}: {exc}"
+            self._emit(
+                job,
+                type="archive_copy.issue",
+                terminal=True,
+                details={"error": job.failure},
+                session=session,
+            )
 
     def _cleanup_source_read(self, *, collection_id: int, destination_store: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -363,6 +528,34 @@ class SqlAlchemyArchiveCopyService:
             return self._config.archive_store(value).name
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
+
+    def _emit(
+        self,
+        job: ArchiveCopyJobRecord,
+        *,
+        type: str,
+        terminal: bool = False,
+        details: dict[str, object] | None = None,
+        session: Session,
+    ) -> None:
+        self._lifecycle_events.emit_collection(
+            type=type,
+            collection_id=job.collection_id,
+            details={
+                "source_store": job.source_store,
+                "destination_store": job.destination_store,
+                "state": job.state,
+                **(details or {}),
+            },
+            terminal=terminal,
+            initiator=ApplicationPrincipal(
+                app=job.initiated_by_app,
+                key_id=job.initiated_by_key_id,
+                access=frozenset(),
+            ),
+            event_context_json=job.event_context_json,
+            session=session,
+        )
 
 
 def _select_source_copy(
@@ -428,10 +621,13 @@ def _job_payload(job: ArchiveCopyJobRecord) -> dict[str, object]:
         "collection_id": job.collection_id,
         "source_store": job.source_store,
         "destination_store": job.destination_store,
+        "initiated_by_app": job.initiated_by_app,
+        "initiated_by_key_id": job.initiated_by_key_id,
         "state": job.state,
         "requested_at": job.requested_at,
         "ready_at": job.ready_at,
         "expires_at": job.expires_at,
+        "completed_at": job.completed_at,
         "failure": job.failure,
     }
 
@@ -441,10 +637,13 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
         "collection_id": copy.collection_id,
         "source_store": None,
         "destination_store": copy.store,
+        "initiated_by_app": None,
+        "initiated_by_key_id": None,
         "state": "completed",
         "requested_at": None,
         "ready_at": copy.last_verified_at,
         "expires_at": None,
+        "completed_at": copy.last_verified_at,
         "failure": None,
     }
 

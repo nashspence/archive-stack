@@ -15,7 +15,6 @@ CURRENT_TABLES = {
     "archive_copy_retirements",
     "archive_download_reservations",
     "archive_download_usage",
-    "archive_usage_snapshots",
     "catalog_events",
     "collection_archive_copies",
     "collection_archive_attestations",
@@ -51,11 +50,6 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert set(inspector.get_table_names()) == CURRENT_TABLES
-    assert {column["name"] for column in inspector.get_columns("archive_usage_snapshots")} == {
-        "captured_at",
-        "uploaded_collections",
-        "measured_storage_bytes",
-    }
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",
         "month_started_at",
@@ -77,6 +71,13 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "app",
         "state",
         "plan_etag",
+        "restore_requested_at",
+    }
+    assert {column["name"] for column in inspector.get_columns("archive_copy_jobs")} >= {
+        "initiated_by_app",
+        "initiated_by_key_id",
+        "event_context_json",
+        "completed_at",
     }
     assert {column["name"] for column in inspector.get_columns("collection_proof_maturations")} == {
         "collection_id",

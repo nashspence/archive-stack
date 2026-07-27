@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from riverhog_core.app_permissions import (
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyRetirementRecord,
     CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
@@ -24,13 +25,14 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
+    RetrievalJobRecord,
     TagRecord,
 )
 from riverhog_core.collection_metadata import (
     collection_content_etag,
     collection_record_manifest,
 )
-from riverhog_core.ports.archive_store import ArchiveObjectIdentity
+from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig
@@ -39,7 +41,7 @@ from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
-from riverhog_protocol.errors import DownloadAllowanceExceeded, NotFound
+from riverhog_protocol.errors import DownloadAllowanceExceeded, InvalidState, NotFound
 
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
@@ -173,6 +175,23 @@ class PartiallyReadyArchiveStore(PreparedArchiveStore):
         return ArchiveReadStatus(state="ready" if collection_id == COLLECTION_ID else "requested")
 
 
+class FailOncePreparedArchiveStore(PreparedArchiveStore):
+    def __init__(self, archive, *, passphrase: str) -> None:
+        super().__init__(archive, passphrase=passphrase)
+        self.prepare_attempts = 0
+
+    def prepare_archive_objects_read(
+        self,
+        *,
+        objects: Sequence[ArchiveObjectIdentity],
+        **kwargs: object,
+    ) -> ArchiveReadStatus:
+        self.prepare_attempts += 1
+        if self.prepare_attempts == 1:
+            raise RuntimeError("provider temporarily unavailable")
+        return super().prepare_archive_objects_read(objects=objects, **kwargs)
+
+
 def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
     store = MemoryArchiveStore(archive)
@@ -247,6 +266,29 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
             path="two.txt",
         )
     assert service.acknowledge(app="local", job_id=str(job["id"]))["state"] == "completed"
+
+
+def test_retrieval_does_not_select_an_archive_copy_being_retired(tmp_path: Path) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add(
+            ArchiveCopyRetirementRecord(
+                collection_id=COLLECTION_ID,
+                store="deep",
+                challenge="challenge",
+                plan_json="{}",
+                started_at="2026-07-15T00:00:00.000000Z",
+            )
+        )
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        None,
+        proof_verifier=FixtureProofVerifier(),
+    )
+
+    with pytest.raises(InvalidState, match="no readable archive copy"):
+        service.plan([(COLLECTION_ID, "one.txt")])
 
 
 def test_app_can_cancel_its_ready_retrieval_job(tmp_path: Path) -> None:
@@ -454,7 +496,8 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
 
     assert job["state"] == "requested"
     assert allowance.reservations == [(job["id"], expected_remote_bytes)]
-    assert store.prepared == [("data-000000",)]
+    assert job["restore_requested_at"] is None
+    assert store.prepared == []
     assert service.process_due(limit=1) == 1
     job = service.get(
         app=principal.app,
@@ -469,6 +512,8 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
         path="one.txt",
     )
     assert job["state"] == "ready"
+    assert job["restore_requested_at"] is not None
+    assert store.prepared == [("data-000000",)]
     assert b"".join(chunks) == FILES["one.txt"]
     assert {store for store, _bytes, _attribution in allowance.tracked} == {"retrieval-cache"}
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -506,7 +551,6 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
         key_id=cached_principal.key_id,
         job_id=str(cached_job["id"]),
     )
-
     service.acknowledge(
         app=principal.app,
         key_id=principal.key_id,
@@ -516,6 +560,54 @@ def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path)
     assert service.sweep() == 1
     assert len(cache.deleted) == 1
 
+
+def test_restore_request_retries_durably_after_initial_provider_failure(
+    tmp_path: Path,
+) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    config = replace(
+        config,
+        archive_stores={"deep": deep},
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.example.invalid",
+            region="example",
+            bucket="cache",
+            access_key_id="key",
+            secret_access_key="secret",
+        ),
+    )
+    store = FailOncePreparedArchiveStore(archive, passphrase=config.archive_passphrase)
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        MemoryRetrievalCache(),  # type: ignore[arg-type]
+        proof_verifier=FixtureProofVerifier(),
+    )
+    selection = [(COLLECTION_ID, "one.txt")]
+    plan = service.plan(selection)
+
+    created = service.create(app="local", files=selection, plan_etag=str(plan["etag"]))
+
+    assert created["state"] == "requested"
+    assert created["restore_requested_at"] is None
+    assert service.process_due(limit=1) == 1
+    failed = service.get(app="local", job_id=str(created["id"]))
+    assert failed["state"] == "requested"
+    assert failed["restore_requested_at"] is None
+    assert failed["failure"] == "provider temporarily unavailable"
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        record = session.get(RetrievalJobRecord, str(created["id"]))
+        assert record is not None
+        record.next_poll_at = "2026-01-01T00:00:00.000000Z"
+
+    assert service.process_due(limit=1) == 1
+    ready = service.get(app="local", job_id=str(created["id"]))
+    assert ready["state"] == "ready"
+    assert ready["restore_requested_at"] is not None
+    assert ready["failure"] is None
+    assert store.prepare_attempts == 2
 
 def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)

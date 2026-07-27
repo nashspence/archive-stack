@@ -12,7 +12,11 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
-from riverhog_core.catalog_db import initialize_db
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_models import (
+    ArchiveDownloadReservationRecord,
+    ArchiveDownloadUsageRecord,
+)
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
@@ -76,7 +80,8 @@ def test_download_allowance_accounts_remote_bytes_and_releases_reservation(
     tmp_path: Path,
 ) -> None:
     clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
-    service = _service(tmp_path / "catalog.sqlite3", clock=clock)
+    path = tmp_path / "catalog.sqlite3"
+    service = _service(path, clock=clock)
 
     content = service.track(
         store="deep",
@@ -104,7 +109,8 @@ def test_download_allowance_counts_partial_reads_and_retries(
     tmp_path: Path,
 ) -> None:
     clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
-    service = _service(tmp_path / "catalog.sqlite3", clock=clock)
+    path = tmp_path / "catalog.sqlite3"
+    service = _service(path, clock=clock)
 
     def interrupted():
         yield b"partial"
@@ -184,7 +190,8 @@ def test_download_allowance_counts_abandoned_reservation_conservatively(
     tmp_path: Path,
 ) -> None:
     clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
-    service = _service(tmp_path / "catalog.sqlite3", clock=clock)
+    path = tmp_path / "catalog.sqlite3"
+    service = _service(path, clock=clock)
     _abandoned = service.track(
         store="deep",
         expected_bytes=30,
@@ -196,6 +203,10 @@ def test_download_allowance_counts_abandoned_reservation_conservatively(
     status = service.get_statuses()[0]
     assert status.accounted_bytes == 30
     assert status.reserved_bytes == 0
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        assert session.query(ArchiveDownloadReservationRecord).count() == 1
+        usage = session.get(ArchiveDownloadUsageRecord, "deep")
+        assert usage is not None and usage.accounted_bytes == 0
 
 
 def test_download_allowance_resets_by_utc_month_and_protects_crossing_reads(

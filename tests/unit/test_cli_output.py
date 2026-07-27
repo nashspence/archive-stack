@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from jeb_cli_support.output import format_archive_plan, format_attempts, format_status
 from riverhog_cli.output import (
-    format_archive_report,
+    format_archive_store,
     format_collection_summary,
     format_collection_upload,
     format_collection_upload_plan,
@@ -97,30 +97,29 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
     assert "42/a.txt" in files
 
 
-def test_archive_report_uses_remote_storage_measurement() -> None:
-    rendered = format_archive_report(
+def test_archive_store_output_uses_remote_storage_measurement() -> None:
+    rendered = format_archive_store(
         {
-            "scope": "all",
-            "totals": {
-                "collections": 2,
-                "uploaded_collections": 2,
-                "measured_storage_bytes": 1200,
+            "store": "deep",
+            "backend": "s3",
+            "storage_class": "DEEP_ARCHIVE",
+            "read_mode": "restore_required",
+            "write_target": False,
+            "collections": 2,
+            "objects": 14,
+            "stored_bytes": 1200,
+            "download_allowance": {
+                "accounted_bytes": 25_000_000_000,
+                "reserved_bytes": 5_000_000_000,
+                "effective_limit_bytes": 950_000_000_000,
+                "resets_at": "2026-08-01T00:00:00.000000Z",
             },
-            "download_allowances": [
-                {
-                    "store": "deep",
-                    "accounted_bytes": 25_000_000_000,
-                    "reserved_bytes": 5_000_000_000,
-                    "effective_limit_bytes": 950_000_000_000,
-                    "resets_at": "2026-08-01T00:00:00.000000Z",
-                }
-            ],
         }
     )
 
-    assert "remote storage: 1.2 KB" in rendered
-    assert "download deep: 25.0 GB used + 5.0 GB reserved / 950.0 GB" in rendered
-    assert "resets 2026-08-01T00:00:00.000000Z" in rendered
+    assert "stored: 1.2 KB" in rendered
+    assert "download allowance: 25.0 GB used + 5.0 GB reserved / 950.0 GB" in rendered
+    assert "download allowance resets: 2026-08-01T00:00:00.000000Z" in rendered
 
 
 def test_jeb_output_remains_concise() -> None:

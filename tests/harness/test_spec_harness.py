@@ -13,7 +13,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
 from riverhog_core.ports.upload_store import UploadStore
-from riverhog_core.services.archive_reporting import SqlAlchemyArchiveReportingService
+from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
@@ -32,7 +32,7 @@ from tests.unit.archive_object_fixtures import (
 class Harness:
     collections: SqlAlchemyCollectionService
     search: SqlAlchemySearchService
-    archive_reporting: SqlAlchemyArchiveReportingService
+    archive_stores: SqlAlchemyArchiveStoreService
     retrieval: SqlAlchemyRetrievalService
 
 
@@ -59,7 +59,7 @@ def harness(tmp_path: Path) -> Harness:
     return Harness(
         collections=SqlAlchemyCollectionService(config, cast(UploadStore, object())),
         search=SqlAlchemySearchService(config),
-        archive_reporting=SqlAlchemyArchiveReportingService(config),
+        archive_stores=SqlAlchemyArchiveStoreService(config),
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
@@ -84,7 +84,7 @@ def _request() -> Request:
     )
 
 
-def test_catalog_search_and_archive_report_share_current_identity(harness: Harness) -> None:
+def test_catalog_search_and_archive_store_share_current_identity(harness: Harness) -> None:
     collection = harness.collections.get(COLLECTION_ID)
     search = harness.search.search(
         q="readme",
@@ -93,7 +93,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
         sort="file_ref",
         order="asc",
     )
-    archive = harness.archive_reporting.get_report()
+    archive = harness.archive_stores.get("deep")
     resources = resourcesync_resource_list(
         _request(),
         ApplicationPrincipal(
@@ -109,7 +109,7 @@ def test_catalog_search_and_archive_report_share_current_identity(harness: Harne
         ("deep", "uploaded")
     ]
     assert search["files"][0]["file_ref"] == f"{COLLECTION_ID}/readme.txt"
-    assert archive.totals.uploaded_collections == 1
+    assert archive.collections == 1
     assert str(COLLECTION_ID).encode() in resources.body
 
 

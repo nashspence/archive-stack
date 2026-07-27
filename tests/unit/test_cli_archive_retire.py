@@ -23,15 +23,7 @@ def _plan() -> dict[str, object]:
             "store": "b2",
             "last_verified_at": "2026-07-15T00:00:00Z",
             "remote_storage_bytes": 28,
-            "objects": [
-                {
-                    "kind": "pack",
-                    "object_path": "objects/data-000000.age",
-                    "stored_bytes": 20,
-                },
-                {"kind": "manifest", "object_path": "manifest.yml.age", "stored_bytes": 5},
-                {"kind": "proof", "object_path": "manifest.yml.ots.age", "stored_bytes": 3},
-            ],
+            "object_count": 3,
         },
         "retained_copies": [
             {
@@ -40,7 +32,7 @@ def _plan() -> dict[str, object]:
                 "remote_storage_bytes": 28,
             }
         ],
-        "retired_retrieval_jobs": [],
+        "retired_retrieval_job_count": 0,
         "blockers": [],
         "verification_note": "Another store must pass remote verification.",
         "billing_note": "Provider billing may lag.",

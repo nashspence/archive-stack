@@ -7,7 +7,12 @@ from typing import Protocol
 from lifecycle_events import EventPage
 
 from riverhog_core.app_permissions import ApplicationAccess, ApplicationPrincipal
-from riverhog_core.domain.models import ArchiveUsageReport, CollectionListPage, CollectionSummary
+from riverhog_core.domain.models import (
+    ArchiveStoreListPage,
+    ArchiveStoreSummary,
+    CollectionListPage,
+    CollectionSummary,
+)
 
 JsonObject = dict[str, object]
 
@@ -344,6 +349,26 @@ class ArchiveCopyService(Protocol):
         *,
         destination_store: str,
         source_store: str | None = None,
+        initiator: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> JsonObject: ...
+    def get(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
+    def list(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def process_due(self, *, limit: int = 1) -> int: ...
 
@@ -365,10 +390,21 @@ class ArchiveCopyRetirementService(Protocol):
     def retire(self, collection_id: int, *, store: str, challenge: str) -> JsonObject: ...
 
 
-class ArchiveReportingService(Protocol):
-    def get_report(
+class ArchiveStoreService(Protocol):
+    def get(
+        self,
+        store: str,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> ArchiveStoreSummary: ...
+    def list(
         self,
         *,
-        collection: int | None = None,
+        page: int,
+        per_page: int,
+        q: str | None,
+        sort: str,
+        order: str,
+        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
-    ) -> ArchiveUsageReport: ...
+    ) -> ArchiveStoreListPage: ...

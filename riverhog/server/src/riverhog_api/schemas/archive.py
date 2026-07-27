@@ -1,20 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from riverhog_api.schemas.common import RiverhogModel
-
-type ArchiveOwnedObjectKind = Literal[
-    "pack",
-    "file",
-    "segment",
-    "manifest",
-    "proof",
-    "checksums",
-    "signature",
-    "signature-proof",
-    "metadata",
-]
 
 
 class ArchiveCopyOut(RiverhogModel):
@@ -43,17 +31,32 @@ class CreateArchiveCopyRequest(RiverhogModel):
     collection_id: int
     destination_store: str
     source_store: str | None = None
+    event_context: dict[str, Any] | None = None
 
 
 class ArchiveCopyJobOut(RiverhogModel):
     collection_id: int
     source_store: str | None
     destination_store: str
+    initiated_by_app: str | None
+    initiated_by_key_id: str | None
     state: Literal["requested", "waiting", "copying", "completed", "failed"]
     requested_at: str | None
     ready_at: str | None
     expires_at: str | None
+    completed_at: str | None
     failure: str | None
+
+
+class ArchiveCopyJobListOut(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: str
+    order: Literal["asc", "desc"]
+    query: str | None
+    copies: list[ArchiveCopyJobOut]
 
 
 class ArchiveCopyRetirementRequest(RiverhogModel):
@@ -65,17 +68,11 @@ class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
     challenge: str
 
 
-class ArchiveCopyRetirementObjectOut(RiverhogModel):
-    kind: ArchiveOwnedObjectKind
-    object_path: str
-    stored_bytes: int
-
-
 class ArchiveCopyRetirementTargetOut(RiverhogModel):
     store: str
     last_verified_at: str
     remote_storage_bytes: int
-    objects: list[ArchiveCopyRetirementObjectOut]
+    object_count: int
 
 
 class ArchiveCopyRetirementRetainedOut(RiverhogModel):
@@ -93,7 +90,7 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
     challenge: str | None
     target_copy: ArchiveCopyRetirementTargetOut
     retained_copies: list[ArchiveCopyRetirementRetainedOut]
-    retired_retrieval_jobs: list[str]
+    retired_retrieval_job_count: int
     blockers: list[str]
     verification_note: str
     billing_note: str

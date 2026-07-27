@@ -3,9 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from riverhog_api.schemas.archive import ArchiveCopyRetirementPlanOut
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionArchiveCopyRecord
+from riverhog_core.catalog_models import (
+    CollectionArchiveCopyRecord,
+    CollectionMetadataPublicationRecord,
+)
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
@@ -66,14 +70,33 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
     plan = service.plan(COLLECTION_ID, store="deep")
 
     assert plan["status"] == "ready"
-    assert [current["kind"] for current in plan["target_copy"]["objects"]] == [
-        "pack",
-        "manifest",
-        "proof",
-    ]
+    assert plan["target_copy"]["object_count"] == 3
     assert [current["store"] for current in plan["retained_copies"]] == ["b2"]
-    assert plan["retired_retrieval_jobs"] == []
+    assert plan["retired_retrieval_job_count"] == 0
     assert plan["challenge"]
+    ArchiveCopyRetirementPlanOut.model_validate(plan)
+
+
+def test_active_target_metadata_publication_blocks_retirement(tmp_path: Path) -> None:
+    config, _deep, _b2, service = _service(tmp_path / "catalog.sqlite3")
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add(
+            CollectionMetadataPublicationRecord(
+                collection_id=COLLECTION_ID,
+                store="deep",
+                desired_revision=1,
+                state="publishing",
+                attempt_count=1,
+                next_attempt_at="2026-07-15T00:00:00.000000Z",
+                last_attempt_at="2026-07-15T00:00:00.000000Z",
+            )
+        )
+
+    plan = service.plan(COLLECTION_ID, store="deep")
+
+    assert plan["status"] == "blocked"
+    assert plan["challenge"] is None
+    assert plan["blockers"] == ["collection metadata publication is active: deep"]
 
 
 def test_retirement_verifies_a_retained_copy_then_deletes_every_target_object(

@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from riverhog_api.schemas.archive import ArchiveCopyOut, ArchiveOwnedObjectKind
+from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
 
 
@@ -37,6 +37,7 @@ class CollectionSummaryOut(RiverhogModel):
     tags: list[str]
     files: int
     bytes: int
+    remote_storage_bytes: int
     archive_copies: list[ArchiveCopyOut]
 
 
@@ -45,24 +46,16 @@ class ListCollectionsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
+    sort: str
+    order: Literal["asc", "desc"]
+    query: str | None
     collections: list[CollectionSummaryOut]
 
 
-class CollectionDeletionFileOut(RiverhogModel):
-    path: str
-    bytes: int
-
-
-class CollectionDeletionObjectOut(RiverhogModel):
+class CollectionDeletionArchiveCopyOut(RiverhogModel):
     store: str
-    kind: ArchiveOwnedObjectKind
-    object_path: str
+    objects: int
     stored_bytes: int
-
-
-class CollectionDeletionUploadFileOut(RiverhogModel):
-    path: str
-    bytes: int
 
 
 class CollectionDeletionPlanOut(RiverhogModel):
@@ -71,12 +64,12 @@ class CollectionDeletionPlanOut(RiverhogModel):
     warning: str
     expires_at: str
     challenge: str | None
-    files: list[CollectionDeletionFileOut]
     file_count: int
     bytes: int
-    archive_objects: list[CollectionDeletionObjectOut]
+    archive_copies: list[CollectionDeletionArchiveCopyOut]
+    archive_object_count: int
     remote_storage_bytes: int
-    upload_files: list[CollectionDeletionUploadFileOut]
+    upload_file_count: int
     record_etag: str
     metadata_rows: dict[str, int]
     blockers: list[str]

@@ -10,9 +10,9 @@ Keep account recovery, multi-factor authentication, payment, billing alerts, cre
 bucket permissions, provider contacts, and archive-passphrase custody current. Periodically
 exercise object listing, metadata reads, retrieval requests, and downloads in every store.
 
-After account, credential, provider, or storage-class changes, run an authenticated archive
-report and retrieve known files through the application interface from the affected
-store. A report or object listing alone does not establish recoverability.
+After account, credential, provider, or storage-class changes, inspect the affected store
+with `riverhog archive store show` and retrieve known files through the application
+interface. A storage summary or object listing alone does not establish recoverability.
 
 An AWS archive store may route encrypted object downloads through a private CloudFront
 distribution while retaining S3 as the authority for writes, metadata, restore state, and
@@ -26,8 +26,8 @@ each encrypted object before opening the remote read and accounts for the cipher
 it receives, including partial reads and retries. Set that store's
 `MONTHLY_DOWNLOAD_ALLOWANCE_BYTES` and optional `DOWNLOAD_SAFETY_BUFFER_BYTES`; the
 buffer must be smaller than the allowance, and a nonzero buffer without an allowance is
-invalid. The archive report shows current usage, reservations, remaining bytes, and reset
-time.
+invalid. `riverhog archive store show` shows current usage, reservations, remaining
+bytes, and reset time.
 
 Riverhog maintains plaintext `README.md` and `AGENTS.md` guidance at each archive root.
 Opaque names do not mean objects are unused; encrypted collection objects may be the sole
@@ -35,7 +35,9 @@ durable copies.
 
 ## Archive copies
 
-`riverhog archive copy --help` copies a collection between configured archive stores. The
+`riverhog archive copy start --help` creates or resumes a copy between configured archive
+stores. `riverhog archive copy list --help` and `riverhog archive copy show --help`
+expose current and terminal copy jobs. The
 background job verifies the source object set, prepares provider-managed archive objects for
 reading when necessary, writes an independently encrypted destination object set, and
 records it only after destination verification.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from riverhog_core.app_permissions import (
     CATALOG_READ,
@@ -14,15 +15,21 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionMetadataPublicationRecord
+from riverhog_core.catalog_models import (
+    ArchiveCopyRetirementRecord,
+    CollectionDeletionRecord,
+    CollectionMetadataPublicationRecord,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.tags import SqlAlchemyTagService
+from riverhog_protocol.errors import Conflict
 
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import (
+    COLLECTION_ID,
     MemoryArchiveStore,
     as_archive_store,
     seed_archive_copy,
@@ -155,3 +162,45 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         assert publication is not None
         assert publication.state == "published"
         assert publication.desired_revision == publication.published_revision == 3
+
+
+def test_collection_tag_mutation_waits_for_destructive_custody_operations(
+    tmp_path: Path,
+) -> None:
+    config, _archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        {"document.txt": b"metadata publication\n"},
+    )
+    tags = SqlAlchemyTagService(config)
+    tags.create("camera", creator=BOOTSTRAP)
+    manager = ApplicationPrincipal(
+        app="operator",
+        key_id=None,
+        access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
+    )
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        session.add(
+            CollectionDeletionRecord(
+                collection_id=COLLECTION_ID,
+                challenge="challenge",
+                plan_json="{}",
+                started_at="2026-07-15T00:00:00.000000Z",
+            )
+        )
+    with pytest.raises(Conflict, match="collection deletion is in progress"):
+        tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
+
+    with session_scope(factory) as session:
+        session.delete(session.get(CollectionDeletionRecord, COLLECTION_ID))
+        session.add(
+            ArchiveCopyRetirementRecord(
+                collection_id=COLLECTION_ID,
+                store="deep",
+                challenge="challenge",
+                plan_json="{}",
+                started_at="2026-07-15T00:00:00.000000Z",
+            )
+        )
+    with pytest.raises(Conflict, match="archive copy retirement is in progress"):
+        tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
