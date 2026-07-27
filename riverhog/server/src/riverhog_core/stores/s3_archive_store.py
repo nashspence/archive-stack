@@ -1995,10 +1995,8 @@ class S3ArchiveStore:
                     message="Collection archive object is immediately readable.",
                 )
             return ArchiveReadStatus(
-                state="requested",
-                ready_at=estimated_ready_at,
-                expires_at=estimated_expires_at,
-                message="AWS archive retrieval is still in progress.",
+                state="expired",
+                message="AWS archive object is not currently restored.",
             )
         if restore["ongoing"]:
             return ArchiveReadStatus(
@@ -2006,6 +2004,15 @@ class S3ArchiveStore:
                 ready_at=estimated_ready_at,
                 expires_at=restore["expires_at"] or estimated_expires_at,
                 message="AWS archive retrieval is still in progress.",
+            )
+        if (
+            restore["expires_at"] is not None
+            and restore["expires_at"] <= utc_timestamp_now()
+        ):
+            return ArchiveReadStatus(
+                state="expired",
+                expires_at=restore["expires_at"],
+                message="AWS archive object restore has expired.",
             )
         return ArchiveReadStatus(
             state="ready",

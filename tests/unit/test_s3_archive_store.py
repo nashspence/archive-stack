@@ -1142,6 +1142,48 @@ def test_read_preparation_requests_only_selected_deep_objects(monkeypatch, tmp_p
     assert client.restore_requests == [data[0].object_path]
 
 
+@pytest.mark.parametrize(
+    "restore_header",
+    (
+        None,
+        'ongoing-request="false", expiry-date="Sat, 01 Jan 2000 00:00:00 GMT"',
+    ),
+)
+def test_deep_object_without_a_current_restore_is_expired(
+    monkeypatch,
+    tmp_path: Path,
+    restore_header: str | None,
+) -> None:
+    client = _FakeS3Client()
+    store = _store(
+        monkeypatch,
+        tmp_path,
+        client,
+        archive_backend="aws",
+        archive_storage_class="DEEP_ARCHIVE",
+    )
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=_archive(),
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    data = _identity(receipt).data_objects
+    if restore_header is None:
+        client.objects[data[0].object_path].pop("Restore", None)
+    else:
+        client.objects[data[0].object_path]["Restore"] = restore_header
+
+    status = store.get_archive_objects_read_status(
+        collection_id=COLLECTION_ID,
+        objects=data,
+        requested_at="2026-01-01T00:00:00.000000Z",
+        estimated_ready_at="2026-01-01T12:00:00.000000Z",
+        estimated_expires_at=None,
+    )
+
+    assert status.state == "expired"
+
+
 def test_verification_and_deletion_cover_the_complete_object_set(
     monkeypatch, tmp_path: Path
 ) -> None:

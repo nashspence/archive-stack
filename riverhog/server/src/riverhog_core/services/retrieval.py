@@ -44,7 +44,7 @@ from riverhog_core.collection_access import collection_access_filter, require_co
 from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
-from riverhog_core.ports.retrieval_cache import RetrievalCache
+from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
@@ -926,6 +926,7 @@ class SqlAlchemyRetrievalService:
                 parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
             )
             all_ready = True
+            restore_expired = False
             for (store_name, collection_id), objects in groups.items():
                 store = self._archive_stores.require(store_name)
                 status = store.get_archive_objects_read_status(
@@ -935,6 +936,10 @@ class SqlAlchemyRetrievalService:
                     estimated_ready_at=estimated_ready,
                     estimated_expires_at=None,
                 )
+                if status.state == "expired":
+                    all_ready = False
+                    restore_expired = True
+                    continue
                 if status.state != "ready":
                     all_ready = False
                     continue
@@ -952,6 +957,20 @@ class SqlAlchemyRetrievalService:
                         ),
                         content_length=object_identity.stored_bytes,
                     )
+                    try:
+                        _validate_cache_receipt(receipt, object_identity)
+                    except Exception as receipt_error:
+                        try:
+                            self._cache.delete(
+                                object_path=receipt.object_path,
+                                version_id=receipt.version_id,
+                            )
+                        except Exception as cleanup_error:
+                            raise RuntimeError(
+                                f"{receipt_error}; retrieval cache cleanup also failed: "
+                                f"{cleanup_error}"
+                            ) from cleanup_error
+                        raise
                     with session_scope(self._session_factory) as session:
                         session.merge(
                             RetrievalCacheObjectRecord(
@@ -1007,9 +1026,14 @@ class SqlAlchemyRetrievalService:
                 with session_scope(self._session_factory) as session:
                     job = session.get(RetrievalJobRecord, job_id)
                     if job is not None and job.state == "requested":
-                        job.next_poll_at = format_utc_timestamp(
-                            utc_now() + self._config.retrieval_sweep_interval
-                        )
+                        if restore_expired:
+                            job.restore_requested_at = None
+                            job.next_poll_at = format_utc_timestamp(utc_now())
+                            job.failure = None
+                        else:
+                            job.next_poll_at = format_utc_timestamp(
+                                utc_now() + self._config.retrieval_sweep_interval
+                            )
         except Exception as exc:
             with session_scope(self._session_factory) as session:
                 job = session.get(RetrievalJobRecord, job_id)
@@ -1153,6 +1177,22 @@ def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentit
         sha256=row.sha256,
         stored_sha256=row.stored_sha256,
     )
+
+
+def _validate_cache_receipt(
+    receipt: RetrievalCacheReceipt,
+    identity: ArchiveObjectIdentity,
+) -> None:
+    if (
+        not receipt.object_path
+        or receipt.stored_bytes != identity.stored_bytes
+        or receipt.stored_sha256 != identity.stored_sha256
+        or not receipt.cached_at
+        or not receipt.verified_at
+    ):
+        raise RuntimeError("retrieval cache receipt does not match verified archive metadata")
+    parse_utc_timestamp(receipt.cached_at)
+    parse_utc_timestamp(receipt.verified_at)
 
 
 def _job_owner(job_id: str) -> str:
