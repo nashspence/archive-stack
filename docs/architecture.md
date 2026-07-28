@@ -61,22 +61,22 @@ narrow ResourceSync profile. Applications keep their own desired state and data;
 Riverhog does not track whether an application has materialized a file.
 
 Every application key carries explicit action-and-resource bindings. Authentication
-establishes a named application principal; independent bindings control catalog, retrieval,
-collection creation, deletion, archive, tag, quota, and key-management operations. Creating a
-tag is separate from creating a collection and grants the creating key only collection-creation
-access under that tag. Post-creation tag changes require their own explicit permission.
-The bootstrap credential can issue application keys and assign their download quotas but
-has no operational collection authority. Riverhog's guarded deletion and download policies
-remain in force after authorization.
+establishes a named application principal, while independent bindings control what that
+principal may do to which resources. Creating a tag is separate from creating a collection
+and grants the creating key only collection-creation access under that tag. Post-creation
+tag changes require their own explicit permission. The bootstrap credential can issue
+application keys and assign their download quotas but has no operational collection
+authority. Riverhog's guarded deletion and download policies remain in force after
+authorization.
 
 An application submits exact immutable file references from a retrieval plan. Riverhog
 chooses a complete archive copy and creates an application-owned retrieval job. Immediately
 readable objects are served from their archive store. For a store whose provider requires
 retrieval preparation, Riverhog performs that work asynchronously and copies the existing
 archive ciphertext into a separate retrieval-cache store. Application leases bound cache
-retention, and acknowledgment releases the job's leases. The initial archive copy retains
-the same ciphertext in that cache for a configurable 30-day lease when the write store
-requires retrieval preparation.
+retention, and acknowledgment releases the job's leases. When the write store itself
+requires retrieval preparation, initial archive ingestion retains the same ciphertext under
+a bounded configurable cache lease.
 
 The content endpoint reconstructs one logical file, supports validators and byte ranges,
 and verifies archive and file checksums. The default client's `local` subtree is the

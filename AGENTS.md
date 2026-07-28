@@ -4,24 +4,13 @@ Read [README.md](README.md) for the product entrypoint.
 
 ## Boundaries
 
-`riverhog/server` is the custody platform service. `riverhog/client` is its official direct
-CLI; the client's `local` subtree is the reference external application and owns its local
-materialization. Both are independent distributions and the client must not import server
-implementation modules. `riverhog/recovery` is an independent reference implementation
-that reconstructs archive copies without the server, client, or database.
-
-`companions/munchy` and `companions/jeb` are companion applications with independent
-server and client distributions. Munchy owns generic media ingest. Jeb owns generic
-watched-drop collection. Hardware-specific Munchy execution targets live beneath
-`companions/munchy/server/targets`; they are server-owned components with separate images
-for selective placement, not companion applications.
-
-`utilities/mango-fish` and `utilities/gogurt` are Riverhog-agnostic utilities. Mango Fish
-owns generic CloudEvents-to-webhook delivery. Gogurt maps mounted-volume markers to
-configured actions. Implementation projects may depend on focused packages, but never
-import one another's implementation modules; runtime integration crosses HTTP and
-CloudEvents contracts. Keep public code generic; real identity and deployment topology
-belong downstream.
+The [architecture](docs/architecture.md) is the authority for component roles, boundaries,
+and core terms. Enforce those boundaries in code: server, client, companion, target,
+utility, and recovery implementations may share focused packages but never import one
+another's implementation modules. Runtime integration crosses published HTTP and
+CloudEvents contracts. `riverhog/recovery` must remain independent of the server, client,
+and database. Hardware-specific Munchy targets remain server-owned even when separately
+deployed. Keep public code generic; real identity and deployment topology belong downstream.
 
 ## Safety
 
@@ -40,10 +29,16 @@ application's OpenAPI document, command syntax comes from `--help`, and configur
 shape comes from real parsers and checked executable examples. Do not add hand-maintained
 inventories of those surfaces to `main`; release reference is generated from a tag.
 
-Manual documentation is limited to:
+Durable documentation has distinct roles:
 
-- [architecture](docs/architecture.md) for the current mental model and boundaries;
-- [archive operations](docs/archive-operations.md) for human custody judgment.
+- [README](README.md) is the human entrypoint and repository map;
+- [architecture](docs/architecture.md) owns the stable mental model, boundaries, and terms;
+- [archive operations](docs/archive-operations.md) owns human custody judgment;
+- [recovery without Riverhog](docs/recovery-without-riverhog.md) owns the portable recovery
+  procedure.
+
+Licensing, security reporting, and contribution policy remain in their conventional
+top-level files. Do not add release reference or duplicate executable contracts to `main`.
 
 ## Work
 

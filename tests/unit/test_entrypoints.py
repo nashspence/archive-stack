@@ -5,6 +5,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 ENTRYPOINTS = {REPO / "README.md", REPO / "AGENTS.md"}
+DURABLE_CONTEXT = {
+    REPO / "docs/architecture.md",
+    REPO / "docs/archive-operations.md",
+    REPO / "docs/recovery-without-riverhog.md",
+}
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 IGNORED_TREES = {
     ".git",
@@ -57,3 +62,8 @@ def test_all_markdown_is_reachable_and_links_resolve() -> None:
                 pending.append(target)
 
     assert markdown == reachable
+
+
+def test_both_entrypoints_route_to_each_durable_context_document() -> None:
+    for entrypoint in ENTRYPOINTS:
+        assert DURABLE_CONTEXT <= _local_links(entrypoint)

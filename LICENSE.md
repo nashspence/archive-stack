@@ -22,12 +22,4 @@ SDKs, interoperability examples, and independent recovery tooling.
 
 `REUSE.toml` is the machine-readable authority for individual paths. Full license texts are
 in `LICENSES/`. Third-party components retain their own licenses; see the
-[third-party notices](THIRD_PARTY_NOTICES.md) and the notice bundle and SBOM belonging to
-each release artifact.
-
-## Artifact contract
-
-Each Python distribution declares its SPDX license expression and contains the applicable
-license text. Published container images declare their first-party license, contain both
-first-party license texts and the repository third-party notice, identify their exact source
-revision, and are released with an artifact-specific notice bundle and SBOM.
+[third-party notices](THIRD_PARTY_NOTICES.md).
