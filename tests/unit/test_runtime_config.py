@@ -30,9 +30,38 @@ def test_retrieval_max_lease_covers_the_default_lease(tmp_path: Path) -> None:
 
 
 def test_restore_required_store_requires_retrieval_cache(tmp_path: Path) -> None:
-    deep = _config(tmp_path).archive_store("deep")
+    archive = _config(tmp_path).archive_store("archive")
     with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE"):
-        _config(tmp_path, archive_stores={"deep": replace(deep, read_mode="restore_required")})
+        _config(
+            tmp_path,
+            archive_stores={
+                "archive": replace(archive, backend="aws", read_mode="restore_required")
+            },
+        )
+
+
+@pytest.mark.parametrize("backend", ("garage", "minio"))
+def test_archive_store_backend_must_use_a_supported_profile(
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    archive = _config(tmp_path).archive_store("archive")
+
+    with pytest.raises(ValueError, match="archive store archive backend"):
+        _config(tmp_path, archive_stores={"archive": replace(archive, backend=backend)})
+
+
+@pytest.mark.parametrize("backend", ("b2", "s3"))
+def test_restore_required_reads_are_aws_specific(tmp_path: Path, backend: str) -> None:
+    archive = _config(tmp_path).archive_store("archive")
+
+    with pytest.raises(ValueError, match="restore_required reads require the aws backend"):
+        _config(
+            tmp_path,
+            archive_stores={
+                "archive": replace(archive, backend=backend, read_mode="restore_required")
+            },
+        )
 
 
 def test_load_runtime_config_parses_archive_security_settings(
@@ -188,21 +217,21 @@ def test_load_runtime_config_builds_named_archive_stores(
 def test_load_runtime_config_enables_cloudfront_downloads_per_aws_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
         "https://archive.example.test/",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
         "example-key-id",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
         "/run/secrets/cloudfront.pem",
     )
 
-    store = load_runtime_config().archive_store("deep")
+    store = load_runtime_config().archive_store("archive")
 
     assert store.cloudfront_base_url == "https://archive.example.test"
     assert store.cloudfront_public_key_id == "example-key-id"
@@ -213,15 +242,15 @@ def test_load_runtime_config_enables_a_monthly_download_allowance_per_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
         "1TB",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "50GB",
     )
 
-    store = load_runtime_config().archive_store("deep")
+    store = load_runtime_config().archive_store("archive")
 
     assert store.monthly_download_allowance_bytes == 1_000_000_000_000
     assert store.download_safety_buffer_bytes == 50_000_000_000
@@ -231,7 +260,7 @@ def test_download_safety_buffer_requires_an_allowance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "50GB",
     )
 
@@ -243,11 +272,11 @@ def test_download_safety_buffer_must_leave_a_positive_effective_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
         "50GB",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "50GB",
     )
 
@@ -258,9 +287,9 @@ def test_download_safety_buffer_must_leave_a_positive_effective_limit(
 def test_cloudfront_download_configuration_is_atomic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
         "https://archive.example.test",
     )
 
@@ -271,31 +300,31 @@ def test_cloudfront_download_configuration_is_atomic(
 def test_metered_download_source_cannot_be_bypassed_through_a_store_alias(
     tmp_path: Path,
 ) -> None:
-    deep = _config(tmp_path).archive_store("deep")
+    archive = _config(tmp_path).archive_store("archive")
     metered = replace(
-        deep,
+        archive,
         monthly_download_allowance_bytes=1_000,
         download_safety_buffer_bytes=100,
     )
-    alias = replace(deep, name="alias")
+    alias = replace(archive, name="alias")
 
-    with pytest.raises(ValueError, match="metered archive download source.*alias, deep"):
-        _config(tmp_path, archive_stores={"deep": metered, "alias": alias})
+    with pytest.raises(ValueError, match="metered archive download source.*alias, archive"):
+        _config(tmp_path, archive_stores={"archive": metered, "alias": alias})
 
 
 def test_cloudfront_downloads_require_an_aws_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
         "https://archive.example.test",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
         "example-key-id",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
         "/run/secrets/cloudfront.pem",
     )
 
@@ -316,14 +345,14 @@ def test_cloudfront_base_url_requires_a_private_https_origin_contract(
     monkeypatch: pytest.MonkeyPatch,
     base_url: str,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND", "aws")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL", base_url)
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL", base_url)
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
         "example-key-id",
     )
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
         "/run/secrets/cloudfront.pem",
     )
 

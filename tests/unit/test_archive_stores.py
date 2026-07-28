@@ -21,7 +21,18 @@ from tests.unit.db_helpers import sqlite_url
 
 
 def _config(path: Path) -> RuntimeConfig:
-    return RuntimeConfig(database_url=sqlite_url(path))
+    config = RuntimeConfig(database_url=sqlite_url(path))
+    deep = replace(
+        config.archive_store("archive"),
+        name="deep",
+        storage_class="DEEP_ARCHIVE",
+    )
+    return replace(
+        config,
+        archive_stores={"deep": deep},
+        archive_write_store="deep",
+        archive_read_order=("deep",),
+    )
 
 
 def _seed(path: Path) -> None:
@@ -116,17 +127,20 @@ def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema
 def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     config = _config(path)
+    archive = config.archive_store("deep")
     config = replace(
         config,
         archive_stores={
-            "deep": config.archive_store("deep"),
+            "deep": archive,
             "b2": replace(
-                config.archive_store("deep"),
+                archive,
                 name="b2",
                 storage_class="STANDARD",
                 read_mode="immediate",
             ),
         },
+        archive_write_store="deep",
+        archive_read_order=("deep", "b2"),
     )
     initialize_db(config.database_url)
     _seed(path)
@@ -162,6 +176,8 @@ def test_archive_store_summary_includes_download_allowance(tmp_path: Path) -> No
                 download_safety_buffer_bytes=100,
             )
         },
+        archive_write_store="deep",
+        archive_read_order=("deep",),
     )
     initialize_db(config.database_url)
     allowance = SqlAlchemyDownloadAllowance(config)

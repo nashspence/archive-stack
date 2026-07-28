@@ -28,6 +28,7 @@ DEFAULT_ARCHIVE_OBJECT_CONCURRENCY = 4
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
+SUPPORTED_ARCHIVE_BACKENDS = frozenset({"aws", "b2", "s3"})
 
 
 def _parse_bool(value: str) -> bool:
@@ -184,12 +185,12 @@ class RuntimeConfig:
     upload_session_idle_ttl: timedelta = field(default_factory=lambda: timedelta(days=7))
     upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     log_level: str = DEFAULT_LOG_LEVEL
-    archive_write_store: str = "deep"
-    archive_read_order: tuple[str, ...] = ("deep",)
+    archive_write_store: str = "archive"
+    archive_read_order: tuple[str, ...] = ("archive",)
     archive_stores: Mapping[str, ArchiveStoreConfig] = field(
         default_factory=lambda: {
-            "deep": ArchiveStoreConfig(
-                name="deep",
+            "archive": ArchiveStoreConfig(
+                name="archive",
                 endpoint_url="http://127.0.0.1:9000",
                 region="us-east-1",
                 bucket="riverhog",
@@ -198,7 +199,7 @@ class RuntimeConfig:
                 force_path_style=True,
                 prefix="archive",
                 backend="s3",
-                storage_class="DEEP_ARCHIVE",
+                storage_class="STANDARD",
                 read_mode="immediate",
             )
         }
@@ -275,7 +276,22 @@ class RuntimeConfig:
             name = _normalize_archive_store_name(raw_name)
             if store.name != name:
                 raise ValueError(f"archive store mapping key must match its name: {raw_name!r}")
-            store = replace(store, prefix=_normalize_prefix(store.prefix))
+            backend = _parse_choice(
+                store.backend,
+                name=f"archive store {name} backend",
+                allowed=set(SUPPORTED_ARCHIVE_BACKENDS),
+            )
+            read_mode = _parse_choice(
+                store.read_mode,
+                name=f"archive store {name} read mode",
+                allowed={"immediate", "restore_required"},
+            )
+            store = replace(
+                store,
+                prefix=_normalize_prefix(store.prefix),
+                backend=backend,
+                read_mode=read_mode,
+            )
             required_store_fields = {
                 "endpoint_url": store.endpoint_url,
                 "region": store.region,
@@ -294,9 +310,9 @@ class RuntimeConfig:
                 raise ValueError(
                     f"archive store {name} has blank required fields: " + ", ".join(missing_fields)
                 )
-            if store.read_mode not in {"immediate", "restore_required"}:
+            if store.read_mode == "restore_required" and store.backend != "aws":
                 raise ValueError(
-                    f"archive store {name} read mode must be immediate or restore_required"
+                    f"archive store {name} restore_required reads require the aws backend"
                 )
             if store.monthly_download_allowance_bytes is not None:
                 if store.monthly_download_allowance_bytes <= 0:
@@ -516,7 +532,7 @@ def _parse_archive_stores(
     names = tuple(
         dict.fromkeys(
             _normalize_archive_store_name(raw)
-            for raw in values.get("RIVERHOG_ARCHIVE_STORES", "deep").split(",")
+            for raw in values.get("RIVERHOG_ARCHIVE_STORES", "archive").split(",")
             if raw.strip()
         )
     )
@@ -551,8 +567,8 @@ def _parse_archive_stores(
             force_path_style=_parse_bool(values.get(f"{prefix}FORCE_PATH_STYLE", "true")),
             prefix=_normalize_prefix(values.get(f"{prefix}PREFIX", "archive")),
             backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
-            storage_class=values.get(f"{prefix}STORAGE_CLASS", "DEEP_ARCHIVE").strip()
-            or "DEEP_ARCHIVE",
+            storage_class=values.get(f"{prefix}STORAGE_CLASS", "STANDARD").strip()
+            or "STANDARD",
             read_mode=_parse_choice(
                 values.get(f"{prefix}READ_MODE", "immediate"),
                 name=f"{prefix}READ_MODE",

@@ -37,7 +37,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format fix mypy lint unit spec postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -61,6 +61,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
+		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make archive-throughput  Measure, verify, and delete an archive upload probe.' \
 		'  make archive-download-smoke  Verify signed CloudFront download and probe cleanup.' \
@@ -86,7 +87,7 @@ help:
 		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
 		'  ARCHIVE_SOURCE=/path   Existing file for make archive-throughput.' \
-		'  ARCHIVE_STORE=deep     Optional store for make archive-download-smoke.' \
+		'  ARCHIVE_STORE=archive  Optional store for make archive-download-smoke.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
@@ -119,6 +120,9 @@ spec:
 
 postgres-concurrency:
 	@POSTGRES_TESTS="$(POSTGRES_TESTS)" ./scripts/test_postgres_concurrency.sh
+
+compose-smoke:
+	@./scripts/test_compose_smoke.sh
 
 tus-throughput:
 	@if [[ -z "$(TUS_URL)" ]]; then \

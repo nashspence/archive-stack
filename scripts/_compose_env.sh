@@ -12,6 +12,7 @@ if [[ -f "${LOCAL_ENV_FILE}" ]]; then
 else
   COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${DEFAULT_ENV_FILE}}"
 fi
+export RIVERHOG_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"
 
 compose() {
   docker compose \

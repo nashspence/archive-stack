@@ -229,6 +229,13 @@ def _services(
     BlockingArchiveStore,
 ]:
     config = RuntimeConfig(database_url=database_url)
+    deep = replace(config.archive_store("archive"), name="deep")
+    config = replace(
+        config,
+        archive_stores={"deep": deep},
+        archive_write_store="deep",
+        archive_read_order=("deep",),
+    )
     store = BlockingArchiveStore()
     stores = ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)})
     return (
@@ -455,15 +462,17 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     _seed(database_url)
     _seed_b2_copy(database_url)
     base = RuntimeConfig(database_url=database_url)
+    archive = base.archive_store("archive")
     b2_config = replace(
-        base.archive_store("deep"),
+        archive,
         name="b2",
         backend="b2",
         storage_class="STANDARD",
     )
     config = replace(
         base,
-        archive_stores={"deep": base.archive_store("deep"), "b2": b2_config},
+        archive_stores={"deep": replace(archive, name="deep"), "b2": b2_config},
+        archive_write_store="deep",
         archive_read_order=("deep", "b2"),
     )
     deep = BlockingArchiveStore()

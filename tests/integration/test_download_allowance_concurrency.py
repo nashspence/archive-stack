@@ -54,11 +54,14 @@ def _config(database_url: str) -> RuntimeConfig:
         config,
         archive_stores={
             "deep": replace(
-                config.archive_store("deep"),
+                config.archive_store("archive"),
+                name="deep",
                 monthly_download_allowance_bytes=100,
                 download_safety_buffer_bytes=10,
             )
         },
+        archive_write_store="deep",
+        archive_read_order=("deep",),
     )
 
 

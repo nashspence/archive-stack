@@ -20,7 +20,7 @@ class ArchiveDownloadAllowanceOut(RiverhogModel):
 
 class ArchiveStoreOut(RiverhogModel):
     store: str
-    backend: str
+    backend: Literal["aws", "b2", "s3"]
     storage_class: str
     read_mode: Literal["immediate", "restore_required"]
     write_target: bool

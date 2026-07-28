@@ -569,7 +569,11 @@ def test_tag_scoped_catalog_changes_project_access_transitions(tmp_path: Path) -
 
 def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -682,7 +686,11 @@ def test_restore_request_retries_durably_after_initial_provider_failure(
     tmp_path: Path,
 ) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -730,7 +738,11 @@ def test_restore_request_retries_durably_after_initial_provider_failure(
 
 def test_expired_provider_restore_is_requested_again(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -771,7 +783,11 @@ def test_expired_provider_restore_is_requested_again(tmp_path: Path) -> None:
 
 def test_requested_retrieval_survives_worker_restart(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -821,7 +837,11 @@ def test_requested_retrieval_survives_worker_restart(tmp_path: Path) -> None:
 
 def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -890,7 +910,11 @@ def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
 
 def test_invalid_cache_receipt_does_not_make_retrieval_ready(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},
@@ -982,7 +1006,11 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
         session.flush()
         apply_archive_receipt(copy, archive_receipt(second_archive), second_archive)
 
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},

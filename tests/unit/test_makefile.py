@@ -285,29 +285,21 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORES",
         "RIVERHOG_ARCHIVE_WRITE_STORE",
         "RIVERHOG_ARCHIVE_READ_ORDER",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_ENDPOINT_URL",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_REGION",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_BUCKET",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_ACCESS_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_SECRET_ACCESS_KEY",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_FORCE_PATH_STYLE",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_PREFIX",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_BACKEND",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_STORAGE_CLASS",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_READ_MODE",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_BASE_URL",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PUBLIC_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_CLOUDFRONT_PRIVATE_KEY_PATH",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
-        "RIVERHOG_ARCHIVE_STORE_DEEP_DOWNLOAD_SAFETY_BUFFER_BYTES",
-        "RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL",
-        "RIVERHOG_ARCHIVE_STORE_B2_BUCKET",
-        "RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY",
-        "RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS",
-        "RIVERHOG_ARCHIVE_STORE_B2_READ_MODE",
-        "RIVERHOG_ARCHIVE_STORE_B2_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
-        "RIVERHOG_ARCHIVE_STORE_B2_DOWNLOAD_SAFETY_BUFFER_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ENDPOINT_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_REGION",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BUCKET",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ACCESS_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_SECRET_ACCESS_KEY",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_FORCE_PATH_STYLE",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_STORAGE_CLASS",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_READ_MODE",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         "RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE",
@@ -352,9 +344,15 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
         assert (
-            compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_B2_PREFIX"]
-            == "${RIVERHOG_ARCHIVE_STORE_B2_PREFIX-}"
+            compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX"]
+            == "${RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX-}"
         )
+        assert compose["services"][service]["env_file"] == [
+            "${RIVERHOG_COMPOSE_ENV_FILE:-../../.env.compose.example}"
+        ]
+
+    compose_helper = (REPO_ROOT / "scripts" / "_compose_env.sh").read_text(encoding="utf-8")
+    assert 'export RIVERHOG_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"' in compose_helper
 
 
 @pytest.mark.parametrize(
@@ -516,6 +514,25 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     assert " exec -T garage /garage -c /etc/garage.toml node id" in docker_log
     assert " run --rm --entrypoint python" in docker_log
     assert "tests/harness/configure_garage.py" in docker_log
+
+
+def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "compose-smoke",
+        extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    docker_log = "\n".join(_read_log_lines(docker_log_path))
+    assert " build --sbom=true test" in docker_log
+    assert " up --detach garage" in docker_log
+    assert " build --sbom=true app" in docker_log
+    assert " up --detach --wait app" in docker_log
+    assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
+    assert " app python -c " in docker_log
+    assert " down --volumes --remove-orphans" in docker_log
 
 
 def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) -> None:

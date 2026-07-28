@@ -193,19 +193,18 @@ def seed_archive_copy(
             current,
         )
     config = RuntimeConfig(database_url=database_url)
-    if store == "deep":
+    if store == "archive":
         return config, current
+    configured_store = replace(
+        config.archive_store("archive"),
+        name=store,
+        backend=backend,
+        storage_class=storage_class,
+    )
     return (
         replace(
             config,
-            archive_stores={
-                store: replace(
-                    config.archive_store("deep"),
-                    name=store,
-                    backend=backend,
-                    storage_class=storage_class,
-                )
-            },
+            archive_stores={store: configured_store},
             archive_write_store=store,
             archive_read_order=(store,),
         ),

@@ -421,9 +421,12 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
         store_fields[name]: overrides.pop(name) for name in tuple(overrides) if name in store_fields
     }
     config = replace(config, **overrides)
+    store = replace(config.archive_store("archive"), name="deep", **store_overrides)
     return replace(
         config,
-        archive_stores={"deep": replace(config.archive_store("deep"), **store_overrides)},
+        archive_stores={"deep": store},
+        archive_write_store="deep",
+        archive_read_order=("deep",),
     )
 
 
@@ -748,7 +751,11 @@ def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
         lambda config, store: client,
     )
     config = _config(tmp_path, archive_scrypt_work_factor=1)
-    deep = replace(config.archive_store("deep"), read_mode="restore_required")
+    deep = replace(
+        config.archive_store("deep"),
+        backend="aws",
+        read_mode="restore_required",
+    )
     config = replace(
         config,
         archive_stores={"deep": deep},

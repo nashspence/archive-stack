@@ -49,11 +49,17 @@ def _config(
 ) -> RuntimeConfig:
     config = RuntimeConfig(database_url=sqlite_url(path))
     store = replace(
-        config.archive_store("deep"),
+        config.archive_store("archive"),
+        name="deep",
         monthly_download_allowance_bytes=allowance,
         download_safety_buffer_bytes=buffer,
     )
-    return replace(config, archive_stores={"deep": store})
+    return replace(
+        config,
+        archive_stores={"deep": store},
+        archive_write_store="deep",
+        archive_read_order=("deep",),
+    )
 
 
 def _service(

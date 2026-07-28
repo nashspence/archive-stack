@@ -54,6 +54,31 @@ through guarded copy and retirement operations. An archive copy reads and verifi
 source object set, writes and verifies an equivalent destination set, and records the copy
 only after completion.
 
+### Object-store configuration
+
+Riverhog uses the S3 API for three separate storage roles:
+
+| Role | Supported count | Purpose |
+| --- | ---: | --- |
+| Ingress store | Exactly one | Temporary, immediately readable encrypted uploads |
+| Archive store | One or more | Named durable authorities; one receives new writes and an ordered set serves reads |
+| Retrieval cache | Zero or one | Leased encrypted copies of objects whose archive provider requires retrieval preparation |
+
+Archive-store names are operator-defined identities, not provider types. List them with
+`RIVERHOG_ARCHIVE_STORES`, select one with `RIVERHOG_ARCHIVE_WRITE_STORE`, and order
+reads with `RIVERHOG_ARCHIVE_READ_ORDER`. A store named `cold-copy` uses configuration
+keys beginning `RIVERHOG_ARCHIVE_STORE_COLD_COPY_`. The Compose override file is passed
+through to the server, so arbitrary configured store names are supported without editing
+the Compose file.
+
+Each archive store chooses one supported backend profile: `s3` for a generic
+S3-compatible immediate-read service, `b2` for Backblaze B2's S3 API, or `aws` for
+AWS S3. The `aws` profile alone supports `restore_required` reads and optional
+CloudFront delivery; `s3` and `b2` are immediate-read profiles. Any
+`restore_required` store requires the separate retrieval cache. The checked-in
+development stack has one immediate-read Garage archive named `archive` and no retrieval
+cache.
+
 ## Applications and retrieval
 
 Riverhog publishes portable collection manifests and current collection changes through a

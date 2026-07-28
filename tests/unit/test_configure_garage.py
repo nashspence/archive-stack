@@ -57,8 +57,8 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = replace(config, **overrides)
     if archive_bucket is None:
         return config
-    store = replace(config.archive_store("deep"), bucket=str(archive_bucket))
-    return replace(config, archive_stores={"deep": store})
+    store = replace(config.archive_store("archive"), bucket=str(archive_bucket))
+    return replace(config, archive_stores={"archive": store})
 
 
 def test_lifecycle_targets_cover_each_distinct_object_store_bucket(tmp_path: Path) -> None:

@@ -12,16 +12,25 @@ secret_access_key="$(
   compose_env_value RIVERHOG_INGRESS_SECRET_ACCESS_KEY 2222222222222222222222222222222222222222222222222222222222222222
 )"
 ingress_bucket="$(compose_env_value RIVERHOG_INGRESS_BUCKET riverhog-ingress)"
-archive_access_key_id="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_ACCESS_KEY_ID GK000000000000000000000002)"
+archive_store_names="$(compose_env_value RIVERHOG_ARCHIVE_STORES archive)"
+archive_store_default="${archive_store_names%%,*}"
+archive_store="$(compose_env_value RIVERHOG_ARCHIVE_WRITE_STORE "${archive_store_default}")"
+archive_store_suffix="$(printf '%s' "${archive_store}" | tr '[:lower:]-' '[:upper:]_')"
+archive_access_key_name="RIVERHOG_ARCHIVE_STORE_${archive_store_suffix}_ACCESS_KEY_ID"
+archive_secret_key_name="RIVERHOG_ARCHIVE_STORE_${archive_store_suffix}_SECRET_ACCESS_KEY"
+archive_bucket_name="RIVERHOG_ARCHIVE_STORE_${archive_store_suffix}_BUCKET"
+archive_access_key_id="$(compose_env_value "${archive_access_key_name}" GK000000000000000000000002)"
 archive_secret_access_key="$(
-  compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_SECRET_ACCESS_KEY 2222222222222222222222222222222222222222222222222222222222222222
+  compose_env_value "${archive_secret_key_name}" 2222222222222222222222222222222222222222222222222222222222222222
 )"
-archive_bucket="$(compose_env_value RIVERHOG_ARCHIVE_STORE_DEEP_BUCKET riverhog-archive)"
-cache_access_key_id="$(compose_env_value RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID GK000000000000000000000002)"
-cache_secret_access_key="$(
-  compose_env_value RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY 2222222222222222222222222222222222222222222222222222222222222222
-)"
-cache_bucket="$(compose_env_value RIVERHOG_RETRIEVAL_CACHE_BUCKET riverhog-retrieval-cache)"
+archive_bucket="$(compose_env_value "${archive_bucket_name}" riverhog-archive)"
+cache_access_key_id="$(compose_env_value RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID)"
+cache_secret_access_key="$(compose_env_value RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY)"
+cache_bucket="$(compose_env_value RIVERHOG_RETRIEVAL_CACHE_BUCKET)"
+cache_configured=false
+if [[ -n "${cache_access_key_id}" || -n "${cache_secret_access_key}" || -n "${cache_bucket}" ]]; then
+  cache_configured=true
+fi
 
 compose up --detach garage
 
@@ -46,21 +55,21 @@ compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key impor
 if [[ "${archive_access_key_id}" != "${access_key_id}" || "${archive_secret_access_key}" != "${secret_access_key}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${archive_access_key_id}" "${archive_access_key_id}" "${archive_secret_access_key}"
 fi
-if [[ "${cache_access_key_id}" != "${access_key_id}" && "${cache_access_key_id}" != "${archive_access_key_id}" ]]; then
+if [[ "${cache_configured}" == true && "${cache_access_key_id}" != "${access_key_id}" && "${cache_access_key_id}" != "${archive_access_key_id}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${cache_access_key_id}" "${cache_access_key_id}" "${cache_secret_access_key}"
 fi
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${ingress_bucket}"
 if [[ "${archive_bucket}" != "${ingress_bucket}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${archive_bucket}"
 fi
-if [[ "${cache_bucket}" != "${ingress_bucket}" && "${cache_bucket}" != "${archive_bucket}" ]]; then
+if [[ "${cache_configured}" == true && "${cache_bucket}" != "${ingress_bucket}" && "${cache_bucket}" != "${archive_bucket}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${cache_bucket}"
 fi
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${ingress_bucket}" --key "${access_key_id}"
 if [[ "${archive_access_key_id}" != "${access_key_id}" || "${archive_bucket}" != "${ingress_bucket}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${archive_bucket}" --key "${archive_access_key_id}"
 fi
-if [[ "${cache_access_key_id}" != "${access_key_id}" || "${cache_bucket}" != "${ingress_bucket}" ]]; then
+if [[ "${cache_configured}" == true && ( "${cache_access_key_id}" != "${access_key_id}" || "${cache_bucket}" != "${ingress_bucket}" ) ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${cache_bucket}" --key "${cache_access_key_id}"
 fi
 compose run --rm --entrypoint python "${COMPOSE_RUN_TTY_ARGS[@]}" test tests/harness/configure_garage.py
