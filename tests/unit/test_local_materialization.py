@@ -4,11 +4,13 @@ import ast
 import hashlib
 import inspect
 import io
+import json
 import tarfile
 from pathlib import Path
 from typing import Any
 
 from riverhog_cli import local as local_materialization
+from riverhog_protocol.errors import InvalidState
 from typer.testing import CliRunner
 
 COLLECTION_ID = 1
@@ -84,9 +86,11 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
 
     assert imports == {
         ("riverhog_api_client.client", "ApiClient"),
+        ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
+        ("riverhog_cli.output", "format_local_collections"),
     }
 
 
@@ -280,7 +284,10 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     assert removed.exit_code == 0
     assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
     assert api.canceled == ["job-1"]
-    assert runner.invoke(local_materialization.local_app, ["list"]).stdout == ""
+    assert (
+        runner.invoke(local_materialization.local_app, ["list"]).stdout
+        == "local collections: 0 (page 1/0)\n"
+    )
 
 
 def test_local_evict_removes_retained_nested_collection_tree(
@@ -332,19 +339,157 @@ def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
 
     assert collection_dir.joinpath("notes/one.txt").read_bytes() == CONTENT
     assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
-    for tag in ("photos", "reviewed"):
-        link = target / "by-tag" / tag / PROJECTION_NAME
+    for tag, other_tag in (("photos", "reviewed"), ("reviewed", "photos")):
+        link = target / "by-tag" / tag / f"{PROJECTION_NAME}--{other_tag}"
         assert link.is_symlink()
         assert link.resolve() == collection_dir
 
     api.replace_tags()
     assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
 
-    assert not (target / "by-tag" / "photos" / PROJECTION_NAME).exists()
-    assert not (target / "by-tag" / "reviewed" / PROJECTION_NAME).exists()
+    assert not (target / "by-tag" / "photos").exists()
+    assert not (target / "by-tag" / "reviewed").exists()
     untagged = target / "untagged" / PROJECTION_NAME
     assert untagged.is_symlink()
     assert untagged.resolve() == collection_dir
+
+
+def test_local_projection_names_append_other_tags_in_canonical_order() -> None:
+    assert local_materialization._projection_name(
+        COLLECTION_ID,
+        CREATED_AT,
+        tags=["zebra", "alpha", "middle"],
+        parent_tag="middle",
+    ) == f"{PROJECTION_NAME}--alpha--zebra"
+
+    bounded = local_materialization._projection_name(
+        COLLECTION_ID,
+        CREATED_AT,
+        tags=[f"tag-{index}-{'x' * 70}" for index in range(8)],
+        parent_tag="tag-0-" + "x" * 70,
+    )
+
+    assert len(bounded.encode("utf-8")) <= local_materialization.PROJECTION_NAME_BYTES_MAX
+    assert bounded == local_materialization._projection_name(
+        COLLECTION_ID,
+        CREATED_AT,
+        tags=[f"tag-{index}-{'x' * 70}" for index in reversed(range(8))],
+        parent_tag="tag-0-" + "x" * 70,
+    )
+
+
+def test_local_list_uses_standard_human_json_and_id_views(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
+
+    human = runner.invoke(local_materialization.local_app, ["list", "--query", "docs"])
+    machine = runner.invoke(
+        local_materialization.local_app,
+        ["list", "--query", "docs", "--json"],
+    )
+    identifiers = runner.invoke(
+        local_materialization.local_app,
+        ["list", "--query", "desired", "--ids"],
+    )
+
+    assert human.exit_code == 0
+    assert "local collections: 1 (page 1/1)" in human.stdout
+    assert "status=desired" in human.stdout
+    assert "tags=docs" in human.stdout
+    assert machine.exit_code == 0
+    assert json.loads(machine.stdout) == {
+        "collections": [
+            {
+                "bytes": len(CONTENT) + len(SECOND_CONTENT),
+                "collection_id": COLLECTION_ID,
+                "created_at": CREATED_AT,
+                "files": 2,
+                "status": "desired",
+                "tags": ["docs"],
+            }
+        ],
+        "order": "asc",
+        "page": 1,
+        "pages": 1,
+        "per_page": 25,
+        "query": "docs",
+        "sort": "collection_id",
+        "total": 1,
+    }
+    assert identifiers.exit_code == 0
+    assert identifiers.stdout == "1\n"
+
+
+def test_local_list_pages_and_sorts_database_aggregates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    target.mkdir()
+    db = local_materialization._connect(target)
+    try:
+        for collection_id, byte_count in ((1, 100), (2, 300), (3, 200)):
+            local_materialization._store_manifest(
+                db,
+                {
+                    "format": "riverhog-collection/v2",
+                    "collection": collection_id,
+                    "tags": ["docs"],
+                    "files": [
+                        {
+                            "path": "file.bin",
+                            "bytes": byte_count,
+                            "sha256": "a" * 64,
+                        }
+                    ],
+                },
+                created_at=f"2026-07-19T20:55:0{collection_id}.000000Z",
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    runner = CliRunner()
+    page = runner.invoke(
+        local_materialization.local_app,
+        [
+            "list",
+            "--sort",
+            "bytes",
+            "--order",
+            "desc",
+            "--per-page",
+            "1",
+            "--page",
+            "2",
+            "--json",
+        ],
+    )
+    all_ids = runner.invoke(
+        local_materialization.local_app,
+        ["list", "--sort", "bytes", "--order", "desc", "--all", "--ids"],
+    )
+
+    assert page.exit_code == 0
+    payload = json.loads(page.stdout)
+    assert (payload["page"], payload["per_page"], payload["total"], payload["pages"]) == (
+        2,
+        1,
+        3,
+        3,
+    )
+    assert payload["collections"][0]["collection_id"] == 3
+    assert payload["collections"][0]["bytes"] == 200
+    assert all_ids.exit_code == 0
+    assert all_ids.stdout == "2\n3\n1\n"
 
 
 def test_local_projection_refuses_an_unmanaged_root_symlink(
@@ -363,7 +508,7 @@ def test_local_projection_refuses_an_unmanaged_root_symlink(
     result = CliRunner().invoke(local_materialization.local_app, ["sync"])
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, RuntimeError)
+    assert isinstance(result.exception, InvalidState)
     assert "projection root must not be a symlink" in str(result.exception)
 
 

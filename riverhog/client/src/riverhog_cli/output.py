@@ -49,6 +49,22 @@ def format_collections(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_local_collections(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "local collections")]
+    for collection in _items(payload, "collections"):
+        tags = collection.get("tags")
+        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
+        lines.append(
+            f"- {collection.get('collection_id', 'unknown')}  "
+            f"status={collection.get('status', 'unknown')}  "
+            f"created={collection.get('created_at', 'unknown')}  "
+            f"files={collection.get('files', 0)}  "
+            f"bytes={_bytes(collection.get('bytes'))}  "
+            f"tags={tag_text or 'none'}"
+        )
+    return "\n".join(lines)
+
+
 def format_collection_summary(
     payload: Mapping[str, object],
 ) -> str:

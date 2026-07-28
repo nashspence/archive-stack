@@ -895,10 +895,3 @@ class ApiClient(_HttpApiClient):
             "offset": next_offset,
             "expires_at": None,
         }
-
-    def get_file_content(self, path: str, output: Path | None = None) -> bytes:
-        response = self._request("GET", f"/v1/files/{quote(path, safe='/')}/content")
-        content = response.content
-        if output is not None:
-            output.write_bytes(content)
-        return content

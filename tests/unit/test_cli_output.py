@@ -8,6 +8,7 @@ from riverhog_cli.output import (
     format_collection_upload_plan,
     format_collections,
     format_find,
+    format_local_collections,
 )
 
 
@@ -95,6 +96,31 @@ def test_list_and_search_output_use_immutable_logical_identity() -> None:
     assert "created=2026-07-26T18:43:00.000000Z" in collections
     assert "tags=family" in collections
     assert "42/a.txt" in files
+
+
+def test_local_list_output_projects_its_json_model() -> None:
+    rendered = format_local_collections(
+        {
+            "page": 1,
+            "pages": 1,
+            "total": 1,
+            "collections": [
+                {
+                    "collection_id": 42,
+                    "created_at": "2026-07-26T18:43:00.000000Z",
+                    "tags": ["family", "sony-a6700"],
+                    "status": "desired",
+                    "files": 1,
+                    "bytes": 10,
+                }
+            ],
+        }
+    )
+
+    assert "local collections: 1 (page 1/1)" in rendered
+    assert "- 42" in rendered
+    assert "status=desired" in rendered
+    assert "tags=family,sony-a6700" in rendered
 
 
 def test_archive_store_output_uses_remote_storage_measurement() -> None:

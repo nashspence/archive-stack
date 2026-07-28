@@ -12,14 +12,28 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from cli_support.output import emit, format_list_ids
 from riverhog_api_client.client import ApiClient
+from riverhog_protocol.errors import InvalidState
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
 from time_formats import parse_utc_timestamp
+
+from riverhog_cli.output import format_local_collections
 
 local_app = typer.Typer(
     no_args_is_help=True,
     help="Maintain selected archive collections in a local directory.",
 )
+
+LOCAL_LIST_PAGE_SIZE_MAX = 100
+LOCAL_LIST_SORT_FIELDS = {
+    "bytes": "bytes",
+    "collection_id": "collection_id",
+    "created_at": "created_at",
+    "files": "files",
+    "status": "status",
+}
+PROJECTION_NAME_BYTES_MAX = 240
 
 
 def _target() -> Path:
@@ -87,11 +101,11 @@ def _store_manifest(
         or not isinstance(files, list)
         or not isinstance(raw_tags, list)
     ):
-        raise RuntimeError("Riverhog returned an unsupported collection manifest")
+        raise InvalidState("Riverhog returned an unsupported collection manifest")
     parse_utc_timestamp(created_at)
     tags = sorted({normalize_tag(str(tag)) for tag in raw_tags})
     if tags != raw_tags:
-        raise RuntimeError("Riverhog returned non-canonical collection tags")
+        raise InvalidState("Riverhog returned non-canonical collection tags")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     etag = hashlib.sha256(canonical).hexdigest()
     db.execute(
@@ -118,7 +132,7 @@ def _store_manifest(
         byte_count = int(current["bytes"])
         sha256 = str(current["sha256"])
         if byte_count < 0 or len(sha256) != 64:
-            raise RuntimeError("Riverhog returned invalid file metadata")
+            raise InvalidState("Riverhog returned invalid file metadata")
         db.execute(
             """
             INSERT INTO desired_files (collection_id, path, bytes, sha256)
@@ -131,7 +145,7 @@ def _store_manifest(
 def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: int) -> None:
     summary = api.get_collection(collection_id)
     if normalize_collection_id(summary["id"]) != collection_id:
-        raise RuntimeError("Riverhog returned the wrong collection summary")
+        raise InvalidState("Riverhog returned the wrong collection summary")
     _store_manifest(
         db,
         api.get_portable_collection_manifest(collection_id),
@@ -142,13 +156,29 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
     output = (target / str(collection_id) / path).resolve()
     if not output.is_relative_to(target):
-        raise RuntimeError("materialization path escapes RIVERHOG_LOCAL_ROOT")
+        raise InvalidState("materialization path escapes RIVERHOG_LOCAL_ROOT")
     return output
 
 
-def _projection_name(collection_id: int, created_at: str) -> str:
+def _projection_name(
+    collection_id: int,
+    created_at: str,
+    *,
+    tags: list[str] | None = None,
+    parent_tag: str | None = None,
+) -> str:
     timestamp = parse_utc_timestamp(created_at).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}--{collection_id}"
+    base = f"{timestamp}--{collection_id}"
+    other_tags = sorted(tag for tag in tags or [] if tag != parent_tag)
+    if not other_tags:
+        return base
+    full_name = "--".join((base, *other_tags))
+    if len(full_name.encode("utf-8")) <= PROJECTION_NAME_BYTES_MAX:
+        return full_name
+    digest = hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:12]
+    suffix = f"--{digest}"
+    budget = PROJECTION_NAME_BYTES_MAX - len(suffix)
+    return f"{full_name[:budget].rstrip('-')}{suffix}"
 
 
 def _collection_is_materialized(
@@ -184,18 +214,24 @@ def _expected_projection_links(
         collection_id = normalize_collection_id(row["collection_id"])
         if not _collection_is_materialized(db, target, collection_id):
             continue
-        name = _projection_name(collection_id, str(row["created_at"]))
         tags = json.loads(str(row["tags_json"]))
         if not isinstance(tags, list):
-            raise RuntimeError(f"invalid local tag state for collection {collection_id}")
-        directories = (
-            [target / "by-tag" / normalize_tag(str(tag)) for tag in tags]
-            if tags
-            else [target / "untagged"]
-        )
+            raise InvalidState(f"invalid local tag state for collection {collection_id}")
+        normalized_tags = [normalize_tag(str(tag)) for tag in tags]
         collection_dir = target / str(collection_id)
-        for directory in directories:
-            link = directory / name
+        if not normalized_tags:
+            directory = target / "untagged"
+            link = directory / _projection_name(collection_id, str(row["created_at"]))
+            expected[link] = os.path.relpath(collection_dir, start=directory)
+            continue
+        for parent_tag in normalized_tags:
+            directory = target / "by-tag" / parent_tag
+            link = directory / _projection_name(
+                collection_id,
+                str(row["created_at"]),
+                tags=normalized_tags,
+                parent_tag=parent_tag,
+            )
             expected[link] = os.path.relpath(collection_dir, start=directory)
     return expected
 
@@ -208,9 +244,9 @@ def _actual_projection_links(
     actual: dict[Path, str] = {}
     for root in (target / "by-tag", target / "untagged"):
         if root.is_symlink():
-            raise RuntimeError(f"local projection root must not be a symlink: {root}")
+            raise InvalidState(f"local projection root must not be a symlink: {root}")
         if root.exists() and not root.is_dir():
-            raise RuntimeError(f"local projection root is not a directory: {root}")
+            raise InvalidState(f"local projection root is not a directory: {root}")
         if create_roots:
             root.mkdir(parents=True, exist_ok=True)
         if not root.exists():
@@ -219,7 +255,7 @@ def _actual_projection_links(
             if current.is_symlink():
                 actual[current] = os.readlink(current)
             elif not current.is_dir():
-                raise RuntimeError(f"local projection contains an unmanaged file: {current}")
+                raise InvalidState(f"local projection contains an unmanaged file: {current}")
     return actual
 
 
@@ -235,7 +271,7 @@ def _reconcile_projection(db: sqlite3.Connection, target: Path) -> None:
         if link.is_symlink() and os.readlink(link) == destination:
             continue
         if link.exists() or link.is_symlink():
-            raise RuntimeError(f"local projection path is occupied: {link}")
+            raise InvalidState(f"local projection path is occupied: {link}")
         link.symlink_to(destination, target_is_directory=True)
 
     for root in (target / "by-tag", target / "untagged"):
@@ -283,10 +319,10 @@ def _extract_pack(
         path = normalize_relpath(str(placement["path"]))
         raw_member = placement["member"]
         if not isinstance(raw_member, str):
-            raise RuntimeError(f"archive pack member mapping is missing: {collection_id}/{path}")
+            raise InvalidState(f"archive pack member mapping is missing: {collection_id}/{path}")
         member = normalize_relpath(raw_member)
         if member in selected:
-            raise RuntimeError(f"duplicate archive pack member mapping: {member}")
+            raise InvalidState(f"duplicate archive pack member mapping: {member}")
         selected[member] = (collection_id, path, int(placement["bytes"]))
 
     extracted: set[tuple[int, str]] = set()
@@ -297,14 +333,14 @@ def _extract_pack(
             if destination is None:
                 continue
             if not info.isfile():
-                raise RuntimeError(f"archive pack member is not a file: {member}")
+                raise InvalidState(f"archive pack member is not a file: {member}")
             collection_id, path, expected_bytes = destination
             identity = (collection_id, path)
             if identity in extracted:
-                raise RuntimeError(f"duplicate archive pack member: {member}")
+                raise InvalidState(f"duplicate archive pack member: {member}")
             source = archive.extractfile(info)
             if source is None:
-                raise RuntimeError(f"archive pack member cannot be read: {member}")
+                raise InvalidState(f"archive pack member cannot be read: {member}")
             output = _output_path(staging_root, collection_id, path)
             output.parent.mkdir(parents=True, exist_ok=True)
             byte_count = 0
@@ -313,12 +349,12 @@ def _extract_pack(
                     handle.write(chunk)
                     byte_count += len(chunk)
             if byte_count != expected_bytes:
-                raise RuntimeError(f"archive pack member has the wrong size: {member}")
+                raise InvalidState(f"archive pack member has the wrong size: {member}")
             extracted.add(identity)
     expected = {(current[0], current[1]) for current in selected.values()}
     if extracted != expected:
         missing = sorted(path for collection_id, path in expected - extracted)
-        raise RuntimeError(f"archive pack members are missing: {', '.join(missing)}")
+        raise InvalidState(f"archive pack members are missing: {', '.join(missing)}")
     return extracted
 
 
@@ -332,7 +368,9 @@ def _place_raw_object(
     path = normalize_relpath(str(placement["path"]))
     expected_bytes = int(placement["bytes"])
     if object_path.stat().st_size != expected_bytes:
-        raise RuntimeError(f"archive object has the wrong placement size: {collection_id}/{path}")
+        raise InvalidState(
+            f"archive object has the wrong placement size: {collection_id}/{path}"
+        )
     output = _output_path(staging_root, collection_id, path)
     output.parent.mkdir(parents=True, exist_ok=True)
     mode = "r+b" if output.exists() else "w+b"
@@ -373,7 +411,7 @@ def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
         if not changes.get("has_more"):
             return
         if cursor <= after:
-            raise RuntimeError("ResourceSync cursor did not advance while changes remained")
+            raise InvalidState("ResourceSync cursor did not advance while changes remained")
         after = cursor
 
 
@@ -468,7 +506,7 @@ def _download_job(
                 byte_count=int(current["plaintext_bytes"]),
                 sha256=str(current["sha256"]),
             ):
-                raise RuntimeError(
+                raise InvalidState(
                     f"retrieved archive object did not match its manifest: "
                     f"{collection_id}/{object_id}"
                 )
@@ -482,7 +520,7 @@ def _download_job(
                 )
             else:
                 if len(placements) != 1 or placements[0]["member"] is not None:
-                    raise RuntimeError(
+                    raise InvalidState(
                         f"raw archive object has invalid placement: {collection_id}/{object_id}"
                     )
                 staged.add(
@@ -498,13 +536,13 @@ def _download_job(
             missing = sorted(
                 f"{collection_id}/{path}" for collection_id, path in set(expected) - staged
             )
-            raise RuntimeError(
+            raise InvalidState(
                 f"retrieval did not materialize selected files: {', '.join(missing)}"
             )
         for (collection_id, path), (expected_bytes, expected_sha256) in expected.items():
             staging = _output_path(staging_root, collection_id, path)
             if not _matches(staging, byte_count=expected_bytes, sha256=expected_sha256):
-                raise RuntimeError(
+                raise InvalidState(
                     f"retrieved file did not match its manifest: {collection_id}/{path}"
                 )
         for collection_id, path in expected:
@@ -512,7 +550,7 @@ def _download_job(
             output = _output_path(target, collection_id, path)
             output.parent.mkdir(parents=True, exist_ok=True)
             if output.exists():
-                raise RuntimeError(f"target appeared during retrieval: {collection_id}/{path}")
+                raise InvalidState(f"target appeared during retrieval: {collection_id}/{path}")
             staging.replace(output)
     finally:
         shutil.rmtree(transfer_root, ignore_errors=True)
@@ -607,30 +645,113 @@ def remove_collection(
 
 
 @local_app.command("list")
-def list_collections() -> None:
+def list_collections(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[
+        int,
+        typer.Option("--per-page", min=1, max=LOCAL_LIST_PAGE_SIZE_MAX),
+    ] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "collection_id",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Search collection id, tag, or status"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching local collection"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one collection id per line"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    if sort not in LOCAL_LIST_SORT_FIELDS:
+        allowed = ", ".join(sorted(LOCAL_LIST_SORT_FIELDS))
+        raise typer.BadParameter(f"--sort must be one of: {allowed}")
+    normalized_order = order.strip().lower()
+    if normalized_order not in {"asc", "desc"}:
+        raise typer.BadParameter("--order must be asc or desc")
+
     target = _target()
     with closing(_connect(target)) as db:
-        rows = list(
-            db.execute(
-                """
+        filters = ""
+        params: list[object] = []
+        normalized_query = (query or "").strip() or None
+        if normalized_query:
+            filters = (
+                "WHERE CAST(collection_id AS TEXT) LIKE ? "
+                "OR lower(tags_json) LIKE lower(?) "
+                "OR status LIKE lower(?)"
+            )
+            pattern = f"%{normalized_query}%"
+            params.extend((pattern, pattern, pattern))
+        base_query = f"""
+                WITH local_collections AS (
                 SELECT c.collection_id, c.created_at, c.tags_json, c.remote_deleted,
+                       CASE c.remote_deleted
+                           WHEN 1 THEN 'remote-deleted'
+                           ELSE 'desired'
+                       END AS status,
                        COUNT(f.path) AS files,
                        COALESCE(SUM(f.bytes), 0) AS bytes
                 FROM desired_collections AS c
                 LEFT JOIN desired_files AS f USING (collection_id)
                 GROUP BY c.collection_id, c.created_at, c.tags_json, c.remote_deleted
-                ORDER BY c.collection_id
+                )
+                SELECT * FROM local_collections
+                {filters}
                 """
-            )
+        total = int(
+            db.execute(
+                f"SELECT COUNT(*) FROM ({base_query})",
+                params,
+            ).fetchone()[0]
         )
-    for row in rows:
-        status = "remote-deleted" if row["remote_deleted"] else "desired"
-        tags = json.loads(str(row["tags_json"]))
-        typer.echo(
-            f"{row['collection_id']}  {status}  "
-            f"{_projection_name(row['collection_id'], row['created_at'])}  "
-            f"tags={','.join(tags) or 'none'}  {row['files']} files  {row['bytes']} bytes"
+        effective_page = 1 if all_items else page
+        effective_per_page = total if all_items and total else per_page
+        offset = (effective_page - 1) * effective_per_page
+        order_column = LOCAL_LIST_SORT_FIELDS[sort]
+        rows = db.execute(
+            f"""
+            {base_query}
+            ORDER BY {order_column} {normalized_order.upper()}, collection_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, effective_per_page, offset),
         )
+        collections = [
+            {
+                "collection_id": int(row["collection_id"]),
+                "created_at": str(row["created_at"]),
+                "tags": json.loads(str(row["tags_json"])),
+                "status": str(row["status"]),
+                "files": int(row["files"]),
+                "bytes": int(row["bytes"]),
+            }
+            for row in rows
+        ]
+    pages = (total + effective_per_page - 1) // effective_per_page if total else 0
+    payload = {
+        "page": effective_page,
+        "per_page": effective_per_page,
+        "total": total,
+        "pages": pages,
+        "sort": sort,
+        "order": normalized_order,
+        "query": normalized_query,
+        "collections": collections,
+    }
+    if ids:
+        emit(
+            format_list_ids(payload, "collections", id_key="collection_id"),
+            json_mode=False,
+        )
+        return
+    emit(payload if json_mode else format_local_collections(payload), json_mode=json_mode)
 
 
 @local_app.command("sync")
