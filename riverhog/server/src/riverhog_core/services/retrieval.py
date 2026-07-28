@@ -24,6 +24,7 @@ from riverhog_core.archive_objects import (
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CatalogEventRecord,
@@ -149,16 +150,10 @@ class SqlAlchemyRetrievalService:
             cursor = int(page_sequences[-1]) if page_sequences else after
             if not page_sequences:
                 return {"cursor": cursor, "has_more": False, "changes": []}
-            rows = session.scalars(
-                select(CatalogEventRecord)
-                .where(
-                    CatalogEventRecord.sequence.in_(page_sequences),
-                    collection_access_filter(
-                        CatalogEventRecord.collection_id,
-                        principal,
-                        CATALOG_READ,
-                    ),
-                )
+            visibility, projected_change = catalog_event_projection(principal, CATALOG_READ)
+            rows = session.execute(
+                select(CatalogEventRecord, projected_change.label("projected_change"))
+                .where(CatalogEventRecord.sequence.in_(page_sequences), visibility)
                 .order_by(CatalogEventRecord.sequence)
             ).all()
             return {
@@ -166,13 +161,13 @@ class SqlAlchemyRetrievalService:
                 "has_more": has_more,
                 "changes": [
                     {
-                        "sequence": row.sequence,
-                        "change": row.change,
-                        "collection_id": row.collection_id,
-                        "occurred_at": row.occurred_at,
-                        "etag": row.record_etag,
+                        "sequence": event.sequence,
+                        "change": projected,
+                        "collection_id": event.collection_id,
+                        "occurred_at": event.occurred_at,
+                        "etag": event.record_etag,
                     }
-                    for row in rows
+                    for event, projected in rows
                 ],
             }
 

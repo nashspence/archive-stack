@@ -19,9 +19,9 @@ from riverhog_core.app_permissions import (
     tag_resource,
 )
 from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
-    CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
@@ -278,13 +278,14 @@ class SqlAlchemyTagService:
                 files=files,
             )
             _schedule_metadata_publications(session, collection)
-            session.add(
-                CatalogEventRecord(
-                    change="updated",
-                    collection_id=collection_id,
-                    occurred_at=now,
-                    record_etag=collection.record_etag,
-                )
+            record_catalog_event(
+                session,
+                change="updated",
+                collection_id=collection_id,
+                occurred_at=now,
+                record_etag=collection.record_etag,
+                before_tags=current_tags,
+                after_tags=normalized_tags,
             )
             session.flush()
             self._lifecycle_events.emit_collection(

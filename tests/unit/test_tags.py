@@ -17,6 +17,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
+    CatalogEventTagRecord,
     CollectionDeletionRecord,
     CollectionMetadataPublicationRecord,
 )
@@ -139,6 +140,20 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         for event in events
     )
     assert all("tags" not in event.data for event in events)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        assert [
+            (row.sequence, row.phase, row.tag_id)
+            for row in session.query(CatalogEventTagRecord).order_by(
+                CatalogEventTagRecord.sequence,
+                CatalogEventTagRecord.phase,
+                CatalogEventTagRecord.tag_id,
+            )
+        ] == [
+            (1, "after", "camera"),
+            (1, "before", "docs"),
+            (2, "after", "reviewed"),
+            (2, "before", "camera"),
+        ]
 
     archive_store = MemoryArchiveStore()
     publisher = SqlAlchemyArchiveUploadService(

@@ -23,7 +23,7 @@ from riverhog_core.catalog_models import CollectionRecord, TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
-from riverhog_protocol.errors import Forbidden
+from riverhog_protocol.errors import Forbidden, Unauthorized
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -65,6 +65,10 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
     @api.exception_handler(Forbidden)
     async def forbidden_handler(_request: object, exc: Forbidden) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": exc.message})
+
+    @api.exception_handler(Unauthorized)
+    async def unauthorized_handler(_request: object, exc: Unauthorized) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": exc.message})
 
     api.include_router(apps_router, prefix="/v1")
     api.include_router(quotas_router, prefix="/v1")

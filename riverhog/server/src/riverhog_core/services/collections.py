@@ -294,6 +294,8 @@ class SqlAlchemyCollectionService:
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
             if upload is not None:
+                if upload.initiated_by_app != principal.app:
+                    raise NotFound(f"collection upload not found: {normalized_collection_id}")
                 require_collection_create_access(
                     principal,
                     COLLECTIONS_CREATE,

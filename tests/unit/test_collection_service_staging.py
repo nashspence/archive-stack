@@ -348,6 +348,33 @@ def test_finalized_upload_status_does_not_grant_cross_application_visibility(
         _service(path).require_upload_access(1, principal)
 
 
+def test_open_upload_status_does_not_grant_cross_application_visibility(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed_tag(path, "photos")
+    service = _service(path)
+    creator = ApplicationPrincipal(
+        app="creator",
+        key_id="creator-key",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")}),
+    )
+    created = service.create_or_resume_upload_session(
+        idempotency_key="photos-upload",
+        tags=["photos"],
+        initiator=creator,
+    )
+    other = ApplicationPrincipal(
+        app="other",
+        key_id="other-key",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")}),
+    )
+
+    with pytest.raises(NotFound, match="collection upload not found"):
+        service.require_upload_access(int(created["collection_id"]), other)
+
+
 def test_registered_file_metadata_is_immutable(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))

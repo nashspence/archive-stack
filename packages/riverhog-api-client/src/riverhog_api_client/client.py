@@ -12,6 +12,8 @@ from lifecycle_events import EventPage
 from riverhog_protocol.errors import (
     BadRequest,
     Conflict,
+    DownloadAllowanceExceeded,
+    Forbidden,
     HashMismatch,
     InvalidPath,
     InvalidState,
@@ -19,6 +21,7 @@ from riverhog_protocol.errors import (
     NotYetImplemented,
     RiverhogError,
     ServiceUnavailable,
+    Unauthorized,
 )
 
 from riverhog_api_client.tus import TusHttpClient
@@ -141,6 +144,8 @@ class _HttpApiClient:
         message = error.get("message", response.text)
         exc_map: dict[str, type[RiverhogError]] = {
             "bad_request": BadRequest,
+            "unauthorized": Unauthorized,
+            "forbidden": Forbidden,
             "invalid_path": InvalidPath,
             "not_found": NotFound,
             "conflict": Conflict,
@@ -148,6 +153,7 @@ class _HttpApiClient:
             "hash_mismatch": HashMismatch,
             "not_implemented": NotYetImplemented,
             "service_unavailable": ServiceUnavailable,
+            "download_allowance_exceeded": DownloadAllowanceExceeded,
         }
         raise exc_map.get(code, RiverhogError)(str(message))
 

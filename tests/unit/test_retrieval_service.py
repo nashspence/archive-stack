@@ -16,6 +16,7 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CatalogEventRecord,
@@ -497,6 +498,73 @@ def test_filtered_catalog_changes_advance_past_invisible_rows(tmp_path: Path) ->
     assert second["cursor"] == 2
     assert second["has_more"] is False
     assert [change["collection_id"] for change in second["changes"]] == [COLLECTION_ID]
+
+
+def test_tag_scoped_catalog_changes_project_access_transitions(tmp_path: Path) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        record_catalog_event(
+            session,
+            change="updated",
+            collection_id=COLLECTION_ID,
+            occurred_at="2026-07-18T00:00:00.000000Z",
+            record_etag="a" * 64,
+            before_tags=("docs",),
+            after_tags=("camera",),
+        )
+        record_catalog_event(
+            session,
+            change="updated",
+            collection_id=COLLECTION_ID,
+            occurred_at="2026-07-18T00:00:01.000000Z",
+            record_etag="b" * 64,
+            before_tags=("camera",),
+            after_tags=("docs",),
+        )
+        record_catalog_event(
+            session,
+            change="deleted",
+            collection_id=COLLECTION_ID,
+            occurred_at="2026-07-18T00:00:02.000000Z",
+            record_etag="b" * 64,
+            before_tags=("docs",),
+            after_tags=(),
+        )
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        None,
+        proof_verifier=FixtureProofVerifier(),
+    )
+    docs_reader = ApplicationPrincipal(
+        app="docs-reader",
+        key_id="docs-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ, "tag:docs")}),
+    )
+    broad_reader = ApplicationPrincipal(
+        app="broad-reader",
+        key_id="broad-key",
+        access=frozenset(
+            {
+                ApplicationAccess(CATALOG_READ, "tag:camera"),
+                ApplicationAccess(CATALOG_READ, "tag:docs"),
+            }
+        ),
+    )
+
+    docs_changes = service.change_list(principal=docs_reader)["changes"]
+    broad_changes = service.change_list(principal=broad_reader)["changes"]
+
+    assert [change["change"] for change in docs_changes] == [
+        "deleted",
+        "updated",
+        "deleted",
+    ]
+    assert [change["change"] for change in broad_changes] == [
+        "updated",
+        "updated",
+        "deleted",
+    ]
 
 
 def test_provider_prepared_retrieval_uses_leased_encrypted_cache(tmp_path: Path) -> None:

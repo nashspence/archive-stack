@@ -10,6 +10,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
+    CatalogEventTagRecord,
     CollectionMetadataPublicationRecord,
     CollectionRecord,
 )
@@ -109,6 +110,8 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "deleted" and event.collection_id == COLLECTION_ID
+        snapshot = session.query(CatalogEventTagRecord).one()
+        assert (snapshot.phase, snapshot.tag_id) == ("before", "docs")
 
 
 def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(

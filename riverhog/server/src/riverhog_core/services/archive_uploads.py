@@ -21,9 +21,9 @@ from riverhog_core.archive_objects import (
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
-    CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionDeletionRecord,
@@ -865,13 +865,14 @@ class SqlAlchemyArchiveUploadService:
                 store=upload.archive_store,
                 receipt=receipt,
             )
-            session.add(
-                CatalogEventRecord(
-                    change="created",
-                    collection_id=collection_id,
-                    occurred_at=now,
-                    record_etag=record_etag,
-                )
+            record_catalog_event(
+                session,
+                change="created",
+                collection_id=collection_id,
+                occurred_at=now,
+                record_etag=record_etag,
+                before_tags=(),
+                after_tags=tags,
             )
             self._lifecycle_events.emit_collection(
                 type="collection.finalized",

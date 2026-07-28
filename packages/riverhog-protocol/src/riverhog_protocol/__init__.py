@@ -10,6 +10,7 @@ from riverhog_protocol.errors import (
     NotYetImplemented,
     RiverhogError,
     ServiceUnavailable,
+    Unauthorized,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "NotYetImplemented",
     "RiverhogError",
     "ServiceUnavailable",
+    "Unauthorized",
 ]

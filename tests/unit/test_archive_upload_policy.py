@@ -14,6 +14,7 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
+    CatalogEventTagRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
@@ -204,6 +205,13 @@ def test_encrypted_ingress_streams_into_independently_restorable_archive_objects
         assert session.get(CollectionUploadRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "created" and event.collection_id == COLLECTION_ID
+        assert [
+            (row.phase, row.tag_id)
+            for row in session.query(CatalogEventTagRecord).order_by(
+                CatalogEventTagRecord.phase,
+                CatalogEventTagRecord.tag_id,
+            )
+        ] == [("after", "docs")]
         files = (("document.txt", len(CONTENT), hashlib.sha256(CONTENT).hexdigest()),)
         content_etag = collection_content_etag(files)
         _manifest, expected_etag = collection_record_manifest(

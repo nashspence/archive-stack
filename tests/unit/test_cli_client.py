@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from riverhog_api_client.client import ApiClient
+from riverhog_protocol.errors import DownloadAllowanceExceeded, Forbidden, Unauthorized
 
 
 class RecordingClient(ApiClient):
@@ -15,6 +17,29 @@ class RecordingClient(ApiClient):
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         self.calls.append((method, path, kwargs))
         return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, path))
+
+
+@pytest.mark.parametrize(
+    ("code", "error_type"),
+    [
+        ("unauthorized", Unauthorized),
+        ("forbidden", Forbidden),
+        ("download_allowance_exceeded", DownloadAllowanceExceeded),
+    ],
+)
+def test_client_preserves_actionable_api_error_types(
+    code: str,
+    error_type: type[Exception],
+) -> None:
+    client = ApiClient(base_url="http://example.invalid")
+    response = httpx.Response(
+        400,
+        json={"error": {"code": code, "message": "action denied"}},
+        request=httpx.Request("GET", "http://example.invalid/v1/test"),
+    )
+
+    with pytest.raises(error_type, match="action denied"):
+        client._raise_for_error(response)
 
 
 def test_search_uses_current_collection_filters() -> None:

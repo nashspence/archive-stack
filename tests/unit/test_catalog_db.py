@@ -16,6 +16,7 @@ CURRENT_TABLES = {
     "archive_download_reservations",
     "archive_download_usage",
     "catalog_events",
+    "catalog_event_tags",
     "collection_archive_copies",
     "collection_archive_attestations",
     "collection_archive_file_objects",
@@ -122,6 +123,11 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "event_json",
         "context_json",
         "context_expires_at",
+    }
+    assert {column["name"] for column in inspector.get_columns("catalog_event_tags")} == {
+        "sequence",
+        "phase",
+        "tag_id",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_job_files")} == {
         "job_id",

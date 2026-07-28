@@ -462,6 +462,7 @@ def create_app(
     async def handle_riverhog_error(_: Request, exc: RiverhogError) -> JSONResponse:
         status_map = {
             "bad_request": 400,
+            "unauthorized": 401,
             "forbidden": 403,
             "invalid_target": 400,
             "not_found": 404,
@@ -473,7 +474,11 @@ def create_app(
             "download_allowance_exceeded": 429,
         }
         payload = ErrorResponse(error=ErrorBody(code=exc.code, message=exc.message))
-        return JSONResponse(status_code=status_map.get(exc.code, 400), content=payload.model_dump())
+        return JSONResponse(
+            status_code=status_map.get(exc.code, 400),
+            content=payload.model_dump(),
+            headers={"WWW-Authenticate": "Bearer"} if exc.code == "unauthorized" else None,
+        )
 
     @app.exception_handler(NotImplementedError)
     async def handle_builtin_not_implemented(_: Request, exc: NotImplementedError) -> JSONResponse:

@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from riverhog_api.auth import require_application, require_permission
 from riverhog_core.app_permissions import (
@@ -29,7 +28,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
-from riverhog_protocol.errors import BadRequest, Forbidden, NotFound
+from riverhog_protocol.errors import BadRequest, Forbidden, NotFound, Unauthorized
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -351,9 +350,7 @@ def test_application_authentication_distinguishes_missing_and_forbidden_permissi
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid")
     assert require_application(credentials, container) == principal
     assert require_permission(CATALOG_READ)(credentials, container) == principal
-    with pytest.raises(HTTPException) as missing:
+    with pytest.raises(Unauthorized, match="invalid application token"):
         require_application(None, container)
-    assert missing.value.status_code == 401
-    with pytest.raises(HTTPException) as forbidden:
+    with pytest.raises(Forbidden, match="application permission required"):
         require_permission(COLLECTIONS_CREATE)(credentials, container)
-    assert forbidden.value.status_code == 403

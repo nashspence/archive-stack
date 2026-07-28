@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, ForeignKeyConstraint, Identity, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Identity,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_db import Base
@@ -405,6 +414,20 @@ class CatalogEventRecord(Base):
     record_etag: Mapped[str] = mapped_column(String(64))
 
     __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
+
+
+class CatalogEventTagRecord(Base):
+    __tablename__ = "catalog_event_tags"
+
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    phase: Mapped[str] = mapped_column(String, primary_key=True)
+    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["sequence"], ["catalog_events.sequence"], ondelete="CASCADE"),
+        CheckConstraint("phase IN ('before', 'after')", name="ck_catalog_event_tags_phase"),
+        Index("ix_catalog_event_tags_visibility", "phase", "tag_id", "sequence"),
+    )
 
 
 class LifecycleEventRecord(Base):

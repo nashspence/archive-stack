@@ -16,10 +16,10 @@ from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    CatalogEventRecord,
     CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
@@ -27,6 +27,7 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
     CollectionRecord,
+    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     RetrievalCacheObjectRecord,
@@ -230,6 +231,13 @@ class SqlAlchemyCollectionDeletionService:
                 session.delete(upload)
             collection = session.get(CollectionRecord, collection_id)
             if collection is not None:
+                before_tags = tuple(
+                    session.scalars(
+                        select(CollectionTagRecord.tag_id)
+                        .where(CollectionTagRecord.collection_id == collection_id)
+                        .order_by(CollectionTagRecord.tag_id)
+                    ).all()
+                )
                 execution = _execution(plan)
                 self._lifecycle_events.emit_collection(
                     type="collection.deleted",
@@ -256,15 +264,16 @@ class SqlAlchemyCollectionDeletionService:
                     ),
                     session=session,
                 )
-                session.delete(collection)
-            session.add(
-                CatalogEventRecord(
+                record_catalog_event(
+                    session,
                     change="deleted",
                     collection_id=collection_id,
                     occurred_at=format_utc_timestamp(utc_now()),
                     record_etag=str(plan["record_etag"]),
+                    before_tags=before_tags,
+                    after_tags=(),
                 )
-            )
+                session.delete(collection)
             session.delete(active)
         return _deletion_result(plan, status="deleted")
 

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from types import SimpleNamespace
 from typing import Any, cast
 
+import anyio
+import httpx
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from riverhog_api.app import create_app
-from riverhog_core.app_permissions import APPLICATION_PERMISSIONS
+from riverhog_core.app_permissions import (
+    APPLICATION_PERMISSIONS,
+    CATALOG_READ,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 
 
 def _permission_dependencies(dependant: Dependant) -> Iterable[str]:
@@ -47,3 +55,45 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
 
     assert protected
     assert len(protected) == len(set(protected))
+
+
+def test_application_authentication_uses_the_public_error_contract() -> None:
+    principal = ApplicationPrincipal(
+        app="reader",
+        key_id="reader-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ)}),
+    )
+
+    class Keys:
+        def authenticate(self, token: str) -> ApplicationPrincipal | None:
+            return principal if token == "reader-token" else None
+
+    app = create_app(container=cast(Any, SimpleNamespace(app_keys=Keys())))
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            unauthorized = await client.get("/v1/collections")
+            assert unauthorized.status_code == 401
+            assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
+            assert unauthorized.json() == {
+                "error": {
+                    "code": "unauthorized",
+                    "message": "invalid application token",
+                }
+            }
+
+            forbidden = await client.post(
+                "/v1/collection-upload-sessions",
+                headers={"Authorization": "Bearer reader-token"},
+                json={"idempotency_key": "example", "tags": ["example"]},
+            )
+            assert forbidden.status_code == 403
+            assert forbidden.json() == {
+                "error": {
+                    "code": "forbidden",
+                    "message": "application permission required: collections:create",
+                }
+            }
+
+    anyio.run(exercise)

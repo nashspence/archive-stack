@@ -5,7 +5,7 @@ import secrets
 from collections.abc import Callable
 from typing import Annotated, cast
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from riverhog_core.app_permissions import (
     ARCHIVES_MANAGE,
@@ -22,6 +22,7 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
+from riverhog_protocol.errors import Forbidden, Unauthorized
 
 from riverhog_api.deps import ContainerDep, ServiceContainer
 
@@ -70,11 +71,7 @@ def require_application(
     principal = authenticate_token(supplied, container)
     if principal is not None:
         return principal
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="invalid application token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    raise Unauthorized("invalid application token")
 
 
 def require_permission(permission: str) -> PermissionDependency:
@@ -85,10 +82,7 @@ def require_permission(permission: str) -> PermissionDependency:
         principal = require_application(credentials, container)
         if principal.allows(permission):
             return principal
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"application permission required: {permission}",
-        )
+        raise Forbidden(f"application permission required: {permission}")
 
     dependency.riverhog_permission = permission  # type: ignore[attr-defined]
     return dependency

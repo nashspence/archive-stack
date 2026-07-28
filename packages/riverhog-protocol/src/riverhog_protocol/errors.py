@@ -17,6 +17,10 @@ class Forbidden(RiverhogError):
     code = "forbidden"
 
 
+class Unauthorized(RiverhogError):
+    code = "unauthorized"
+
+
 class InvalidPath(RiverhogError):
     code = "invalid_path"
 
