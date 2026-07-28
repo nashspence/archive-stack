@@ -1,6 +1,11 @@
+import importlib.metadata
 from typing import Any
 
 from riverhog_api import app as api_app
+
+
+def test_api_version_matches_the_installed_server_distribution() -> None:
+    assert api_app.create_app().version == importlib.metadata.version("riverhog-server")
 
 
 def test_api_entrypoint_listens_on_the_container_network(monkeypatch: Any) -> None:

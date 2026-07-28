@@ -7,13 +7,6 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
 import typer
-from cli_support.application_keys import (
-    format_app_key_created,
-    format_app_key_revoked,
-    format_app_keys,
-    format_apps,
-)
-from cli_support.output import format_list_ids, json_text
 from config_validation import ConfigError
 from munchy_api_client.client import (
     ATTENTION_STYLE,
@@ -55,6 +48,13 @@ from munchy_workflows.job_authoring import (
 )
 from munchy_workflows.profiles import EncodeProfile, ProfileError, load_encode_profiles
 from pydantic import ValidationError
+from riverhog_cli_support.application_keys import (
+    format_app_key_created,
+    format_app_key_revoked,
+    format_app_keys,
+    format_apps,
+)
+from riverhog_cli_support.output import format_list_ids, json_text
 from time_formats import parse_duration
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
@@ -953,9 +953,7 @@ def enable_job_template(
 ) -> None:
     """Enable a job template for new submissions."""
 
-    _set_job_template_enabled(
-        template_id, server_url=server_url, enabled=True, json_mode=json_mode
-    )
+    _set_job_template_enabled(template_id, server_url=server_url, enabled=True, json_mode=json_mode)
 
 
 @template_app.command("disable")

@@ -1,3 +1,5 @@
+"""Shared structured CLI output helpers for Riverhog-family applications."""
+
 from __future__ import annotations
 
 import json

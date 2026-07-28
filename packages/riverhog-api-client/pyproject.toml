@@ -10,10 +10,10 @@ requires-python = ">=3.12"
 dependencies = [
   "h2>=4,<5",
   "httpx>=0.27,<1.0",
-  "lifecycle-events",
-  "riverhog-age",
-  "riverhog-protocol",
-  "tus-transport",
+  "lifecycle-events>=0.1,<0.2",
+  "riverhog-age>=0.1,<0.2",
+  "riverhog-protocol>=0.1,<0.2",
+  "tus-transport>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
@@ -24,4 +24,3 @@ tus-transport = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_api_client"]
-

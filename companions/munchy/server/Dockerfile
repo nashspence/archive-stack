@@ -10,7 +10,6 @@ COPY pyproject.toml uv.lock ./
 COPY companions/munchy/server/pyproject.toml companions/munchy/server/pyproject.toml
 COPY companions/munchy/server/src companions/munchy/server/src
 COPY packages/application-access packages/application-access
-COPY packages/cli-support packages/cli-support
 COPY packages/config-validation packages/config-validation
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/munchy-api-client packages/munchy-api-client

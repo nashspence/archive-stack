@@ -7,11 +7,11 @@ name = "jeb-cli-support"
 version = "0.1.0"
 description = "Shared command-line presentation for Jeb."
 requires-python = ">=3.12"
-dependencies = ["cli-support", "jeb-protocol"]
+dependencies = ["jeb-protocol>=0.1,<0.2", "riverhog-cli-support>=0.1,<0.2"]
 
 [tool.uv.sources]
-cli-support = { workspace = true }
 jeb-protocol = { workspace = true }
+riverhog-cli-support = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jeb_cli_support"]

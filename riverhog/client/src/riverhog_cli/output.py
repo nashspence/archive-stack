@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from cli_support.output import (
+from riverhog_cli_support.output import (
     human_bytes as _bytes,
 )
-from cli_support.output import (
+from riverhog_cli_support.output import (
     mapping_items as _items,
 )
-from cli_support.output import (
+from riverhog_cli_support.output import (
     page_line as _page_line,
 )
 

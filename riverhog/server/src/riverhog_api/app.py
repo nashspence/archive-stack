@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.metadata
 import logging
 import os
 import threading
@@ -454,7 +455,11 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await proof_maturation_task
 
-    app = FastAPI(title="riverhog API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="riverhog API",
+        version=importlib.metadata.version("riverhog-server"),
+        lifespan=lifespan,
+    )
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
     app.dependency_overrides[get_container] = get_or_create_container
 

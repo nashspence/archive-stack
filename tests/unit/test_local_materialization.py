@@ -91,6 +91,8 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
         ("riverhog_cli.output", "format_local_collections"),
+        ("riverhog_cli_support.output", "emit"),
+        ("riverhog_cli_support.output", "format_list_ids"),
     }
 
 

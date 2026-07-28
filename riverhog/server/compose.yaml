@@ -158,6 +158,8 @@ services:
     build:
       context: ../..
       dockerfile: riverhog/server/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     restart: unless-stopped
     depends_on:
       garage:

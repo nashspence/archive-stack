@@ -9,7 +9,7 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 COPY companions/jeb/server/pyproject.toml companions/jeb/server/pyproject.toml
 COPY companions/jeb/server/src companions/jeb/server/src
-COPY packages/cli-support packages/cli-support
+COPY packages/riverhog-cli-support packages/riverhog-cli-support
 COPY packages/jeb-cli-support packages/jeb-cli-support
 COPY packages/jeb-protocol packages/jeb-protocol
 COPY packages/lifecycle-events packages/lifecycle-events

@@ -137,9 +137,12 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
                 continue
             copied_sources.update(tokens[1:-1])
 
-        missing = {
+        expected = {
             str(projects[dependency].relative_to(REPO))
             for dependency in dependency_closure(distribution, graph)
-            if str(projects[dependency].relative_to(REPO)) not in copied_sources
         }
+        copied_packages = {source for source in copied_sources if source.startswith("packages/")}
+        missing = expected - copied_packages
+        extra = copied_packages - expected
         assert not missing, f"{dockerfile.relative_to(REPO)} omits {sorted(missing)}"
+        assert not extra, f"{dockerfile.relative_to(REPO)} unnecessarily copies {sorted(extra)}"

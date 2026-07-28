@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from cli_support.output import emit, format_list_ids
 from riverhog_api_client.client import ApiClient
+from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
 from time_formats import parse_utc_timestamp
@@ -368,9 +368,7 @@ def _place_raw_object(
     path = normalize_relpath(str(placement["path"]))
     expected_bytes = int(placement["bytes"])
     if object_path.stat().st_size != expected_bytes:
-        raise InvalidState(
-            f"archive object has the wrong placement size: {collection_id}/{path}"
-        )
+        raise InvalidState(f"archive object has the wrong placement size: {collection_id}/{path}")
     output = _output_path(staging_root, collection_id, path)
     output.parent.mkdir(parents=True, exist_ok=True)
     mode = "r+b" if output.exists() else "w+b"

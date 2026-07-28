@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 import riverhog_cli.main
-from cli_support.output import emit
 from pytest import CaptureFixture
 from riverhog_cli.main import app
+from riverhog_cli_support.output import emit
 from typer.testing import CliRunner
 
 

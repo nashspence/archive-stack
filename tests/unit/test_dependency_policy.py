@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -45,3 +46,23 @@ def test_workspace_distributions_publish_their_inline_types() -> None:
         for package_path in package_paths:
             marker = member.parent / package_path / "py.typed"
             assert marker.is_file(), f"{marker.relative_to(REPO_ROOT)} is missing"
+
+
+def test_workspace_distributions_bound_internal_dependency_versions() -> None:
+    configs = {
+        member: tomllib.loads(member.read_text(encoding="utf-8"))
+        for member in workspace_pyprojects(REPO_ROOT)
+    }
+    workspace_names = {
+        str(config["project"]["name"]).replace("_", "-").lower() for config in configs.values()
+    }
+
+    for member, config in configs.items():
+        for requirement in config["project"].get("dependencies", []):
+            name = re.split(r"[<>=!~;\[]", str(requirement), maxsplit=1)[0]
+            if name.replace("_", "-").lower() not in workspace_names:
+                continue
+            assert ">=" in requirement and "<" in requirement, (
+                f"{member.relative_to(REPO_ROOT)} does not bound internal dependency "
+                f"{requirement!r}"
+            )

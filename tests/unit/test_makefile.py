@@ -487,6 +487,14 @@ def test_build_targets_are_atomic(tmp_path: Path) -> None:
     assert " build test" in docker_log
 
 
+def test_dist_builds_a_clean_complete_artifact_set(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "dist")
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == ["|x -- uv build --all-packages --clear"]
+
+
 def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path, "bootstrap-garage", extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"}
@@ -635,6 +643,17 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "SOURCE_REVISION=development" in makefile
 
 
+def test_riverhog_image_identifies_its_source_revision() -> None:
+    dockerfile = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
+    compose = (REPO_ROOT / "riverhog/server/compose.yaml").read_text(encoding="utf-8")
+    build_script = (REPO_ROOT / "scripts/build_riverhog.sh").read_text(encoding="utf-8")
+
+    assert "ARG SOURCE_REVISION=unknown" in dockerfile
+    assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
+    assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
+    assert 'SOURCE_REVISION="$(git -C "${ROOT_DIR}" rev-parse --verify HEAD)"' in build_script
+
+
 def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:
     dockerfile = (REPO_ROOT / "companions/munchy/server" / "Dockerfile").read_text(encoding="utf-8")
 
@@ -700,6 +719,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-munchy-server" in completed.stdout
     assert "make build-munchy-av1-nvenc" in completed.stdout
     assert "make build-test" in completed.stdout
+    assert "make dist-smoke" in completed.stdout
     assert "make fix" in completed.stdout
     assert "make format" in completed.stdout
     assert "make ruff-fix" in completed.stdout

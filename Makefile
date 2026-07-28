@@ -15,7 +15,7 @@ MYPY_SOURCES = \
 	companions/munchy/client/src \
 	companions/munchy/server/src \
 	packages/application-access/src \
-	packages/cli-support/src \
+	packages/riverhog-cli-support/src \
 	packages/config-validation/src \
 	packages/jeb-api-client/src \
 	packages/jeb-cli-support/src \
@@ -36,7 +36,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -64,6 +64,7 @@ help:
 		'  make archive-download-smoke  Verify signed CloudFront download and probe cleanup.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make dist              Build every Python distribution independently.' \
+		'  make dist-smoke        Install and exercise the Riverhog server and client wheels.' \
 		'  make build-riverhog    Build the Riverhog image.' \
 		'  make build-jeb         Build the Jeb image.' \
 		'  make build-mango-fish  Build the Mango Fish image.' \
@@ -136,7 +137,10 @@ dist:
 		printf '%s\n' 'Riverhog Makefile targets require mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
 		exit 127; \
 	fi
-	@"$(MISE_BIN)" x -- uv build --all-packages
+	@"$(MISE_BIN)" x -- uv build --all-packages --clear
+
+dist-smoke: dist
+	@MISE_BIN="$(MISE_BIN)" ./scripts/test_distributions.sh
 
 build-riverhog:
 	@./scripts/build_riverhog.sh

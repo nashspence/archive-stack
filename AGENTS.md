@@ -62,5 +62,6 @@ Run focused tests while iterating, then:
 make lint
 make unit
 make spec
+make dist-smoke
 make build
 ```

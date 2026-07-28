@@ -7,7 +7,7 @@ name = "munchy-config"
 version = "0.1.0"
 description = "Munchy configuration schemas and reusable device-profile expansion."
 requires-python = ">=3.12"
-dependencies = ["config-validation"]
+dependencies = ["config-validation>=0.1,<0.2"]
 
 [tool.uv.sources]
 config-validation = { workspace = true }

@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 
-from cli_support.output import emit, format_list_ids
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
     format_archive_plan,
@@ -15,6 +14,7 @@ from jeb_cli_support.output import (
     format_status,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
+from riverhog_cli_support.output import emit, format_list_ids
 
 from jeb.collector import (
     Collector,

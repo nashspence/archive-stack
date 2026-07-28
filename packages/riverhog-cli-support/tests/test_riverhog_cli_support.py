@@ -1,4 +1,10 @@
-from cli_support.output import format_list_ids, human_bytes, json_text, mapping_items, page_line
+from riverhog_cli_support.output import (
+    format_list_ids,
+    human_bytes,
+    json_text,
+    mapping_items,
+    page_line,
+)
 
 
 def test_shared_cli_output_projects_common_values() -> None:

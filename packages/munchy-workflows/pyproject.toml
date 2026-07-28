@@ -8,12 +8,12 @@ version = "0.1.0"
 description = "Shared Munchy workflow authoring and profile behavior."
 requires-python = ">=3.12"
 dependencies = [
-  "config-validation",
-  "munchy-api-client",
-  "munchy-config",
+  "config-validation>=0.1,<0.2",
+  "munchy-api-client>=0.1,<0.2",
+  "munchy-config>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
-  "time-formats",
-  "tus-transport",
+  "time-formats>=0.1,<0.2",
+  "tus-transport>=0.1,<0.2",
 ]
 
 [tool.uv.sources]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -17,20 +18,20 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 
 import httpx
 import typer
-from cli_support.application_keys import (
-    format_app_key_created,
-    format_app_key_revoked,
-    format_app_key_rotated,
-    format_app_keys,
-    format_apps,
-)
-from cli_support.output import emit, format_list_ids
 from riverhog_age import plaintext_bytes_for_ciphertext_offset
 from riverhog_api_client.client import ApiClient
 from riverhog_api_client.ingress import (
     DEFAULT_INGRESS_PART_BYTES,
     iter_ingress_upload_parts,
 )
+from riverhog_cli_support.application_keys import (
+    format_app_key_created,
+    format_app_key_revoked,
+    format_app_key_rotated,
+    format_app_keys,
+    format_apps,
+)
+from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
@@ -65,7 +66,7 @@ from riverhog_cli.output import (
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
 
-app = typer.Typer(help="Riverhog collection archive CLI.")
+app = typer.Typer(help="Riverhog custody platform CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 collection_tag_app = typer.Typer(help="Collection tag assignments.")
 archive_app = typer.Typer(help="Archive-store operations.")
@@ -135,8 +136,26 @@ def _close_client() -> None:
         _API_CLIENT = None
 
 
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    typer.echo(importlib.metadata.version("riverhog-client"))
+    raise typer.Exit()
+
+
 @app.callback()
-def _root(ctx: typer.Context) -> None:
+def _root(
+    ctx: typer.Context,
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the installed Riverhog client version",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
     ctx.call_on_close(_close_client)
 
 

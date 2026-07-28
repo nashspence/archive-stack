@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from cli_support.output import mapping_items, page_line
+from riverhog_cli_support.output import mapping_items, page_line
 
 
 def _strings(value: object) -> list[str]:

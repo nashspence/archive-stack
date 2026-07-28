@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from cli_support.output import json_text
 from config_validation import ConfigError
+from riverhog_cli_support.output import json_text
 
 from gogurt.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,

@@ -10,7 +10,6 @@ resolution-markers = [
 [manifest]
 members = [
     "application-access",
-    "cli-support",
     "config-validation",
     "gogurt",
     "jeb-api-client",
@@ -28,6 +27,7 @@ members = [
     "munchy-workflows",
     "riverhog-age",
     "riverhog-api-client",
+    "riverhog-cli-support",
     "riverhog-client",
     "riverhog-protocol",
     "riverhog-server",
@@ -269,11 +269,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cli-support"
-version = "0.1.0"
-source = { editable = "packages/cli-support" }
-
-[[package]]
 name = "click"
 version = "8.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -476,15 +471,15 @@ name = "gogurt"
 version = "0.1.0"
 source = { editable = "utilities/gogurt" }
 dependencies = [
-    { name = "cli-support" },
     { name = "config-validation" },
+    { name = "riverhog-cli-support" },
     { name = "typer" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "config-validation", editable = "packages/config-validation" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "typer", specifier = ">=0.12,<1.0" },
 ]
 
@@ -690,14 +685,14 @@ name = "jeb-cli-support"
 version = "0.1.0"
 source = { editable = "packages/jeb-cli-support" }
 dependencies = [
-    { name = "cli-support" },
     { name = "jeb-protocol" },
+    { name = "riverhog-cli-support" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
 ]
 
 [[package]]
@@ -705,20 +700,20 @@ name = "jeb-client"
 version = "0.1.0"
 source = { editable = "companions/jeb/client" }
 dependencies = [
-    { name = "cli-support" },
     { name = "jeb-api-client" },
     { name = "jeb-cli-support" },
     { name = "jeb-protocol" },
     { name = "pyyaml" },
+    { name = "riverhog-cli-support" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "jeb-api-client", editable = "packages/jeb-api-client" },
     { name = "jeb-cli-support", editable = "packages/jeb-cli-support" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
 ]
 
 [[package]]
@@ -732,7 +727,6 @@ version = "0.1.0"
 source = { editable = "companions/jeb/server" }
 dependencies = [
     { name = "argon2-cffi" },
-    { name = "cli-support" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jeb-cli-support" },
@@ -740,6 +734,7 @@ dependencies = [
     { name = "lifecycle-events" },
     { name = "munchy-api-client" },
     { name = "pydantic" },
+    { name = "riverhog-cli-support" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -747,7 +742,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23,<26" },
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jeb-cli-support", editable = "packages/jeb-cli-support" },
@@ -755,6 +749,7 @@ requires-dist = [
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
@@ -936,12 +931,12 @@ name = "munchy-client"
 version = "0.1.0"
 source = { editable = "companions/munchy/client" }
 dependencies = [
-    { name = "cli-support" },
     { name = "config-validation" },
     { name = "munchy-api-client" },
     { name = "munchy-workflows" },
     { name = "pydantic" },
     { name = "rich" },
+    { name = "riverhog-cli-support" },
     { name = "time-formats" },
     { name = "tus-transport" },
     { name = "typer" },
@@ -949,12 +944,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "config-validation", editable = "packages/config-validation" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "munchy-workflows", editable = "packages/munchy-workflows" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1544,15 +1539,20 @@ requires-dist = [
 ]
 
 [[package]]
+name = "riverhog-cli-support"
+version = "0.1.0"
+source = { editable = "packages/riverhog-cli-support" }
+
+[[package]]
 name = "riverhog-client"
 version = "0.1.0"
 source = { editable = "riverhog/client" }
 dependencies = [
-    { name = "cli-support" },
     { name = "httpx" },
     { name = "rich" },
     { name = "riverhog-age" },
     { name = "riverhog-api-client" },
+    { name = "riverhog-cli-support" },
     { name = "riverhog-protocol" },
     { name = "time-formats" },
     { name = "tus-transport" },
@@ -1561,11 +1561,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cli-support", editable = "packages/cli-support" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-age", editable = "packages/riverhog-age" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
+    { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
