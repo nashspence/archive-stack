@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import threading
 import time
 from collections.abc import Iterator
@@ -14,7 +15,9 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from riverhog_age import decrypt_age_scrypt
+from riverhog_core.archive_attestations import archive_copy_checksums
 from riverhog_core.archive_objects import (
+    SMALL_FILE_LIMIT,
     STORED_OBJECT_LIMIT,
     CollectionArchive,
     CollectionArchiveDataObject,
@@ -40,6 +43,7 @@ from riverhog_core.stores.s3_archive_store import (
     _read_object_range,
 )
 from riverhog_protocol.errors import DownloadAllowanceExceeded
+from riverhog_recover import recover_archive
 
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.db_helpers import sqlite_url
@@ -556,6 +560,69 @@ def test_upload_encrypts_every_object_independently(monkeypatch, tmp_path: Path)
         assert len(plaintext) == current.plaintext_bytes
         assert hashlib.sha256(plaintext).hexdigest() == current.sha256
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=_identity(receipt))
+
+
+def test_production_archive_ciphertext_recovers_with_independent_utility(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    if shutil.which("age") is None or shutil.which("age-plugin-batchpass") is None:
+        pytest.skip("official age and age-plugin-batchpass are required")
+
+    expected = {
+        "notes/alpha.txt": b"alpha\n",
+        "notes/beta.txt": b"beta\n",
+        "whole.bin": b"w" * SMALL_FILE_LIMIT,
+        "segmented.bin": b"s" * (SMALL_FILE_LIMIT + 1),
+    }
+    archive = build_collection_archive(
+        collection_id=COLLECTION_ID,
+        files=tuple(
+            CollectionArchiveSourceFile(
+                path=path,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+            for path, content in expected.items()
+        ),
+        max_plaintext_object_bytes=SMALL_FILE_LIMIT,
+        stamper=FixtureProofStamper(),
+    )
+    assert {current.kind for current in archive.data_objects} == {"pack", "file", "segment"}
+
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    receipt = store.upload_collection_archive(
+        collection_id=COLLECTION_ID,
+        archive=archive,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+    )
+    identity = _identity(receipt)
+
+    downloaded = tmp_path / "downloaded-archive"
+    for current in receipt.objects:
+        relative = current.object_path.removeprefix(f"{ARCHIVE_PREFIX}/")
+        assert relative != current.object_path
+        destination = downloaded / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(cast(bytes, client.objects[current.object_path]["Body"]))
+    (downloaded / "SHA256SUMS").write_bytes(
+        archive_copy_checksums(
+            archive_storage_prefix=ARCHIVE_PREFIX,
+            objects=identity.objects,
+        )
+    )
+
+    output = tmp_path / "recovered"
+    summary = recover_archive(
+        downloaded,
+        output,
+        passphrase="test-archive-passphrase",
+    )
+
+    assert summary.files == len(expected)
+    assert summary.bytes == sum(len(content) for content in expected.values())
+    assert {path: (output / path).read_bytes() for path in expected} == expected
 
 
 def test_archive_proof_replacement_is_encrypted_and_immediately_reverified(
