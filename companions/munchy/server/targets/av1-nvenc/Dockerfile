@@ -2,25 +2,30 @@ FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS ffmpeg-build
 
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
 ARG NV_CODEC_HEADERS_REF=33a9ede8d9914299d9262539c576a15bd0a19621
-ARG FFMPEG_NVCCFLAGS="-gencode arch=compute_120,code=sm_120 -O2"
+ARG FFMPEG_CUDA_FLAGS="--cuda-gpu-arch=sm_120 -O2"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates git make pkg-config yasm nasm \
+    build-essential ca-certificates clang-20 git make pkg-config yasm nasm \
     libfreetype6-dev libharfbuzz-dev libfontconfig1-dev libfribidi-dev \
     libopus-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git \
+COPY companions/munchy/server/targets/av1-nvenc/verify-ffmpeg /build/verify-ffmpeg
+RUN git init nv-codec-headers \
  && cd nv-codec-headers \
- && git checkout "${NV_CODEC_HEADERS_REF}" \
+ && git remote add origin https://code.ffmpeg.org/FFmpeg/nv-codec-headers.git \
+ && git -c http.version=HTTP/1.1 fetch --depth 1 origin "${NV_CODEC_HEADERS_REF}" \
+ && git checkout --detach FETCH_HEAD \
  && make install
 
-RUN git clone https://git.ffmpeg.org/ffmpeg.git \
+RUN git init ffmpeg \
  && cd ffmpeg \
- && git checkout "${FFMPEG_REF}" \
+ && git remote add origin https://code.ffmpeg.org/FFmpeg/FFmpeg.git \
+ && git -c http.version=HTTP/1.1 fetch --depth 1 origin "${FFMPEG_REF}" \
+ && git checkout --detach FETCH_HEAD \
  && PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure \
       --prefix=/opt/ffmpeg \
       --pkg-config-flags=--static \
@@ -32,19 +37,20 @@ RUN git clone https://git.ffmpeg.org/ffmpeg.git \
       --disable-shared \
       --enable-static \
       --enable-gpl \
-      --enable-nonfree \
       --enable-libfreetype \
       --enable-libharfbuzz \
       --enable-libfontconfig \
       --enable-libfribidi \
       --enable-libopus \
-      --enable-cuda-nvcc \
+      --enable-cuda-llvm \
       --enable-cuvid \
       --enable-nvdec \
       --enable-nvenc \
-      --nvccflags="${FFMPEG_NVCCFLAGS}" \
+      --nvcc=clang-20 \
+      --nvccflags="${FFMPEG_CUDA_FLAGS}" \
  && make -j"$(nproc)" \
- && make install
+ && make install \
+ && sh /build/verify-ffmpeg /opt/ffmpeg/bin/ffmpeg
 
 
 FROM python:3.12-slim AS python-build

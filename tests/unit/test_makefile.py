@@ -643,6 +643,26 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "SOURCE_REVISION=development" in makefile
 
 
+def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
+    target = REPO_ROOT / "companions/munchy/server/targets/av1-nvenc"
+    dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
+    verification = (target / "verify-ffmpeg").read_text(encoding="utf-8")
+
+    assert "--enable-cuda-llvm" in dockerfile
+    assert "clang-20" in dockerfile
+    assert "--enable-nvenc" in dockerfile
+    assert "--enable-nvdec" in dockerfile
+    assert "--enable-cuvid" in dockerfile
+    assert "--enable-nonfree" not in dockerfile
+    assert "--enable-cuda-nvcc" not in dockerfile
+    assert dockerfile.count("git -c http.version=HTTP/1.1 fetch --depth 1 origin") == 2
+    assert "https://code.ffmpeg.org/FFmpeg/nv-codec-headers.git" in dockerfile
+    assert "https://code.ffmpeg.org/FFmpeg/FFmpeg.git" in dockerfile
+    for capability in ("av1_nvenc", "libopus", "av1_cuvid", "scale_cuda", "uhq"):
+        assert capability in verification
+    assert "FFmpeg must not be built with --enable-nonfree" in verification
+
+
 def test_riverhog_image_identifies_its_source_revision() -> None:
     dockerfile = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
     compose = (REPO_ROOT / "riverhog/server/compose.yaml").read_text(encoding="utf-8")

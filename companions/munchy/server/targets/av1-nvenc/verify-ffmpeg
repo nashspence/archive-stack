@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+ffmpeg_bin="${1:-ffmpeg}"
+buildconf="$("${ffmpeg_bin}" -hide_banner -buildconf 2>&1)"
+
+if printf '%s\n' "${buildconf}" | grep -F -- '--enable-nonfree' >/dev/null; then
+    echo "FFmpeg must not be built with --enable-nonfree" >&2
+    exit 1
+fi
+printf '%s\n' "${buildconf}" | grep -F -- '--enable-cuda-llvm' >/dev/null
+printf '%s\n' "${buildconf}" | grep -F -- '--enable-nvenc' >/dev/null
+printf '%s\n' "${buildconf}" | grep -F -- '--enable-nvdec' >/dev/null
+printf '%s\n' "${buildconf}" | grep -F -- '--enable-cuvid' >/dev/null
+
+"${ffmpeg_bin}" -hide_banner -encoders 2>&1 | grep -F 'av1_nvenc' >/dev/null
+"${ffmpeg_bin}" -hide_banner -encoders 2>&1 | grep -F 'libopus' >/dev/null
+"${ffmpeg_bin}" -hide_banner -decoders 2>&1 | grep -F 'av1_cuvid' >/dev/null
+"${ffmpeg_bin}" -hide_banner -decoders 2>&1 | grep -F 'h264_cuvid' >/dev/null
+"${ffmpeg_bin}" -hide_banner -decoders 2>&1 | grep -F 'hevc_cuvid' >/dev/null
+"${ffmpeg_bin}" -hide_banner -filters 2>&1 | grep -F 'scale_cuda' >/dev/null
+"${ffmpeg_bin}" -hide_banner -h encoder=av1_nvenc 2>&1 | grep -F 'uhq' >/dev/null
