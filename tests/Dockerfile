@@ -9,6 +9,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 ARG AGE_VERSION=v1.3.1
 
+LABEL org.opencontainers.image.licenses="CAL-1.0 AND Apache-2.0"
+
+COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
+COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git minisign \
     && rm -rf /var/lib/apt/lists/*

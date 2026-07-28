@@ -100,7 +100,12 @@ COPY --from=python-build /opt/venv /opt/venv
 
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Munchy AV1 NVENC Target" \
+      org.opencontainers.image.licenses="CAL-1.0" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
+COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]

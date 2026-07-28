@@ -22,6 +22,7 @@ single_wheel() {
 }
 
 client_wheel="$(single_wheel 'riverhog_client-*.whl')"
+recovery_wheel="$(single_wheel 'riverhog_recover-*.whl')"
 server_wheel="$(single_wheel 'riverhog_server-*.whl')"
 
 run_uv venv --python 3.12 "${SCRATCH}/client"
@@ -43,6 +44,19 @@ run_uv pip install \
     'import importlib.metadata as m; import riverhog_cli.main; import riverhog_cli_support.output; m.version("riverhog-cli-support")'
 )
 
+run_uv venv --python 3.12 "${SCRATCH}/recovery"
+run_uv pip install \
+  --strict \
+  --python "${SCRATCH}/recovery/bin/python" \
+  --find-links "${DIST_DIR}" \
+  "${recovery_wheel}"
+(
+  cd "${SCRATCH}"
+  env -u PYTHONPATH "${SCRATCH}/recovery/bin/riverhog-recover" --help >/dev/null
+  "${SCRATCH}/recovery/bin/python" -I -c \
+    'import importlib.metadata as m; import riverhog_recover; m.version("riverhog-recover")'
+)
+
 run_uv venv --python 3.12 "${SCRATCH}/server"
 run_uv pip install \
   --strict \
@@ -55,4 +69,4 @@ run_uv pip install \
     'import importlib.metadata as m; from riverhog_api.app import create_app; app = create_app(); assert app.version == m.version("riverhog-server"); assert any(ep.name == "riverhog-api" for ep in m.entry_points(group="console_scripts"))'
 )
 
-printf 'Riverhog server and client distribution smoke tests passed.\n'
+printf 'Riverhog server, client, and recovery distribution smoke tests passed.\n'

@@ -28,7 +28,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Jeb" \
+      org.opencontainers.image.licenses="CAL-1.0" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
+COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg libimage-exiftool-perl tini \

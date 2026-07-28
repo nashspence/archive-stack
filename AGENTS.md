@@ -7,7 +7,8 @@ Read [README.md](README.md) for the product entrypoint.
 `riverhog/server` is the custody platform service. `riverhog/client` is its official direct
 CLI; the client's `local` subtree is the reference external application and owns its local
 materialization. Both are independent distributions and the client must not import server
-implementation modules.
+implementation modules. `riverhog/recovery` is an independent reference implementation
+that reconstructs archive copies without the server, client, or database.
 
 `companions/munchy` and `companions/jeb` are companion applications with independent
 server and client distributions. Munchy owns generic media ingest. Jeb owns generic

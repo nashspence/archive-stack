@@ -6,6 +6,18 @@ restorable archive objects, and gives applications a stable catalog and retrieva
 interface. This repository centers the platform server and its official `riverhog` client;
 companion applications integrate through published APIs rather than platform internals.
 
+## Deployment scope
+
+Riverhog is designed for one autonomous custody owner per deployment. It is not a
+multi-tenant custody service. The owner is expected to control the configured storage
+accounts, their billing and lifecycle policy, application credentials, and the archive
+passphrase.
+
+Riverhog is software, not a storage provider or independent custodian. Read the
+[operational responsibilities](docs/archive-operations.md) before entrusting data to it and
+test [recovery without Riverhog](docs/recovery-without-riverhog.md) before relying on an
+archive.
+
 ## Custody
 
 Configured archive stores are the durable storage authority. Their encrypted collection
@@ -30,6 +42,8 @@ starting point for local overrides. Owner-scoped examples contain fake identitie
 - [`riverhog/server`](riverhog/server/) is the custody platform service.
 - [`riverhog/client`](riverhog/client/) is the direct platform CLI. Its `local` commands
   are the reference external application and maintain client-owned local materialization.
+- [`riverhog/recovery`](riverhog/recovery/) is the independently packaged, permissively
+  licensed reference recovery implementation.
 - [`companions`](companions/) contains applications with first-class ecosystem adapters:
   Munchy for media workflows and Jeb for transport-neutral watched drops. Each has an
   independently packaged `server` and `client`.
@@ -46,6 +60,10 @@ starting point for local overrides. Owner-scoped examples contain fake identitie
 - [Architecture](docs/architecture.md) explains custody and component boundaries.
 - [Archive operations](docs/archive-operations.md) covers the human checks around
   durable storage, recovery, and deletion.
+- [Recovery without Riverhog](docs/recovery-without-riverhog.md) is the independent archive
+  recovery path.
+- [Licensing](LICENSE.md), [security reporting](SECURITY.md), and
+  [contributing](CONTRIBUTING.md) define the repository's release and participation terms.
 
 Release-level reference documentation belongs to tagged releases. The documentation on
 `main` is intentionally limited to current context that cannot be recovered quickly from

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25.0"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "munchy-workflows"
 version = "0.1.0"
 description = "Shared Munchy workflow authoring and profile behavior."
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
   "config-validation>=0.1,<0.2",
   "munchy-api-client>=0.1,<0.2",

@@ -73,5 +73,5 @@ configure_compose_tty() {
 
 ensure_compose_image() {
   local service="$1"
-  compose build "${service}"
+  compose build --sbom=true "${service}"
 }

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25.0"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,8 +7,9 @@ name = "riverhog-age"
 version = "0.1.0"
 description = "Resumable age encryption used by the Riverhog protocol."
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = ["cryptography>=41,<47"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_age"]
-

@@ -457,7 +457,7 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[0]
     assert "companions/munchy/client/src companions/munchy/server/src" in uv_log_lines[0]
-    assert "riverhog/client/src riverhog/server/src" in uv_log_lines[0]
+    assert "riverhog/client/src riverhog/recovery/src riverhog/server/src" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
     assert "--no-error-summary --no-color-output --strict" in uv_log_lines[0]
 
@@ -468,9 +468,10 @@ def test_lint_runs_ruff_then_mypy(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 2
-    assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[1]
+    assert len(uv_log_lines) == 3
+    assert "python -m reuse lint" in uv_log_lines[0]
+    assert "python -m ruff check ." in uv_log_lines[1]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[2]
 
 
 def test_build_targets_are_atomic(tmp_path: Path) -> None:
@@ -479,12 +480,16 @@ def test_build_targets_are_atomic(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build app" in docker_log
-    assert "companions/jeb/server/compose.yaml build jeb" in docker_log
+    assert " build --sbom=true app" in docker_log
+    assert "companions/jeb/server/compose.yaml build --sbom=true jeb" in docker_log
     assert "utilities/mango-fish/Dockerfile --tag mango-fish:dev" in docker_log
-    assert "companions/munchy/server/compose.yaml build munchy-server" in docker_log
-    assert "companions/munchy/server/targets/av1-nvenc/compose.yaml build api" in docker_log
-    assert " build test" in docker_log
+    assert "--sbom=true --build-arg SOURCE_REVISION=" in docker_log
+    assert "companions/munchy/server/compose.yaml build --sbom=true munchy-server" in docker_log
+    assert (
+        "companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api"
+        in docker_log
+    )
+    assert " build --sbom=true test" in docker_log
 
 
 def test_dist_builds_a_clean_complete_artifact_set(tmp_path: Path) -> None:
@@ -492,7 +497,11 @@ def test_dist_builds_a_clean_complete_artifact_set(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
-    assert _read_log_lines(uv_log_path) == ["|x -- uv build --all-packages --clear"]
+    assert _read_log_lines(uv_log_path) == [
+        "|x -- uv build --all-packages --clear --no-create-gitignore",
+        "|x -- uv run --locked --all-packages --group dev "
+        "python scripts/check_distribution_licenses.py dist",
+    ]
 
 
 def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) -> None:
@@ -640,7 +649,7 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:latest" in compose
     makefile = MAKEFILE.read_text(encoding="utf-8")
     assert "MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev" in makefile
-    assert "SOURCE_REVISION=development" in makefile
+    assert 'SOURCE_REVISION="$$(git rev-parse --verify HEAD)"' in makefile
 
 
 def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
@@ -702,11 +711,12 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     assert _read_log_lines(docker_log_path) == []
 
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 3
-    assert "python -m ruff check ." in uv_log_lines[0]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[1]
+    assert len(uv_log_lines) == 4
+    assert "python -m reuse lint" in uv_log_lines[0]
+    assert "python -m ruff check ." in uv_log_lines[1]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[2]
     assert (
-        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[2]
+        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[3]
     )
 
 

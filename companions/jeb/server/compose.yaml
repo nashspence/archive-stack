@@ -3,6 +3,8 @@ services:
     build:
       context: ../../..
       dockerfile: companions/jeb/server/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     image: jeb:latest
     restart: unless-stopped
     env_file:

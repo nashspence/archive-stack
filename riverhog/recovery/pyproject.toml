@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-recover"
+version = "0.1.0"
+description = "Independent reference recovery for Riverhog archive copies."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "PyYAML>=6,<7",
+]
+
+[project.scripts]
+riverhog-recover = "riverhog_recover.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_recover"]

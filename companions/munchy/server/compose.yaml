@@ -3,6 +3,8 @@ services:
     build:
       context: ../../..
       dockerfile: companions/munchy/server/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     image: munchy-server:latest
     container_name: munchy-server
     network_mode: host

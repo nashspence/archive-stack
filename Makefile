@@ -31,12 +31,13 @@ MYPY_SOURCES = \
 	packages/time-formats/src \
 	packages/tus-transport/src \
 	riverhog/client/src \
+	riverhog/recovery/src \
 	riverhog/server/src \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format fix mypy lint unit spec postgres-concurrency tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -50,6 +51,7 @@ endef
 help:
 	@printf '%s\n' \
 		'Targets:' \
+		'  make license           Verify SPDX/REUSE coverage for every tracked path.' \
 		'  make ruff              Run repo-wide ruff in the locked local uv environment.' \
 		'  make ruff-fix          Run ruff --fix in the locked local uv environment.' \
 		'  make format            Run ruff format in the locked local uv environment.' \
@@ -90,6 +92,9 @@ help:
 		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
 
+license:
+	$(call UV_CMD,python -m reuse lint)
+
 ruff:
 	$(call UV_CMD,python -m ruff check $(FILES) $(args))
 
@@ -104,7 +109,7 @@ fix: ruff-fix format
 mypy:
 	$(call UV_CMD,python -m mypy $(MYPY_SOURCES) $(MYPY_FLAGS) $(args))
 
-lint: ruff mypy
+lint: license ruff mypy
 
 unit:
 	$(call UV_CMD,python -m pytest -q $(TESTS) $(args))
@@ -137,7 +142,8 @@ dist:
 		printf '%s\n' 'Riverhog Makefile targets require mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
 		exit 127; \
 	fi
-	@"$(MISE_BIN)" x -- uv build --all-packages --clear
+	@"$(MISE_BIN)" x -- uv build --all-packages --clear --no-create-gitignore
+	@$(UV_RUN) python scripts/check_distribution_licenses.py dist
 
 dist-smoke: dist
 	@MISE_BIN="$(MISE_BIN)" ./scripts/test_distributions.sh
@@ -146,16 +152,16 @@ build-riverhog:
 	@./scripts/build_riverhog.sh
 
 build-jeb:
-	@docker compose --file companions/jeb/server/compose.yaml build jeb
+	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/jeb/server/compose.yaml build --sbom=true jeb
 
 build-mango-fish:
-	@docker build --file utilities/mango-fish/Dockerfile --tag mango-fish:dev .
+	@docker build --sbom=true --build-arg SOURCE_REVISION="$$(git rev-parse --verify HEAD)" --file utilities/mango-fish/Dockerfile --tag mango-fish:dev .
 
 build-munchy-server:
-	@docker compose --file companions/munchy/server/compose.yaml build munchy-server
+	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/compose.yaml build --sbom=true munchy-server
 
 build-munchy-av1-nvenc:
-	@MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev SOURCE_REVISION=development docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build api
+	@MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api
 
 build-test:
 	@./scripts/build_test.sh

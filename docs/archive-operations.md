@@ -4,6 +4,13 @@ Riverhog's configured archive stores are its durable storage authority. Operatio
 readiness therefore includes human and provider controls that application tests cannot
 establish.
 
+Riverhog is provided as-is and is not a storage provider or independent custodian. It does
+not guarantee preservation, availability, confidentiality, or recoverability. The operator
+is responsible for storage accounts, credentials, billing, lifecycle policies, redundant
+copies, archive-passphrase custody, and tested recovery. Loss of the passphrase or all valid
+archive copies may permanently prevent recovery. This operational warning supplements, but
+does not replace, the warranty and liability limitations in the applicable software license.
+
 ## Account readiness
 
 Keep account recovery, multi-factor authentication, payment, billing alerts, credentials,
@@ -13,6 +20,8 @@ exercise object listing, metadata reads, retrieval requests, and downloads in ev
 After account, credential, provider, or storage-class changes, inspect the affected store
 with `riverhog archive store show` and retrieve known files through the application
 interface. A storage summary or object listing alone does not establish recoverability.
+Periodically follow [Recovery without Riverhog](recovery-without-riverhog.md) against a
+disposable collection without using the Riverhog database or server.
 
 An AWS archive store may route encrypted object downloads through a private CloudFront
 distribution while retaining S3 as the authority for writes, metadata, restore state, and

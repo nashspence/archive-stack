@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25.0"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "lifecycle-events"
 version = "0.1.0"
 description = "Durable CloudEvents lifecycle log and client primitives."
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
   "httpx>=0.27,<1.0",
   "pydantic>=2.7,<3.0",
@@ -14,4 +16,3 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lifecycle_events"]
-
