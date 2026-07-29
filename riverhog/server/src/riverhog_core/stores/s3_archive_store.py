@@ -1931,7 +1931,7 @@ class S3ArchiveStore:
                 Key=object_path,
                 RestoreRequest={
                     "Days": hold_days,
-                    "ArchiveJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
+                    "GlacierJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
                 },
             )
         except Exception as exc:
@@ -2282,7 +2282,7 @@ must be restored before it is readable:
 aws s3api restore-object \\
   --bucket BUCKET \\
   --key PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age \\
-  --restore-request '{{"Days":7,"ArchiveJobParameters":{{"Tier":"Bulk"}}}}'
+  --restore-request '{{"Days":7,"GlacierJobParameters":{{"Tier":"Bulk"}}}}'
 ```
 
 After any required restore completes, download and independently decrypt each

@@ -73,7 +73,7 @@ class _FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
-        self.restore_requests: list[str] = []
+        self.restore_requests: list[tuple[str, object]] = []
         self.fail_after_parts: int | None = None
         self.uploaded_parts = 0
         self.next_upload = 1
@@ -263,8 +263,8 @@ class _FakeS3Client:
             self.versions.get(key, set()).discard(version_id)
 
     def restore_object(self, *, Bucket: str, Key: str, RestoreRequest: object) -> None:
-        _ = Bucket, RestoreRequest
-        self.restore_requests.append(Key)
+        _ = Bucket
+        self.restore_requests.append((Key, RestoreRequest))
         self.objects[Key]["Restore"] = 'ongoing-request="true"'
 
 
@@ -1213,7 +1213,12 @@ def test_read_preparation_requests_only_selected_deep_objects(monkeypatch, tmp_p
     )
 
     assert status.state == "requested"
-    assert client.restore_requests == [data[0].object_path]
+    assert client.restore_requests == [
+        (
+            data[0].object_path,
+            {"Days": 1, "GlacierJobParameters": {"Tier": "Bulk"}},
+        )
+    ]
 
 
 @pytest.mark.parametrize(
