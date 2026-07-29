@@ -305,6 +305,7 @@ def format_archive_store(payload: Mapping[str, object]) -> str:
         f"backend: {payload.get('backend', 'unknown')}",
         f"storage class: {payload.get('storage_class', 'unknown')}",
         f"read mode: {payload.get('read_mode', 'unknown')}",
+        f"read priority: {payload.get('read_priority', 'unknown')}",
         f"write target: {'yes' if payload.get('write_target') else 'no'}",
         f"collections: {payload.get('collections', 0)}",
         f"objects: {payload.get('objects', 0)}",
@@ -331,6 +332,7 @@ def format_archive_stores(payload: Mapping[str, object]) -> str:
             f"backend={store.get('backend', 'unknown')}  "
             f"class={store.get('storage_class', 'unknown')}  "
             f"read={store.get('read_mode', 'unknown')}  "
+            f"read-priority={store.get('read_priority', 'unknown')}  "
             f"write={'yes' if store.get('write_target') else 'no'}  "
             f"collections={store.get('collections', 0)}  "
             f"objects={store.get('objects', 0)}  "

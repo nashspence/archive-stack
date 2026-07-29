@@ -127,9 +127,10 @@ def test_archive_store_output_uses_remote_storage_measurement() -> None:
     rendered = format_archive_store(
         {
             "store": "deep",
-            "backend": "s3",
+            "backend": "aws",
             "storage_class": "DEEP_ARCHIVE",
             "read_mode": "restore_required",
+            "read_priority": 2,
             "write_target": False,
             "collections": 2,
             "objects": 14,
@@ -144,6 +145,7 @@ def test_archive_store_output_uses_remote_storage_measurement() -> None:
     )
 
     assert "stored: 1.2 KB" in rendered
+    assert "read priority: 2" in rendered
     assert "download allowance: 25.0 GB used + 5.0 GB reserved / 950.0 GB" in rendered
     assert "download allowance resets: 2026-08-01T00:00:00.000000Z" in rendered
 

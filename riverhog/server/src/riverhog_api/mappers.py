@@ -66,6 +66,7 @@ def map_archive_store(summary: ArchiveStoreSummary) -> dict[str, object]:
         "backend": summary.backend,
         "storage_class": summary.storage_class,
         "read_mode": summary.read_mode,
+        "read_priority": summary.read_priority,
         "write_target": summary.write_target,
         "collections": summary.collections,
         "objects": summary.objects,

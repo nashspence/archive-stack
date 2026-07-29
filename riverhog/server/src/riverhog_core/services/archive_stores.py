@@ -26,6 +26,7 @@ _SORT_FIELDS = {
     "backend",
     "storage_class",
     "read_mode",
+    "read_priority",
     "collections",
     "objects",
     "stored_bytes",
@@ -42,6 +43,9 @@ class SqlAlchemyArchiveStoreService:
         self._config = config
         self._session_factory = make_session_factory(config.database_url)
         self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(config)
+        self._read_priorities = {
+            name: priority for priority, name in enumerate(config.archive_read_order, start=1)
+        }
 
     def get(
         self,
@@ -150,6 +154,7 @@ class SqlAlchemyArchiveStoreService:
             backend=config.backend,
             storage_class=config.storage_class,
             read_mode=config.read_mode,
+            read_priority=self._read_priorities[config.name],
             write_target=config.name == self._config.archive_write_store,
             collections=collections,
             objects=objects,

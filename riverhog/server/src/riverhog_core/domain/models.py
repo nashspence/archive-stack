@@ -50,6 +50,7 @@ class ArchiveStoreSummary:
     backend: str
     storage_class: str
     read_mode: str
+    read_priority: int
     write_target: bool
     collections: int
     objects: int

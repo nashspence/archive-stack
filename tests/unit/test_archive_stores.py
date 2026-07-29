@@ -121,6 +121,7 @@ def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema
     assert response.collections == 1
     assert response.objects == 4
     assert response.stored_bytes == 42
+    assert response.read_priority == 1
     assert response.write_target is True
 
 
@@ -159,9 +160,20 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
         sort="store",
         order="asc",
     )
+    by_read_priority = SqlAlchemyArchiveStoreService(config).list(
+        page=1,
+        per_page=25,
+        q=None,
+        sort="read_priority",
+        order="asc",
+    )
 
     assert (page.total, page.pages, [store.store for store in page.stores]) == (2, 2, ["deep"])
     assert [store.store for store in filtered.stores] == ["b2"]
+    assert [(store.store, store.read_priority) for store in by_read_priority.stores] == [
+        ("deep", 1),
+        ("b2", 2),
+    ]
 
 
 def test_archive_store_summary_includes_download_allowance(tmp_path: Path) -> None:

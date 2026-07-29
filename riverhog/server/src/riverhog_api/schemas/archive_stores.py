@@ -23,6 +23,7 @@ class ArchiveStoreOut(RiverhogModel):
     backend: Literal["aws", "b2", "s3"]
     storage_class: str
     read_mode: Literal["immediate", "restore_required"]
+    read_priority: int
     write_target: bool
     collections: int
     objects: int

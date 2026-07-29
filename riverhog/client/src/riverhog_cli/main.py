@@ -1854,6 +1854,7 @@ _ARCHIVE_STORE_SORT_FIELDS = {
     "backend",
     "storage_class",
     "read_mode",
+    "read_priority",
     "collections",
     "objects",
     "stored_bytes",

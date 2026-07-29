@@ -86,9 +86,10 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
 ) -> None:
     store = {
         "store": "deep",
-        "backend": "s3",
+        "backend": "aws",
         "storage_class": "DEEP_ARCHIVE",
         "read_mode": "restore_required",
+        "read_priority": 2,
         "write_target": False,
         "collections": 2,
         "objects": 9,
@@ -126,9 +127,11 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
 
     assert human_list.exit_code == 0
     assert "collections=2" in human_list.stdout
+    assert "read-priority=2" in human_list.stdout
     assert json.loads(json_list.stdout) == page
     assert human_show.exit_code == 0
     assert "stored: 2.0 KB" in human_show.stdout
+    assert "read priority: 2" in human_show.stdout
     assert json.loads(json_show.stdout) == store
     assert calls == ["list", "list", "show:deep", "show:deep"]
 
