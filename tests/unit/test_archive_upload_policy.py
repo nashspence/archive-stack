@@ -234,6 +234,32 @@ def test_encrypted_ingress_streams_into_independently_restorable_archive_objects
     assert upload_store.targets == {}
 
 
+def test_startup_resumes_a_complete_failed_archive_upload(tmp_path: Path) -> None:
+    upload_store = MemoryUploadStore()
+    config = _stage(tmp_path, upload_store)
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        upload = session.get(CollectionUploadRecord, COLLECTION_ID)
+        assert upload is not None
+        upload.state = "failed"
+        upload.archive_failure = "archive worker stopped"
+
+    restarted = SqlAlchemyArchiveUploadService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore())}),
+        upload_store=upload_store,  # type: ignore[arg-type]
+        proof_stamper=FixtureProofStamper(),
+    )
+
+    assert restarted.requeue_failed_uploads_for_startup() == 1
+    with session_scope(factory) as session:
+        upload = session.get(CollectionUploadRecord, COLLECTION_ID)
+        assert upload is not None
+        assert upload.state == "archiving"
+        assert upload.archive_phase == "retry_wait"
+        assert upload.archive_next_attempt_at is not None
+
+
 def test_restore_required_ingest_records_the_initial_cache_lease(tmp_path: Path) -> None:
     upload_store = MemoryUploadStore()
     archive_store = CachedMemoryArchiveStore(read_mode="restore_required")

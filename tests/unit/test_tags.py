@@ -126,18 +126,21 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
     assert tags.replace_collection(1, ("camera",), principal=manager)["metadata_revision"] == 2
     assert tags.replace_collection(1, ("reviewed",), principal=manager)["metadata_revision"] == 3
 
-    events = SqlAlchemyLifecycleEventService(config).page(
-        owner_app="operator",
-        after=None,
-        limit=100,
-    ).events
+    events = (
+        SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app="operator",
+            after=None,
+            limit=100,
+        )
+        .events
+    )
     assert [event.data["collection_tags"] for event in events] == [
         ["camera"],
         ["reviewed"],
     ]
     assert all(
-        event.data["collection_created_at"] == "2026-07-15T00:00:00.000000Z"
-        for event in events
+        event.data["collection_created_at"] == "2026-07-15T00:00:00.000000Z" for event in events
     )
     assert all("tags" not in event.data for event in events)
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -177,6 +180,39 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         assert publication is not None
         assert publication.state == "published"
         assert publication.desired_revision == publication.published_revision == 3
+
+
+def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:
+    config, _archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        {"document.txt": b"metadata publication\n"},
+    )
+    tags = SqlAlchemyTagService(config)
+    tags.create("camera", creator=BOOTSTRAP)
+    manager = ApplicationPrincipal(
+        app="operator",
+        key_id=None,
+        access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
+    )
+    tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        publication = session.get(CollectionMetadataPublicationRecord, (COLLECTION_ID, "deep"))
+        assert publication is not None
+        publication.state = "publishing"
+
+    restarted = SqlAlchemyArchiveUploadService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore())}),
+        proof_stamper=FixtureProofStamper(),
+    )
+
+    assert restarted.requeue_interrupted_metadata_publications_for_startup() == 1
+    with session_scope(factory) as session:
+        publication = session.get(CollectionMetadataPublicationRecord, (COLLECTION_ID, "deep"))
+        assert publication is not None
+        assert publication.state == "pending"
+        assert publication.next_attempt_at is not None
 
 
 def test_collection_tag_mutation_waits_for_destructive_custody_operations(

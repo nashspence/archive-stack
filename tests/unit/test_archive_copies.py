@@ -107,11 +107,15 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
     assert shown["state"] == "completed"
     assert shown["initiated_by_app"] == "operator"
     assert listed["copies"] == [shown]
-    events = SqlAlchemyLifecycleEventService(config).page(
-        owner_app="operator",
-        after=None,
-        limit=100,
-    ).events
+    events = (
+        SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app="operator",
+            after=None,
+            limit=100,
+        )
+        .events
+    )
     assert [event.type.rsplit(".", 1)[-1] for event in events] == [
         "requested",
         "completed",
@@ -136,6 +140,27 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
         assert job is not None and job.state == "waiting"
     assert source.prepared == [("data-000000",)]
     assert destination.archive is None
+
+
+def test_startup_resumes_a_claimed_archive_copy(tmp_path: Path) -> None:
+    config, _archive, _source, _destination, service = _service(tmp_path / "catalog.sqlite3")
+    service.create_or_resume(
+        COLLECTION_ID,
+        destination_store="b2",
+        initiator=INITIATOR,
+    )
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
+        assert job is not None
+        job.state = "copying"
+
+    assert service.requeue_interrupted_copies_for_startup() == 1
+    with session_scope(factory) as session:
+        job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
+        assert job is not None
+        assert job.state == "requested"
+        assert job.next_attempt_at is not None
 
 
 @pytest.mark.parametrize(

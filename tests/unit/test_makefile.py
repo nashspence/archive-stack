@@ -530,6 +530,7 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert " up --detach garage" in docker_log
     assert " build --sbom=true app" in docker_log
     assert " up --detach --wait app" in docker_log
+    assert " restart app" in docker_log
     assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
     assert " app python -c " in docker_log
     assert " down --volumes --remove-orphans" in docker_log
@@ -547,6 +548,7 @@ def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) ->
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert " up --detach --wait postgres" in docker_log
     assert "RIVERHOG_TEST_POSTGRES_URL=postgresql+psycopg://" in docker_log
+    assert "tests/integration/test_catalog_schema_postgres.py" in docker_log
     assert "tests/integration/test_collection_deletion_concurrency.py" in docker_log
     assert "tests/integration/test_download_allowance_concurrency.py" in docker_log
     assert " down --volumes --remove-orphans" in docker_log

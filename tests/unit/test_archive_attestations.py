@@ -170,6 +170,48 @@ def test_waits_without_replacing_an_incomplete_attestation_proof(tmp_path) -> No
         assert record.failure is None
 
 
+@pytest.mark.parametrize(
+    ("claimed_state", "resumed_state"),
+    (("publishing", "pending"), ("upgrading", "waiting")),
+)
+def test_startup_resumes_a_claimed_archive_attestation(
+    tmp_path,
+    claimed_state: str,
+    resumed_state: str,
+) -> None:
+    config, archive = seed_archive_copy(tmp_path / "state.sqlite3", {"docs/readme.txt": b"hi"})
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        session.add(
+            CollectionArchiveAttestationRecord(
+                collection_id=archive.collection_id,
+                store="deep",
+                state=claimed_state,
+                attempt_count=1,
+                next_attempt_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+    service = SqlAlchemyArchiveAttestationService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        signer=_Signer(),
+        signature_verifier=_SignatureVerifier(),
+        proof_stamper=FixtureProofStamper(),
+        proof_upgrader=_WaitingUpgrader(),
+        proof_verifier=FixtureProofVerifier(),
+    )
+
+    assert service.requeue_interrupted_for_startup() == 1
+    with session_scope(factory) as session:
+        record = session.get(
+            CollectionArchiveAttestationRecord,
+            (archive.collection_id, "deep"),
+        )
+        assert record is not None
+        assert record.state == resumed_state
+        assert record.next_attempt_at is not None
+
+
 def _mark_manifest_proof_matured(database_url: str, collection_id: int) -> None:
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:

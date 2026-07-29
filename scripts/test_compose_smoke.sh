@@ -17,7 +17,7 @@ ensure_compose_image app
 compose up --detach --wait app
 
 bootstrap_token="$(compose_env_value RIVERHOG_BOOTSTRAP_TOKEN riverhog-development-bootstrap-token)"
-smoke_code="import json, os, urllib.request
+create_code="import json, os, urllib.request
 health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz'))
 assert health['status'] == 'ok'
 openapi = json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json'))
@@ -27,5 +27,30 @@ request = urllib.request.Request(
     headers={'Authorization': 'Bearer ' + os.environ['RIVERHOG_SMOKE_TOKEN']},
 )
 apps = json.load(urllib.request.urlopen(request))
-assert apps['apps'] == []"
-compose exec -T --env "RIVERHOG_SMOKE_TOKEN=${bootstrap_token}" app python -c "${smoke_code}"
+assert apps['apps'] == []
+request = urllib.request.Request(
+    'http://127.0.0.1:8000/v1/apps/smoke/keys',
+    method='POST',
+    data=json.dumps({'access': [{'permission': 'catalog:read', 'resource': '*'}]}).encode(),
+    headers={
+        'Authorization': 'Bearer ' + os.environ['RIVERHOG_SMOKE_TOKEN'],
+        'Content-Type': 'application/json',
+    },
+)
+created = json.load(urllib.request.urlopen(request))
+assert created['app'] == 'smoke'"
+compose exec -T --env "RIVERHOG_SMOKE_TOKEN=${bootstrap_token}" app python -c "${create_code}"
+
+compose restart app
+compose up --detach --wait app
+
+restart_code="import json, os, urllib.request
+health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz'))
+assert health['status'] == 'ok'
+request = urllib.request.Request(
+    'http://127.0.0.1:8000/v1/apps',
+    headers={'Authorization': 'Bearer ' + os.environ['RIVERHOG_SMOKE_TOKEN']},
+)
+apps = json.load(urllib.request.urlopen(request))
+assert [app['name'] for app in apps['apps']] == ['smoke']"
+compose exec -T --env "RIVERHOG_SMOKE_TOKEN=${bootstrap_token}" app python -c "${restart_code}"
