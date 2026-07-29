@@ -138,14 +138,16 @@ class SqlAlchemyCollectionService:
             collection = session.scalar(
                 select(CollectionRecord)
                 .options(selectinload(CollectionRecord.archive_copies))
-                .where(CollectionRecord.creation_idempotency_key == normalized_idempotency_key)
+                .where(
+                    CollectionRecord.created_by_app == initiator_app,
+                    CollectionRecord.creation_idempotency_key == normalized_idempotency_key,
+                )
             )
             if collection is not None:
                 _ensure_finalized_request_matches(
                     session,
                     collection=collection,
                     tags=normalized_tags,
-                    initiator_app=initiator_app,
                 )
                 return _finalized_collection_upload_payload(
                     session,
@@ -154,12 +156,12 @@ class SqlAlchemyCollectionService:
                 )
             upload = session.scalar(
                 select(CollectionUploadRecord).where(
-                    CollectionUploadRecord.idempotency_key == normalized_idempotency_key
+                    CollectionUploadRecord.initiated_by_app == initiator_app,
+                    CollectionUploadRecord.idempotency_key == normalized_idempotency_key,
                 )
             )
 
             if upload is not None:
-                _ensure_upload_initiator_matches(upload, initiator_app)
                 _ensure_event_context_matches(upload, normalized_event_context_json)
                 _ensure_upload_tags_match(upload, normalized_tags)
                 _ensure_upload_archive_store_matches(upload, normalized_archive_store)
@@ -1204,10 +1206,7 @@ def _ensure_finalized_request_matches(
     *,
     collection: CollectionRecord,
     tags: Sequence[str],
-    initiator_app: str,
 ) -> None:
-    if collection.created_by_app != initiator_app:
-        raise Conflict("idempotency_key belongs to a different application")
     current_tags = tuple(
         session.scalars(
             select(CollectionTagRecord.tag_id)
@@ -1217,13 +1216,6 @@ def _ensure_finalized_request_matches(
     )
     if current_tags != tuple(tags):
         raise Conflict("idempotency_key already finalized with different tags")
-
-
-def _ensure_upload_initiator_matches(upload: CollectionUploadRecord, app: str) -> None:
-    if upload.initiated_by_app != app:
-        raise Conflict(
-            f"collection upload is owned by a different application: {upload.collection_id}"
-        )
 
 
 def _ensure_event_context_matches(

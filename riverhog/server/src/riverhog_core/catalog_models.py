@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,7 +37,7 @@ class CollectionRecord(Base):
     __tablename__ = "collections"
 
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    creation_idempotency_key: Mapped[str] = mapped_column(String, unique=True)
+    creation_idempotency_key: Mapped[str] = mapped_column(String)
     content_etag: Mapped[str] = mapped_column(String(64))
     record_etag: Mapped[str] = mapped_column(String(64))
     metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
@@ -59,6 +60,14 @@ class CollectionRecord(Base):
         back_populates="collection",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "created_by_app",
+            "creation_idempotency_key",
+            name="uq_collections_application_idempotency_key",
+        ),
     )
 
 
@@ -684,7 +693,12 @@ class CollectionUploadRecord(Base):
         cascade="all, delete-orphan",
     )
     __table_args__ = (
-        Index("ux_collection_uploads_idempotency_key", "idempotency_key", unique=True),
+        Index(
+            "ux_collection_uploads_application_idempotency_key",
+            "initiated_by_app",
+            "idempotency_key",
+            unique=True,
+        ),
         {"sqlite_autoincrement": True},
     )
 

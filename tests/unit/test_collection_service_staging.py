@@ -375,6 +375,85 @@ def test_open_upload_status_does_not_grant_cross_application_visibility(
         service.require_upload_access(int(created["collection_id"]), other)
 
 
+def test_open_upload_idempotency_is_scoped_to_stable_application_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed_tag(path, "photos")
+    service = _service(path)
+    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")})
+
+    first = service.create_or_resume_upload_session(
+        idempotency_key="shared-retry-key",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(app="first", key_id="first-key", access=access),
+    )
+    rotated = service.create_or_resume_upload_session(
+        idempotency_key="shared-retry-key",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(app="first", key_id="replacement-key", access=access),
+    )
+    independent = service.create_or_resume_upload_session(
+        idempotency_key="shared-retry-key",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(app="second", key_id="second-key", access=access),
+    )
+
+    assert first["collection_id"] == rotated["collection_id"]
+    assert independent["collection_id"] != first["collection_id"]
+
+
+def test_finalized_upload_idempotency_is_scoped_to_stable_application_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    database_url = sqlite_url(path)
+    initialize_db(database_url)
+    _seed_tag(path, "photos")
+    created_at = "2026-01-01T00:00:00.000000Z"
+    with session_scope(make_session_factory(database_url)) as session:
+        for collection_id, app in ((1, "first"), (2, "second")):
+            session.add(
+                CollectionRecord(
+                    id=collection_id,
+                    creation_idempotency_key="shared-retry-key",
+                    content_etag=str(collection_id) * 64,
+                    record_etag=str(collection_id + 2) * 64,
+                    metadata_revision=1,
+                    metadata_updated_at=created_at,
+                    created_by_app=app,
+                    created_at=created_at,
+                )
+            )
+            session.add(
+                CollectionTagRecord(
+                    collection_id=collection_id,
+                    tag_id="photos",
+                    assigned_by_app=app,
+                    assigned_at=created_at,
+                )
+            )
+
+    service = _service(path)
+    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")})
+    first = service.create_or_resume_upload_session(
+        idempotency_key="shared-retry-key",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(app="first", key_id="replacement-key", access=access),
+    )
+    second = service.create_or_resume_upload_session(
+        idempotency_key="shared-retry-key",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(app="second", key_id="second-key", access=access),
+    )
+
+    assert first["state"] == "finalized"
+    assert first["collection_id"] == 1
+    assert second["state"] == "finalized"
+    assert second["collection_id"] == 2
+
+
 def test_registered_file_metadata_is_immutable(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
