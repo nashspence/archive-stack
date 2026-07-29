@@ -413,6 +413,40 @@ class ArchiveCopyJobRecord(Base):
     )
 
 
+class ArchiveCopyObjectUploadRecord(Base):
+    __tablename__ = "archive_copy_object_uploads"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    destination_store: Mapped[str] = mapped_column(String, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)
+    object_path: Mapped[str] = mapped_column(String)
+    plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    multipart_content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    encryption_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    uploaded_parts: Mapped[int] = mapped_column(Integer, default=0)
+    total_parts: Mapped[int] = mapped_column(Integer, default=0)
+    cache_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cache_cached_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    cache_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "destination_store"],
+            ["archive_copy_jobs.collection_id", "archive_copy_jobs.destination_store"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
 class CatalogEventRecord(Base):
     __tablename__ = "catalog_events"
 

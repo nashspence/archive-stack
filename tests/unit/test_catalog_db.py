@@ -46,6 +46,18 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "event_context_json",
         "completed_at",
     }
+    assert {
+        column["name"] for column in inspector.get_columns("archive_copy_object_uploads")
+    } >= {
+        "collection_id",
+        "destination_store",
+        "object_id",
+        "multipart_upload_id",
+        "multipart_parts_json",
+        "encryption_state_json",
+        "cache_object_path",
+        "cache_stored_sha256",
+    }
     assert {column["name"] for column in inspector.get_columns("collection_proof_maturations")} == {
         "collection_id",
         "store",

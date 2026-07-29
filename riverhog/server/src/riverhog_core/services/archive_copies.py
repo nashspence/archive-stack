@@ -4,16 +4,21 @@ import logging
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, cast, delete, func, or_, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
-from riverhog_core.archive_objects import CollectionArchiveFile, load_collection_archive
+from riverhog_core.archive_objects import (
+    CollectionArchive,
+    CollectionArchiveFile,
+    load_collection_archive,
+)
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
+    ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
@@ -32,6 +37,10 @@ from riverhog_core.services.archive_records import (
     apply_archive_receipt,
     archive_copy_identity,
     archive_copy_is_complete,
+    record_initial_ingestion_cache,
+)
+from riverhog_core.services.archive_upload_tracking import (
+    SqlAlchemyArchiveMultipartUploadTracker,
 )
 from riverhog_core.services.collection_custody import require_collection_custody_idle
 from riverhog_core.services.lifecycle_events import (
@@ -405,10 +414,16 @@ class SqlAlchemyArchiveCopyService:
             ),
             verifier=self._proof_verifier,
         )
+        self._plan_destination_upload(
+            collection_id=collection_id,
+            destination_store=destination_store,
+            archive=archive,
+        )
         receipt = destination.upload_collection_archive(
             collection_id=collection_id,
             archive=archive,
             archive_storage_prefix=destination_storage_prefix,
+            multipart_tracker=self._destination_upload_tracker(destination_store),
         )
         destination.verify_collection_archive(
             collection_id=collection_id,
@@ -429,6 +444,20 @@ class SqlAlchemyArchiveCopyService:
                 )
                 session.add(copy)
             apply_archive_receipt(copy, receipt, archive)
+            session.flush()
+            record_initial_ingestion_cache(
+                session,
+                collection_id=collection_id,
+                store=destination_store,
+                receipt=receipt,
+                lease=self._config.retrieval_initial_ingestion_lease,
+            )
+            session.execute(
+                delete(ArchiveCopyObjectUploadRecord).where(
+                    ArchiveCopyObjectUploadRecord.collection_id == collection_id,
+                    ArchiveCopyObjectUploadRecord.destination_store == destination_store,
+                )
+            )
             collection = session.get(CollectionRecord, collection_id)
             assert collection is not None
             session.merge(
@@ -475,6 +504,67 @@ class SqlAlchemyArchiveCopyService:
         return tuple(
             CollectionArchiveFile(path=file.path, bytes=file.bytes, sha256=file.sha256)
             for file in files
+        )
+
+    def _plan_destination_upload(
+        self,
+        *,
+        collection_id: int,
+        destination_store: str,
+        archive: CollectionArchive,
+    ) -> None:
+        expected = {current.object_id: current for current in archive.data_objects}
+        with session_scope(self._session_factory) as session:
+            existing = {
+                current.object_id: current
+                for current in session.scalars(
+                    select(ArchiveCopyObjectUploadRecord).where(
+                        ArchiveCopyObjectUploadRecord.collection_id == collection_id,
+                        ArchiveCopyObjectUploadRecord.destination_store == destination_store,
+                    )
+                )
+            }
+            if set(existing) - set(expected):
+                raise Conflict("archive copy upload checkpoint does not match its manifest")
+            for object_id, current in expected.items():
+                record = existing.get(object_id)
+                if record is None:
+                    session.add(
+                        ArchiveCopyObjectUploadRecord(
+                            collection_id=collection_id,
+                            destination_store=destination_store,
+                            object_id=object_id,
+                            kind=current.kind,
+                            object_path="",
+                            plaintext_bytes=current.plaintext_bytes,
+                            sha256=current.sha256,
+                        )
+                    )
+                    continue
+                if (
+                    record.kind != current.kind
+                    or record.plaintext_bytes != current.plaintext_bytes
+                    or record.sha256 != current.sha256
+                ):
+                    raise Conflict("archive copy upload checkpoint does not match its manifest")
+
+    def _destination_upload_tracker(
+        self,
+        destination_store: str,
+    ) -> SqlAlchemyArchiveMultipartUploadTracker:
+        def load_record(
+            session: Session,
+            collection_id: int,
+            object_id: str,
+        ) -> ArchiveCopyObjectUploadRecord | None:
+            return session.get(
+                ArchiveCopyObjectUploadRecord,
+                (collection_id, destination_store, object_id),
+            )
+
+        return SqlAlchemyArchiveMultipartUploadTracker(
+            self._session_factory,
+            load_record=load_record,
         )
 
     def _record_failure(

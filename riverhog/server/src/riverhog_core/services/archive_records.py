@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
+from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.archive_objects import STORED_OBJECT_LIMIT, CollectionArchive
@@ -12,12 +14,52 @@ from riverhog_core.catalog_models import (
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
     CollectionMetadataPublicationRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
 )
+
+
+def record_initial_ingestion_cache(
+    session: Session,
+    *,
+    collection_id: int,
+    store: str,
+    receipt: CollectionArchiveUploadReceipt,
+    lease: timedelta,
+) -> None:
+    expires_at = format_utc_timestamp(utc_now() + lease)
+    for current in receipt.objects:
+        cached = current.ingestion_cache
+        if cached is None:
+            continue
+        session.merge(
+            RetrievalCacheObjectRecord(
+                source_store=store,
+                collection_id=collection_id,
+                object_id=current.object_id,
+                object_path=cached.object_path,
+                version_id=cached.version_id,
+                stored_bytes=cached.stored_bytes,
+                stored_sha256=cached.stored_sha256,
+                cached_at=cached.cached_at,
+                verified_at=cached.verified_at,
+            )
+        )
+        session.flush()
+        session.merge(
+            RetrievalCacheLeaseRecord(
+                owner="initial-ingestion",
+                source_store=store,
+                collection_id=collection_id,
+                object_id=current.object_id,
+                expires_at=expires_at,
+            )
+        )
 
 
 def apply_archive_receipt(

@@ -235,6 +235,7 @@ class MemoryArchiveStore:
         self.published_metadata: list[tuple[int, str, bytes]] = []
         self.replaced_proofs: list[bytes] = []
         self.attestation_artifacts: dict[str, bytes] = {}
+        self.multipart_tracker: ArchiveMultipartUploadTracker | None = None
 
     def read_mode(self) -> str:
         return self._read_mode
@@ -256,7 +257,7 @@ class MemoryArchiveStore:
         archive_storage_prefix: str | None = None,
         multipart_tracker: ArchiveMultipartUploadTracker | None = None,
     ) -> CollectionArchiveUploadReceipt:
-        _ = multipart_tracker
+        self.multipart_tracker = multipart_tracker
         assert collection_id == archive.collection_id
         materialized_objects: list[CollectionArchiveDataObject] = []
         for current in archive.data_objects:

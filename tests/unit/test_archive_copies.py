@@ -9,12 +9,18 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
+    ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
     CollectionProofMaturationRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
 )
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
+from riverhog_core.runtime_config import RetrievalCacheConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from sqlalchemy import select
 
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
@@ -60,6 +66,40 @@ def _service(path: Path, *, source_ready: bool = True):
     return config, archive, source, destination, service
 
 
+class RestoreRequiredDestination(MemoryArchiveStore):
+    def __init__(self) -> None:
+        super().__init__(
+            backend="aws",
+            storage_class="DEEP_ARCHIVE",
+            read_mode="restore_required",
+        )
+
+    def upload_collection_archive(self, **kwargs):
+        tracker = kwargs.get("multipart_tracker")
+        assert tracker is not None
+        uploaded = super().upload_collection_archive(**kwargs)
+        objects = []
+        for current in uploaded.objects:
+            if current.kind not in {"pack", "file", "segment"}:
+                objects.append(current)
+                continue
+            cached = RetrievalCacheReceipt(
+                object_path=f"objects/cache-{current.object_id}",
+                version_id="cache-version",
+                stored_bytes=current.stored_bytes,
+                stored_sha256=current.stored_sha256,
+                cached_at=current.uploaded_at,
+                verified_at=str(current.verified_at),
+            )
+            tracker.save_ingestion_cache(
+                collection_id=kwargs["collection_id"],
+                object_id=current.object_id,
+                receipt=cached,
+            )
+            objects.append(replace(current, ingestion_cache=cached))
+        return replace(uploaded, objects=tuple(objects))
+
+
 def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) -> None:
     config, archive, source, destination, service = _service(tmp_path / "catalog.sqlite3")
 
@@ -74,6 +114,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
 
     assert requested["state"] == "requested"
     assert destination.archive is not None
+    assert destination.multipart_tracker is not None
     assert destination.archive.manifest_bytes == archive.manifest_bytes
     assert [current.object_id for current in destination.archive.data_objects] == [
         current.object_id for current in archive.data_objects
@@ -121,6 +162,71 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
         "completed",
     ]
     assert events[-1].data["context"] == {"workflow": "promotion"}
+
+
+def test_archive_copy_to_restore_required_store_records_initial_cache_lease(
+    tmp_path: Path,
+) -> None:
+    config, archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        FILES,
+        store="b2",
+        backend="b2",
+    )
+    deep = replace(
+        config.archive_store("b2"),
+        name="deep",
+        backend="aws",
+        storage_class="DEEP_ARCHIVE",
+        read_mode="restore_required",
+    )
+    config = replace(
+        config,
+        archive_stores={"b2": config.archive_store("b2"), "deep": deep},
+        archive_read_order=("b2", "deep"),
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.example",
+            region="us-east-1",
+            bucket="cache",
+            access_key_id="key",
+            secret_access_key="secret",
+        ),
+    )
+    source = MemoryArchiveStore(archive, backend="b2")
+    destination = RestoreRequiredDestination()
+    service = SqlAlchemyArchiveCopyService(
+        config,
+        ArchiveStoreRegistry(
+            {
+                "b2": as_archive_store(source),
+                "deep": as_archive_store(destination),
+            }
+        ),
+        proof_verifier=FixtureProofVerifier(),
+    )
+    service.create_or_resume(
+        COLLECTION_ID,
+        source_store="b2",
+        destination_store="deep",
+        initiator=INITIATOR,
+    )
+
+    assert service.process_due(limit=1) == 1
+
+    data_object = archive.data_objects[0]
+    with session_scope(make_session_factory(config.database_url)) as session:
+        cached = session.get(
+            RetrievalCacheObjectRecord,
+            ("deep", COLLECTION_ID, data_object.object_id),
+        )
+        lease = session.get(
+            RetrievalCacheLeaseRecord,
+            ("initial-ingestion", "deep", COLLECTION_ID, data_object.object_id),
+        )
+        checkpoints = session.scalars(select(ArchiveCopyObjectUploadRecord)).all()
+        assert cached is not None
+        assert lease is not None
+        assert checkpoints == []
 
 
 def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
