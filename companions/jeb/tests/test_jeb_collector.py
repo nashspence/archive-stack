@@ -545,6 +545,7 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     assert request.event_context == {"initiator": {"app": "jeb", "attempt_id": batch_id}}
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]
     assert request.files[0].sha256
+    assert request.files[0].filesystem_metadata == {}
 
 
 def test_jeb_attempt_issue_is_appended_to_lifecycle_log(tmp_path: Path) -> None:

@@ -45,7 +45,6 @@ from munchy_api_client.client import (
 from munchy_api_client.client import (
     is_transient_upload_error as munchy_is_transient_upload_error,
 )
-from munchy_api_client.filesystem_metadata import collect_filesystem_metadata
 from munchy_api_client.preflight import (
     MP4_LIKE_EXTENSIONS,
     MediaPreflightFile,
@@ -3008,7 +3007,6 @@ def munchy_submission_request(
             rel_path=str(row["target_path"]),
             bytes=int(row["bytes"]),
             sha256=str(row["sha256"]),
-            filesystem_metadata=collect_filesystem_metadata(filesystem_metadata_source(row)),
         )
         for row in rows
     )
@@ -3026,16 +3024,6 @@ def munchy_submission_request(
         upload_workers=target.upload_workers,
         upload_chunk_mib=max(1, target.upload_chunk_bytes // (1024 * 1024)),
     )
-
-
-def filesystem_metadata_source(row: sqlite3.Row) -> Path:
-    source = Path(str(row["input_path"]))
-    if source.exists():
-        return source
-    staging = Path(str(row["staging_path"]))
-    if staging.exists():
-        return staging
-    raise UnrecoverableJebError(f"source and staging file are both missing: {source} -> {staging}")
 
 
 def run_safe_remux(*, ffmpeg_path: str, source: Path, dest: Path) -> None:
