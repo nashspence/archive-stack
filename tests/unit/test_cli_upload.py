@@ -575,6 +575,45 @@ def test_staged_wait_accepts_a_collection_that_already_finalized() -> None:
     assert payload["state"] == "finalized"
 
 
+def test_incremental_upload_retry_returns_an_already_finalized_collection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "clip.bin").write_bytes(b"video")
+    finalized = {
+        "collection_id": COLLECTION_ID,
+        "state": "finalized",
+        "files_total": 1,
+        "files_uploaded": 1,
+        "bytes_total": 5,
+        "uploaded_bytes": 5,
+    }
+
+    class Api:
+        def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return finalized
+
+    def forbidden_hash(_path: Path) -> str:
+        raise AssertionError("a finalized retry must not hash local files")
+
+    monkeypatch.setattr(riverhog_main, "_file_sha256", forbidden_hash)
+
+    assert (
+        riverhog_main._upload_collection_via_session(
+            Api(),  # type: ignore[arg-type]
+            "test-upload",
+            ["collection"],
+            root,
+            ingest_source=str(root),
+            wait_mode="finalized",
+            file_concurrency=2,
+        )
+        == finalized
+    )
+
+
 def test_upload_chunk_size_defaults_to_tusd_s3_part_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

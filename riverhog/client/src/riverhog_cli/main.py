@@ -1389,6 +1389,25 @@ def _upload_collection_via_session(
         archive_store=archive_store,
     )
     collection_id = cast(int, session_payload["collection_id"])
+    session_state = str(session_payload.get("state") or "open")
+    if session_state == "finalized":
+        _log_upload(f"Collection {collection_id} already finalized for this retry key")
+        return session_payload
+    if session_state != "open":
+        _log_upload(f"Upload session {collection_id} already {session_state}")
+        if wait_mode == "finalized" and session_state == "archiving":
+            final_payload, completion_state = _wait_for_finalized_collection(
+                api,
+                collection_id,
+                None,
+                status=_log_upload,
+            )
+            if completion_state == "timeout":
+                raise typer.Exit(124)
+            if completion_state == "failed":
+                raise typer.Exit(1)
+            return final_payload
+        return session_payload
     _log_upload(f"Upload session {collection_id}: registering files incrementally")
 
     manifest_by_path: dict[str, CollectionManifestEntry] = {}
