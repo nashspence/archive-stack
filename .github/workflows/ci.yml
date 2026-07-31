@@ -40,14 +40,22 @@ jobs:
           persist-credentials: false
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      - name: Configure Docker engine
+        if: matrix.docker
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: v29.3.1
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
       - name: Install Docker Compose
         if: matrix.docker
         uses: docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2 # v2.3.0
         with:
           version: v5.1.1
-      - name: Install Docker Buildx
-        if: matrix.docker
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Run repository target
         env:
           CI_TARGET: ${{ matrix.target }}
