@@ -191,7 +191,11 @@ def ensure_under_data_dir(path: Path, *, name: str) -> Path:
 
 
 def status_path(job_id: str) -> Path:
-    return DATA_DIR / "jobs" / job_id / "status.json"
+    storage_id = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    return ensure_under_data_dir(
+        DATA_DIR / "jobs" / storage_id / "status.json",
+        name="job status",
+    )
 
 
 def write_status(job_id: str, payload: dict[str, Any]) -> None:

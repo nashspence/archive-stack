@@ -399,6 +399,14 @@ def normalize_posix(value: str) -> str:
     return path
 
 
+def path_under(root: Path, relative: str | Path, *, label: str) -> Path:
+    resolved_root = root.resolve()
+    candidate = (resolved_root / relative).resolve()
+    if candidate == resolved_root or not candidate.is_relative_to(resolved_root):
+        raise RuntimeError(f"{label} escaped its configured root")
+    return candidate
+
+
 def normalize_output_mode(value: str | None) -> str:
     return str(value or "video")
 
@@ -2747,13 +2755,17 @@ def shared_input_file_path(file_state: dict[str, Any]) -> Path | None:
     if not input_upload_id or not rel_path:
         return None
     root = shared_input_upload_root(input_upload_id)
-    original_path = root / rel_path
+    original_path = path_under(root, rel_path, label="input file")
     group_name = upload_file_resolved_group(file_state)
     routed_path: Path | None = None
     if group_name:
         resolved = file_state.get("resolved_group_rel")
         if isinstance(resolved, str) and resolved.strip():
-            routed_path = root / group_name / Path(normalize_posix(resolved))
+            routed_path = path_under(
+                root,
+                Path(group_name) / normalize_posix(resolved),
+                label="routed input file",
+            )
         elif rel_path.startswith(f"{group_name}/"):
             routed_path = original_path
     if routed_path is not None and routed_path.exists():
@@ -5892,18 +5904,18 @@ def finalize_canceled_job(job: dict[str, Any], *, reason: str) -> dict[str, Any]
     job = mark_job_canceled(job, reason=reason)
     try:
         cancel_handoff(job, reason=reason)
-    except Exception as exc:
+    except Exception:
         job["handoff_cancel_failed_at"] = utc_timestamp_now()
-        job["handoff_cancel_error"] = str(exc)
+        job["handoff_cancel_error"] = "handoff cancellation failed"
         log.exception("unexpected failure while cancelling handoff for %s", job.get("job_id"))
         save_job(job)
 
     try:
         cleanup_canceled_job(job)
         compact_terminal_job_state(job)
-    except Exception as exc:
+    except Exception:
         job["cleanup_failed_at"] = utc_timestamp_now()
-        job["cleanup_error"] = str(exc)
+        job["cleanup_error"] = "local cleanup failed"
         log.exception("failed to clean canceled job %s", job.get("job_id"))
     return save_job(job)
 

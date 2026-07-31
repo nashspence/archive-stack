@@ -10,7 +10,9 @@ import pytest
 from jeb import collector as collector_module
 from jeb.collector import Collector, config_from_env
 from jeb.ingress import (
+    JebIngressError,
     incomplete_tus_upload_status,
+    normalize_tus_upload_id,
     prepare_tus_upload,
     reap_stale_incomplete_tus_uploads,
 )
@@ -39,6 +41,21 @@ def collector_for(env: dict[str, str]) -> Collector:
 def basic_authorization(source: str, password: str) -> str:
     encoded = base64.b64encode(f"{source}:{password}".encode()).decode()
     return f"Basic {encoded}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("", "../upload", "a" * 31, "A" * 32, "not-an-upload-id"),
+)
+def test_jeb_tus_upload_ids_are_canonical_uuid_hex(value: str) -> None:
+    with pytest.raises(JebIngressError, match="invalid ID"):
+        normalize_tus_upload_id(value)
+
+
+def test_jeb_tus_upload_id_normalization_returns_canonical_storage_segment() -> None:
+    upload_id = "a" * 32
+
+    assert normalize_tus_upload_id(upload_id) == upload_id
 
 
 def write_upload(

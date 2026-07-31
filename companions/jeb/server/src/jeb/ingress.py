@@ -36,6 +36,17 @@ class JebIngressCollisionError(JebIngressError):
     pass
 
 
+def normalize_tus_upload_id(raw: object) -> str:
+    value = str(raw or "")
+    try:
+        normalized = uuid.UUID(value).hex
+    except (ValueError, AttributeError) as exc:
+        raise JebIngressError("Jeb TUS upload has an invalid ID") from exc
+    if value != normalized:
+        raise JebIngressError("Jeb TUS upload has an invalid ID")
+    return normalized
+
+
 @dataclass(frozen=True)
 class JebIngressConfig:
     landing_dir: Path
@@ -101,12 +112,8 @@ def scan_incomplete_tus_uploads(
             payload = json.loads(info_path.read_text(encoding="utf-8"))
             if not isinstance(payload, Mapping):
                 raise ValueError("upload record must be an object")
-            upload_id = str(payload.get("ID") or "")
-            if (
-                upload_id != info_path.name.removesuffix(".info")
-                or len(upload_id) != 32
-                or any(character not in "0123456789abcdef" for character in upload_id)
-            ):
+            upload_id = normalize_tus_upload_id(payload.get("ID"))
+            if upload_id != info_path.name.removesuffix(".info"):
                 raise ValueError("upload record has an invalid ID")
             size = _upload_size(payload.get("Size"))
             offset = _upload_size(payload.get("Offset"))
@@ -277,9 +284,7 @@ def publish_tus_upload(
     *,
     upload: Mapping[str, object],
 ) -> Path:
-    upload_id = str(upload.get("ID") or "")
-    if not upload_id or any(ch not in "0123456789abcdef" for ch in upload_id):
-        raise JebIngressError("Jeb TUS upload has an invalid ID")
+    upload_id = normalize_tus_upload_id(upload.get("ID"))
     size = _upload_size(upload.get("Size"))
     if _upload_size(upload.get("Offset")) != size:
         raise JebIngressError("Jeb TUS upload is not complete")
@@ -305,9 +310,9 @@ def publish_tus_upload(
         raise JebIngressError("Jeb TUS ingress requires filestore staging")
     expected_source = (config.tus_staging_dir / upload_id).resolve()
     expected_info = (config.tus_staging_dir / f"{upload_id}.info").resolve()
-    staged_file = Path(str(storage.get("Path") or "")).resolve()
-    info = Path(str(storage.get("InfoPath") or "")).resolve()
-    if staged_file != expected_source or info != expected_info:
+    reported_source = Path(str(storage.get("Path") or "")).resolve()
+    reported_info = Path(str(storage.get("InfoPath") or "")).resolve()
+    if reported_source != expected_source or reported_info != expected_info:
         raise JebIngressError("Jeb TUS upload escaped its staging directory")
 
     destination = _landing_destination(
@@ -318,8 +323,8 @@ def publish_tus_upload(
     )
     return JebLandingPublisher(config).publish(
         upload_id=upload_id,
-        source=staged_file,
-        info=info,
+        source=expected_source,
+        info=expected_info,
         destination=destination,
         size=size,
     )
@@ -340,13 +345,15 @@ class JebLandingPublisher:
         destination: Path,
         size: int,
     ) -> Path:
+        upload_id = normalize_tus_upload_id(upload_id)
         source = source.resolve()
         info = info.resolve()
         destination = destination.resolve()
         self._require_within(source, self._staging_dir, label="source")
         self._require_within(info, self._staging_dir, label="info")
         self._require_within(destination, self._landing_dir, label="destination")
-        receipt = self._receipt_dir / f"{upload_id}.json"
+        receipt = (self._receipt_dir / f"{upload_id}.json").resolve()
+        self._require_within(receipt, self._receipt_dir, label="receipt")
         relative_destination = destination.relative_to(self._landing_dir).as_posix()
 
         if receipt.exists():
@@ -471,8 +478,10 @@ def _landing_destination(
         raise JebIngressAuthenticationError("Jeb TUS source is not enabled") from exc
     if not configured.enabled or "tus" not in configured.adapters:
         raise JebIngressAuthenticationError("Jeb TUS source is not enabled")
-    destination = (config.landing_dir / source / PurePosixPath(relative_path)).resolve()
-    source_root = (config.landing_dir / source).resolve()
+    normalized_path = PurePosixPath(normalize_landing_path(relative_path))
+    source_id = configured.id
+    destination = (config.landing_dir / source_id / normalized_path).resolve()
+    source_root = (config.landing_dir / source_id).resolve()
     if not destination.is_relative_to(source_root):
         raise JebIngressError("Jeb TUS upload escaped its source landing directory")
     return destination

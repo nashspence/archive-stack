@@ -11,6 +11,16 @@ from munchy_av1_nvenc import main as av1
 
 
 class SourceArtifactsTests(unittest.TestCase):
+    def test_status_path_uses_an_opaque_storage_segment(self) -> None:
+        job_id = "../../operator-visible-job"
+        expected_segment = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(av1, "DATA_DIR", Path(tmp)):
+            self.assertEqual(
+                av1.status_path(job_id),
+                Path(tmp) / "jobs" / expected_segment / "status.json",
+            )
+
     def test_startup_recovers_interrupted_jobs(self) -> None:
         calls: list[str] = []
 

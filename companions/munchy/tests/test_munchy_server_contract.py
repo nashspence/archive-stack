@@ -4270,7 +4270,7 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
     assert stored["phase"] == "canceled"
     assert "cancel_requested" not in stored
     assert stored["handoff_cancel_failed_at"]
-    assert "riverhog cancel unavailable" in stored["handoff_cancel_error"]
+    assert stored["handoff_cancel_error"] == "handoff cancellation failed"
     assert server.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
@@ -5629,6 +5629,27 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
 
     assert calls == [tusd_source, shared_source]
     assert (dest_root / "camera" / "a.mp4").read_bytes() == b"video-a"
+
+
+def test_shared_input_file_rejects_a_symlink_escape(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.ensure_dirs()
+    root = server.shared_input_upload_root("upload-1")
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "camera").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="escaped its configured root"):
+        server.shared_input_file_path(
+            {
+                "path": "camera/a.mp4",
+                "input_upload_id": "upload-1",
+            }
+        )
 
 
 def test_run_job_points_gpu_payload_at_shared_input_tree(
