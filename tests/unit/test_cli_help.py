@@ -7,7 +7,7 @@ runner = CliRunner()
 
 
 def test_riverhog_help_names_current_custody_boundaries() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["--help"], terminal_width=160, color=False)
 
     assert result.exit_code == 0
     assert "collection" in result.stdout
@@ -16,14 +16,19 @@ def test_riverhog_help_names_current_custody_boundaries() -> None:
 
 
 def test_collection_upload_help_exposes_archive_store_selection() -> None:
-    result = runner.invoke(app, ["collection", "upload", "--help"])
+    result = runner.invoke(
+        app,
+        ["collection", "upload", "--help"],
+        terminal_width=160,
+        color=False,
+    )
 
     assert result.exit_code == 0
     assert "--archive-store" in result.stdout
 
 
 def test_riverhog_local_help_names_materialization_operations() -> None:
-    result = runner.invoke(app, ["local", "--help"])
+    result = runner.invoke(app, ["local", "--help"], terminal_width=160, color=False)
 
     assert result.exit_code == 0
     for command in ("add", "sync", "repair", "audit", "evict"):
