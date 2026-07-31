@@ -29,6 +29,7 @@ def test_ci_is_a_thin_adapter_over_repository_make_targets() -> None:
         "compile",
         "unit",
         "spec",
+        "c2sp-vectors",
         "postgres-concurrency",
         "compose-smoke",
         "dist-smoke",

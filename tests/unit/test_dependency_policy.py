@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from pathlib import Path
@@ -16,6 +17,9 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
 
     assert mise["tools"]["python"] == "3.12.3"
     assert mise["tools"]["uv"] == "0.11.24"
+    assert mise["tools"]["age"] == "1.3.1"
+    assert mise["tools"]["minisign"] == "0.12"
+    assert mise["env"]["_"]["path"] == "tools"
     assert mise["settings"]["lockfile"] is True
     assert "dev" in pyproject["dependency-groups"]
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
@@ -35,6 +39,29 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     for member in members:
         project = tomllib.loads(member.read_text(encoding="utf-8"))["project"]
         assert project["requires-python"] == ">=3.12"
+
+
+def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:
+    exiftool = REPO_ROOT / "tools/exiftool"
+    stub = tomllib.loads(exiftool.read_text(encoding="utf-8").split("\n", 1)[1])
+
+    assert os.access(exiftool, os.X_OK)
+    assert stub == {
+        "version": "13.59",
+        "bin": "exiftool-13.59/exiftool",
+        "url": "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz",
+        "checksum": "sha256:87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac",
+        "size": 8653399,
+    }
+
+    vector_runner = REPO_ROOT / "scripts/test_c2sp_vectors.sh"
+    vector_script = vector_runner.read_text(encoding="utf-8")
+    assert os.access(vector_runner, os.X_OK)
+    assert "1e3d2860d46e94e777e1b17c7a6f2436387e3ecc" in vector_script
+    assert "516ce226b3d53c9859fcc973edc8976078dcee5600f72f7c27442857e4a3d16c" in vector_script
+
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    assert 'c2sp-vectors:\n\t@MISE_BIN="$(MISE_BIN)" ./scripts/test_c2sp_vectors.sh' in makefile
 
 
 def test_workspace_distributions_publish_their_inline_types() -> None:

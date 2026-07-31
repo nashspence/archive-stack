@@ -26,6 +26,7 @@ jobs:
           - target: compile
           - target: unit
           - target: spec
+          - target: c2sp-vectors
           - target: postgres-concurrency
             docker: true
           - target: compose-smoke
