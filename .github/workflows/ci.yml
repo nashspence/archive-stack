@@ -20,16 +20,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - lint
-          - format-check
-          - compile
-          - unit
-          - spec
-          - postgres-concurrency
-          - compose-smoke
-          - dist-smoke
-          - build
+        include:
+          - target: lint
+          - target: format-check
+          - target: compile
+          - target: unit
+          - target: spec
+          - target: postgres-concurrency
+            docker: true
+          - target: compose-smoke
+            docker: true
+          - target: dist-smoke
+          - target: build
+            docker: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +40,11 @@ jobs:
           persist-credentials: false
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      - name: Install Docker Compose
+        if: matrix.docker
+        uses: docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2 # v2.3.0
+        with:
+          version: v5.1.1
       - name: Run repository target
         env:
           CI_TARGET: ${{ matrix.target }}
