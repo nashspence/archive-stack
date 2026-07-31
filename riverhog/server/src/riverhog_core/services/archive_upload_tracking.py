@@ -200,9 +200,6 @@ def _multipart_parts_from_json(raw: str | None) -> tuple[ArchiveMultipartUploade
 
 def _multipart_parts_to_json(parts: tuple[ArchiveMultipartUploadedPart, ...]) -> str:
     return json.dumps(
-        [
-            {"part_number": part.part_number, "etag": part.etag, "size": part.size}
-            for part in parts
-        ],
+        [{"part_number": part.part_number, "etag": part.etag, "size": part.size} for part in parts],
         separators=(",", ":"),
     )

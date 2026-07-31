@@ -137,9 +137,7 @@ class SqlAlchemyArchiveStoreService:
         )
 
     def _allowances(self) -> dict[str, ArchiveDownloadAllowance]:
-        return {
-            current.store: current for current in self._download_allowance.get_statuses()
-        }
+        return {current.store: current for current in self._download_allowance.get_statuses()}
 
     def _summary(
         self,
@@ -197,9 +195,7 @@ def _store_aggregates(
         CollectionMetadataPublicationRecord.collection_id.label("collection_id"),
         CollectionMetadataPublicationRecord.store.label("store"),
         literal(1).label("objects"),
-        func.coalesce(CollectionMetadataPublicationRecord.stored_bytes, 0).label(
-            "stored_bytes"
-        ),
+        func.coalesce(CollectionMetadataPublicationRecord.stored_bytes, 0).label("stored_bytes"),
     ).where(CollectionMetadataPublicationRecord.object_path.is_not(None))
     owned = union_all(immutable, mutable).subquery()
     rows = session.execute(
@@ -211,8 +207,7 @@ def _store_aggregates(
         )
         .outerjoin(
             owned,
-            (owned.c.collection_id == copies.c.collection_id)
-            & (owned.c.store == copies.c.store),
+            (owned.c.collection_id == copies.c.collection_id) & (owned.c.store == copies.c.store),
         )
         .group_by(copies.c.store)
     )

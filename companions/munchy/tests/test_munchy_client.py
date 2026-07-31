@@ -128,8 +128,7 @@ def test_format_job_summary_line_includes_upload_and_encode_progress() -> None:
     )
 
     assert line.startswith(
-        "example-q49 · 20260727T123456Z [job job-1] | "
-        "job: running | eager_archive:pipeline=3/3"
+        "example-q49 · 20260727T123456Z [job job-1] | job: running | eager_archive:pipeline=3/3"
     )
     assert "remote upload 10/20 files" in line
     assert "remote encode 4/20 files" in line
@@ -662,9 +661,7 @@ def test_compact_job_failure_is_single_line_and_prefers_root_error() -> None:
         }
     )
 
-    assert failure == (
-        "Munchy job failed: routing failed for camera/clip.wav: no matching route"
-    )
+    assert failure == ("Munchy job failed: routing failed for camera/clip.wav: no matching route")
     assert "\n" not in failure
 
 

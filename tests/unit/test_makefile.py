@@ -630,10 +630,31 @@ def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
     assert "python -m ruff check $(FILES)" in makefile
     assert "python -m ruff check --fix $(FILES)" in makefile
     assert "python -m ruff format $(FILES)" in makefile
+    assert "python -m ruff format --check $(FILES)" in makefile
     assert "MYPY_SOURCES" in makefile
     assert "riverhog/server/src" in makefile
     assert "packages/tus-transport/src" in makefile
     assert "strict = true" in pyproject
+
+
+def test_format_check_and_compile_are_non_mutating_repository_targets(tmp_path: Path) -> None:
+    format_completed, docker_log_path, uv_log_path = _run_make(tmp_path, "format-check")
+
+    assert format_completed.returncode == 0, format_completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == [
+        "|x -- uv run --locked --all-packages --group dev python -m ruff format --check ."
+    ]
+    uv_log_path.unlink()
+
+    compile_completed, docker_log_path, uv_log_path = _run_make(tmp_path, "compile")
+
+    assert compile_completed.returncode == 0, compile_completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == [
+        "|x -- uv run --locked --all-packages --group dev "
+        "python -m compileall -q companions packages riverhog scripts tests utilities"
+    ]
 
 
 def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() -> None:
@@ -771,12 +792,15 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make dist-smoke" in completed.stdout
     assert "make fix" in completed.stdout
     assert "make format" in completed.stdout
+    assert "make format-check" in completed.stdout
+    assert "make compile" in completed.stdout
     assert "make ruff-fix" in completed.stdout
     assert "make stop-spec" in completed.stdout
     assert "make test" in completed.stdout
     assert "make tus-throughput" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "FILES='...'" in completed.stdout
+    assert "PYTHON_PATHS='...'" in completed.stdout
     assert "TESTS='...'" in completed.stdout
     assert "TUS_URL=https://..." in completed.stdout
     assert "fast" not in completed.stdout

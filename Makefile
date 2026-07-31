@@ -6,6 +6,7 @@ FILES ?= .
 TESTS ?= companions packages riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py
+PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
@@ -37,7 +38,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format fix mypy lint unit spec postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -55,9 +56,11 @@ help:
 		'  make ruff              Run repo-wide ruff in the locked local uv environment.' \
 		'  make ruff-fix          Run ruff --fix in the locked local uv environment.' \
 		'  make format            Run ruff format in the locked local uv environment.' \
+		'  make format-check      Verify ruff formatting without changing files.' \
 		'  make fix               Run ruff-fix, then format.' \
 		'  make mypy              Run repo-wide mypy in the locked local uv environment.' \
-		'  make lint              Run ruff, then mypy.' \
+		'  make lint              Run license, ruff, then mypy checks.' \
+		'  make compile           Byte-compile all repository Python files.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
@@ -80,8 +83,9 @@ help:
 		'  make test              Run lint, then unit.' \
 		'' \
 		'Variables:' \
-		"  args='...'             Forward arguments to mypy or pytest lanes." \
-		"  FILES='...'            Narrow ruff, ruff-fix, or format to specific files." \
+		"  args='...'             Forward arguments to ruff, mypy, or pytest lanes." \
+		"  FILES='...'            Narrow ruff and format targets to specific files." \
+		"  PYTHON_PATHS='...'      Narrow the Python compile lane." \
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
@@ -105,12 +109,18 @@ ruff-fix:
 format:
 	$(call UV_CMD,python -m ruff format $(FILES) $(args))
 
+format-check:
+	$(call UV_CMD,python -m ruff format --check $(FILES) $(args))
+
 fix: ruff-fix format
 
 mypy:
 	$(call UV_CMD,python -m mypy $(MYPY_SOURCES) $(MYPY_FLAGS) $(args))
 
 lint: license ruff mypy
+
+compile:
+	$(call UV_CMD,python -m compileall -q $(PYTHON_PATHS))
 
 unit:
 	$(call UV_CMD,python -m pytest -q $(TESTS) $(args))

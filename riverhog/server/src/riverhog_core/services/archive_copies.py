@@ -210,9 +210,7 @@ class SqlAlchemyArchiveCopyService:
             )
         ]
         if query is not None:
-            escaped = (
-                query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            )
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             pattern = f"%{escaped}%"
             filters.append(
                 or_(
@@ -241,9 +239,7 @@ class SqlAlchemyArchiveCopyService:
             "state": ArchiveCopyJobRecord.state,
             "requested_at": ArchiveCopyJobRecord.requested_at,
         }
-        direction = (
-            sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
-        )
+        direction = sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
         statement = (
             select(ArchiveCopyJobRecord)
             .where(*filters)

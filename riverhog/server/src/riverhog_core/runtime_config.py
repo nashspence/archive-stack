@@ -243,9 +243,7 @@ class RuntimeConfig:
     ingress_cleanup_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     ingress_cleanup_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=10))
     retrieval_cache: RetrievalCacheConfig | None = None
-    retrieval_cache_new_archive_lease: timedelta = field(
-        default_factory=lambda: timedelta(days=30)
-    )
+    retrieval_cache_new_archive_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
     retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
@@ -601,8 +599,7 @@ def _parse_archive_stores(
             force_path_style=_parse_bool(values.get(f"{prefix}FORCE_PATH_STYLE", "true")),
             prefix=_normalize_prefix(values.get(f"{prefix}PREFIX", "archive")),
             backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
-            storage_class=values.get(f"{prefix}STORAGE_CLASS", "STANDARD").strip()
-            or "STANDARD",
+            storage_class=values.get(f"{prefix}STORAGE_CLASS", "STANDARD").strip() or "STANDARD",
             read_mode=_parse_choice(
                 values.get(f"{prefix}READ_MODE", "immediate"),
                 name=f"{prefix}READ_MODE",

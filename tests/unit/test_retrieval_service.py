@@ -230,9 +230,7 @@ class ExpireOncePreparedArchiveStore(PreparedArchiveStore):
         return super().prepare_archive_objects_read(objects=objects, **kwargs)
 
     def get_archive_objects_read_status(self, **_kwargs: object) -> ArchiveReadStatus:
-        return ArchiveReadStatus(
-            state="expired" if self.prepare_attempts == 1 else "ready"
-        )
+        return ArchiveReadStatus(state="expired" if self.prepare_attempts == 1 else "ready")
 
 
 class InvalidReceiptRetrievalCache(MemoryRetrievalCache):
@@ -291,11 +289,15 @@ def test_immediate_retrieval_plan_serves_only_selected_logical_file(tmp_path: Pa
     assert byte_count == len(FILES["two.txt"])
     assert sha256 == hashlib.sha256(FILES["two.txt"]).hexdigest()
     assert b"".join(chunks) == FILES["two.txt"]
-    retrieval_events = SqlAlchemyLifecycleEventService(config).page(
-        owner_app="local",
-        after=None,
-        limit=10,
-    ).events
+    retrieval_events = (
+        SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app="local",
+            after=None,
+            limit=10,
+        )
+        .events
+    )
     assert [event.type.rsplit(".", 1)[-1] for event in retrieval_events] == [
         "requested",
         "ready",
@@ -867,9 +869,7 @@ def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
     principal = ApplicationPrincipal(
         app="local",
         key_id=key_id,
-        access=frozenset(
-            {ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}
-        ),
+        access=frozenset({ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{COLLECTION_ID}")}),
     )
     service = SqlAlchemyRetrievalService(
         config,
@@ -890,9 +890,9 @@ def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
 
     assert allowance.get_key_quota(key_id=key_id)["reserved_bytes"] > 0
     assert service.process_due(limit=1) == 1
-    assert service.get(app=principal.app, key_id=key_id, job_id=str(created["id"]))[
-        "state"
-    ] == "ready"
+    assert (
+        service.get(app=principal.app, key_id=key_id, job_id=str(created["id"]))["state"] == "ready"
+    )
     with session_scope(make_session_factory(config.database_url)) as session:
         record = session.get(RetrievalJobRecord, str(created["id"]))
         assert record is not None
@@ -942,12 +942,11 @@ def test_invalid_cache_receipt_does_not_make_retrieval_ready(tmp_path: Path) -> 
     assert service.process_due(limit=1) == 1
     failed = service.get(app="local", job_id=str(created["id"]))
     assert failed["state"] == "requested"
-    assert failed["failure"] == (
-        "retrieval cache receipt does not match verified archive metadata"
-    )
+    assert failed["failure"] == ("retrieval cache receipt does not match verified archive metadata")
     assert len(cache.deleted) == 1
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.query(RetrievalCacheObjectRecord).count() == 0
+
 
 def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: Path) -> None:
     config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
@@ -1037,11 +1036,15 @@ def test_partially_prepared_job_keeps_completed_cache_objects_leased(tmp_path: P
     ]
     plan = service.plan(selection)
     job = service.create(app="local", files=selection, plan_etag=str(plan["etag"]))
-    requested_event = SqlAlchemyLifecycleEventService(config).page(
-        owner_app="local",
-        after=None,
-        limit=10,
-    ).events[0]
+    requested_event = (
+        SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app="local",
+            after=None,
+            limit=10,
+        )
+        .events[0]
+    )
 
     assert requested_event.data["collection_ids"] == [
         COLLECTION_ID,

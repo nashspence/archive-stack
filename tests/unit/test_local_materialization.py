@@ -357,12 +357,15 @@ def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
 
 
 def test_local_projection_names_append_other_tags_in_canonical_order() -> None:
-    assert local_materialization._projection_name(
-        COLLECTION_ID,
-        CREATED_AT,
-        tags=["zebra", "alpha", "middle"],
-        parent_tag="middle",
-    ) == f"{PROJECTION_NAME}--alpha--zebra"
+    assert (
+        local_materialization._projection_name(
+            COLLECTION_ID,
+            CREATED_AT,
+            tags=["zebra", "alpha", "middle"],
+            parent_tag="middle",
+        )
+        == f"{PROJECTION_NAME}--alpha--zebra"
+    )
 
     bounded = local_materialization._projection_name(
         COLLECTION_ID,

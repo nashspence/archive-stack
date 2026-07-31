@@ -166,9 +166,7 @@ def _validate_archive_receipt(
         if current.stored_bytes < 1 or current.stored_bytes > STORED_OBJECT_LIMIT:
             raise ValueError(f"collection archive receipt object size is invalid: {object_id}")
         if not _is_sha256(current.stored_sha256):
-            raise ValueError(
-                f"collection archive receipt stored digest is invalid: {object_id}"
-            )
+            raise ValueError(f"collection archive receipt stored digest is invalid: {object_id}")
         if current.object_path in object_paths:
             raise ValueError(f"collection archive receipt object path is duplicated: {object_id}")
         object_paths.add(current.object_path)

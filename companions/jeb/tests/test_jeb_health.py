@@ -209,9 +209,7 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
         assert listed["per_page"] == 25
         assert listed["total"] == 1
         assert listed["pages"] == 1
-        assert listed["sources"][0]["target_config"] == {
-            "template_id": "camera-archive"
-        }
+        assert listed["sources"][0]["target_config"] == {"template_id": "camera-archive"}
         filtered = read_json(
             f"{base}?q=PHO&enabled=true&adapter=tus&target=munchy"
             "&sort=updated_at&order=desc&all=true"

@@ -728,8 +728,7 @@ class SqlAlchemyDownloadAllowance:
                             func.sum(
                                 case(
                                     (
-                                        ArchiveDownloadReservationRecord.expires_at
-                                        <= now_text,
+                                        ArchiveDownloadReservationRecord.expires_at <= now_text,
                                         ArchiveDownloadReservationRecord.reserved_bytes,
                                     ),
                                     else_=0,
@@ -741,8 +740,7 @@ class SqlAlchemyDownloadAllowance:
                             func.sum(
                                 case(
                                     (
-                                        ArchiveDownloadReservationRecord.expires_at
-                                        > now_text,
+                                        ArchiveDownloadReservationRecord.expires_at > now_text,
                                         ArchiveDownloadReservationRecord.reserved_bytes,
                                     ),
                                     else_=0,
@@ -752,8 +750,7 @@ class SqlAlchemyDownloadAllowance:
                         ),
                     ).where(
                         ArchiveDownloadReservationRecord.store == policy.name,
-                        ArchiveDownloadReservationRecord.month_started_at
-                        == month_started_at,
+                        ArchiveDownloadReservationRecord.month_started_at == month_started_at,
                     )
                 ).one()
                 accounted_bytes += int(expired_bytes)

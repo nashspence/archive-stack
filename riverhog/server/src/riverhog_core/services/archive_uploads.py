@@ -257,8 +257,7 @@ class SqlAlchemyArchiveUploadService:
             publication = session.scalar(
                 select(CollectionMetadataPublicationRecord)
                 .where(
-                    CollectionMetadataPublicationRecord.collection_id
-                    == candidate.collection_id,
+                    CollectionMetadataPublicationRecord.collection_id == candidate.collection_id,
                     CollectionMetadataPublicationRecord.store == candidate.store,
                 )
                 .with_for_update()

@@ -2007,10 +2007,7 @@ class S3ArchiveStore:
                 expires_at=restore["expires_at"] or estimated_expires_at,
                 message="AWS archive retrieval is still in progress.",
             )
-        if (
-            restore["expires_at"] is not None
-            and restore["expires_at"] <= utc_timestamp_now()
-        ):
+        if restore["expires_at"] is not None and restore["expires_at"] <= utc_timestamp_now():
             return ArchiveReadStatus(
                 state="expired",
                 expires_at=restore["expires_at"],

@@ -311,9 +311,7 @@ class Collector:
         self.event_log = SQLiteLifecycleEventLog(self.connect)
         self.event_cursors = SQLiteEventCursorStore(self.connect)
         munchy_adapter = MunchyTargetAdapter()
-        self.target_contract_adapters: dict[str, TargetContractAdapter] = {
-            "munchy": munchy_adapter
-        }
+        self.target_contract_adapters: dict[str, TargetContractAdapter] = {"munchy": munchy_adapter}
         self.target_adapters: dict[str, TargetAdapter] = {"munchy": munchy_adapter}
         if target_adapters:
             self.target_adapters.update(target_adapters)
@@ -2837,9 +2835,7 @@ class MunchyTargetAdapter:
     def normalize_source_config(self, config: Mapping[str, Any]) -> dict[str, Any]:
         unknown = sorted(set(config) - {"template_id"})
         if unknown:
-            raise SourceRegistryError(
-                "unknown Munchy target option(s): " + ", ".join(unknown)
-            )
+            raise SourceRegistryError("unknown Munchy target option(s): " + ", ".join(unknown))
         template_id = str(config.get("template_id") or "").strip()
         if not template_id or len(template_id) > 160 or not SAFE_NAME.fullmatch(template_id):
             raise SourceRegistryError("Munchy target option template_id must be a safe ID")

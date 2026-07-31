@@ -270,8 +270,7 @@ class SqlAlchemyRetrievalService:
                         is not None
                     ):
                         raise Conflict(
-                            "archive copy retirement is active: "
-                            f"{collection_id} in {source_store}"
+                            f"archive copy retirement is active: {collection_id} in {source_store}"
                         )
                 record = RetrievalJobRecord(
                     id=job_id,
@@ -892,9 +891,7 @@ class SqlAlchemyRetrievalService:
                     + self._config.retrieval_estimated_latency
                 )
                 for (store_name, collection_id), objects in groups.items():
-                    self._archive_stores.require(
-                        store_name
-                    ).prepare_archive_objects_read(
+                    self._archive_stores.require(store_name).prepare_archive_objects_read(
                         collection_id=collection_id,
                         objects=objects,
                         retrieval_tier=self._config.retrieval_tier,

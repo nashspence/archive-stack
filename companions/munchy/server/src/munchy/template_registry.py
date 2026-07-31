@@ -45,8 +45,7 @@ def ensure_template_registry_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS job_templates_enabled_id "
-        "ON job_templates(enabled, template_id)"
+        "CREATE INDEX IF NOT EXISTS job_templates_enabled_id ON job_templates(enabled, template_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS job_templates_updated_id "
@@ -78,9 +77,7 @@ def _require_template_schema(conn: sqlite3.Connection, *, label: str) -> None:
 
 def _validate_template_rows(conn: sqlite3.Connection, *, label: str) -> int:
     count = 0
-    query = (
-        "SELECT " + ", ".join(JOB_TEMPLATE_COLUMNS) + " FROM job_templates ORDER BY template_id"
-    )
+    query = "SELECT " + ", ".join(JOB_TEMPLATE_COLUMNS) + " FROM job_templates ORDER BY template_id"
     for row in conn.execute(query):
         template_id = str(row[0]).strip()
         if not template_id:

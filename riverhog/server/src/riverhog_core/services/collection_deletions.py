@@ -329,7 +329,9 @@ def _build_plan(
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
     metadata_publication_count = int(
         session.scalar(
-            select(func.count()).select_from(CollectionMetadataPublicationRecord).where(
+            select(func.count())
+            .select_from(CollectionMetadataPublicationRecord)
+            .where(
                 CollectionMetadataPublicationRecord.collection_id == collection_id,
                 CollectionMetadataPublicationRecord.object_path.is_not(None),
             )
@@ -444,8 +446,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
         )
     )
     blockers.extend(
-        f"collection metadata publication is active: {store}"
-        for store in metadata_publications
+        f"collection metadata publication is active: {store}" for store in metadata_publications
     )
     return blockers
 
