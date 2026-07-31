@@ -78,7 +78,7 @@ class CachedMemoryArchiveStore(MemoryArchiveStore):
             objects=tuple(
                 replace(
                     current,
-                    ingestion_cache=RetrievalCacheReceipt(
+                    retrieval_cache=RetrievalCacheReceipt(
                         object_path=f"cache/{current.object_id}",
                         version_id=f"version-{current.object_id}",
                         stored_bytes=current.stored_bytes,
@@ -260,12 +260,12 @@ def test_startup_resumes_a_complete_failed_archive_upload(tmp_path: Path) -> Non
         assert upload.archive_next_attempt_at is not None
 
 
-def test_restore_required_ingest_records_the_initial_cache_lease(tmp_path: Path) -> None:
+def test_restore_required_write_records_the_new_archive_cache_lease(tmp_path: Path) -> None:
     upload_store = MemoryUploadStore()
     archive_store = CachedMemoryArchiveStore(read_mode="restore_required")
     config = replace(
         _stage(tmp_path, upload_store),
-        retrieval_initial_ingestion_lease=timedelta(days=30),
+        retrieval_cache_new_archive_lease=timedelta(days=30),
     )
     service = SqlAlchemyArchiveUploadService(
         config,
@@ -285,7 +285,7 @@ def test_restore_required_ingest_records_the_initial_cache_lease(tmp_path: Path)
             COLLECTION_ID,
             "data-000000",
         )
-        assert lease.owner == "initial-ingestion"
+        assert lease.owner == "new-archive"
         remaining = parse_utc_timestamp(lease.expires_at) - utc_now()
         assert timedelta(days=29, hours=23) < remaining <= timedelta(days=30)
 

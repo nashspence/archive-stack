@@ -418,7 +418,7 @@ class S3ArchiveStore:
         expected_stored_sha256: str,
         expected_storage_class: str,
         uploaded_at: str | None = None,
-        ingestion_cache: RetrievalCacheReceipt | None = None,
+        retrieval_cache: RetrievalCacheReceipt | None = None,
     ) -> ArchiveObjectUploadReceipt:
         _validate_uploaded_collection_metadata(
             object_key=object_key,
@@ -457,7 +457,7 @@ class S3ArchiveStore:
                 fallback=verified_at,
             ),
             verified_at=verified_at,
-            ingestion_cache=ingestion_cache,
+            retrieval_cache=retrieval_cache,
         )
 
     def upload_collection_archive(
@@ -1010,25 +1010,27 @@ class S3ArchiveStore:
             kind=kind,
         )
         cache_required = self.read_mode() == "restore_required" and data_object is not None
-        ingestion_cache: RetrievalCacheReceipt | None = None
+        retrieval_cache: RetrievalCacheReceipt | None = None
         if cache_required:
             if self._retrieval_cache is None:
-                raise RuntimeError("restore-required archive ingest requires a retrieval cache")
+                raise RuntimeError("restore-required archive writes require a retrieval cache")
             if multipart_tracker is None:
-                raise RuntimeError("restore-required archive ingest requires cache checkpointing")
-            ingestion_cache = multipart_tracker.load_ingestion_cache(
+                raise RuntimeError(
+                    "restore-required archive writes require retrieval-cache checkpointing"
+                )
+            retrieval_cache = multipart_tracker.load_retrieval_cache(
                 collection_id=collection_id,
                 object_id=object_id,
             )
         existing = self._head_object(object_key=object_key)
         if existing is not None:
-            if cache_required and ingestion_cache is None:
+            if cache_required and retrieval_cache is None:
                 raise RuntimeError(
-                    "restore-required archive object exists without its ingestion cache receipt"
+                    "restore-required archive object exists without its retrieval-cache receipt"
                 )
             stored_sha256 = (
-                ingestion_cache.stored_sha256
-                if ingestion_cache is not None
+                retrieval_cache.stored_sha256
+                if retrieval_cache is not None
                 else _head_metadata(existing).get(STORED_SHA256_METADATA)
             )
             if stored_sha256 is None:
@@ -1053,20 +1055,20 @@ class S3ArchiveStore:
                 expected_sha256=sha256,
                 expected_stored_sha256=stored_sha256,
                 expected_storage_class=storage_class,
-                ingestion_cache=ingestion_cache,
+                retrieval_cache=retrieval_cache,
             )
 
         age_session: ResumableAgeScryptSession | None = None
-        stored_sha256 = ingestion_cache.stored_sha256 if ingestion_cache is not None else None
+        stored_sha256 = retrieval_cache.stored_sha256 if retrieval_cache is not None else None
         if data_object is not None:
-            if ingestion_cache is not None:
+            if retrieval_cache is not None:
                 assert self._retrieval_cache is not None
-                content_length = ingestion_cache.stored_bytes
+                content_length = retrieval_cache.stored_bytes
                 content = self._retrieval_cache.iter_object(
-                    object_path=ingestion_cache.object_path,
-                    version_id=ingestion_cache.version_id,
-                    expected_bytes=ingestion_cache.stored_bytes,
-                    expected_sha256=ingestion_cache.stored_sha256,
+                    object_path=retrieval_cache.object_path,
+                    version_id=retrieval_cache.version_id,
+                    expected_bytes=retrieval_cache.stored_bytes,
+                    expected_sha256=retrieval_cache.stored_sha256,
                 )
             else:
                 age_session = ResumableAgeScryptSession.create(
@@ -1081,7 +1083,7 @@ class S3ArchiveStore:
                 content = _iter_encrypted_object(object=data_object, session=age_session)
                 if cache_required:
                     assert self._retrieval_cache is not None
-                    ingestion_cache = self._retrieval_cache.put(
+                    retrieval_cache = self._retrieval_cache.put(
                         source_store=self._store.name,
                         collection_id=collection_id,
                         object_id=object_id,
@@ -1089,16 +1091,16 @@ class S3ArchiveStore:
                         content_length=content_length,
                     )
                     assert multipart_tracker is not None
-                    multipart_tracker.save_ingestion_cache(
+                    multipart_tracker.save_retrieval_cache(
                         collection_id=collection_id,
                         object_id=object_id,
-                        receipt=ingestion_cache,
+                        receipt=retrieval_cache,
                     )
                     content = self._retrieval_cache.iter_object(
-                        object_path=ingestion_cache.object_path,
-                        version_id=ingestion_cache.version_id,
-                        expected_bytes=ingestion_cache.stored_bytes,
-                        expected_sha256=ingestion_cache.stored_sha256,
+                        object_path=retrieval_cache.object_path,
+                        version_id=retrieval_cache.version_id,
+                        expected_bytes=retrieval_cache.stored_bytes,
+                        expected_sha256=retrieval_cache.stored_sha256,
                     )
         else:
             plaintext = _single_put_body(content)
@@ -1186,7 +1188,7 @@ class S3ArchiveStore:
             expected_stored_sha256=stored_sha256,
             expected_storage_class=storage_class,
             uploaded_at=uploaded_at,
-            ingestion_cache=ingestion_cache,
+            retrieval_cache=retrieval_cache,
         )
 
     def _put_archive_object_multipart(

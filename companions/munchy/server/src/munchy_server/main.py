@@ -226,7 +226,7 @@ RIVERHOG_HANDOFF_WORKERS = max(
     1,
     int(os.getenv("MUNCHY_RIVERHOG_HANDOFF_WORKERS", "8")),
 )
-# A one-chunk upload immediately asks an S3-compatible ingress store to complete
+# A one-chunk upload immediately asks an S3-compatible ingress staging store to complete
 # its multipart object. Bound those completion bursts independently of streaming
 # concurrency so large files retain throughput without overwhelming the store.
 RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS = 2

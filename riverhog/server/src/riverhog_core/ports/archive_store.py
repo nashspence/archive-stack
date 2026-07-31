@@ -23,7 +23,7 @@ class ArchiveObjectUploadReceipt:
     storage_class: str
     uploaded_at: str
     verified_at: str | None = None
-    ingestion_cache: RetrievalCacheReceipt | None = None
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,14 +142,14 @@ class ArchiveMultipartUploadTracker(Protocol):
         upload_id: str,
     ) -> None: ...
 
-    def load_ingestion_cache(
+    def load_retrieval_cache(
         self,
         *,
         collection_id: int,
         object_id: str,
     ) -> RetrievalCacheReceipt | None: ...
 
-    def save_ingestion_cache(
+    def save_retrieval_cache(
         self,
         *,
         collection_id: int,

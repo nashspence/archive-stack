@@ -91,12 +91,12 @@ class RestoreRequiredDestination(MemoryArchiveStore):
                 cached_at=current.uploaded_at,
                 verified_at=str(current.verified_at),
             )
-            tracker.save_ingestion_cache(
+            tracker.save_retrieval_cache(
                 collection_id=kwargs["collection_id"],
                 object_id=current.object_id,
                 receipt=cached,
             )
-            objects.append(replace(current, ingestion_cache=cached))
+            objects.append(replace(current, retrieval_cache=cached))
         return replace(uploaded, objects=tuple(objects))
 
 
@@ -164,7 +164,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
     assert events[-1].data["context"] == {"workflow": "promotion"}
 
 
-def test_archive_copy_to_restore_required_store_records_initial_cache_lease(
+def test_archive_copy_to_restore_required_store_records_new_archive_cache_lease(
     tmp_path: Path,
 ) -> None:
     config, archive = seed_archive_copy(
@@ -221,7 +221,7 @@ def test_archive_copy_to_restore_required_store_records_initial_cache_lease(
         )
         lease = session.get(
             RetrievalCacheLeaseRecord,
-            ("initial-ingestion", "deep", COLLECTION_ID, data_object.object_id),
+            ("new-archive", "deep", COLLECTION_ID, data_object.object_id),
         )
         checkpoints = session.scalars(select(ArchiveCopyObjectUploadRecord)).all()
         assert cached is not None

@@ -88,6 +88,25 @@ def _normalize_prefix(value: str) -> str:
     return "/".join(parts)
 
 
+def _s3_namespaces_overlap(
+    *,
+    left_endpoint_url: str,
+    left_bucket: str,
+    left_prefix: str,
+    right_endpoint_url: str,
+    right_bucket: str,
+    right_prefix: str,
+) -> bool:
+    if left_endpoint_url.rstrip("/").casefold() != right_endpoint_url.rstrip("/").casefold():
+        return False
+    if left_bucket.casefold() != right_bucket.casefold():
+        return False
+    left_parts = tuple(part for part in left_prefix.split("/") if part)
+    right_parts = tuple(part for part in right_prefix.split("/") if part)
+    common = min(len(left_parts), len(right_parts))
+    return left_parts[:common] == right_parts[:common]
+
+
 def _normalize_archive_store_name(value: str) -> str:
     name = value.strip().casefold()
     if not name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
@@ -224,7 +243,9 @@ class RuntimeConfig:
     ingress_cleanup_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     ingress_cleanup_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=10))
     retrieval_cache: RetrievalCacheConfig | None = None
-    retrieval_initial_ingestion_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
+    retrieval_cache_new_archive_lease: timedelta = field(
+        default_factory=lambda: timedelta(days=30)
+    )
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
     retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
@@ -416,7 +437,8 @@ class RuntimeConfig:
         ]
         if missing_ingress_fields:
             raise ValueError(
-                "ingress store has blank required fields: " + ", ".join(missing_ingress_fields)
+                "ingress staging store has blank required fields: "
+                + ", ".join(missing_ingress_fields)
             )
         object.__setattr__(self, "ingress_store", ingress_store)
         if len(self.ingress_secret_key.encode("utf-8")) < 32:
@@ -429,7 +451,7 @@ class RuntimeConfig:
         if not ingress_development and self.ingress_secret_key == DEV_INGRESS_SECRET_KEY:
             raise ValueError(
                 "RIVERHOG_INGRESS_SECRET_KEY must be explicitly set for a non-development "
-                "ingress store"
+                "ingress staging store"
             )
         restore_required_stores = [
             name
@@ -461,6 +483,18 @@ class RuntimeConfig:
                 raise ValueError(
                     "retrieval cache has blank required fields: " + ", ".join(missing_cache_fields)
                 )
+            if _s3_namespaces_overlap(
+                left_endpoint_url=ingress_store.endpoint_url,
+                left_bucket=ingress_store.bucket,
+                left_prefix=ingress_store.prefix,
+                right_endpoint_url=cache.endpoint_url,
+                right_bucket=cache.bucket,
+                right_prefix=cache.prefix,
+            ):
+                raise ValueError(
+                    "ingress staging store and retrieval cache must use non-overlapping "
+                    "S3 namespaces"
+                )
             object.__setattr__(self, "retrieval_cache", cache)
         if self.tusd_append_timeout.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT must be > 0")
@@ -484,8 +518,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL must be > 0")
         if self.archive_object_concurrency < 1:
             raise ValueError("RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY must be >= 1")
-        if self.retrieval_initial_ingestion_lease.total_seconds() <= 0:
-            raise ValueError("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE must be > 0")
+        if self.retrieval_cache_new_archive_lease.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE must be > 0")
         if self.retrieval_default_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_DEFAULT_LEASE must be > 0")
         if self.retrieval_max_lease < self.retrieval_default_lease:
@@ -801,8 +835,8 @@ def load_runtime_config() -> RuntimeConfig:
         archive_multipart_sweep_interval=archive_multipart_sweep_interval,
         archive_object_concurrency=archive_object_concurrency,
         retrieval_cache=retrieval_cache,
-        retrieval_initial_ingestion_lease=parse_duration(
-            os.getenv("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE", "30d")
+        retrieval_cache_new_archive_lease=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "30d")
         ),
         retrieval_default_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "7d")),
         retrieval_max_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "30d")),

@@ -339,7 +339,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
         self.states.pop(object_id, None)
         self.parts.pop(object_id, None)
 
-    def load_ingestion_cache(
+    def load_retrieval_cache(
         self,
         *,
         collection_id: int,
@@ -348,7 +348,7 @@ class _Tracker(ArchiveMultipartUploadTracker):
         _ = collection_id
         return self.cache_receipts.get(object_id)
 
-    def save_ingestion_cache(
+    def save_retrieval_cache(
         self,
         *,
         collection_id: int,
@@ -782,8 +782,8 @@ def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
     )
 
     data = receipt.require_object("data-000000")
-    assert data.ingestion_cache is not None
-    cached = cache.objects[(data.ingestion_cache.object_path, data.ingestion_cache.version_id)]
+    assert data.retrieval_cache is not None
+    cached = cache.objects[(data.retrieval_cache.object_path, data.retrieval_cache.version_id)]
     assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
     assert data.stored_sha256 == hashlib.sha256(cached).hexdigest()
     assert decrypt_age_scrypt(cached, config.archive_passphrase) == expected_plaintext
@@ -797,7 +797,7 @@ def test_restore_required_upload_uses_exact_leased_cache_ciphertext(
     )
     assert cast(bytes, client.objects[data.object_path]["Body"]) == cached
     resumed_data = resumed.require_object("data-000000")
-    assert resumed_data.ingestion_cache == data.ingestion_cache
+    assert resumed_data.retrieval_cache == data.retrieval_cache
     assert resumed_data.stored_sha256 == hashlib.sha256(cached).hexdigest()
 
 

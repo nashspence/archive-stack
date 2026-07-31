@@ -53,7 +53,7 @@ from riverhog_core.proofs import CommandProofStamper, ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import (
     apply_archive_receipt,
-    record_initial_ingestion_cache,
+    record_new_archive_cache_lease,
 )
 from riverhog_core.services.archive_upload_tracking import (
     SqlAlchemyArchiveMultipartUploadTracker,
@@ -878,12 +878,12 @@ class SqlAlchemyArchiveUploadService:
                     next_attempt_at=now,
                 )
             )
-            record_initial_ingestion_cache(
+            record_new_archive_cache_lease(
                 session,
                 collection_id=collection_id,
                 store=upload.archive_store,
                 receipt=receipt,
-                lease=self._config.retrieval_initial_ingestion_lease,
+                lease=self._config.retrieval_cache_new_archive_lease,
             )
             record_catalog_event(
                 session,
@@ -1145,14 +1145,14 @@ def _archive_upload_receipt_to_payload(
         "uploaded_at": receipt.uploaded_at,
         "verified_at": receipt.verified_at,
     }
-    if receipt.ingestion_cache is not None:
-        payload["ingestion_cache"] = {
-            "object_path": receipt.ingestion_cache.object_path,
-            "version_id": receipt.ingestion_cache.version_id,
-            "stored_bytes": receipt.ingestion_cache.stored_bytes,
-            "stored_sha256": receipt.ingestion_cache.stored_sha256,
-            "cached_at": receipt.ingestion_cache.cached_at,
-            "verified_at": receipt.ingestion_cache.verified_at,
+    if receipt.retrieval_cache is not None:
+        payload["retrieval_cache"] = {
+            "object_path": receipt.retrieval_cache.object_path,
+            "version_id": receipt.retrieval_cache.version_id,
+            "stored_bytes": receipt.retrieval_cache.stored_bytes,
+            "stored_sha256": receipt.retrieval_cache.stored_sha256,
+            "cached_at": receipt.retrieval_cache.cached_at,
+            "verified_at": receipt.retrieval_cache.verified_at,
         }
     return payload
 
@@ -1160,10 +1160,10 @@ def _archive_upload_receipt_to_payload(
 def _archive_upload_receipt_from_payload(payload: object) -> ArchiveObjectUploadReceipt:
     if not isinstance(payload, dict):
         raise ValueError("archive upload receipt payload must be an object")
-    cache_payload = payload.get("ingestion_cache")
-    ingestion_cache = None
+    cache_payload = payload.get("retrieval_cache")
+    retrieval_cache = None
     if isinstance(cache_payload, dict):
-        ingestion_cache = RetrievalCacheReceipt(
+        retrieval_cache = RetrievalCacheReceipt(
             object_path=str(cache_payload["object_path"]),
             version_id=(
                 str(cache_payload["version_id"])
@@ -1187,7 +1187,7 @@ def _archive_upload_receipt_from_payload(payload: object) -> ArchiveObjectUpload
         storage_class=str(payload["storage_class"]),
         uploaded_at=str(payload["uploaded_at"]),
         verified_at=str(payload["verified_at"]) if payload.get("verified_at") is not None else None,
-        ingestion_cache=ingestion_cache,
+        retrieval_cache=retrieval_cache,
     )
 
 

@@ -9,6 +9,8 @@ from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
     DEV_ARCHIVE_PASSPHRASE,
     ArchiveStoreConfig,
+    IngressStoreConfig,
+    RetrievalCacheConfig,
     RuntimeConfig,
     load_runtime_config,
 )
@@ -38,6 +40,72 @@ def test_restore_required_store_requires_retrieval_cache(tmp_path: Path) -> None
                 "archive": replace(archive, backend="aws", read_mode="restore_required")
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("ingress_prefix", "cache_prefix"),
+    (
+        ("", ""),
+        ("work", "work"),
+        ("work", "work/retrieval"),
+        ("work/ingress", "work"),
+    ),
+)
+def test_ingress_and_retrieval_cache_namespaces_must_not_overlap(
+    tmp_path: Path,
+    ingress_prefix: str,
+    cache_prefix: str,
+) -> None:
+    ingress = IngressStoreConfig(
+        endpoint_url="http://127.0.0.1:9000",
+        region="us-east-1",
+        bucket="work",
+        access_key_id="minioadmin",
+        secret_access_key="minioadmin",
+        force_path_style=True,
+        prefix=ingress_prefix,
+    )
+    cache = RetrievalCacheConfig(
+        endpoint_url="http://127.0.0.1:9000/",
+        region="us-east-1",
+        bucket="work",
+        access_key_id="minioadmin",
+        secret_access_key="minioadmin",
+        force_path_style=True,
+        prefix=cache_prefix,
+    )
+
+    with pytest.raises(ValueError, match="must use non-overlapping S3 namespaces"):
+        _config(tmp_path, ingress_store=ingress, retrieval_cache=cache)
+
+
+def test_ingress_and_retrieval_cache_can_share_a_bucket_with_disjoint_prefixes(
+    tmp_path: Path,
+) -> None:
+    ingress = IngressStoreConfig(
+        endpoint_url="http://127.0.0.1:9000",
+        region="us-east-1",
+        bucket="work",
+        access_key_id="minioadmin",
+        secret_access_key="minioadmin",
+        force_path_style=True,
+        prefix="ingress",
+    )
+    cache = RetrievalCacheConfig(
+        endpoint_url="http://127.0.0.1:9000",
+        region="us-east-1",
+        bucket="work",
+        access_key_id="minioadmin",
+        secret_access_key="minioadmin",
+        force_path_style=True,
+        prefix="retrieval",
+    )
+
+    config = _config(tmp_path, ingress_store=ingress, retrieval_cache=cache)
+
+    assert config.ingress_store.prefix == "ingress"
+    assert config.retrieval_cache is not None
+    assert config.retrieval_cache.prefix == "retrieval"
 
 
 @pytest.mark.parametrize("backend", ("garage", "minio"))
@@ -174,7 +242,7 @@ def test_load_runtime_config_parses_retrieval_settings(
 ) -> None:
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "6h")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_TIER", "standard")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_INITIAL_INGESTION_LEASE", "20d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "20d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "2d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "20d")
 
@@ -182,7 +250,7 @@ def test_load_runtime_config_parses_retrieval_settings(
 
     assert config.retrieval_estimated_latency == timedelta(hours=6)
     assert config.retrieval_tier == "standard"
-    assert config.retrieval_initial_ingestion_lease == timedelta(days=20)
+    assert config.retrieval_cache_new_archive_lease == timedelta(days=20)
     assert config.retrieval_default_lease == timedelta(days=2)
 
 

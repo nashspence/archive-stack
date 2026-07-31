@@ -129,7 +129,7 @@ class SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
             record.multipart_parts_json = None
             record.encryption_state_json = None
 
-    def load_ingestion_cache(
+    def load_retrieval_cache(
         self,
         *,
         collection_id: int,
@@ -155,7 +155,7 @@ class SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
                 verified_at=record.cache_verified_at,
             )
 
-    def save_ingestion_cache(
+    def save_retrieval_cache(
         self,
         *,
         collection_id: int,

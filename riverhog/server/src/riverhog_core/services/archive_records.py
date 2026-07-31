@@ -24,7 +24,7 @@ from riverhog_core.ports.archive_store import (
 )
 
 
-def record_initial_ingestion_cache(
+def record_new_archive_cache_lease(
     session: Session,
     *,
     collection_id: int,
@@ -34,7 +34,7 @@ def record_initial_ingestion_cache(
 ) -> None:
     expires_at = format_utc_timestamp(utc_now() + lease)
     for current in receipt.objects:
-        cached = current.ingestion_cache
+        cached = current.retrieval_cache
         if cached is None:
             continue
         session.merge(
@@ -53,7 +53,7 @@ def record_initial_ingestion_cache(
         session.flush()
         session.merge(
             RetrievalCacheLeaseRecord(
-                owner="initial-ingestion",
+                owner="new-archive",
                 source_store=store,
                 collection_id=collection_id,
                 object_id=current.object_id,

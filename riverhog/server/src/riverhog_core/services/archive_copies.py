@@ -37,7 +37,7 @@ from riverhog_core.services.archive_records import (
     apply_archive_receipt,
     archive_copy_identity,
     archive_copy_is_complete,
-    record_initial_ingestion_cache,
+    record_new_archive_cache_lease,
 )
 from riverhog_core.services.archive_upload_tracking import (
     SqlAlchemyArchiveMultipartUploadTracker,
@@ -445,12 +445,12 @@ class SqlAlchemyArchiveCopyService:
                 session.add(copy)
             apply_archive_receipt(copy, receipt, archive)
             session.flush()
-            record_initial_ingestion_cache(
+            record_new_archive_cache_lease(
                 session,
                 collection_id=collection_id,
                 store=destination_store,
                 receipt=receipt,
-                lease=self._config.retrieval_initial_ingestion_lease,
+                lease=self._config.retrieval_cache_new_archive_lease,
             )
             session.execute(
                 delete(ArchiveCopyObjectUploadRecord).where(

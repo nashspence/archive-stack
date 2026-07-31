@@ -15,7 +15,7 @@ digest.
 Authenticated preflight creates a random per-file ingress secret and returns it to that
 client once as part of the upload descriptor. The secret is envelope-encrypted in the
 catalog. Clients stream independently framed age ciphertext through TUS into the configured
-ingress object store; TUS metadata carries only an opaque upload identifier. Riverhog reads
+ingress staging store; TUS metadata carries only an opaque upload identifier. Riverhog reads
 and decrypts bounded ranges while constructing the permanent archive, so its host never
 needs space for a complete file or collection. It removes ingress objects only after the
 archive copy is complete and verified.
@@ -60,7 +60,7 @@ Riverhog uses the S3 API for three separate storage roles:
 
 | Role | Supported count | Purpose |
 | --- | ---: | --- |
-| Ingress store | Exactly one | Temporary, immediately readable encrypted uploads |
+| Ingress staging store | Exactly one | Temporary, immediately readable client-encrypted uploads |
 | Archive store | One or more | Named durable authorities; one receives new writes and an ordered set serves reads |
 | Retrieval cache | Zero or one | Leased encrypted copies of objects whose archive provider requires retrieval preparation |
 
@@ -75,7 +75,9 @@ Each archive store chooses one supported backend profile: `s3` for a generic
 S3-compatible immediate-read service, `b2` for Backblaze B2's S3 API, or `aws` for
 AWS S3. The `aws` profile alone supports `restore_required` reads and optional
 CloudFront delivery; `s3` and `b2` are immediate-read profiles. Any
-`restore_required` store requires the separate retrieval cache. The checked-in
+`restore_required` store requires the separate retrieval cache. Production deployments
+should use separate buckets for ingress staging and retrieval caching. A shared bucket is
+supported only when the two roles use non-overlapping prefixes. The checked-in
 development stack has one immediate-read Garage archive named `archive` and no retrieval
 cache.
 
@@ -100,8 +102,8 @@ readable objects are served from their archive store. For a store whose provider
 retrieval preparation, Riverhog performs that work asynchronously and copies the existing
 archive ciphertext into a separate retrieval-cache store. Application leases bound cache
 retention, and acknowledgment releases the job's leases. When the write store itself
-requires retrieval preparation, initial archive ingestion retains the same ciphertext under
-a bounded configurable cache lease.
+requires retrieval preparation, Riverhog retains newly written canonical archive ciphertext
+under a bounded configurable retrieval-cache lease.
 
 The content endpoint reconstructs one logical file, supports validators and byte ranges,
 and verifies archive and file checksums. The default client's `local` subtree is the
@@ -160,9 +162,10 @@ presentation.
   mutable metadata manifest.
 - **Archive store:** a named durable object-store destination with defined read behavior.
 - **Archive copy:** one verified object set for a collection in one archive store.
-- **Ingress store:** temporary encrypted upload storage.
+- **Ingress staging store:** temporary client-encrypted upload-session storage. Its objects
+  are not canonical archive objects.
 - **Retrieval cache:** leased encrypted storage used only for archive objects whose provider
-  cannot make them immediately readable.
+  cannot make them immediately readable. Its objects are exact canonical archive ciphertext.
 - **Retrieval plan:** a stable resolution of logical files to one complete archive copy.
 - **Retrieval job:** application-owned preparation and lease state for one plan.
 - **Handoff:** Munchy's delivery of completed artifacts through one named destination
