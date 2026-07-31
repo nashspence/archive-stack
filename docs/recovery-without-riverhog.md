@@ -28,6 +28,16 @@ Download the selected directory, including `manifest.yml.age`, `manifest.yml.ots
 `objects/` directory, and any `SHA256SUMS*` files. Objects in a provider archive class must
 complete provider-side restoration before they can be downloaded.
 
+```sh
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID ./archives/ARCHIVE_ID \
+  --recursive \
+  --force-glacier-transfer
+```
+
+The AWS CLI requires `--force-glacier-transfer` for restored Glacier-class objects even
+after their restore status reports ready. The flag does not initiate restoration; use it
+only after every needed object has completed its provider-side restore.
+
 When an attestation is present, obtain the Minisign public key from an independently trusted
 location and verify the inventory before recovery:
 

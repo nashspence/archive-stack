@@ -2286,10 +2286,14 @@ aws s3api restore-object \\
 ```
 
 After any required restore completes, download and independently decrypt each
-needed object:
+needed object. The AWS CLI requires `--force-glacier-transfer` for a restored
+Glacier-class object even after its restore status reports ready; the flag does not
+initiate restoration:
 
 ```sh
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age .
+aws s3 cp \
+  s3://BUCKET/PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age . \
+  --force-glacier-transfer
 age --decrypt -o data-NNNNNN data-NNNNNN.age
 # Enter the same archive passphrase when age prompts.
 sha256sum data-NNNNNN

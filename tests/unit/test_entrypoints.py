@@ -67,3 +67,11 @@ def test_all_markdown_is_reachable_and_links_resolve() -> None:
 def test_both_entrypoints_route_to_each_durable_context_document() -> None:
     for entrypoint in ENTRYPOINTS:
         assert DURABLE_CONTEXT <= _local_links(entrypoint)
+
+
+def test_recovery_documents_restored_glacier_download_gate() -> None:
+    recovery = (REPO / "docs/recovery-without-riverhog.md").read_text(encoding="utf-8")
+
+    assert "--recursive" in recovery
+    assert "--force-glacier-transfer" in recovery
+    assert "The flag does not initiate restoration" in recovery

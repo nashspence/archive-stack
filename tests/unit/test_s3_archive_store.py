@@ -713,6 +713,7 @@ def test_collection_metadata_manifest_is_independently_encrypted(
     readme = cast(bytes, client.objects[readme_key]["Body"]).decode()
     agents = cast(bytes, client.objects[agents_key]["Body"]).decode()
     assert "archives/ARCHIVE_ID/metadata.yml.age" in readme
+    assert "--force-glacier-transfer" in readme
     assert "archives/ARCHIVE_ID/metadata.yml.age" in agents
 
 
