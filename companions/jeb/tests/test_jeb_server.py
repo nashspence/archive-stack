@@ -223,6 +223,7 @@ def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> No
                 "batch_attempts",
                 "files",
                 "attempt_files",
+                "service_operations",
             )
         }
         batch_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(batches)")}
@@ -249,6 +250,11 @@ def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> No
     } <= indexes["batch_attempts"]
     assert "idx_jeb_files_batch" in indexes["files"]
     assert "idx_jeb_attempt_files_attempt" in indexes["attempt_files"]
+    assert {
+        "idx_jeb_service_operations_started",
+        "idx_jeb_service_operations_state_started",
+        "ux_jeb_service_operations_running",
+    } <= indexes["service_operations"]
     assert {
         "trg_jeb_files_summary_delete",
         "trg_jeb_files_summary_insert",

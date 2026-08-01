@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import secrets
 import threading
-import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb_core.domain.models import UnrecoverableJebError, event_timestamp
+from jeb_core.domain.models import UnrecoverableJebError
 from jeb_core.domain.sources import SourceRegistryError
 from jeb_core.ingress import (
     JebIngressAuthenticationError,
@@ -22,232 +20,25 @@ from jeb_core.ingress import (
     prepare_tus_upload,
     publish_tus_upload,
 )
+from jeb_core.services.operations import JebServiceOperations
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 
 from jeb_api.composition import JebServices
 
 ResolutionFilter = Literal["unresolved", "resolved", "all"]
-LOG = logging.getLogger(__name__)
 DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
-
-
-@dataclass
-class JebServiceOperation:
-    id: str
-    operation: str
-    started_at: str
-    source: str | None
-    attempt_id: str | None
-    state: str = "running"
-    completed_at: str | None = None
-    failure: str | None = None
-    thread: threading.Thread | None = None
-
-    def summary(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "id": self.id,
-            "operation": self.operation,
-            "started_at": self.started_at,
-            "state": self.state,
-        }
-        if self.source is not None:
-            payload["source"] = self.source
-        if self.attempt_id is not None:
-            payload["attempt_id"] = self.attempt_id
-        if self.completed_at is not None:
-            payload["completed_at"] = self.completed_at
-        if self.failure is not None:
-            payload["failure"] = self.failure
-        return payload
-
-
-class JebServiceOperations:
-    _HISTORY_LIMIT = 100
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._active_id: str | None = None
-        self._operations: dict[str, JebServiceOperation] = {}
-
-    def _prune_locked(self) -> None:
-        if self._active_id is None:
-            return
-        active = self._operations[self._active_id]
-        if active.thread is not None and not active.thread.is_alive() and active.state == "running":
-            active.state = "failed"
-            active.failure = "operation thread ended without reporting a result"
-            active.completed_at = event_timestamp()
-            self._active_id = None
-
-    def active_summary(self) -> dict[str, Any] | None:
-        with self._lock:
-            self._prune_locked()
-            return None if self._active_id is None else self._operations[self._active_id].summary()
-
-    def get(self, operation_id: str) -> dict[str, Any]:
-        with self._lock:
-            self._prune_locked()
-            operation = self._operations.get(operation_id)
-            if operation is None:
-                raise KeyError(operation_id)
-            return operation.summary()
-
-    def list_page(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        sort: str,
-        order: str,
-        query: str | None,
-        state: str | None,
-        all_items: bool,
-    ) -> dict[str, Any]:
-        if page < 1 or not 1 <= per_page <= 100:
-            raise ValueError("operation page and per_page must be between 1 and 100")
-        if sort not in {"id", "operation", "state", "started_at", "completed_at"}:
-            raise ValueError("invalid operation sort field")
-        if order not in {"asc", "desc"}:
-            raise ValueError("order must be asc or desc")
-        normalized_query = query.strip().casefold() if query and query.strip() else None
-        normalized_state = state.strip().casefold() if state and state.strip() else None
-        with self._lock:
-            self._prune_locked()
-            operations = [current.summary() for current in self._operations.values()]
-        if normalized_state is not None:
-            operations = [
-                current for current in operations if current.get("state") == normalized_state
-            ]
-        if normalized_query is not None:
-            operations = [
-                current
-                for current in operations
-                if normalized_query in " ".join(str(value) for value in current.values()).casefold()
-            ]
-        operations.sort(
-            key=lambda item: (str(item.get(sort) or ""), str(item.get("id") or "")),
-            reverse=order == "desc",
-        )
-        total = len(operations)
-        selected = operations if all_items else operations[(page - 1) * per_page : page * per_page]
-        return {
-            "page": 1 if all_items else page,
-            "per_page": total if all_items else per_page,
-            "total": total,
-            "pages": (1 if total else 0) if all_items else ((total + per_page - 1) // per_page),
-            "sort": sort,
-            "order": order,
-            "query": normalized_query,
-            "filters": ({"state": normalized_state} if normalized_state else {}),
-            "operations": selected,
-        }
-
-    def _start_locked(
-        self,
-        *,
-        operation: str,
-        run: Callable[[], None],
-        source: str | None,
-        attempt_id: str | None,
-    ) -> dict[str, Any]:
-        operation_id = uuid.uuid4().hex[:12]
-        current = JebServiceOperation(
-            id=operation_id,
-            operation=operation,
-            started_at=event_timestamp(),
-            source=source,
-            attempt_id=attempt_id,
-        )
-
-        def target() -> None:
-            failure: str | None = None
-            try:
-                run()
-            except Exception as exc:
-                failure = f"{type(exc).__name__}: {exc}"
-                LOG.exception(
-                    "Jeb service operation failed",
-                    extra={"operation": operation, "operation_id": operation_id},
-                )
-            finally:
-                with self._lock:
-                    stored = self._operations[operation_id]
-                    stored.state = "failed" if failure is not None else "succeeded"
-                    stored.failure = failure
-                    stored.completed_at = event_timestamp()
-                    if self._active_id == operation_id:
-                        self._active_id = None
-
-        thread = threading.Thread(
-            target=target,
-            name=f"jeb-{operation}-{operation_id}",
-            daemon=True,
-        )
-        current.thread = thread
-        self._operations[operation_id] = current
-        self._active_id = operation_id
-        while len(self._operations) > self._HISTORY_LIMIT:
-            self._operations.pop(next(iter(self._operations)))
-        thread.start()
-        return current.summary()
-
-    def start(
-        self,
-        *,
-        operation: str,
-        run: Callable[[], None],
-        source: str | None = None,
-        attempt_id: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            self._prune_locked()
-            if self._active_id is not None:
-                active_summary = self._operations[self._active_id].summary()
-                raise UnrecoverableJebError(
-                    "Jeb operation already running: "
-                    f"{active_summary['operation']} {active_summary['id']}"
-                )
-            return self._start_locked(
-                operation=operation,
-                run=run,
-                source=source,
-                attempt_id=attempt_id,
-            )
-
-    def prepare_and_start(
-        self,
-        *,
-        operation: str,
-        prepare: Callable[[], str | None],
-        run: Callable[[str], None],
-        source: str | None = None,
-    ) -> tuple[str | None, dict[str, Any] | None]:
-        with self._lock:
-            self._prune_locked()
-            if self._active_id is not None:
-                active_summary = self._operations[self._active_id].summary()
-                raise UnrecoverableJebError(
-                    "Jeb operation already running: "
-                    f"{active_summary['operation']} {active_summary['id']}"
-                )
-            attempt_id = prepare()
-            if attempt_id is None:
-                return None, None
-            return attempt_id, self._start_locked(
-                operation=operation,
-                run=lambda: run(attempt_id),
-                source=source,
-                attempt_id=attempt_id,
-            )
 
 
 @dataclass(frozen=True)
 class JebServiceState:
     services: JebServices
-    operations: JebServiceOperations = field(default_factory=JebServiceOperations)
     api_token: str = field(
         default_factory=lambda: os.getenv("JEB_API_TOKEN") or DEFAULT_JEB_API_TOKEN
     )
+
+    @property
+    def operations(self) -> JebServiceOperations:
+        return self.services.operations
 
 
 def _response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
@@ -885,6 +676,7 @@ def start_jeb_service_server(
     port: int,
     state: JebServiceState,
 ) -> ThreadingHTTPServer:
+    state.operations.recover_interrupted()
     server = ThreadingHTTPServer((host, port), jeb_service_handler(state))
     thread = threading.Thread(
         target=server.serve_forever,

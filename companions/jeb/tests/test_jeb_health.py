@@ -484,6 +484,55 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
         server.server_close()
 
 
+def test_jeb_service_operations_survive_service_recreation(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    services = create_services(config_from_env(env))
+    operation = services.operations.start(operation="once", run=lambda: None)
+    operation_id = str(operation["id"])
+    deadline = time.monotonic() + 5
+    while services.operations.get(operation_id)["state"] == "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    restarted = create_services(config_from_env(env))
+
+    shown = restarted.operations.get(operation_id)
+    page = restarted.operations.list_page(
+        page=1,
+        per_page=25,
+        sort="started_at",
+        order="desc",
+        query="once",
+        state="succeeded",
+        all_items=False,
+    )
+    assert shown["state"] == "succeeded"
+    assert shown["completed_at"]
+    assert page["total"] == 1
+    assert page["operations"] == [shown]
+
+
+def test_jeb_service_startup_marks_an_interrupted_operation_failed(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    services = create_services(config_from_env(env))
+    services.store.create_service_operation(
+        operation_id="interrupted-operation",
+        operation="archive-now",
+        started_at="2026-08-01T12:00:00Z",
+        source="phone",
+        attempt_id="attempt-1",
+    )
+
+    restarted = create_services(config_from_env(env))
+    restarted.operations.recover_interrupted()
+
+    shown = restarted.operations.get("interrupted-operation")
+    assert shown["state"] == "failed"
+    assert shown["completed_at"]
+    assert shown["failure"] == "service restarted before operation completed"
+    assert restarted.operations.active_summary() is None
+
+
 def test_jeb_service_api_cancels_an_unresolved_attempt(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")

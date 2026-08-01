@@ -45,6 +45,223 @@ class SQLiteJebStore:
                 "CREATE INDEX IF NOT EXISTS idx_jeb_source_removals_source "
                 "ON source_removals(source_id, started_at)"
             )
+            self.create_service_operation_schema(conn)
+
+    def create_service_operation_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_operations (
+                id TEXT PRIMARY KEY,
+                operation TEXT NOT NULL,
+                state TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                source TEXT,
+                attempt_id TEXT,
+                failure TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_service_operations_started "
+            "ON service_operations(started_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_service_operations_state_started "
+            "ON service_operations(state, started_at, id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_jeb_service_operations_running "
+            "ON service_operations(state) WHERE state = 'running'"
+        )
+
+    def recover_interrupted_service_operations(self) -> int:
+        completed_at = event_timestamp()
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE service_operations
+                SET
+                    state = 'failed',
+                    completed_at = ?,
+                    failure = 'service restarted before operation completed'
+                WHERE state = 'running'
+                """,
+                (completed_at,),
+            )
+        return int(cursor.rowcount)
+
+    def create_service_operation(
+        self,
+        *,
+        operation_id: str,
+        operation: str,
+        started_at: str,
+        source: str | None,
+        attempt_id: str | None,
+    ) -> dict[str, Any]:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO service_operations(
+                    id, operation, state, started_at, source, attempt_id
+                )
+                VALUES(?, ?, 'running', ?, ?, ?)
+                """,
+                (operation_id, operation, started_at, source, attempt_id),
+            )
+        return self.get_service_operation(operation_id)
+
+    def complete_service_operation(
+        self,
+        operation_id: str,
+        *,
+        state: Literal["failed", "succeeded"],
+        failure: str | None,
+        completed_at: str,
+        history_limit: int = 100,
+    ) -> None:
+        if history_limit < 1:
+            raise ValueError("service operation history limit must be positive")
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE service_operations
+                SET state = ?, failure = ?, completed_at = ?
+                WHERE id = ? AND state = 'running'
+                """,
+                (state, failure, completed_at, operation_id),
+            )
+            if cursor.rowcount != 1:
+                return
+            conn.execute(
+                """
+                DELETE FROM service_operations
+                WHERE id IN (
+                    SELECT id
+                    FROM service_operations
+                    WHERE state != 'running'
+                    ORDER BY started_at DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (history_limit,),
+            )
+
+    def _service_operation_summary(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": str(row["id"]),
+            "operation": str(row["operation"]),
+            "started_at": str(row["started_at"]),
+            "state": str(row["state"]),
+        }
+        for key in ("source", "attempt_id", "completed_at", "failure"):
+            if row[key] is not None:
+                payload[key] = str(row[key])
+        return payload
+
+    def active_service_operation(self) -> dict[str, Any] | None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM service_operations
+                WHERE state = 'running'
+                ORDER BY started_at, id
+                LIMIT 1
+                """
+            ).fetchone()
+        return None if row is None else self._service_operation_summary(row)
+
+    def get_service_operation(self, operation_id: str) -> dict[str, Any]:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM service_operations WHERE id = ?",
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        return self._service_operation_summary(row)
+
+    def list_service_operations(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        sort: str,
+        order: str,
+        query: str | None,
+        state: str | None,
+        all_items: bool,
+    ) -> dict[str, Any]:
+        if page < 1 or not 1 <= per_page <= 100:
+            raise ValueError("operation page and per_page must be between 1 and 100")
+        sort_sql = {
+            "id": "id",
+            "operation": "operation",
+            "state": "state",
+            "started_at": "started_at",
+            "completed_at": "completed_at",
+        }.get(sort)
+        if sort_sql is None:
+            raise ValueError("invalid operation sort field")
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be asc or desc")
+        normalized_query = query.strip().casefold() if query and query.strip() else None
+        normalized_state = state.strip().casefold() if state and state.strip() else None
+        clauses: list[str] = []
+        values: list[object] = []
+        if normalized_state is not None:
+            clauses.append("state = ?")
+            values.append(normalized_state)
+        if normalized_query is not None:
+            like = f"%{like_literal(normalized_query)}%"
+            clauses.append(
+                """
+                (
+                    id LIKE ? ESCAPE '\\'
+                    OR operation LIKE ? ESCAPE '\\'
+                    OR state LIKE ? ESCAPE '\\'
+                    OR source LIKE ? ESCAPE '\\'
+                    OR attempt_id LIKE ? ESCAPE '\\'
+                    OR failure LIKE ? ESCAPE '\\'
+                )
+                """
+            )
+            values.extend((like,) * 6)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        order_sql = order.upper()
+        offset = (page - 1) * per_page
+        with self.transaction() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM service_operations {where}",
+                values,
+            ).fetchone()
+            total = int(total_row["total"] if total_row is not None else 0)
+            selected_sql = (
+                f"SELECT * FROM service_operations {where} "
+                f"ORDER BY {sort_sql} {order_sql}, id {order_sql}"
+            )
+            rows = (
+                conn.execute(selected_sql, values).fetchall()
+                if all_items
+                else conn.execute(
+                    f"{selected_sql} LIMIT ? OFFSET ?",
+                    [*values, per_page, offset],
+                ).fetchall()
+            )
+        operations = [self._service_operation_summary(row) for row in rows]
+        return {
+            "page": 1 if all_items else page,
+            "per_page": total if all_items else per_page,
+            "total": total,
+            "pages": (1 if total else 0) if all_items else ((total + per_page - 1) // per_page),
+            "sort": sort,
+            "order": order,
+            "query": normalized_query,
+            "filters": ({"state": normalized_state} if normalized_state else {}),
+            "operations": operations,
+        }
 
     def connect(self) -> sqlite3.Connection:
         self.config.service.state_db.parent.mkdir(parents=True, exist_ok=True)

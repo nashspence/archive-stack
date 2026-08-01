@@ -26,6 +26,7 @@ from jeb_core.runtime.config import (
 from jeb_core.runtime.service import JebRuntime
 from jeb_core.services.attempts import JebAttemptService
 from jeb_core.services.events import JebEventService
+from jeb_core.services.operations import JebServiceOperations
 from jeb_core.services.sources import JebSourceService
 from lifecycle_events import SQLiteEventCursorStore, SQLiteLifecycleEventLog
 
@@ -35,6 +36,7 @@ class JebServices:
     config: JebConfig
     store: SQLiteJebStore
     events: JebEventService
+    operations: JebServiceOperations
     sources: JebSourceService
     attempts: JebAttemptService
     runtime: JebRuntime
@@ -134,6 +136,7 @@ def create_services(
         return holder["services"]
 
     events = JebEventService(config, store, event_log)
+    operations = JebServiceOperations(store)
     sources = JebSourceService(
         config,
         store,
@@ -171,6 +174,7 @@ def create_services(
         config=config,
         store=store,
         events=events,
+        operations=operations,
         sources=sources,
         attempts=attempts,
         runtime=runtime,

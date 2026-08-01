@@ -3650,6 +3650,36 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
     assert job_b["queue"]["running_job_limit"] == 1
 
 
+def test_scheduler_reschedules_a_persisted_running_job_after_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
+        {
+            "job_id": "job-interrupted",
+            "state": "running",
+            "phase": "handoff",
+            "created_at": "2026-01-01T00:00:00Z",
+            "started_at": "2026-01-01T00:00:01Z",
+            "handoff": {"destination": "command", "options": {}},
+        }
+    )
+    scheduled_tasks: list[tuple[object, tuple[object, ...]]] = []
+
+    class Tasks:
+        def add_task(self, func, *args):  # type: ignore[no-untyped-def]
+            scheduled_tasks.append((func, args))
+
+    server.execution_runtime.active_jobs.clear()
+    server.execution_runtime.scheduled_jobs.clear()
+
+    assert server.job_service.schedule_pending_jobs(Tasks()) == ["job-interrupted"]
+    assert scheduled_tasks == [(server.job_service.run_job, ("job-interrupted",))]
+
+
 def test_submission_accepts_bounded_lifecycle_event_context(
     tmp_path: Path,
     monkeypatch,
