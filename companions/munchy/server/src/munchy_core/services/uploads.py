@@ -613,9 +613,10 @@ def build_preserve_group_source_artifacts(
     group_name: str,
     source_root: Path,
     output_root: Path,
+    allow_missing_filesystem_metadata: bool = False,
 ) -> dict[str, Any]:
     filesystem_metadata = load_filesystem_metadata_map(source_root)
-    if not filesystem_metadata:
+    if not filesystem_metadata and not allow_missing_filesystem_metadata:
         raise RuntimeError(
             "unresumable: source filesystem metadata sidecar is missing for preserve group"
         )
@@ -625,7 +626,9 @@ def build_preserve_group_source_artifacts(
         source = source_root / rel_path
         output = output_root / rel_path
         metadata = filesystem_metadata.get(rel_path.as_posix())
-        if not isinstance(metadata, Mapping):
+        if (not isinstance(metadata, Mapping) or not metadata) and not (
+            allow_missing_filesystem_metadata
+        ):
             raise RuntimeError(
                 "unresumable: source filesystem metadata sidecar is missing entries for "
                 f"{rel_path.as_posix()}"
@@ -634,6 +637,7 @@ def build_preserve_group_source_artifacts(
             source=source,
             output=output,
             source_filesystem_metadata=metadata,
+            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             source_sidecars=source_artifacts_sidecar_entries(
                 upload,
                 [file_state],
@@ -1172,6 +1176,7 @@ def group_dump(group: domain_models.GroupConfig) -> dict[str, Any]:
         "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
+        "allow_missing_filesystem_metadata": group.allow_missing_filesystem_metadata,
         "metadata_projection": metadata_projection,
     }
     if group.max_parallel_encodes is not None:
@@ -1186,4 +1191,5 @@ def default_group_config(req: domain_models.CreateJobRequest) -> domain_models.G
         output_mode=req.output_mode,
         tasks=req.tasks,
         encode_profile=req.encode_profile,
+        allow_missing_filesystem_metadata=req.allow_missing_filesystem_metadata,
     )

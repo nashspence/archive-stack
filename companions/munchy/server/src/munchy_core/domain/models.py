@@ -425,6 +425,7 @@ class GroupConfig(BaseModel):
     encode_profile: EncodeProfile | None = None
     max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
     eager_pipeline_batches: int | None = Field(default=None, ge=1, le=64)
+    allow_missing_filesystem_metadata: bool = False
     metadata_projection: MetadataProjectionSetting = Field(default_factory=MetadataProjectionConfig)
 
     @field_validator("tasks")
@@ -444,6 +445,19 @@ class GroupConfig(BaseModel):
             task in self.tasks for task in ("archive_video", "qcut_video")
         ):
             raise ValueError("audio groups cannot run archive_video or qcut_video")
+        if (
+            self.allow_missing_filesystem_metadata
+            and self.metadata_projection is not False
+            and self.metadata_projection.capture_date_sources is not None
+            and any(
+                str(source.get("type") or "embedded") == "filesystem_birthtime"
+                for source in self.metadata_projection.capture_date_sources
+            )
+        ):
+            raise ValueError(
+                "allow_missing_filesystem_metadata cannot be true when metadata_projection "
+                "uses a filesystem_birthtime capture-date source"
+            )
         return self
 
 
@@ -536,6 +550,21 @@ def validate_routing_predicate(value: Mapping[str, Any], *, label: str) -> None:
         if not isinstance(not_item, Mapping):
             raise ValueError(f"{label}.not must be a predicate")
         validate_routing_predicate(not_item, label=f"{label}.not")
+
+
+def routing_predicate_facts(value: object) -> set[str]:
+    if isinstance(value, list):
+        facts: set[str] = set()
+        for item in value:
+            facts.update(routing_predicate_facts(item))
+        return facts
+    if not isinstance(value, Mapping):
+        return set()
+    facts = {str(value["fact"])} if isinstance(value.get("fact"), str) else set()
+    for nested in value.values():
+        if isinstance(nested, (Mapping, list)):
+            facts.update(routing_predicate_facts(nested))
+    return facts
 
 
 class RoutingRule(BaseModel):
@@ -742,6 +771,7 @@ class CreateJobRequest(BaseModel):
     output_mode: OutputMode = "video"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
+    allow_missing_filesystem_metadata: bool = False
     groups: dict[str, GroupConfig] = Field(default_factory=dict)
     routing: RoutingConfig | None = None
     handoff: HandoffConfig
@@ -779,6 +809,24 @@ class CreateJobRequest(BaseModel):
             missing = sorted(route_groups - group_names)
             if missing:
                 raise ValueError("routing references unknown group(s): " + ", ".join(missing))
+            filesystem_facts = sorted(
+                fact
+                for fact in routing_predicate_facts(self.routing.model_dump(mode="python"))
+                if fact.startswith(
+                    (
+                        "filesystem.",
+                        "filesystem_metadata.",
+                        "source_filesystem_metadata.",
+                    )
+                )
+            )
+            if filesystem_facts and any(
+                group.allow_missing_filesystem_metadata for group in self.groups.values()
+            ):
+                raise ValueError(
+                    "routing cannot reference filesystem metadata facts when a routed group "
+                    "allows missing filesystem metadata: " + ", ".join(filesystem_facts)
+                )
         task_lists = (
             [(name, group.output_mode, group.tasks) for name, group in self.groups.items()]
             if self.groups

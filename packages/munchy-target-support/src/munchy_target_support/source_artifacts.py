@@ -1807,6 +1807,7 @@ def _assemble_source_artifact_bundle_inputs(
     selected_output_path: pathlib.Path,
     encode_output_path: pathlib.Path,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
+    allow_missing_filesystem_metadata: bool = False,
     extra_artifacts: Sequence[SourceArtifact] = (),
 ) -> list[SourceArtifact]:
     inventory_root = work_dir / "inventory"
@@ -1815,12 +1816,16 @@ def _assemble_source_artifact_bundle_inputs(
     source_filesystem_path = inventory_root / "source-filesystem.json"
     source_inventory_path = inventory_root / "source-inventory.json"
     stream_transforms_path = encoding_root / "stream-transforms.json"
-    if not isinstance(source_filesystem_metadata, Mapping):
+    if not source_filesystem_metadata and not allow_missing_filesystem_metadata:
         raise RuntimeError(
             "unresumable: source filesystem metadata sidecar is missing for "
             f"{os.path.basename(src)}"
         )
-    filesystem_metadata = dict(source_filesystem_metadata)
+    filesystem_metadata = (
+        dict(source_filesystem_metadata)
+        if isinstance(source_filesystem_metadata, Mapping) and source_filesystem_metadata
+        else None
+    )
 
     include_source_ffprobe = _json_payload_has_signal(source_metadata)
     include_source_inventory = _source_inventory_has_signal(
@@ -1834,7 +1839,8 @@ def _assemble_source_artifact_bundle_inputs(
 
     if include_source_ffprobe:
         _write_json_artifact(source_ffprobe_path, source_metadata)
-    _write_json_artifact(source_filesystem_path, filesystem_metadata)
+    if filesystem_metadata is not None:
+        _write_json_artifact(source_filesystem_path, filesystem_metadata)
     if include_source_inventory:
         _write_json_artifact(
             source_inventory_path,
@@ -1878,15 +1884,16 @@ def _assemble_source_artifact_bundle_inputs(
                 "application/json",
             )
         )
-    structured_artifacts.append(
-        (
-            source_filesystem_path,
-            "inventory/source-filesystem.json",
-            "source_filesystem",
-            "Original source filesystem metadata",
-            "application/json",
+    if filesystem_metadata is not None:
+        structured_artifacts.append(
+            (
+                source_filesystem_path,
+                "inventory/source-filesystem.json",
+                "source_filesystem",
+                "Original source filesystem metadata",
+                "application/json",
+            )
         )
-    )
     if include_source_inventory:
         structured_artifacts.append(
             (

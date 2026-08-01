@@ -162,7 +162,12 @@ def _default_group_from_section(section: Mapping[str, Any]) -> dict[str, Any]:
     if not group_name:
         return {}
     group: dict[str, Any] = {}
-    for key in ("output_mode", "tasks", "metadata_projection"):
+    for key in (
+        "output_mode",
+        "tasks",
+        "allow_missing_filesystem_metadata",
+        "metadata_projection",
+    ):
         if key in section:
             group[key] = deepcopy(section[key])
     encode_profile = section.get("encode_profile")

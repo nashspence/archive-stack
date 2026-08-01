@@ -242,9 +242,10 @@ def build_strict_source_artifacts(
     encode_command: Sequence[str],
     encode_profile: Mapping[str, Any] | None,
     source_filesystem_metadata: Mapping[str, Any] | None = None,
+    allow_missing_filesystem_metadata: bool = False,
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(source_filesystem_metadata, Mapping):
+    if not source_filesystem_metadata and not allow_missing_filesystem_metadata:
         raise RuntimeError(
             f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
         )
@@ -369,6 +370,7 @@ def build_strict_source_artifacts(
             selected_output_path=archive_mkv,
             encode_output_path=archive_mkv,
             source_filesystem_metadata=source_filesystem_metadata,
+            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             extra_artifacts=_source_sidecar_artifacts(source_sidecars),
         )
 
@@ -414,12 +416,18 @@ def build_preserve_source_artifacts(
     source: pathlib.Path,
     output: pathlib.Path,
     source_filesystem_metadata: Mapping[str, Any] | None,
+    allow_missing_filesystem_metadata: bool = False,
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(source_filesystem_metadata, Mapping):
+    if not source_filesystem_metadata and not allow_missing_filesystem_metadata:
         raise RuntimeError(
             f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
         )
+    if not source_filesystem_metadata and not source_sidecars:
+        return {
+            "omitted": True,
+            "reason": "origin filesystem metadata is unavailable",
+        }
     work_dir = output.parent / f".{output.name}.source-artifacts-work"
     bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(output)))
     part_path = pathlib.Path(str(bundle_path) + ".part")
@@ -447,6 +455,7 @@ def build_preserve_source_artifacts(
             selected_output_path=output,
             encode_output_path=output,
             source_filesystem_metadata=source_filesystem_metadata,
+            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             extra_artifacts=_source_sidecar_artifacts(source_sidecars),
         )
         created = source_artifacts._build_source_artifacts_bundle(

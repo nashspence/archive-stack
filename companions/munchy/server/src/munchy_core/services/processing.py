@@ -363,6 +363,9 @@ def run_review_sweep_job(
                             group_config,
                         )
                     ),
+                    "allow_missing_filesystem_metadata": bool(
+                        group_config.get("allow_missing_filesystem_metadata", False)
+                    ),
                     "encode_profile": variant["encode_profile"],
                 }
                 if group_config.get("max_parallel_encodes") is not None:
@@ -1261,6 +1264,9 @@ def build_eager_gpu_payload(
         "run_id": job.get("run_id"),
         "container_metadata_required": routing_service.gpu_tasks_require_container_metadata(
             tasks, group_config
+        ),
+        "allow_missing_filesystem_metadata": bool(
+            group_config.get("allow_missing_filesystem_metadata", False)
         ),
     }
     if group_config.get("encode_profile") is not None:

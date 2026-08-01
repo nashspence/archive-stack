@@ -237,6 +237,10 @@ def normalize_group_payload(
     eager_pipeline_batches = group.get("eager_pipeline_batches")
     if eager_pipeline_batches is not None:
         payload["eager_pipeline_batches"] = eager_pipeline_batches
+    if "allow_missing_filesystem_metadata" in group:
+        payload["allow_missing_filesystem_metadata"] = bool(
+            group["allow_missing_filesystem_metadata"]
+        )
     return payload
 
 

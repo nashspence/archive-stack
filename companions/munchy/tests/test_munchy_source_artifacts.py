@@ -89,6 +89,49 @@ def test_source_artifact_bundle_requires_source_filesystem_metadata(tmp_path: Pa
         )
 
 
+def test_source_artifact_bundle_can_explicitly_omit_filesystem_metadata(
+    tmp_path: Path,
+) -> None:
+    artifacts = source_artifacts._assemble_source_artifact_bundle_inputs(
+        work_dir=tmp_path / "work",
+        src="clip.mp4",
+        output="clip.mkv",
+        source_metadata={"format": {"format_name": "mov"}, "streams": []},
+        source_container={"supported": True, "mode": "iso_bmff_rebuild"},
+        container_inventory=[],
+        container_artifacts=[],
+        exports=[],
+        stream_transforms=[],
+        dropped_items=[],
+        encode_cmd=["ffmpeg", "-i", "clip.mp4", "clip.mkv"],
+        selected_output_path=tmp_path / "clip.mkv",
+        encode_output_path=tmp_path / "clip.mkv",
+        allow_missing_filesystem_metadata=True,
+    )
+
+    assert artifacts
+    assert all(artifact.kind != "source_filesystem" for artifact in artifacts)
+
+
+def test_preserve_source_artifacts_can_explicitly_omit_missing_metadata(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.bin"
+    source.write_bytes(b"source")
+
+    result = build_preserve_source_artifacts(
+        source=source,
+        output=source,
+        source_filesystem_metadata=None,
+        allow_missing_filesystem_metadata=True,
+    )
+
+    assert result == {
+        "omitted": True,
+        "reason": "origin filesystem metadata is unavailable",
+    }
+
+
 def test_source_artifact_bundle_has_no_rebuild_directory(
     tmp_path: Path,
 ) -> None:

@@ -196,6 +196,7 @@ def job_template_definition(*, archive_store: str = "b2") -> dict[str, object]:
         "kind": "munchy.job",
         "job": {
             "workflow_mode": "collection_archive",
+            "allow_missing_filesystem_metadata": True,
             "handoff": {
                 "destination": "riverhog",
                 "options": {
@@ -573,6 +574,95 @@ def test_submission_preflight_resolves_template_without_creating_state(
     assert payload["template_revision"] == 1
     assert payload["content_inspection"] == "after_upload"
     assert payload["files_total"] == 1
+
+
+def test_submission_preflight_requires_explicit_missing_filesystem_metadata_policy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    definition = job_template_definition()
+    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
+
+    with TestClient(server.app) as client:
+        assert (
+            client.post(
+                "/v1/admin/job-templates",
+                json={"template_id": "strict-archive", "definition": definition},
+            ).status_code
+            == 201
+        )
+        response = client.post(
+            "/v1/submissions/preflight",
+            json={
+                "template_id": "strict-archive",
+                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "allow_missing_filesystem_metadata" in response.json()["detail"]
+
+
+def test_job_template_rejects_missing_filesystem_metadata_policy_with_birthtime_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    definition = job_template_definition()
+    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
+    definition["groups"] = {
+        "video": {
+            "tasks": ["archive_video"],
+            "allow_missing_filesystem_metadata": True,
+            "metadata_projection": {
+                "capture_date_sources": [{"type": "filesystem_birthtime"}],
+            },
+        }
+    }
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/v1/admin/job-templates",
+            json={"template_id": "contradictory", "definition": definition},
+        )
+
+    assert response.status_code == 422
+    assert "filesystem_birthtime" in str(response.json()["detail"])
+
+
+def test_job_template_rejects_missing_filesystem_metadata_policy_with_routing_fact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    definition = job_template_definition()
+    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
+    definition["groups"] = {
+        "video": {
+            "tasks": ["archive_video"],
+            "allow_missing_filesystem_metadata": True,
+            "metadata_projection": False,
+        }
+    }
+    definition["job"]["routing"] = {  # type: ignore[index]
+        "routes": [
+            {
+                "id": "filesystem-routed",
+                "group": "video",
+                "when": {"fact": "filesystem.stat.birthtime", "exists": True},
+            }
+        ]
+    }
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/v1/admin/job-templates",
+            json={"template_id": "routing-contradiction", "definition": definition},
+        )
+
+    assert response.status_code == 422
+    assert "routing cannot reference filesystem metadata" in str(response.json()["detail"])
     assert server.state_store.list_states("job") == []
     assert server.state_store.list_states("input-upload") == []
 

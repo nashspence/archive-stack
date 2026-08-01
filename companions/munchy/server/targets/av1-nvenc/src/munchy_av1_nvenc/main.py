@@ -172,6 +172,7 @@ class JobRequest(BaseModel):
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata_required: bool = True
+    allow_missing_filesystem_metadata: bool = False
     source_artifacts_sidecars: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     dry_run: bool = False
 
@@ -1223,6 +1224,7 @@ def run_encode_item(
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
     source_filesystem_metadata: dict[str, Any] | None = None,
+    allow_missing_filesystem_metadata: bool = False,
     source_artifacts_sidecars: list[dict[str, Any]] | None = None,
     on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
@@ -1260,6 +1262,7 @@ def run_encode_item(
             encode_command=result["command"],
             encode_profile=source_artifacts_profile,
             source_filesystem_metadata=source_filesystem_metadata,
+            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             source_sidecars=source_artifacts_sidecars,
         )
     payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
@@ -1301,17 +1304,18 @@ def run_batch(
     source_artifacts: bool = False,
     source_artifacts_profile: dict[str, Any] | None = None,
     source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
+    allow_missing_filesystem_metadata: bool = False,
     container_metadata: Mapping[str, dict[str, Any]] | None = None,
     container_metadata_required: bool = True,
     max_parallel_encodes: int | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     filesystem_metadata = load_filesystem_metadata_map(input_root)
-    if source_artifacts:
+    if source_artifacts and not allow_missing_filesystem_metadata:
         missing_metadata: list[str] = []
         for source in sources:
             rel_path = source.relative_to(input_root).as_posix()
-            if rel_path not in filesystem_metadata:
+            if not filesystem_metadata.get(rel_path):
                 missing_metadata.append(rel_path)
         if missing_metadata:
             sample = ", ".join(missing_metadata[:5])
@@ -1347,6 +1351,7 @@ def run_batch(
                         else []
                     ),
                     source_filesystem_metadata=filesystem_metadata.get(rel_path),
+                    allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
                 )
             ] = source
         for future in as_completed(futures):
@@ -1809,6 +1814,7 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 source_artifacts=True,
                 source_artifacts_profile=encode_profile_dump,
                 source_artifacts_sidecars=req.source_artifacts_sidecars,
+                allow_missing_filesystem_metadata=req.allow_missing_filesystem_metadata,
                 container_metadata=req.container_metadata,
                 container_metadata_required=req.container_metadata_required,
                 max_parallel_encodes=max_parallel_encodes,

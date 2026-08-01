@@ -77,6 +77,7 @@ class SourceArtifactsTests(unittest.TestCase):
                 encode_command: list[str],
                 encode_profile: dict,
                 source_filesystem_metadata: dict,
+                allow_missing_filesystem_metadata: bool,
                 source_sidecars: list[dict] | None = None,
             ) -> dict:
                 self.assertEqual(source.name, "clip.mp4")
@@ -84,6 +85,7 @@ class SourceArtifactsTests(unittest.TestCase):
                 self.assertEqual(encode_command, ["ffmpeg", "-i", "clip.mp4", "clip.mkv"])
                 self.assertEqual(encode_profile["name"], "test-profile")
                 self.assertEqual(source_filesystem_metadata["stat"]["st_birthtime"], 1.25)
+                self.assertFalse(allow_missing_filesystem_metadata)
                 self.assertIsNone(source_sidecars)
                 archive_mkv.write_bytes(b"after-source-artifacts")
                 return {"output": str(archive_mkv) + ".source-artifacts.tar.zst"}
@@ -194,6 +196,37 @@ class SourceArtifactsTests(unittest.TestCase):
                     source_artifacts=True,
                     source_artifacts_profile={"name": "test-profile"},
                 )
+
+    def test_archive_batch_allows_explicitly_missing_filesystem_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_root = root / "input"
+            output_root = root / "output"
+            input_root.mkdir()
+            source = input_root / "clip.mp4"
+            source.write_bytes(b"source")
+
+            results = av1.run_batch(
+                sources=[source],
+                input_root=input_root,
+                output_root=output_root,
+                suffix=".webm",
+                command_builder=lambda src, dest, metadata: [
+                    "ffmpeg",
+                    "-i",
+                    str(src),
+                    str(dest),
+                ],
+                label="archive video encode",
+                dry_run=True,
+                source_artifacts=True,
+                source_artifacts_profile={"name": "test-profile"},
+                allow_missing_filesystem_metadata=True,
+                container_metadata_required=False,
+            )
+
+            self.assertEqual(len(results), 1)
+            self.assertTrue(results[0]["dry_run"])
 
     def test_archive_batch_requires_projected_container_metadata_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

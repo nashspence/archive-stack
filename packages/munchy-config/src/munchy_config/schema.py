@@ -166,10 +166,34 @@ GROUP_SCHEMA: dict[str, Any] = {
         "encode_profile": {"type": "object"},
         "max_parallel_encodes": {"type": "integer", "minimum": 1},
         "eager_pipeline_batches": {"type": "integer", "minimum": 1},
+        "allow_missing_filesystem_metadata": {"type": "boolean"},
         "metadata_projection": {
             "oneOf": [{"type": "boolean", "const": False}, {"type": "object"}],
         },
     },
+    "allOf": [
+        {
+            "not": {
+                "required": ["allow_missing_filesystem_metadata", "metadata_projection"],
+                "properties": {
+                    "allow_missing_filesystem_metadata": {"const": True},
+                    "metadata_projection": {
+                        "type": "object",
+                        "required": ["capture_date_sources"],
+                        "properties": {
+                            "capture_date_sources": {
+                                "contains": {
+                                    "type": "object",
+                                    "required": ["type"],
+                                    "properties": {"type": {"const": "filesystem_birthtime"}},
+                                }
+                            }
+                        },
+                    },
+                },
+            }
+        }
+    ],
     "additionalProperties": False,
 }
 
@@ -183,6 +207,7 @@ DEVICE_PROFILE_SECTION_SCHEMA: dict[str, Any] = {
         "output_mode": {"enum": ["video", "audio", "preserve"]},
         "tasks": STRING_LIST,
         "media_preflight": {"type": "boolean"},
+        "allow_missing_filesystem_metadata": {"type": "boolean"},
         "group": {"type": "string"},
         "encode_profile": {"oneOf": [{"type": "boolean"}, {"type": "object"}]},
         "metadata_projection": {
@@ -302,6 +327,7 @@ JOB_SCHEMA: dict[str, Any] = {
         "workflow_mode": {"enum": ["collection_archive", "review"]},
         "output_mode": {"enum": ["video", "audio", "preserve"]},
         "tasks": STRING_LIST,
+        "allow_missing_filesystem_metadata": {"type": "boolean"},
         "handoff": HANDOFF_SCHEMA,
         "review": {"type": "object"},
         "routing": ROUTING_SCHEMA,

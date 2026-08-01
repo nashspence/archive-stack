@@ -280,7 +280,7 @@ def audio_archive_metadata_for_source(
     *,
     rel_path: str,
     group_config: dict[str, Any],
-    filesystem_metadata: Mapping[str, Any],
+    filesystem_metadata: Mapping[str, Any] | None,
 ) -> ProjectionMetadata | None:
     if not routing_service.metadata_projection_enabled(group_config):
         return None
@@ -355,7 +355,12 @@ def run_archive_audio_item(
     profile, _audio = audio_archive_profile(group_config)
     rel_path = source.relative_to(input_root).as_posix()
     metadata = filesystem_metadata.get(rel_path)
-    if not isinstance(metadata, Mapping):
+    allow_missing_filesystem_metadata = bool(
+        group_config.get("allow_missing_filesystem_metadata", False)
+    )
+    if (not isinstance(metadata, Mapping) or not metadata) and not (
+        allow_missing_filesystem_metadata
+    ):
         raise RuntimeError(
             f"unresumable: source filesystem metadata sidecar is missing entries for {rel_path}"
         )
@@ -386,6 +391,7 @@ def run_archive_audio_item(
         encode_command=cast(list[str], result["command"]),
         encode_profile=profile,
         source_filesystem_metadata=metadata,
+        allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
         source_sidecars=source_sidecars,
     )
     return {
@@ -412,7 +418,9 @@ def run_archive_audio_group(
     if not sources:
         return {"status": "skipped", "reason": "no audio sources", "items": []}
     filesystem_metadata = load_filesystem_metadata_map(input_root)
-    if not filesystem_metadata:
+    if not filesystem_metadata and not bool(
+        group_config.get("allow_missing_filesystem_metadata", False)
+    ):
         raise RuntimeError(
             "unresumable: source filesystem metadata sidecar is missing for audio archive group"
         )
