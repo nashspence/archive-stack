@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 import riverhog_cli.main
+import typer
 from riverhog_cli.main import app
 from typer.testing import CliRunner
 
@@ -221,10 +223,8 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
 
 
 def test_quota_ids_require_an_application_for_actionable_identity() -> None:
-    result = runner.invoke(app, ["app", "key", "quota", "list", "--ids"])
-
-    assert result.exit_code == 2
-    assert "--ids requires --app" in result.output
+    with pytest.raises(typer.BadParameter, match="--ids requires --app"):
+        riverhog_cli.main.app_key_quota_list_cmd(ids=True)
 
 
 def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monkeypatch) -> None:
