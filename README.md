@@ -31,7 +31,7 @@ defaults.
 
 - [`riverhog/server`](riverhog/server/) is the archive platform service.
 - [`riverhog/client`](riverhog/client/) is the direct platform CLI. Its `local` commands
-  are the reference external application and maintain client-owned local materialization.
+  maintain client-owned local materialization.
 - [`riverhog/recovery`](riverhog/recovery/) is the independently packaged, permissively
   licensed reference recovery implementation.
 - [`companions`](companions/) contains applications with first-class ecosystem adapters:

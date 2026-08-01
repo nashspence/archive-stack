@@ -106,10 +106,10 @@ requires retrieval preparation, Riverhog retains newly written canonical archive
 under a bounded configurable retrieval-cache lease.
 
 The content endpoint reconstructs one logical file, supports validators and byte ranges,
-and verifies archive and file checksums. The default client's `local` subtree is the
-reference application: it owns a local directory and SQLite catalog, follows
-ResourceSync changes, obtains retrieval jobs, verifies downloads, and atomically publishes
-local files. Other applications use the same interface and remain isolated from its state.
+and verifies archive and file checksums. `riverhog local` owns a local directory and SQLite
+catalog, follows ResourceSync changes, obtains retrieval jobs, verifies downloads, and
+atomically publishes local files. Other applications use the same interface and remain
+isolated from its state.
 
 Each service publishes its operational lifecycle as a durable CloudEvents 1.0 cursor log.
 Riverhog and Munchy scope normal event readers to their authenticated application. Munchy
