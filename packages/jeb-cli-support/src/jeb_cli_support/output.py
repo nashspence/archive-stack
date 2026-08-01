@@ -97,12 +97,20 @@ def format_status(payload: Mapping[str, object]) -> str:
 def format_archive_plan(payload: Mapping[str, object]) -> str:
     lines = [
         f"Jeb archive plan: {payload.get('source', payload.get('source_id', 'unknown'))}",
+        f"status: {payload.get('status', 'unknown')}",
         f"eligible files: {payload.get('file_count', 0)}",
         f"eligible bytes: {payload.get('total_bytes', 0)}",
     ]
+    target_preflight = payload.get("target_preflight")
+    if isinstance(target_preflight, Mapping) and target_preflight.get("error"):
+        lines.append(f"error: {target_preflight['error']}")
     if payload.get("period_start") or payload.get("period_end"):
         lines.append(f"period: {payload.get('period_start')} — {payload.get('period_end')}")
     return "\n".join(lines)
+
+
+def archive_plan_exit_code(payload: Mapping[str, object]) -> int:
+    return 0 if str(payload.get("status") or "").startswith("would_") else 1
 
 
 def format_config_check(payload: Mapping[str, object]) -> str:
@@ -114,6 +122,7 @@ def format_operation(payload: Mapping[str, object], *, title: str) -> str:
 
 
 __all__ = [
+    "archive_plan_exit_code",
     "format_archive_plan",
     "format_attempt",
     "format_attempts",

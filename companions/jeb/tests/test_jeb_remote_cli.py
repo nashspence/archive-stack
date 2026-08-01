@@ -294,6 +294,33 @@ def test_jeb_remote_cli_renders_archive_dry_run(capsys, monkeypatch) -> None:  #
     assert "eligible bytes: 42" in output
 
 
+def test_jeb_remote_cli_fails_rejected_archive_dry_run(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setattr(
+        fake,
+        "archive_now",
+        lambda **_kwargs: {
+            "status": "target_preflight_failed",
+            "source": "camera",
+            "file_count": 1,
+            "total_bytes": 42,
+            "target_preflight": {
+                "ok": False,
+                "status": "rejected",
+                "error": "source filesystem metadata is required",
+            },
+        },
+    )
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    assert jeb_cli.main(["archive-now", "--source", "camera", "--dry-run"]) == 1
+
+    output = capsys.readouterr().out
+    assert "status: target_preflight_failed" in output
+    assert "error: source filesystem metadata is required" in output
+
+
 def test_jeb_remote_cli_enrolls_and_plans_source_purge(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)

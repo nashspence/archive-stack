@@ -11,6 +11,7 @@ import yaml
 from jeb_api_client import JebApiClient, JebApiError
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
+    archive_plan_exit_code,
     format_archive_plan,
     format_attempt,
     format_attempts,
@@ -94,14 +95,15 @@ def cmd_archive_now(args: argparse.Namespace) -> int:
     )
     if args.json:
         emit(payload, json_mode=True)
-        return 0
-    if args.dry_run:
+    elif args.dry_run:
         emit(format_archive_plan(payload), json_mode=False)
-        return 0
-    if payload.get("status") == "no_eligible_files":
+    else:
+        if payload.get("status") == "no_eligible_files":
+            emit(format_operation(payload, title="jeb archive"), json_mode=False)
+            return 1
         emit(format_operation(payload, title="jeb archive"), json_mode=False)
-        return 1
-    emit(format_operation(payload, title="jeb archive"), json_mode=False)
+    if args.dry_run:
+        return archive_plan_exit_code(payload)
     return 0
 
 

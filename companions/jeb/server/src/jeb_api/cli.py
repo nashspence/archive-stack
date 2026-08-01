@@ -7,6 +7,7 @@ import sys
 
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
+    archive_plan_exit_code,
     format_archive_plan,
     format_attempt,
     format_attempts,
@@ -147,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(str(exc), file=sys.stderr)
                 return 1
             emit(format_archive_plan(payload), json_mode=False)
-            return 0
+            return archive_plan_exit_code(payload)
         try:
             attempt_id = services.attempts.archive_now(
                 source_id=args.source,

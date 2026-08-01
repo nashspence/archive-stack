@@ -105,6 +105,38 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     assert services.store.list_attempts(terminal="all")["total"] == 0
 
 
+def test_jeb_archive_now_dry_run_fails_rejected_target_preflight(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    env = enroll(jeb_env(tmp_path))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+
+    class RejectingMunchyClient:
+        def __init__(self, url: str, *, token: str = "") -> None:
+            self.url = url
+            self.token = token
+
+        def preflight_submission(self, request: object) -> dict[str, object]:
+            _ = request
+            raise ValueError("source filesystem metadata is required")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", RejectingMunchyClient)
+
+    assert jeb_main(["archive-now", "--source", "phone", "--dry-run"]) == 1
+
+    output = capsys.readouterr().out
+    assert "status: target_preflight_failed" in output
+    assert "error: source filesystem metadata is required" in output
+
+
 def test_jeb_archive_now_reports_unknown_source_concisely(
     tmp_path: Path,
     capsys,
