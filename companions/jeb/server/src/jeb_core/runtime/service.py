@@ -8,14 +8,13 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from jeb_protocol import ATTEMPT_RESOLVED_STATES
+
 import jeb_core.domain.models as domain_models
 import jeb_core.persistence.sqlite_state as state_store
 import jeb_core.services.attempts as attempt_service
 import jeb_core.services.events as event_service
 import jeb_core.services.sources as source_service
-from jeb_core.domain.models import (
-    TERMINAL_STATES,
-)
 from jeb_core.ingress import (
     incomplete_tus_upload_status,
     reap_stale_incomplete_tus_uploads,
@@ -85,19 +84,19 @@ class JebRuntime:
                     reap["scan_error"],
                 )
             self.sources.resolve_inactive_target_preflight_failures()
-            for attempt_id in self.store.active_attempt_ids():
+            for attempt_id in self.store.unresolved_attempt_ids():
                 self.attempts.process_attempt(attempt_id)
-            active_sources = {str(row["source_id"]) for row in self.store.active_attempts()}
+            unresolved_sources = {str(row["source_id"]) for row in self.store.unresolved_attempts()}
             for source in self.source_registry.list():
-                if source.enabled and source.id not in active_sources:
+                if source.enabled and source.id not in unresolved_sources:
                     self.attempts.discover_source(source)
             self.sources.emit_target_preflight_failures()
 
     def status_summary(self, *, include_backlog: bool = True) -> dict[str, Any]:
         state_counts = self.store.batch_state_counts()
         total_batches = sum(state_counts.values())
-        terminal_count = sum(
-            count for state, count in state_counts.items() if state in TERMINAL_STATES
+        resolved_count = sum(
+            count for state, count in state_counts.items() if state in ATTEMPT_RESOLVED_STATES
         )
         active_preflight_failures = [
             self.store._target_preflight_failure_summary(row)
@@ -107,19 +106,19 @@ class JebRuntime:
             "sources": self.sources.source_statuses(include_backlog=include_backlog),
             "batches": {
                 "total": total_batches,
-                "active": total_batches - terminal_count,
-                "terminal": terminal_count,
+                "unresolved": total_batches - resolved_count,
+                "resolved": resolved_count,
                 "states": state_counts,
             },
-            "active_attempts": self.store.list_attempts(
-                terminal="active",
+            "unresolved_attempts": self.store.list_attempts(
+                resolution="unresolved",
                 sort="updated_at",
                 order="desc",
                 page=1,
                 per_page=10,
             ),
             "recent_failures": self.store.list_attempts(
-                terminal="all",
+                resolution="all",
                 states=("failed", "cleanup_failed"),
                 sort="updated_at",
                 order="desc",

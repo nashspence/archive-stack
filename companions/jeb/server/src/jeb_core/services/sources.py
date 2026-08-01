@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
+from jeb_protocol import ATTEMPT_RESOLVED_STATES
 from time_formats import format_utc_timestamp, utc_now
 
 import jeb_core.domain.models as domain_models
@@ -18,7 +19,6 @@ import jeb_core.services.events as event_service
 from jeb_core.domain.models import (
     SOURCE_PURGE_WARNING,
     SOURCE_REMOVAL_TTL,
-    TERMINAL_STATES,
     EligibleFile,
     TargetConfig,
     UnrecoverableJebError,
@@ -220,14 +220,14 @@ class JebSourceService:
                 """,
                 (source.id,),
             ).fetchall()
-        active_attempts = [
+        unresolved_attempts = [
             {
                 "id": str(row["id"]),
                 "state": str(row["state"]),
                 "target": str(row["target_name"]),
             }
             for row in attempt_rows
-            if str(row["state"]) not in TERMINAL_STATES
+            if str(row["state"]) not in ATTEMPT_RESOLVED_STATES
         ]
         staged_files = filesystem_listing(*(Path(str(row["staging_path"])) for row in staged_rows))
         tus_scan = scan_incomplete_tus_uploads(
@@ -252,16 +252,16 @@ class JebSourceService:
                 blockers.append(
                     f"source has {managed_file_count} Jeb-managed file(s); request a purge plan"
                 )
-            if active_attempts:
+            if unresolved_attempts:
                 blockers.append(
-                    f"source has {len(active_attempts)} active delivery attempt(s); "
+                    f"source has {len(unresolved_attempts)} unresolved delivery attempt(s); "
                     "request a purge plan"
                 )
-        elif active_attempts:
+        elif unresolved_attempts:
             unsupported = sorted(
                 {
                     attempt["target"]
-                    for attempt in active_attempts
+                    for attempt in unresolved_attempts
                     if not callable(
                         getattr(self.target_adapters.get(str(attempt["target"])), "cancel", None)
                     )
@@ -269,7 +269,7 @@ class JebSourceService:
             )
             if unsupported:
                 blockers.append(
-                    "active delivery cancellation is unsupported for target(s): "
+                    "unresolved delivery cancellation is unsupported for target(s): "
                     + ", ".join(unsupported)
                 )
         plan: dict[str, Any] = {
@@ -282,7 +282,7 @@ class JebSourceService:
             "landing_files": landing_files,
             "staged_files": staged_files,
             "incomplete_uploads": tus_uploads,
-            "active_attempts": active_attempts,
+            "unresolved_attempts": unresolved_attempts,
             "batches": int(batch_row["count"] if batch_row is not None else 0),
             "batch_bytes": int(batch_row["bytes"] if batch_row is not None else 0),
             "managed_file_count": managed_file_count,
@@ -375,7 +375,7 @@ class JebSourceService:
     def _apply_source_removal(self, plan: Mapping[str, Any]) -> None:
         source_id = str(plan["source"])
         if bool(plan["purge"]):
-            for attempt in cast(list[dict[str, Any]], plan["active_attempts"]):
+            for attempt in cast(list[dict[str, Any]], plan["unresolved_attempts"]):
                 try:
                     self.store.load_attempt(str(attempt["id"]))
                 except KeyError:

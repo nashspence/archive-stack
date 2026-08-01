@@ -92,10 +92,10 @@ def main(argv: list[str] | None = None) -> int:
         query_help=("Search attempt, batch, job, source, target, state, run id, or error."),
     )
     attempt_list.add_argument(
-        "--terminal",
-        choices=("active", "terminal", "all"),
-        default="active",
-        help="Show active, terminal, or all attempts.",
+        "--resolution",
+        choices=("unresolved", "resolved", "all"),
+        default="unresolved",
+        help="Show unresolved, resolved, or all attempts.",
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
     attempt_list.add_argument("--source", help="Filter by source id.")
@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             sort=args.sort,
             order=args.order,
             query=args.query,
-            terminal=args.terminal,
+            resolution=args.resolution,
             state=args.state,
             source=args.source,
             target=args.target,

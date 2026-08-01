@@ -77,7 +77,7 @@ def test_jeb_archive_now_starts_batch_without_processing(
     assert "jeb archive: staged" in output
     services = create_services(config_from_env(env))
     services.runtime.initialize()
-    [batch_id] = services.store.active_attempt_ids()
+    [batch_id] = services.store.unresolved_attempt_ids()
     assert [row["target_path"] for row in services.store.attempt_files(batch_id)] == [
         "phone/note.txt"
     ]
@@ -101,8 +101,8 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     assert "eligible files: 1" in output
     services = create_services(config_from_env(env))
     services.runtime.initialize()
-    assert services.store.active_attempt_ids() == []
-    assert services.store.list_attempts(terminal="all")["total"] == 0
+    assert services.store.unresolved_attempt_ids() == []
+    assert services.store.list_attempts(resolution="all")["total"] == 0
 
 
 def test_jeb_archive_now_dry_run_fails_rejected_target_preflight(
@@ -184,7 +184,7 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
             [
                 "attempt",
                 "list",
-                "--terminal",
+                "--resolution",
                 "all",
                 "--sort",
                 "bytes",
@@ -207,21 +207,21 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert payload["attempts"][0]["source_id"] == "camera"
     assert payload["attempts"][0]["total_bytes"] == 6
 
-    assert jeb_main(["attempt", "list", "--terminal", "all", "--source", "phone", "--json"]) == 0
+    assert jeb_main(["attempt", "list", "--resolution", "all", "--source", "phone", "--json"]) == 0
 
     filtered = json.loads(capsys.readouterr().out)
     assert filtered["total"] == 1
     assert filtered["filters"]["source"] == "phone"
     assert filtered["attempts"][0]["source_id"] == "phone"
 
-    assert jeb_main(["attempt", "list", "--terminal", "all", "--query", "camera", "--json"]) == 0
+    assert jeb_main(["attempt", "list", "--resolution", "all", "--query", "camera", "--json"]) == 0
 
     queried = json.loads(capsys.readouterr().out)
     assert queried["total"] == 1
     assert queried["query"] == "camera"
     assert queried["attempts"][0]["source_id"] == "camera"
 
-    assert jeb_main(["attempt", "list", "--terminal", "all", "--all", "--json"]) == 0
+    assert jeb_main(["attempt", "list", "--resolution", "all", "--all", "--json"]) == 0
 
     all_attempts = json.loads(capsys.readouterr().out)
     assert all_attempts["page"] == 1
@@ -229,7 +229,7 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert all_attempts["pages"] == 1
     assert all_attempts["total"] == 2
 
-    assert jeb_main(["attempt", "list", "--terminal", "all", "--all", "--ids"]) == 0
+    assert jeb_main(["attempt", "list", "--resolution", "all", "--all", "--ids"]) == 0
 
     ids = capsys.readouterr().out.splitlines()
     assert ids == [attempt["attempt_id"] for attempt in all_attempts["attempts"]]
@@ -250,7 +250,8 @@ def test_jeb_attempts_source_filter_treats_slug_as_literal(
     capsys.readouterr()
 
     assert (
-        jeb_main(["attempt", "list", "--terminal", "all", "--source", "front_door", "--json"]) == 0
+        jeb_main(["attempt", "list", "--resolution", "all", "--source", "front_door", "--json"])
+        == 0
     )
 
     payload = json.loads(capsys.readouterr().out)
@@ -258,7 +259,7 @@ def test_jeb_attempts_source_filter_treats_slug_as_literal(
     assert payload["attempts"][0]["source_id"] == "front_door"
 
 
-def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
+def test_jeb_status_json_reports_sources_backlog_and_unresolved_attempts(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -276,9 +277,10 @@ def test_jeb_status_json_reports_sources_backlog_and_active_attempts(
     assert payload["sources"][0]["id"] == "phone"
     assert payload["sources"][0]["eligible_files"] == 1
     assert payload["sources"][0]["eligible_bytes"] == 5
-    assert payload["batches"]["active"] == 1
+    assert payload["batches"]["unresolved"] == 1
+    assert payload["batches"]["resolved"] == 0
     assert payload["batches"]["states"] == {"batching": 1}
-    assert payload["active_attempts"]["total"] == 1
-    assert payload["active_attempts"]["attempts"][0]["state"] == "batching"
+    assert payload["unresolved_attempts"]["total"] == 1
+    assert payload["unresolved_attempts"]["attempts"][0]["state"] == "batching"
     assert payload["target_preflight_failures"]["total"] == 0
     assert payload["incomplete_tus_uploads"]["total"] == 0

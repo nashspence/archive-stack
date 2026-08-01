@@ -200,6 +200,10 @@ def test_jeb_management_api_gets_one_attempt_by_list_identity(tmp_path: Path) ->
         assert attempt["source_id"] == "phone"
         assert attempt["file_count"] == 1
 
+        unresolved = read_json(f"http://{host}:{port}/v1/attempts?resolution=unresolved")
+        assert unresolved["resolution"] == "unresolved"
+        assert unresolved["attempts"][0]["attempt_id"] == attempt_id
+
         status, missing = request_json(
             "GET",
             f"http://{host}:{port}/v1/attempts/missing",
@@ -421,8 +425,8 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
         assert payload["total_bytes"] == 5
         assert payload["batch_id"]
         assert payload["target_submission_id"]
-        assert services.store.active_attempt_ids() == []
-        assert services.store.list_attempts(terminal="all")["total"] == 0
+        assert services.store.unresolved_attempt_ids() == []
+        assert services.store.list_attempts(resolution="all")["total"] == 0
         assert not processed.is_set()
     finally:
         server.shutdown()

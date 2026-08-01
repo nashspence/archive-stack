@@ -26,7 +26,7 @@ from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 
 from jeb_api.composition import JebServices
 
-TerminalFilter = Literal["active", "terminal", "all"]
+ResolutionFilter = Literal["unresolved", "resolved", "all"]
 LOG = logging.getLogger(__name__)
 DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
 
@@ -237,11 +237,11 @@ def _optional_bool(params: dict[str, list[str]], key: str) -> bool | None:
     return _bool(params, key, False)
 
 
-def _terminal(params: dict[str, list[str]]) -> TerminalFilter:
-    value = _first(params, "terminal", "active") or "active"
-    if value not in {"active", "terminal", "all"}:
-        raise ValueError("terminal must be active, terminal, or all")
-    return cast(TerminalFilter, value)
+def _resolution(params: dict[str, list[str]]) -> ResolutionFilter:
+    value = _first(params, "resolution", "unresolved") or "unresolved"
+    if value not in {"unresolved", "resolved", "all"}:
+        raise ValueError("resolution must be unresolved, resolved, or all")
+    return cast(ResolutionFilter, value)
 
 
 def _payload_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
@@ -451,7 +451,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             sort=sort,
                             order=_first(params, "order", "desc") or "desc",
                             query=_first(params, "q") or _first(params, "query"),
-                            terminal=_terminal(params),
+                            resolution=_resolution(params),
                             state=_first(params, "state"),
                             source=_first(params, "source"),
                             target=_first(params, "target"),

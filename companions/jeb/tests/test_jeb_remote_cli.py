@@ -6,6 +6,24 @@ from typing import Any
 from jeb_cli import main as jeb_cli
 
 
+def source_payload(*, enabled: bool = True) -> dict[str, Any]:
+    return {
+        "id": "camera",
+        "enabled": enabled,
+        "adapters": ["ftp"],
+        "stable_seconds": 600,
+        "include_extensions": ["mp4"],
+        "target": "munchy",
+        "target_config": {"template_id": "camera-review"},
+        "threshold_bytes": 0,
+        "cleanup": "after_target_success",
+        "cadence": "weekly",
+        "weekday": 0,
+        "hour": 3,
+        "minute": 0,
+    }
+
+
 class FakeJebApi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -14,8 +32,8 @@ class FakeJebApi:
         self.calls.append(("status", {"include_backlog": include_backlog}))
         return {
             "sources": [],
-            "batches": {"total": 0, "active": 0, "terminal": 0, "states": {}},
-            "active_attempts": {"attempts": [], "total": 0},
+            "batches": {"total": 0, "unresolved": 0, "resolved": 0, "states": {}},
+            "unresolved_attempts": {"attempts": [], "total": 0},
             "recent_failures": {"attempts": [], "total": 0},
             "target_preflight_failures": {"total": 0, "failures": []},
         }
@@ -29,7 +47,7 @@ class FakeJebApi:
             "total": 0,
             "sort": kwargs["sort"],
             "order": kwargs["order"],
-            "terminal": kwargs["terminal"],
+            "resolution": kwargs["resolution"],
             "filters": {"source": kwargs.get("source")},
             "attempts": [],
         }
@@ -46,6 +64,14 @@ class FakeJebApi:
             "total_bytes": 42,
             "last_error": "target unavailable",
         }
+
+    def wait_for_attempt(self, attempt_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("attempt-watch", {"attempt": attempt_id, **kwargs}))
+        payload = self.get_attempt(attempt_id)
+        on_update = kwargs.get("on_update")
+        if callable(on_update):
+            on_update(payload)
+        return payload
 
     def check_config(self) -> dict[str, Any]:
         self.calls.append(("check-config", {}))
@@ -97,19 +123,33 @@ class FakeJebApi:
             "pages": 1,
             "per_page": 1,
             "total": 1,
-            "sources": [
-                {
-                    "id": "camera",
-                    "enabled": True,
-                    "adapters": ["ftp"],
-                    "target": "munchy",
-                }
-            ],
+            "sources": [source_payload()],
         }
+
+    def get_source(self, source_id: str) -> dict[str, Any]:
+        self.calls.append(("source-show", {"source": source_id}))
+        return source_payload()
 
     def add_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("source-add", payload))
-        return {"source": payload, "credential": "generated"}
+        return {"source": source_payload(), "credential": "generated"}
+
+    def update_source(self, source_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("source-set", {"source": source_id, "changes": changes}))
+        return source_payload()
+
+    def set_source_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
+        self.calls.append(("source-enabled", {"source": source_id, "enabled": enabled}))
+        return source_payload(enabled=enabled)
+
+    def rotate_source_credential(
+        self,
+        source_id: str,
+        *,
+        credential: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("source-credential", {"source": source_id, "credential": credential}))
+        return {"source": source_payload(), "credential": credential or "generated"}
 
     def plan_source_removal(self, source_id: str, *, purge: bool) -> dict[str, Any]:
         self.calls.append(("source-removal-plan", {"source": source_id, "purge": purge}))
@@ -120,11 +160,15 @@ class FakeJebApi:
             "warning": "DANGER: selected Jeb-managed files may be the only copies.",
             "managed_file_count": 2,
             "managed_bytes": 10,
-            "active_attempts": [],
+            "unresolved_attempts": [],
             "blockers": [],
             "expires_at": "2026-07-16T00:15:00Z",
             "challenge": "purge-source-challenge",
         }
+
+    def remove_source(self, source_id: str, *, challenge: str) -> dict[str, Any]:
+        self.calls.append(("source-remove", {"source": source_id, "challenge": challenge}))
+        return {"status": "removed", "source": source_id, "purged": False, "files": 0, "bytes": 0}
 
 
 def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -143,7 +187,7 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
 
-    assert jeb_cli.main(["attempt", "list", "--terminal", "all", "--source", "camera"]) == 0
+    assert jeb_cli.main(["attempt", "list", "--resolution", "all", "--source", "camera"]) == 0
 
     assert fake.calls == [
         (
@@ -157,7 +201,7 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
                 "sort": "updated_at",
                 "state": None,
                 "target": None,
-                "terminal": "all",
+                "resolution": "all",
                 "all_items": False,
             },
         )
@@ -177,6 +221,37 @@ def test_jeb_remote_cli_shows_one_actionable_attempt(capsys, monkeypatch) -> Non
     assert "Jeb attempt attempt-1" in output
     assert "source: camera" in output
     assert "error: target unavailable" in output
+
+
+def test_jeb_remote_cli_watches_only_jeb_attempt_state(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["attempt", "watch", "attempt-1", "--interval", "0.5"]) == 1
+
+    captured = capsys.readouterr()
+    assert "Jeb attempt attempt-1: failed" in captured.err
+    assert "Jeb attempt attempt-1" in captured.out
+    assert "target submission" not in captured.err
+
+
+def test_jeb_remote_cli_watch_emits_final_json_and_success_exit(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class SuccessfulApi(FakeJebApi):
+        def wait_for_attempt(self, attempt_id: str, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs == {"interval": 2.0, "on_update": None}
+            payload = super().get_attempt(attempt_id)
+            payload["state"] = "cleanup_done"
+            payload["last_error"] = None
+            return payload
+
+    fake = SuccessfulApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["attempt", "watch", "attempt-1", "--interval", "2", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["attempt_id"] == "attempt-1"
+    assert payload["state"] == "cleanup_done"
 
 
 def test_jeb_remote_cli_lists_ids_and_forwards_list_filters(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -236,11 +311,68 @@ def test_jeb_remote_cli_formats_source_page(capsys, monkeypatch) -> None:  # typ
     assert "- camera  state=enabled  adapters=ftp  target=munchy" in output
 
 
+def test_jeb_remote_cli_source_show_has_human_and_json_projections(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["source", "show", "camera"]) == 0
+    human = capsys.readouterr().out
+    assert "Jeb source camera" in human
+    assert 'target config: {"template_id":"camera-review"}' in human
+    assert "schedule: weekly weekday=0 at=03:00" in human
+
+    assert jeb_cli.main(["source", "show", "camera", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == source_payload()
+
+
+def test_jeb_remote_cli_source_mutations_have_human_and_json_projections(
+    capsys,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    add_args = [
+        "source",
+        "add",
+        "camera",
+        "--adapter",
+        "ftp",
+        "--target-config",
+        "template_id=camera-review",
+    ]
+    assert jeb_cli.main(add_args) == 0
+    assert "credential: generated" in capsys.readouterr().out
+    assert jeb_cli.main([*add_args, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["credential"] == "generated"
+
+    assert (
+        jeb_cli.main(["source", "set", "camera", "--target-config", "template_id=camera-review"])
+        == 0
+    )
+    assert "Jeb source camera" in capsys.readouterr().out
+
+    assert jeb_cli.main(["source", "enable", "camera", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["enabled"] is True
+    assert jeb_cli.main(["source", "disable", "camera"]) == 0
+    assert "state: disabled" in capsys.readouterr().out
+
+    assert jeb_cli.main(["source", "credential", "camera"]) == 0
+    assert "credential: generated" in capsys.readouterr().out
+    assert jeb_cli.main(["source", "credential", "camera", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["credential"] == "generated"
+
+    assert jeb_cli.main(["source", "remove", "camera", "--confirm", "challenge"]) == 0
+    removal = capsys.readouterr().out
+    assert "removed Jeb source camera" in removal
+    assert "purged: false" in removal
+
+
 def test_jeb_remote_cli_attempt_ids_request_all_matches(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     fake = FakeJebApi()
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
 
-    assert jeb_cli.main(["attempt", "list", "--terminal", "all", "--all", "--ids"]) == 0
+    assert jeb_cli.main(["attempt", "list", "--resolution", "all", "--all", "--ids"]) == 0
 
     assert fake.calls[0][0] == "attempts"
     assert fake.calls[0][1]["all_items"] is True

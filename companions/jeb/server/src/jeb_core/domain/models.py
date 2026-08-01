@@ -13,9 +13,6 @@ from media_preflight import (
 )
 from time_formats import format_utc_timestamp, utc_now
 
-TERMINAL_STATES = {"target_succeeded", "cleanup_done", "superseded"}
-
-
 SOURCE_REMOVAL_TTL = timedelta(minutes=15)
 
 

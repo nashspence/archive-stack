@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
+from jeb_protocol import attempt_state, attempt_watch_finished
 from lifecycle_events import EventPage
 
 QueryValue = str | int | float | bool | None
@@ -125,7 +127,7 @@ class JebApiClient:
         per_page: int = 25,
         sort: str = "updated_at",
         order: str = "desc",
-        terminal: str = "active",
+        resolution: str = "unresolved",
         state: str | None = None,
         source: str | None = None,
         target: str | None = None,
@@ -137,7 +139,7 @@ class JebApiClient:
             "per_page": per_page,
             "sort": sort,
             "order": order,
-            "terminal": terminal,
+            "resolution": resolution,
         }
         for key, value in {
             "state": state,
@@ -153,6 +155,32 @@ class JebApiClient:
 
     def get_attempt(self, attempt_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/attempts/{quote(attempt_id, safe='')}")
+
+    def wait_for_attempt(
+        self,
+        attempt_id: str,
+        *,
+        interval: float = 10.0,
+        on_update: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if interval <= 0:
+            raise ValueError("interval must be positive")
+        last_state: str | None = None
+        while True:
+            try:
+                attempt = self.get_attempt(attempt_id)
+            except httpx.TransportError:
+                time.sleep(interval)
+                continue
+            state = attempt_state(attempt)
+            if not state:
+                raise JebApiError("Jeb attempt response is missing state")
+            if on_update is not None and state != last_state:
+                on_update(attempt)
+            if attempt_watch_finished(attempt):
+                return attempt
+            last_state = state
+            time.sleep(interval)
 
     def check_config(self) -> dict[str, Any]:
         return self._json("GET", "/v1/config/check")

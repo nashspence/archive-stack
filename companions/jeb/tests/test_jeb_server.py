@@ -79,8 +79,8 @@ def set_current_time(
     monkeypatch.setattr(services.attempts, "current_time", lambda: value)
 
 
-def active_attempt_ids(services: JebServices) -> list[str]:
-    return [str(row["id"]) for row in services.store.active_attempts()]
+def unresolved_attempt_ids(services: JebServices) -> list[str]:
+    return [str(row["id"]) for row in services.store.unresolved_attempts()]
 
 
 @dataclass
@@ -266,7 +266,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     batch_id = services.attempts.archive_now(source_id="camera", process=False)
     assert batch_id is not None
 
-    page = services.store.list_attempts(terminal="all", sort="bytes")
+    page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 8
 
@@ -278,7 +278,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
             )
             raise RuntimeError("rollback")
 
-    page = services.store.list_attempts(terminal="all", sort="bytes")
+    page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 8
 
@@ -288,7 +288,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
             (batch_id, "camera/a.txt"),
         )
 
-    page = services.store.list_attempts(terminal="all", sort="bytes")
+    page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 12
 
@@ -298,11 +298,11 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
             (batch_id, "camera/b.txt"),
         )
 
-    page = services.store.list_attempts(terminal="all", sort="bytes")
+    page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["file_count"] == 1
     assert page["attempts"][0]["total_bytes"] == 7
 
-    assert services.store.list_attempts(terminal="all", source="camera")["total"] == 1
+    assert services.store.list_attempts(resolution="all", source="camera")["total"] == 1
 
     with services.store.connect() as conn:
         conn.execute(
@@ -310,11 +310,11 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
             (batch_id, "camera/a.txt"),
         )
 
-    page = services.store.list_attempts(terminal="all", sort="bytes")
+    page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["source_id"] == "camera"
     assert page["attempts"][0]["file_count"] == 0
     assert page["attempts"][0]["total_bytes"] == 0
-    assert services.store.list_attempts(terminal="all", source="camera")["total"] == 1
+    assert services.store.list_attempts(resolution="all", source="camera")["total"] == 1
 
 
 def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
@@ -417,7 +417,7 @@ def test_scheduler_batches_each_source_independently(tmp_path: Path) -> None:
     )
 
     services.runtime.run_once()
-    assert len(active_attempt_ids(services)) == 2
+    assert len(unresolved_attempt_ids(services)) == 2
     services.runtime.run_once()
 
     assert adapter.calls == 2
@@ -437,10 +437,10 @@ def test_manual_cadence_only_runs_with_archive_now(tmp_path: Path) -> None:
     )
 
     services.runtime.run_once()
-    assert active_attempt_ids(services) == []
+    assert unresolved_attempt_ids(services) == []
 
     assert services.attempts.archive_now(source_id="camera", process=False) is not None
-    assert len(active_attempt_ids(services)) == 1
+    assert len(unresolved_attempt_ids(services)) == 1
 
 
 def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
@@ -457,7 +457,7 @@ def test_archive_plan_reports_batch_without_creating_it(tmp_path: Path) -> None:
     assert plan["total_bytes"] == 6
     assert plan["batch_id"]
     assert plan["target_submission_id"]
-    assert active_attempt_ids(services) == []
+    assert unresolved_attempt_ids(services) == []
 
 
 def test_archive_plan_target_preflight_does_not_record_failure(
@@ -486,7 +486,7 @@ def test_archive_plan_target_preflight_does_not_record_failure(
     assert plan["status"] == "target_preflight_failed"
     assert plan["target_preflight"]["status"] == "rejected"
     assert "unknown template" in plan["target_preflight"]["error"]
-    assert active_attempt_ids(services) == []
+    assert unresolved_attempt_ids(services) == []
     assert services.store.target_preflight_failures(state="failed") == []
 
 

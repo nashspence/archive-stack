@@ -14,13 +14,17 @@ from jeb_cli_support.output import (
     archive_plan_exit_code,
     format_archive_plan,
     format_attempt,
+    format_attempt_transition,
     format_attempts,
     format_config_check,
     format_operation,
+    format_source,
+    format_source_removal,
+    format_source_result,
     format_sources,
     format_status,
 )
-from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, SOURCE_LIST_SORT_FIELDS
+from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, SOURCE_LIST_SORT_FIELDS, attempt_succeeded
 from riverhog_cli_support.output import emit, format_list_ids
 
 _API_CLIENT: JebApiClient | None = None
@@ -52,7 +56,7 @@ def cmd_attempt_list(args: argparse.Namespace) -> int:
         per_page=args.per_page,
         sort=args.sort,
         order=args.order,
-        terminal=args.terminal,
+        resolution=args.resolution,
         state=args.state,
         source=args.source,
         target=args.target,
@@ -70,6 +74,20 @@ def cmd_attempt_show(args: argparse.Namespace) -> int:
     payload = client().get_attempt(args.attempt)
     emit(payload if args.json else format_attempt(payload), json_mode=args.json)
     return 0
+
+
+def cmd_attempt_watch(args: argparse.Namespace) -> int:
+    def report_update(payload: dict[str, Any]) -> None:
+        print(format_attempt_transition(payload), file=sys.stderr)
+
+    on_update = None if args.json else report_update
+    payload = client().wait_for_attempt(
+        args.attempt,
+        interval=args.interval,
+        on_update=on_update,
+    )
+    emit(payload if args.json else format_attempt(payload), json_mode=args.json)
+    return 0 if attempt_succeeded(payload) else 1
 
 
 def cmd_check_config(args: argparse.Namespace) -> int:
@@ -162,7 +180,7 @@ def cmd_source_list(args: argparse.Namespace) -> int:
 
 def cmd_source_show(args: argparse.Namespace) -> int:
     payload = client().get_source(args.source)
-    emit(payload, json_mode=True)
+    emit(payload if args.json else format_source(payload), json_mode=args.json)
     return 0
 
 
@@ -187,7 +205,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     if credential is not None:
         payload["credential"] = credential
     result = client().add_source(payload)
-    emit(result, json_mode=True)
+    emit(result if args.json else format_source_result(result), json_mode=args.json)
     return 0
 
 
@@ -196,13 +214,13 @@ def cmd_source_set(args: argparse.Namespace) -> int:
     if args.target_config is not None:
         changes["target_config"] = parse_target_config(args.target_config)
     payload = client().update_source(args.source, changes)
-    emit(payload, json_mode=True)
+    emit(payload if args.json else format_source(payload), json_mode=args.json)
     return 0
 
 
 def cmd_source_enabled(args: argparse.Namespace) -> int:
     payload = client().set_source_enabled(args.source, enabled=args.enabled)
-    emit(payload, json_mode=True)
+    emit(payload if args.json else format_source(payload), json_mode=args.json)
     return 0
 
 
@@ -211,7 +229,7 @@ def cmd_source_credential(args: argparse.Namespace) -> int:
         args.source,
         credential=source_credential(args),
     )
-    emit(payload, json_mode=True)
+    emit(payload if args.json else format_source_result(payload), json_mode=args.json)
     return 0
 
 
@@ -221,7 +239,7 @@ def format_source_removal_plan(payload: dict[str, Any]) -> str:
         f"mode: {'purge' if payload.get('purge') else 'remove'}",
         f"Jeb-managed files: {payload.get('managed_file_count', 0)}",
         f"Jeb-managed bytes: {payload.get('managed_bytes', 0)}",
-        f"active delivery attempts: {len(payload.get('active_attempts') or [])}",
+        f"unresolved delivery attempts: {len(payload.get('unresolved_attempts') or [])}",
     ]
     if payload.get("warning"):
         lines.extend(("", str(payload["warning"])))
@@ -241,7 +259,7 @@ def cmd_source_remove(args: argparse.Namespace) -> int:
         raise ValueError("--dry-run and --confirm cannot be used together")
     if args.confirm:
         payload = client().remove_source(args.source, challenge=args.confirm)
-        emit(payload, json_mode=args.json)
+        emit(payload if args.json else format_source_removal(payload), json_mode=args.json)
         return 0
     plan = client().plan_source_removal(args.source, purge=args.purge)
     if args.json:
@@ -262,7 +280,7 @@ def cmd_source_remove(args: argparse.Namespace) -> int:
         print("Source removal canceled.", file=sys.stderr)
         return 1
     result = client().remove_source(args.source, challenge=challenge)
-    emit(result, json_mode=args.json)
+    emit(result if args.json else format_source_removal(result), json_mode=args.json)
     return 0
 
 
@@ -303,10 +321,10 @@ def build_parser() -> argparse.ArgumentParser:
         query_help=("Search attempt, batch, job, source, target, state, run id, or error."),
     )
     attempt_list.add_argument(
-        "--terminal",
-        choices=("active", "terminal", "all"),
-        default="active",
-        help="Show active, terminal, or all attempts.",
+        "--resolution",
+        choices=("unresolved", "resolved", "all"),
+        default="unresolved",
+        help="Show unresolved, resolved, or all attempts.",
     )
     attempt_list.add_argument("--state", help="Filter by attempt state.")
     attempt_list.add_argument("--source", help="Filter by source id.")
@@ -317,6 +335,11 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_show.add_argument("attempt")
     attempt_show.add_argument("--json", action="store_true", help="Emit JSON.")
     attempt_show.set_defaults(func=cmd_attempt_show)
+    attempt_watch = attempt_sub.add_parser("watch", help="watch one processing attempt")
+    attempt_watch.add_argument("attempt")
+    attempt_watch.add_argument("--interval", type=float, default=10.0, help="Polling seconds.")
+    attempt_watch.add_argument("--json", action="store_true", help="Emit final JSON.")
+    attempt_watch.set_defaults(func=cmd_attempt_watch)
 
     check_config = sub.add_parser("check-config", help="validate deployed Jeb configuration")
     check_config.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -377,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_list.set_defaults(func=cmd_source_list)
     source_show = source_sub.add_parser("show", help="show one source")
     source_show.add_argument("source")
+    source_show.add_argument("--json", action="store_true", help="Emit JSON.")
     source_show.set_defaults(func=cmd_source_show)
     source_add = source_sub.add_parser("add", help="enroll a source")
     source_add.add_argument("source")
@@ -417,6 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_add.add_argument("--weekday", type=int, default=0)
     source_add.add_argument("--hour", type=int, default=3)
     source_add.add_argument("--minute", type=int, default=0)
+    source_add.add_argument("--json", action="store_true", help="Emit JSON.")
     source_add.set_defaults(func=cmd_source_add)
     source_set = source_sub.add_parser("set", help="apply source settings from JSON/YAML")
     source_set.add_argument("source")
@@ -428,10 +453,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=JSON",
         help="Replace adapter-specific target settings; repeat for more than one.",
     )
+    source_set.add_argument("--json", action="store_true", help="Emit JSON.")
     source_set.set_defaults(func=cmd_source_set)
     for action, enabled in (("enable", True), ("disable", False)):
         source_enabled = source_sub.add_parser(action, help=f"{action} a source")
         source_enabled.add_argument("source")
+        source_enabled.add_argument("--json", action="store_true", help="Emit JSON.")
         source_enabled.set_defaults(func=cmd_source_enabled, enabled=enabled)
     credential = source_sub.add_parser("credential", help="rotate a source credential")
     credential.add_argument("source")
@@ -440,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read the replacement credential from one line of stdin; otherwise generate one.",
     )
+    credential.add_argument("--json", action="store_true", help="Emit JSON.")
     credential.set_defaults(func=cmd_source_credential)
     remove = source_sub.add_parser("remove", help="remove a source enrollment")
     remove.add_argument("source")

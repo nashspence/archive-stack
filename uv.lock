@@ -690,12 +690,14 @@ version = "0.1.0"
 source = { editable = "packages/jeb-api-client" }
 dependencies = [
     { name = "httpx" },
+    { name = "jeb-protocol" },
     { name = "lifecycle-events" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
 ]
 

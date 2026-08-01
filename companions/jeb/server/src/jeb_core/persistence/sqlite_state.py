@@ -6,11 +6,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, cast
 
-from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, MAX_LIST_PAGE_SIZE
+from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, ATTEMPT_RESOLVED_STATES, MAX_LIST_PAGE_SIZE
 
 import jeb_core.domain.models as domain_models
 from jeb_core.domain.models import (
-    TERMINAL_STATES,
     EligibleFile,
     event_timestamp,
     run_id_for,
@@ -245,9 +244,9 @@ class SQLiteJebStore:
             "ON target_preflight_failures(state, updated_at)"
         )
 
-    def active_attempts(self) -> list[sqlite3.Row]:
-        terminal = tuple(sorted(TERMINAL_STATES))
-        placeholders = ", ".join("?" for _ in terminal)
+    def unresolved_attempts(self) -> list[sqlite3.Row]:
+        resolved = tuple(sorted(ATTEMPT_RESOLVED_STATES))
+        placeholders = ", ".join("?" for _ in resolved)
         with self.connect() as conn:
             return conn.execute(
                 f"""
@@ -272,11 +271,11 @@ class SQLiteJebStore:
                 WHERE a.state NOT IN ({placeholders})
                 ORDER BY a.created_at
                 """,
-                terminal,
+                resolved,
             ).fetchall()
 
-    def active_attempt_ids(self) -> list[str]:
-        return [str(row["id"]) for row in self.active_attempts()]
+    def unresolved_attempt_ids(self) -> list[str]:
+        return [str(row["id"]) for row in self.unresolved_attempts()]
 
     def list_attempts(
         self,
@@ -286,7 +285,7 @@ class SQLiteJebStore:
         sort: str = "updated_at",
         order: str = "desc",
         query: str | None = None,
-        terminal: Literal["active", "terminal", "all"] = "active",
+        resolution: Literal["unresolved", "resolved", "all"] = "unresolved",
         state: str | None = None,
         states: Sequence[str] | None = None,
         source: str | None = None,
@@ -301,21 +300,21 @@ class SQLiteJebStore:
             raise ValueError("sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS)))
         if order not in {"asc", "desc"}:
             raise ValueError("order must be asc or desc")
-        if terminal not in {"active", "terminal", "all"}:
-            raise ValueError("terminal must be active, terminal, or all")
+        if resolution not in {"unresolved", "resolved", "all"}:
+            raise ValueError("resolution must be unresolved, resolved, or all")
         if state is not None and states is not None:
             raise ValueError("state and states are mutually exclusive")
 
         clauses: list[str] = []
         values: list[object] = []
-        if terminal != "all":
-            terminal_placeholders = ", ".join("?" for _ in TERMINAL_STATES)
-            terminal_values = tuple(sorted(TERMINAL_STATES))
-            if terminal == "terminal":
-                clauses.append(f"a.state IN ({terminal_placeholders})")
+        if resolution != "all":
+            resolved_placeholders = ", ".join("?" for _ in ATTEMPT_RESOLVED_STATES)
+            resolved_values = tuple(sorted(ATTEMPT_RESOLVED_STATES))
+            if resolution == "resolved":
+                clauses.append(f"a.state IN ({resolved_placeholders})")
             else:
-                clauses.append(f"a.state NOT IN ({terminal_placeholders})")
-            values.extend(terminal_values)
+                clauses.append(f"a.state NOT IN ({resolved_placeholders})")
+            values.extend(resolved_values)
         if state:
             clauses.append("a.state = ?")
             values.append(state)
@@ -420,7 +419,7 @@ class SQLiteJebStore:
             "pages": result_pages,
             "sort": sort,
             "order": order,
-            "terminal": terminal,
+            "resolution": resolution,
             "query": query,
             "filters": {
                 "source": source,

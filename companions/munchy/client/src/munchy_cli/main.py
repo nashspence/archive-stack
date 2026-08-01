@@ -1062,6 +1062,7 @@ def disable_job_template(
 def remove_job_template(
     template_id: Annotated[str, typer.Argument(help="Job-template ID")],
     server_url: Annotated[str | None, typer.Option("--server-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Remove a job template without changing accepted jobs."""
 
@@ -1074,7 +1075,12 @@ def remove_job_template(
         )
     except Exception as exc:
         _exit_server_error(exc)
-    emit(payload, json_mode=True)
+    emit(
+        payload
+        if json_mode
+        else f"removed job template: {payload.get('template_id', template_id)}",
+        json_mode=json_mode,
+    )
 
 
 @profile_app.command("validate")

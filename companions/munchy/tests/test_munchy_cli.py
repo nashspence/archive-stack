@@ -284,6 +284,49 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
     assert result.stdout == "archive\nreview\n"
 
 
+def test_munchy_template_remove_has_human_and_json_receipts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://munchy.test"
+
+        def get_job_template(self, template_id: str) -> dict[str, object]:
+            assert template_id == "review"
+            return {"template_id": template_id, "revision": 3}
+
+        def delete_job_template(
+            self,
+            template_id: str,
+            *,
+            expected_revision: int,
+        ) -> dict[str, object]:
+            assert template_id == "review"
+            assert expected_revision == 3
+            return {"template_id": template_id, "state": "removed"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    human = runner.invoke(
+        app,
+        ["template", "remove", "review", "--server-url", "http://munchy.test"],
+    )
+    structured = runner.invoke(
+        app,
+        [
+            "template",
+            "remove",
+            "review",
+            "--server-url",
+            "http://munchy.test",
+            "--json",
+        ],
+    )
+
+    assert human.exit_code == 0
+    assert human.stdout == "removed job template: review\n"
+    assert structured.exit_code == 0
+    assert json.loads(structured.stdout) == {"template_id": "review", "state": "removed"}
+
+
 def test_munchy_application_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
