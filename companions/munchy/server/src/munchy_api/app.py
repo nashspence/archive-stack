@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import threading
@@ -9,66 +10,81 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
+import munchy_core.domain.errors as domain_errors
+import munchy_core.domain.models as domain_models
+import munchy_core.persistence as persistence
+import munchy_core.persistence.lifecycle_events as lifecycle_store
+import munchy_core.persistence.sqlite_state as state_store
+import munchy_core.ports.handoff as handoff_port
+import munchy_core.runtime.config as runtime_config
+import munchy_core.runtime.execution as execution_runtime
+import munchy_core.services.admission as admission_service
+import munchy_core.services.cleanup as cleanup_service
+import munchy_core.services.events as event_service
+import munchy_core.services.handoffs as handoff_service
+import munchy_core.services.jobs as job_service
+import munchy_core.services.processing as processing_service
+import munchy_core.services.scheduling as scheduling_service
+import munchy_core.services.templates as template_service
+import munchy_core.services.uploads as upload_service
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from lifecycle_events import cloud_event, normalize_event_context
-from munchy_core import coordinator as core
-from munchy_core.adapters import external, gpu, riverhog
-from munchy_core.application_keys import (
+from munchy_core.domain.errors import ServiceError
+from munchy_core.persistence.application_keys import (
     EVENTS_READ,
     EVENTS_READ_ALL,
     SUBMISSIONS_MANAGE,
     MunchyPrincipal,
 )
-from munchy_core.errors import ServiceError
-from munchy_core.template_registry import TemplateRegistryError, validate_template_registry
+from munchy_core.persistence.template_registry import (
+    TemplateRegistryError,
+    validate_template_registry,
+)
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from munchy_workflows.profiles import MUNCHY_AUDIO_PROFILE_TARGET, MUNCHY_PROFILE_TARGET
 from time_formats import utc_timestamp_now
 
-command_adapter = external.ExternalHandoffAdapter("command")
-rclone_adapter = external.ExternalHandoffAdapter("rclone")
-core.register_handoff_adapter(command_adapter, option_model=external.CommandHandoffOptions)
-core.register_handoff_adapter(rclone_adapter, option_model=external.RcloneHandoffOptions)
-core.register_gpu_platform(gpu.HttpGpuPlatform())
-riverhog_adapter = riverhog.RiverhogHandoffAdapter()
-core.register_handoff_adapter(riverhog_adapter, option_model=riverhog.RiverhogHandoffOptions)
+from munchy_api.composition import configure_adapters
+
+log = logging.getLogger("munchy.server")
+adapters = configure_adapters()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    core.ensure_dirs()
-    core.init_state_store()
-    if core.RESUME_ON_START:
-        core.schedule_pending_jobs()
-    if core.CLEANUP_INTERVAL_SECONDS > 0:
-        core.cleanup_stop.clear()
-        core.cleanup_thread = threading.Thread(
-            target=core.cleanup_loop, name="cleanup-loop", daemon=True
+    upload_service.ensure_dirs()
+    persistence.initialize_persistence()
+    if runtime_config.RESUME_ON_START:
+        job_service.schedule_pending_jobs()
+    if runtime_config.CLEANUP_INTERVAL_SECONDS > 0:
+        execution_runtime.cleanup_stop.clear()
+        execution_runtime.cleanup_thread = threading.Thread(
+            target=job_service.cleanup_loop, name="cleanup-loop", daemon=True
         )
-        core.cleanup_thread.start()
-    if any(adapter.supports_eager for adapter in core.HANDOFF_ADAPTERS.values()):
-        core.handoff_stop.clear()
-        core.handoff_thread = threading.Thread(
-            target=core.handoff_loop,
+        execution_runtime.cleanup_thread.start()
+    if any(adapter.supports_eager for adapter in handoff_port.HANDOFF_ADAPTERS.values()):
+        execution_runtime.handoff_stop.clear()
+        execution_runtime.handoff_thread = threading.Thread(
+            target=handoff_service.handoff_loop,
             name="handoff-loop",
             daemon=True,
         )
-        core.handoff_thread.start()
-    for adapter in core.HANDOFF_ADAPTERS.values():
+        execution_runtime.handoff_thread.start()
+    for adapter in handoff_port.HANDOFF_ADAPTERS.values():
         adapter.start()
     try:
         yield
     finally:
-        for adapter in reversed(tuple(core.HANDOFF_ADAPTERS.values())):
+        for adapter in reversed(tuple(handoff_port.HANDOFF_ADAPTERS.values())):
             adapter.stop()
-        core.handoff_stop.set()
-        if core.handoff_thread is not None:
-            core.handoff_thread.join(timeout=5)
-        core.cleanup_stop.set()
-        if core.cleanup_thread is not None:
-            core.cleanup_thread.join(timeout=5)
+        execution_runtime.handoff_stop.set()
+        if execution_runtime.handoff_thread is not None:
+            execution_runtime.handoff_thread.join(timeout=5)
+        execution_runtime.cleanup_stop.set()
+        if execution_runtime.cleanup_thread is not None:
+            execution_runtime.cleanup_thread.join(timeout=5)
 
 
 app = FastAPI(title="munchy-server", version="0.1.0", lifespan=lifespan)
@@ -86,9 +102,9 @@ def request_bearer_token(request: Request) -> str:
 
 
 def authorized_admin_bearer(request: Request) -> bool:
-    if not core.ADMIN_TOKEN:
-        return not core.APPLICATION_AUTH_REQUIRED
-    return secrets.compare_digest(request_bearer_token(request), core.ADMIN_TOKEN)
+    if not runtime_config.ADMIN_TOKEN:
+        return not runtime_config.APPLICATION_AUTH_REQUIRED
+    return secrets.compare_digest(request_bearer_token(request), runtime_config.ADMIN_TOKEN)
 
 
 def request_principal(request: Request) -> MunchyPrincipal:
@@ -108,8 +124,8 @@ async def require_api_auth(request: Request, call_next):  # type: ignore[no-unty
                 headers={"WWW-Authenticate": "Bearer"},
             )
     elif request.url.path.startswith("/v1/"):
-        if core.APPLICATION_AUTH_REQUIRED:
-            principal = core.application_keys().authenticate(request_bearer_token(request))
+        if runtime_config.APPLICATION_AUTH_REQUIRED:
+            principal = state_store.application_keys().authenticate(request_bearer_token(request))
             if principal is None:
                 return JSONResponse(
                     {"detail": "invalid application token"},
@@ -134,9 +150,9 @@ async def require_api_auth(request: Request, call_next):  # type: ignore[no-unty
     return await call_next(request)
 
 
-@app.exception_handler(core.InsufficientStorage)
+@app.exception_handler(domain_errors.InsufficientStorage)
 async def insufficient_storage_handler(
-    _request: Request, exc: core.InsufficientStorage
+    _request: Request, exc: domain_errors.InsufficientStorage
 ) -> JSONResponse:
     return JSONResponse(
         status_code=507,
@@ -174,7 +190,7 @@ def health_live() -> dict[str, str]:
 @app.get("/health/ready")
 def health_ready() -> dict[str, Any]:
     try:
-        template_count = validate_template_registry(core.STATE_DB_PATH)
+        template_count = validate_template_registry(runtime_config.STATE_DB_PATH)
     except TemplateRegistryError as exc:
         raise HTTPException(
             status_code=503,
@@ -182,33 +198,32 @@ def health_ready() -> dict[str, Any]:
         ) from exc
     return {
         "status": "ok",
-        "state_dir": str(core.STATE_DIR),
-        "work_dir": str(core.WORK_DIR),
-        "tusd_public_base_url": core.TUSD_PUBLIC_BASE_URL,
-        "gpu_target": core.GPU_TARGET,
+        "state_dir": str(runtime_config.STATE_DIR),
+        "work_dir": str(runtime_config.WORK_DIR),
+        "tusd_public_base_url": runtime_config.TUSD_PUBLIC_BASE_URL,
+        "gpu_target": runtime_config.GPU_TARGET,
         "handoff_adapters": {
             "command": {
-                "enabled": external.EXTERNAL_HANDOFF_ENABLED
-                and bool(external.COMMAND_HANDOFF_COMMAND),
+                "enabled": adapters.command_enabled,
             },
             "rclone": {
-                "enabled": external.EXTERNAL_HANDOFF_ENABLED
-                and bool(external.RCLONE_HANDOFF_COMMAND),
+                "enabled": adapters.rclone_enabled,
             },
             "riverhog": {
-                "enabled": riverhog_adapter.enabled,
-                "eager_workers": riverhog_adapter.worker_count,
+                "enabled": adapters.riverhog.enabled,
+                "eager_workers": adapters.riverhog.worker_count,
                 "eager_worker_running": bool(
-                    core.handoff_thread is not None and core.handoff_thread.is_alive()
+                    execution_runtime.handoff_thread is not None
+                    and execution_runtime.handoff_thread.is_alive()
                 ),
-                "event_worker_running": riverhog_adapter.background_running,
+                "event_worker_running": adapters.riverhog.background_running,
             },
         },
-        "event_source": core.EVENT_SOURCE,
-        "scheduler_paused": core.scheduling_paused(),
-        "running_job_limit": core.MAX_RUNNING_JOBS,
-        "running_jobs": len(core.active_jobs),
-        "scheduled_jobs": len(core.scheduled_jobs),
+        "event_source": runtime_config.EVENT_SOURCE,
+        "scheduler_paused": scheduling_service.scheduling_paused(),
+        "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
+        "running_jobs": len(execution_runtime.active_jobs),
+        "scheduled_jobs": len(execution_runtime.scheduled_jobs),
         "job_templates": template_count,
     }
 
@@ -276,24 +291,24 @@ def capabilities() -> dict[str, Any]:
                 "single_job": True,
             },
             "clip_plan": {
-                "target_seconds": core.DEFAULT_REVIEW_CLIP_TARGET_SECONDS,
-                "min_seconds": core.DEFAULT_REVIEW_CLIP_MIN_SECONDS,
-                "max_seconds": core.DEFAULT_REVIEW_CLIP_MAX_SECONDS,
+                "target_seconds": domain_models.DEFAULT_REVIEW_CLIP_TARGET_SECONDS,
+                "min_seconds": domain_models.DEFAULT_REVIEW_CLIP_MIN_SECONDS,
+                "max_seconds": domain_models.DEFAULT_REVIEW_CLIP_MAX_SECONDS,
             },
         },
         "storage": {
-            "same_filesystem_hardlink_discount": core.path_device(core.TUSD_DIR)
-            == core.path_device(core.GPU_RUNTIME_DIR),
-            "max_active_input_uploads": core.MAX_ACTIVE_INPUT_UPLOADS,
-            "max_running_jobs": core.MAX_RUNNING_JOBS,
+            "same_filesystem_hardlink_discount": upload_service.path_device(runtime_config.TUSD_DIR)
+            == upload_service.path_device(runtime_config.GPU_RUNTIME_DIR),
+            "max_active_input_uploads": runtime_config.MAX_ACTIVE_INPUT_UPLOADS,
+            "max_running_jobs": runtime_config.MAX_RUNNING_JOBS,
             "eager_archive_only_encoding": True,
-            "eager_archive_batch_files": core.EAGER_ARCHIVE_BATCH_FILES,
-            "eager_archive_pipeline_batches": core.EAGER_ARCHIVE_PIPELINE_BATCHES,
-            "storage_wait_seconds": core.STORAGE_WAIT_SECONDS,
+            "eager_archive_batch_files": runtime_config.EAGER_ARCHIVE_BATCH_FILES,
+            "eager_archive_pipeline_batches": runtime_config.EAGER_ARCHIVE_PIPELINE_BATCHES,
+            "storage_wait_seconds": runtime_config.STORAGE_WAIT_SECONDS,
             "scratch_extra_multipliers": {
-                "review": core.REVIEW_SCRATCH_EXTRA_MULTIPLIER,
-                "buffered_handoff": core.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER,
-                "handoff.riverhog": core.GPU_SCRATCH_MULTIPLIER,
+                "review": runtime_config.REVIEW_SCRATCH_EXTRA_MULTIPLIER,
+                "buffered_handoff": runtime_config.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER,
+                "handoff.riverhog": runtime_config.GPU_SCRATCH_MULTIPLIER,
             },
         },
         "events": {
@@ -301,7 +316,7 @@ def capabilities() -> dict[str, Any]:
             "cursor_log": True,
             "operation_context_max_bytes": 4096,
             "operation_context_retention_seconds": int(
-                core.EVENT_CONTEXT_RETENTION.total_seconds()
+                runtime_config.EVENT_CONTEXT_RETENTION.total_seconds()
             ),
         },
         "operations": {
@@ -357,7 +372,7 @@ def list_lifecycle_events(
 ) -> dict[str, Any]:
     try:
         principal = request_principal(request)
-        page = core.lifecycle_event_log().page(
+        page = lifecycle_store.lifecycle_event_log().page(
             after=after,
             limit=limit,
             owner=None if principal.allows(EVENTS_READ_ALL) else principal.app,
@@ -369,7 +384,7 @@ def list_lifecycle_events(
 
 @app.post("/v1/preflight-failures", status_code=202)
 def record_preflight_failure(
-    req: core.ClientPreflightFailureRequest,
+    req: domain_models.ClientPreflightFailureRequest,
     request: Request,
 ) -> dict[str, Any]:
     principal = request_principal(request)
@@ -408,23 +423,27 @@ def record_preflight_failure(
         data["elapsed_seconds"] = req.elapsed_seconds
     subject = req.job_id or req.run_id
     event = cloud_event(
-        source=core.EVENT_SOURCE,
+        source=runtime_config.EVENT_SOURCE,
         type="io.riverhog.munchy.submission.preflight_failed",
         subject=subject,
         data=data,
     )
-    cursor = core.lifecycle_event_log().append(
+    cursor = lifecycle_store.lifecycle_event_log().append(
         event,
         owner=principal.app,
         context=normalize_event_context(req.event_context),
-        context_expires_at=core.event_context_expiry() if req.event_context is not None else None,
+        context_expires_at=event_service.event_context_expiry()
+        if req.event_context is not None
+        else None,
     )
     return {"status": "recorded", "cursor": cursor, "event_id": event.id}
 
 
 @app.post("/v1/admin/job-templates/validate")
-def validate_job_template(req: core.JobTemplateCreateRequest) -> dict[str, Any]:
-    definition, resolved_job, digest = core.validated_job_template_definition(req.definition)
+def validate_job_template(req: domain_models.JobTemplateCreateRequest) -> dict[str, Any]:
+    definition, resolved_job, digest = template_service.validated_job_template_definition(
+        req.definition
+    )
     return {
         "template_id": req.template_id,
         "valid": True,
@@ -445,7 +464,7 @@ def list_applications(
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, object]:
     try:
-        return core.application_keys().list_apps(
+        return state_store.application_keys().list_apps(
             page=page,
             per_page=per_page,
             q=q,
@@ -461,10 +480,10 @@ def list_applications(
 @app.post("/v1/admin/apps/{app_name}/keys", status_code=201)
 def create_application_key(
     app_name: str,
-    req: core.CreateApplicationKeyRequest,
+    req: domain_models.CreateApplicationKeyRequest,
 ) -> dict[str, object]:
     try:
-        return core.application_keys().create(
+        return state_store.application_keys().create(
             app=app_name,
             permissions=req.permissions,
             expires_in=(
@@ -489,7 +508,7 @@ def list_application_keys(
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, object]:
     try:
-        return core.application_keys().list_keys(
+        return state_store.application_keys().list_keys(
             app=app_name,
             page=page,
             per_page=per_page,
@@ -506,7 +525,7 @@ def list_application_keys(
 @app.post("/v1/admin/apps/{app_name}/keys/{key_id}/revoke")
 def revoke_application_key(app_name: str, key_id: str) -> dict[str, object]:
     try:
-        return core.application_keys().revoke(app=app_name, key_id=key_id)
+        return state_store.application_keys().revoke(app=app_name, key_id=key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
@@ -524,7 +543,7 @@ def list_job_templates(
     enabled: bool | None = None,
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
-    return core.list_job_templates_page(
+    return template_service.list_job_templates_page(
         page=page,
         per_page=per_page,
         sort=sort,
@@ -536,26 +555,28 @@ def list_job_templates(
 
 
 @app.post("/v1/admin/job-templates", status_code=201)
-def create_job_template(req: core.JobTemplateCreateRequest) -> dict[str, Any]:
-    return core.create_job_template_record(req)
+def create_job_template(req: domain_models.JobTemplateCreateRequest) -> dict[str, Any]:
+    return template_service.create_job_template_record(req)
 
 
 @app.get("/v1/admin/job-templates/{template_id}")
 def get_job_template(template_id: str) -> dict[str, Any]:
-    return core.load_job_template(template_id)
+    return template_service.load_job_template(template_id)
 
 
 @app.put("/v1/admin/job-templates/{template_id}")
 def replace_job_template(
     template_id: str,
-    req: core.JobTemplateReplaceRequest,
+    req: domain_models.JobTemplateReplaceRequest,
 ) -> dict[str, Any]:
-    return core.replace_job_template_record(template_id, req)
+    return template_service.replace_job_template_record(template_id, req)
 
 
 @app.post("/v1/admin/job-templates/{template_id}/enable")
-def enable_job_template(template_id: str, req: core.JobTemplateEnabledRequest) -> dict[str, Any]:
-    return core.set_job_template_enabled_record(
+def enable_job_template(
+    template_id: str, req: domain_models.JobTemplateEnabledRequest
+) -> dict[str, Any]:
+    return template_service.set_job_template_enabled_record(
         template_id,
         enabled=True,
         expected_revision=req.expected_revision,
@@ -563,8 +584,10 @@ def enable_job_template(template_id: str, req: core.JobTemplateEnabledRequest) -
 
 
 @app.post("/v1/admin/job-templates/{template_id}/disable")
-def disable_job_template(template_id: str, req: core.JobTemplateEnabledRequest) -> dict[str, Any]:
-    return core.set_job_template_enabled_record(
+def disable_job_template(
+    template_id: str, req: domain_models.JobTemplateEnabledRequest
+) -> dict[str, Any]:
+    return template_service.set_job_template_enabled_record(
         template_id,
         enabled=False,
         expected_revision=req.expected_revision,
@@ -575,17 +598,19 @@ def disable_job_template(template_id: str, req: core.JobTemplateEnabledRequest) 
 def delete_job_template(template_id: str, expected_revision: int) -> dict[str, Any]:
     if expected_revision < 1:
         raise HTTPException(status_code=400, detail="expected_revision must be >= 1")
-    return core.delete_job_template_record(template_id, expected_revision=expected_revision)
+    return template_service.delete_job_template_record(
+        template_id, expected_revision=expected_revision
+    )
 
 
 @app.post("/v1/submissions/preflight")
-def preflight_submission(req: core.SubmissionSpec) -> dict[str, Any]:
+def preflight_submission(req: domain_models.SubmissionSpec) -> dict[str, Any]:
     provisional_id = f"preflight-{uuid.uuid4().hex}"
-    template, job_request, storage_hint = core.resolved_submission(
+    template, job_request, storage_hint = job_service.resolved_submission(
         req,
         submission_id=provisional_id,
     )
-    core.require_input_upload_capacity(req.files, storage_hint)
+    admission_service.require_input_upload_capacity(req.files, storage_hint)
     return {
         "accepted": True,
         "template_id": template["template_id"],
@@ -601,22 +626,22 @@ def preflight_submission(req: core.SubmissionSpec) -> dict[str, Any]:
 
 @app.post("/v1/submissions", status_code=202)
 def create_submission(
-    req: core.CreateSubmissionRequest,
+    req: domain_models.CreateSubmissionRequest,
     background_tasks: BackgroundTasks,
     request: Request,
 ) -> dict[str, Any]:
     principal = request_principal(request)
-    with core.state_lock:
-        job, created = core.create_submission_state(req, initiator=principal)
+    with execution_runtime.state_lock:
+        job, created = job_service.create_submission_state(req, initiator=principal)
     if created:
-        core.emit_job_event(job, "job.received", "Munchy submission received.")
-    core.schedule_pending_jobs(background_tasks)
-    return core.submission_response(job)
+        event_service.emit_job_event(job, "job.received", "Munchy submission received.")
+    job_service.schedule_pending_jobs(background_tasks)
+    return job_service.submission_response(job)
 
 
 @app.get("/v1/submissions/{submission_id}")
 def get_submission(submission_id: str) -> dict[str, Any]:
-    return core.submission_response(core.load_submission(submission_id))
+    return job_service.submission_response(job_service.load_submission(submission_id))
 
 
 @app.post(
@@ -627,50 +652,52 @@ def create_or_resume_submission_file_upload(
     submission_id: str,
     rel_path: str,
 ) -> dict[str, Any]:
-    core.load_submission(submission_id)
-    with core.input_file_upload_setup_lock(submission_id, rel_path):
-        return core._create_or_resume_input_file_upload(submission_id, rel_path)
+    job_service.load_submission(submission_id)
+    with execution_runtime.input_file_upload_setup_lock(submission_id, rel_path):
+        return job_service._create_or_resume_input_file_upload(submission_id, rel_path)
 
 
 @app.delete("/v1/submissions/{submission_id}", status_code=202)
 def cancel_submission(submission_id: str) -> dict[str, Any]:
-    core.load_submission(submission_id)
+    job_service.load_submission(submission_id)
     cancel_job(submission_id, cleanup=True)
-    return core.submission_response(core.load_submission(submission_id))
+    return job_service.submission_response(job_service.load_submission(submission_id))
 
 
 @app.get("/v1/admin/scheduler")
 def scheduler_status() -> dict[str, Any]:
-    control = core.scheduler_control()
+    control = scheduling_service.scheduler_control()
     return {
         **control,
-        "active_jobs": sorted(core.active_jobs),
-        "scheduled_jobs": sorted(core.scheduled_jobs),
-        "running_job_limit": core.MAX_RUNNING_JOBS,
-        "running_job_slots_available": core.running_job_slots_available(),
+        "active_jobs": sorted(execution_runtime.active_jobs),
+        "scheduled_jobs": sorted(execution_runtime.scheduled_jobs),
+        "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
+        "running_job_slots_available": scheduling_service.running_job_slots_available(),
         "runnable_jobs": [
-            str(job["job_id"]) for job in core.job_states() if core.runnable_job(job)
+            str(job["job_id"])
+            for job in scheduling_service.job_states()
+            if scheduling_service.runnable_job(job)
         ],
     }
 
 
 @app.post("/v1/admin/scheduler/pause")
 def pause_scheduler() -> dict[str, Any]:
-    return core.set_scheduling_paused(True)
+    return scheduling_service.set_scheduling_paused(True)
 
 
 @app.post("/v1/admin/scheduler/resume")
 def resume_scheduler(background_tasks: BackgroundTasks) -> dict[str, Any]:
-    control = core.set_scheduling_paused(False)
-    scheduled = core.schedule_pending_jobs(background_tasks)
+    control = scheduling_service.set_scheduling_paused(False)
+    scheduled = job_service.schedule_pending_jobs(background_tasks)
     return {**control, "scheduled_jobs": scheduled}
 
 
 @app.post("/internal/tusd/hooks")
 async def tusd_hooks(request: Request) -> JSONResponse:
     if (
-        core.TUSD_HOOK_SECRET
-        and request.headers.get("X-Munchy-Tusd-Hook-Secret") != core.TUSD_HOOK_SECRET
+        runtime_config.TUSD_HOOK_SECRET
+        and request.headers.get("X-Munchy-Tusd-Hook-Secret") != runtime_config.TUSD_HOOK_SECRET
     ):
         return hook_error("invalid hook secret", status_code=403)
     payload = await request.json()
@@ -679,13 +706,13 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     metadata = upload.get("MetaData", {}) if isinstance(upload, dict) else {}
     if payload.get("Type") == "post-finish":
         target_path = str(metadata.get("target_path", "")).lstrip("/")
-        upload_id = core.upload_id_from_target_path(target_path)
-        rel_path = core.rel_path_from_target_path(target_path)
+        upload_id = upload_service.upload_id_from_target_path(target_path)
+        rel_path = upload_service.rel_path_from_target_path(target_path)
         if upload_id and rel_path:
             try:
-                core.sync_shared_input_file(upload_id, rel_path)
+                upload_service.sync_shared_input_file(upload_id, rel_path)
             except Exception:
-                core.log.exception("failed to sync shared input file after tusd post-finish")
+                log.exception("failed to sync shared input file after tusd post-finish")
         return JSONResponse({})
     if payload.get("Type") != "pre-create":
         return JSONResponse({})
@@ -698,7 +725,7 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     if any(part in {"", ".", ".."} for part in target_path.split("/")):
         return hook_error("target_path must be normalized")
     return JSONResponse(
-        {"ChangeFileInfo": {"ID": core.tusd_upload_id_for_target_path(target_path)}}
+        {"ChangeFileInfo": {"ID": upload_service.tusd_upload_id_for_target_path(target_path)}}
     )
 
 
@@ -713,12 +740,12 @@ def list_jobs(
     terminal: str = "active",
     state: str | None = None,
     workflow_mode: str | None = None,
-    handoff_destination: core.HandoffDestination | None = None,
+    handoff_destination: domain_models.HandoffDestination | None = None,
     cancel_requested: bool | None = None,
     storage_wait: bool | None = None,
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
-    return core.list_job_summaries_page(
+    return job_service.list_job_summaries_page(
         page=page,
         per_page=per_page,
         sort=sort,
@@ -736,18 +763,22 @@ def list_jobs(
 
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
-    job = core.load_job(job_id)
-    core.refresh_handoff(job)
-    return core.compact_job_response(job) if compact else core.job_response(job)
+    job = state_store.load_job(job_id)
+    handoff_service.refresh_handoff(job)
+    return (
+        processing_service.compact_job_response(job)
+        if compact
+        else processing_service.job_response(job)
+    )
 
 
 @app.post("/v1/jobs/{job_id}/resume", status_code=202)
 def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    with core.state_lock:
-        job = core.load_job(job_id)
+    with execution_runtime.state_lock:
+        job = state_store.load_job(job_id)
         if job.get("state") == "succeeded":
             return job
-        preserve_handoff = core.handoff_adapter(job).can_resume(job)
+        preserve_handoff = handoff_service.handoff_adapter(job).can_resume(job)
         if preserve_handoff:
             for key in (
                 "debug_bundle_created_at",
@@ -759,8 +790,8 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
                 job.pop(key, None)
             job["handoff_resume_preserved_at"] = utc_timestamp_now()
         else:
-            core.cancel_handoff(job, reason="job_resume_reset")
-            core.reset_resumable_job_runtime_state(job)
+            handoff_service.cancel_handoff(job, reason="job_resume_reset")
+            cleanup_service.reset_resumable_job_runtime_state(job)
         job["state"] = "queued"
         job["phase"] = "queued"
         job.pop("cancel_requested", None)
@@ -770,44 +801,44 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job.pop("finished_at", None)
         job["_allow_clear_cancel"] = True
         job["_reset_runtime_state"] = not preserve_handoff
-        core.save_job(job)
-    core.schedule_pending_jobs(background_tasks)
+        state_store.save_job(job)
+    job_service.schedule_pending_jobs(background_tasks)
     return job
 
 
 @app.post("/v1/jobs/{job_id}/cancel", status_code=202)
 def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     finalize_now = False
-    with core.state_lock:
-        job = core.load_job(job_id)
-        if job.get("state") in core.TERMINAL_JOB_STATES:
+    with execution_runtime.state_lock:
+        job = state_store.load_job(job_id)
+        if job.get("state") in domain_models.TERMINAL_JOB_STATES:
             if cleanup:
                 if job.get("state") == "failed":
-                    core.write_job_debug_bundle(job, reason="terminal_failed_cleanup")
-                core.cancel_handoff(job, reason="terminal_cleanup")
-                core.cleanup_terminal_job(job)
-                core.compact_terminal_job_state(job)
-                return core.compact_job_response(core.save_job(job))
-            return core.compact_job_response(job)
+                    upload_service.write_job_debug_bundle(job, reason="terminal_failed_cleanup")
+                handoff_service.cancel_handoff(job, reason="terminal_cleanup")
+                cleanup_service.cleanup_terminal_job(job)
+                cleanup_service.compact_terminal_job_state(job)
+                return processing_service.compact_job_response(state_store.save_job(job))
+            return processing_service.compact_job_response(job)
         now = utc_timestamp_now()
         job["cancel_requested"] = True
         job["cancel_requested_at"] = now
         job["cleanup_requested"] = True
-        if job_id not in core.active_jobs:
-            core.scheduled_jobs.discard(job_id)
-            job = core.save_job(job)
+        if job_id not in execution_runtime.active_jobs:
+            execution_runtime.scheduled_jobs.discard(job_id)
+            job = state_store.save_job(job)
             finalize_now = True
         else:
             job["phase"] = "cancel_requested"
-            return core.save_job(job)
+            return state_store.save_job(job)
     if finalize_now:
-        return core.finalize_canceled_job(job, reason="job_canceled")
+        return cleanup_service.finalize_canceled_job(job, reason="job_canceled")
     return job
 
 
 @app.post("/v1/maintenance/cleanup")
 def cleanup() -> dict[str, Any]:
-    return core.cleanup_once()
+    return job_service.cleanup_once()
 
 
 def main() -> None:

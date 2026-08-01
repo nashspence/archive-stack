@@ -30,6 +30,10 @@ IMPLEMENTATION_OWNERS = {
 ALL_IMPLEMENTATION_MODULES = set().union(
     *(modules for _, modules in IMPLEMENTATION_OWNERS.values())
 )
+COMPANION_CORE_ROOTS = {
+    "munchy_core": REPO / "companions/munchy/server/src/munchy_core",
+    "jeb_core": REPO / "companions/jeb/server/src/jeb_core",
+}
 
 
 def normalize_distribution_name(name: str) -> str:
@@ -80,6 +84,64 @@ def imported_roots(path: Path) -> set[str]:
     return roots
 
 
+def python_module(path: Path, source: Path, package: str) -> str:
+    relative = path.relative_to(source).with_suffix("")
+    parts = relative.parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join((package, *parts))
+
+
+def imported_modules(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module)
+            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return imported
+
+
+def internal_module_graph(source: Path, package: str) -> dict[str, set[str]]:
+    modules = {python_module(path, source, package): path for path in source.rglob("*.py")}
+    graph: dict[str, set[str]] = {module: set() for module in modules}
+    for module, path in modules.items():
+        for imported in imported_modules(path):
+            candidate = imported
+            while candidate.startswith(f"{package}."):
+                if candidate in modules and candidate != module:
+                    graph[module].add(candidate)
+                    break
+                candidate = candidate.rpartition(".")[0]
+    return graph
+
+
+def dependency_cycle(graph: dict[str, set[str]]) -> list[str] | None:
+    visited: set[str] = set()
+    active: list[str] = []
+
+    def visit(module: str) -> list[str] | None:
+        if module in active:
+            start = active.index(module)
+            return [*active[start:], module]
+        if module in visited:
+            return None
+        active.append(module)
+        for dependency in sorted(graph[module]):
+            if cycle := visit(dependency):
+                return cycle
+        active.pop()
+        visited.add(module)
+        return None
+
+    for module in sorted(graph):
+        if cycle := visit(module):
+            return cycle
+    return None
+
+
 def test_implementation_projects_do_not_cross_owner_boundaries() -> None:
     violations: list[str] = []
     for owner, (source, owned_modules) in IMPLEMENTATION_OWNERS.items():
@@ -119,6 +181,33 @@ def test_companion_platform_clients_are_owned_by_contained_adapters() -> None:
             if imported in imported_roots(path)
         }
         assert actual == expected_paths
+
+
+def test_companion_core_dependency_graphs_are_acyclic() -> None:
+    for package, source in COMPANION_CORE_ROOTS.items():
+        cycle = dependency_cycle(internal_module_graph(source, package))
+        assert cycle is None, " -> ".join(cycle or ())
+
+
+def test_companion_domain_and_ports_are_dependency_roots() -> None:
+    for package, source in COMPANION_CORE_ROOTS.items():
+        for path in (source / "domain").rglob("*.py"):
+            internal = {
+                imported
+                for imported in imported_modules(path)
+                if imported == package or imported.startswith(f"{package}.")
+            }
+            assert all(imported.startswith(f"{package}.domain") for imported in internal)
+        for path in (source / "ports").rglob("*.py"):
+            internal = {
+                imported
+                for imported in imported_modules(path)
+                if imported == package or imported.startswith(f"{package}.")
+            }
+            assert all(
+                imported.startswith((f"{package}.domain", f"{package}.ports"))
+                for imported in internal
+            )
 
 
 def test_images_copy_only_their_owned_implementation_project() -> None:

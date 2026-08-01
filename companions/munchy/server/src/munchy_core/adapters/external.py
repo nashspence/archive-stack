@@ -14,7 +14,11 @@ from munchy_workflows.platform_files import (
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from munchy_core import coordinator as core
+import munchy_core.domain.models as domain_models
+import munchy_core.persistence.sqlite_state as state_store
+import munchy_core.runtime.commands as command_runtime
+import munchy_core.services.events as event_service
+import munchy_core.services.handoffs as handoff_service
 
 HANDOFF_ATTEMPTS = int(os.getenv("MUNCHY_HANDOFF_ATTEMPTS", "3"))
 EXTERNAL_HANDOFF_ENABLED = os.getenv("MUNCHY_EXTERNAL_HANDOFF_ENABLED", "0").lower() in {
@@ -63,7 +67,7 @@ def render_job_template(
     *,
     context: Mapping[str, str] | None = None,
 ) -> str:
-    review = core.dict_or_empty(job.get("review"))
+    review = state_store.dict_or_empty(job.get("review"))
     fields = {
         "job_id": str(job.get("job_id") or ""),
         "run_id": str(job.get("run_id") or ""),
@@ -119,7 +123,7 @@ def run_external_handoff(
     result_key: str = "handoff_receipt",
     phase: str = "handoff",
     component: str = "handoff",
-    event: core.LifecycleEventType = "review.handoff",
+    event: domain_models.LifecycleEventType = "review.handoff",
     allow_empty: bool = True,
     emit_event: bool = True,
     template_context: Mapping[str, str] | None = None,
@@ -142,7 +146,7 @@ def run_external_handoff(
         }
     method = str(config.get("method") or "command")
     if emit_event:
-        core.emit_job_event(
+        event_service.emit_job_event(
             job,
             event,
             f"{source_label.title()} artifacts are complete; handing off for upload.",
@@ -176,7 +180,7 @@ def run_external_handoff(
         ]
 
         def rclone_operation() -> dict[str, Any]:
-            result = core.run_command(command, action=f"{source_label} rclone handoff")
+            result = command_runtime.run_command(command, action=f"{source_label} rclone handoff")
             result.update(
                 {
                     "destination": "rclone",
@@ -189,7 +193,7 @@ def run_external_handoff(
             )
             return result
 
-        return core.retry_handoff_until_success(
+        return handoff_service.retry_handoff_until_success(
             job,
             result_key=result_key,
             phase=phase,
@@ -206,7 +210,7 @@ def run_external_handoff(
     environment["MUNCHY_HANDOFF_SOURCE_LABEL"] = source_label
     environment["MUNCHY_JOB_ID"] = str(job["job_id"])
     environment["MUNCHY_RUN_ID"] = str(job.get("run_id") or "")
-    review = core.dict_or_empty(job.get("review"))
+    review = state_store.dict_or_empty(job.get("review"))
     review_context = {
         "template_id": str(job.get("template_id") or ""),
         "route_id": str(review.get("route_id") or ""),
@@ -219,7 +223,7 @@ def run_external_handoff(
     environment["MUNCHY_REVIEW_PROFILE_ID"] = review_context["profile_id"]
 
     def command_operation() -> dict[str, Any]:
-        result = core.run_command(
+        result = command_runtime.run_command(
             ["/bin/sh", "-lc", COMMAND_HANDOFF_COMMAND],
             action=f"{source_label} command handoff",
             env=environment,
@@ -234,7 +238,7 @@ def run_external_handoff(
         )
         return result
 
-    return core.retry_handoff_until_success(
+    return handoff_service.retry_handoff_until_success(
         job,
         result_key=result_key,
         phase=phase,
@@ -269,14 +273,14 @@ class ExternalHandoffAdapter:
     ) -> dict[str, Any] | None:
         if not final:
             return None
-        configured = core.handoff_config(job)
-        options = core.dict_or_empty(configured.get("options"))
+        configured = handoff_service.handoff_config(job)
+        options = state_store.dict_or_empty(configured.get("options"))
         upload_config: dict[str, Any] = {**options, "enabled": True, "method": self.name}
         if self.name == "rclone":
             upload_config["destination"] = options.get("location")
         configured["state"] = "transferring"
-        core.save_job(job)
-        event: core.LifecycleEventType = (
+        state_store.save_job(job)
+        event: domain_models.LifecycleEventType = (
             "review.handoff"
             if str(job.get("workflow_mode") or "") == "review"
             else "collection_archive.handoff"
@@ -291,10 +295,10 @@ class ExternalHandoffAdapter:
             emit_event=context is None,
             template_context=context,
         )
-        configured = core.handoff_config(job)
+        configured = handoff_service.handoff_config(job)
         configured["state"] = "complete"
         configured["safe_to_delete"] = True
-        core.save_job(job)
+        state_store.save_job(job)
         return receipt
 
     def cancel(self, job: dict[str, Any], *, reason: str) -> None:
@@ -304,7 +308,7 @@ class ExternalHandoffAdapter:
         del job
 
     def progress(self, job: dict[str, Any]) -> dict[str, Any]:
-        configured = core.handoff_config(job)
+        configured = handoff_service.handoff_config(job)
         state = str(configured.get("state") or "pending")
         return {
             "destination": self.name,
@@ -315,7 +319,7 @@ class ExternalHandoffAdapter:
         }
 
     def safe_to_delete(self, job: dict[str, Any]) -> bool:
-        return bool(core.handoff_config(job).get("safe_to_delete"))
+        return bool(handoff_service.handoff_config(job).get("safe_to_delete"))
 
     def eager_ready(self, job: dict[str, Any]) -> bool:
         del job

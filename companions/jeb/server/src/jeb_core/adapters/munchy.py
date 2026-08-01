@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from lifecycle_events import CloudEvent, caused_event, normalize_event_context
 from munchy_api_client.client import (
@@ -22,7 +22,7 @@ from munchy_api_client.client import (
     job_finished_cleanly,
 )
 
-from jeb_core.collector import (
+from jeb_core.domain.models import (
     EligibleFile,
     TargetConfig,
     UnrecoverableJebError,
@@ -30,10 +30,8 @@ from jeb_core.collector import (
     event_timestamp,
     run_id_for,
 )
-from jeb_core.sources import SourceConfig, SourceRegistryError
-
-if TYPE_CHECKING:
-    from jeb_core.collector import Collector
+from jeb_core.domain.sources import SourceConfig, SourceRegistryError
+from jeb_core.ports.target import TargetContext
 
 LOG = logging.getLogger("jeb.adapters.munchy")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -52,10 +50,10 @@ class MunchyTargetAdapter:
         "cleanup_failed",
     }
 
-    def start(self, collector: Collector) -> None:
+    def start(self, context: TargetContext) -> None:
         threading.Thread(
             target=self.consume_events_forever,
-            args=(collector,),
+            args=(context,),
             name="munchy-event-loop",
             daemon=True,
         ).start()
@@ -74,7 +72,7 @@ class MunchyTargetAdapter:
 
     def preflight(
         self,
-        collector: Collector,
+        context: TargetContext,
         source: SourceConfig,
         files: Sequence[EligibleFile],
         *,
@@ -88,7 +86,7 @@ class MunchyTargetAdapter:
                 "file_count": 0,
                 "target_config": config,
             }
-        target = collector.target_by_name(source.target)
+        target = context.target_by_name(source.target)
         request = SubmissionUploadRequest(
             submission_id=f"preflight-{source.id}",
             template_id=str(config["template_id"]),
@@ -121,12 +119,12 @@ class MunchyTargetAdapter:
                         "error": str(exc),
                     }
                 if record_failures:
-                    collector.record_target_preflight_failure(
+                    context.record_target_preflight_failure(
                         source=source,
                         files=files,
                         error=exc,
                     )
-                    collector.emit_target_preflight_failures(source_id=source.id)
+                    context.emit_target_preflight_failures(source_id=source.id)
                 return None, {
                     "ok": False,
                     "status": "rejected",
@@ -144,40 +142,40 @@ class MunchyTargetAdapter:
             }
             if accepted:
                 if record_failures:
-                    collector.clear_target_preflight_failure(source.id)
+                    context.clear_target_preflight_failure(source.id)
                 return list(files), summary
             error = UnrecoverableJebError("target rejected submission preflight")
             if record_failures:
-                collector.record_target_preflight_failure(
+                context.record_target_preflight_failure(
                     source=source,
                     files=files,
                     error=error,
                 )
-                collector.emit_target_preflight_failures(source_id=source.id)
+                context.emit_target_preflight_failures(source_id=source.id)
             return None, summary
 
-    def advance(self, collector: Collector, attempt_id: str) -> None:
-        attempt = collector.load_attempt(attempt_id)
+    def advance(self, context: TargetContext, attempt_id: str) -> None:
+        attempt = context.load_attempt(attempt_id)
         if attempt["state"] == "target_complete":
             return
-        target = collector.target_by_name(str(attempt["target_name"]))
+        target = context.target_by_name(str(attempt["target_name"]))
         with closing(MunchyClient(target.url, token=target.token)) as client:
-            request = self.submission_request(collector, attempt_id, target)
+            request = self.submission_request(context, attempt_id, target)
             state = str(attempt["state"])
             if state == "preflighted":
                 client.create_submission(request)
-                collector.set_attempt_state(attempt_id, "target_submitted")
+                context.set_attempt_state(attempt_id, "target_submitted")
                 state = "target_submitted"
             if state in {"target_submitted", "target_uploading"}:
-                collector.set_attempt_state(attempt_id, "target_uploading")
+                context.set_attempt_state(attempt_id, "target_uploading")
                 try:
                     client.upload_files(request)
                 except JobTerminalDuringUpload as exc:
                     if job_finished_cleanly(exc.job):
-                        collector.set_attempt_state(attempt_id, "target_complete")
+                        context.set_attempt_state(attempt_id, "target_complete")
                         return
                     raise UnrecoverableJebError(compact_job_failure(exc.job)) from exc
-                collector.set_attempt_state(attempt_id, "target_uploaded")
+                context.set_attempt_state(attempt_id, "target_uploaded")
                 state = "target_uploaded"
             if state == "target_uploaded":
                 submission = client.wait_for_submission(
@@ -191,10 +189,10 @@ class MunchyTargetAdapter:
                     )
                 if not job_finished_cleanly(job):
                     raise UnrecoverableJebError(compact_job_failure(job))
-                collector.set_attempt_state(attempt_id, "target_complete")
+                context.set_attempt_state(attempt_id, "target_complete")
 
-    def cancel(self, collector: Collector, attempt_id: str) -> None:
-        attempt = collector.load_attempt(attempt_id)
+    def cancel(self, context: TargetContext, attempt_id: str) -> None:
+        attempt = context.load_attempt(attempt_id)
         if str(attempt["state"]) not in self._REMOTE_STATES:
             return
         submission_id = str(attempt["target_submission_id"] or "")
@@ -202,18 +200,18 @@ class MunchyTargetAdapter:
             raise UnrecoverableJebError(
                 f"active target delivery has no cancellation identity: {attempt_id}"
             )
-        target = collector.target_by_name(str(attempt["target_name"]))
+        target = context.target_by_name(str(attempt["target_name"]))
         with closing(MunchyClient(target.url, token=target.token)) as client:
             client.cancel_submission(submission_id)
 
     def submission_request(
         self,
-        collector: Collector,
+        context: TargetContext,
         attempt_id: str,
         target: TargetConfig,
     ) -> SubmissionUploadRequest:
-        attempt = collector.load_attempt(attempt_id)
-        source = collector.source_by_id(str(attempt["source_id"]))
+        attempt = context.load_attempt(attempt_id)
+        source = context.source_by_id(str(attempt["source_id"]))
         config = self.normalize_source_config(source.target_config)
         files = tuple(
             SubmissionInputFile(
@@ -222,7 +220,7 @@ class MunchyTargetAdapter:
                 bytes=int(row["bytes"]),
                 sha256=str(row["sha256"]),
             )
-            for row in collector.attempt_files(attempt_id)
+            for row in context.attempt_files(attempt_id)
         )
         return SubmissionUploadRequest(
             submission_id=str(attempt["target_submission_id"]),
@@ -234,33 +232,33 @@ class MunchyTargetAdapter:
             upload_chunk_mib=max(1, target.upload_chunk_bytes // (1024 * 1024)),
         )
 
-    def consume_events_forever(self, collector: Collector) -> None:
-        target = collector.target_by_name(self.name)
+    def consume_events_forever(self, context: TargetContext) -> None:
+        target = context.target_by_name(self.name)
         with closing(MunchyClient(target.url, token=target.token)) as client:
             while True:
                 try:
-                    if self.consume_events_once(collector, client):
+                    if self.consume_events_once(context, client):
                         continue
                 except Exception:
                     LOG.exception("Munchy lifecycle event consumption failed")
-                collector.sleep(collector.config.events.upstream_poll_seconds)
+                context.sleep(context.config.events.upstream_poll_seconds)
 
-    def consume_events_once(self, collector: Collector, client: MunchyClient) -> int:
-        cursor = collector.event_cursors.cursor(self.name)
+    def consume_events_once(self, context: TargetContext, client: MunchyClient) -> int:
+        cursor = context.event_cursors.cursor(self.name)
         page = client.list_lifecycle_events(after=cursor, limit=100)
-        translated = sum(1 for event in page.events if self.translate_event(collector, event))
+        translated = sum(1 for event in page.events if self.translate_event(context, event))
         if page.next_cursor != cursor:
-            collector.event_cursors.advance(self.name, page.next_cursor)
+            context.event_cursors.advance(self.name, page.next_cursor)
         return translated
 
-    def translate_event(self, collector: Collector, event: CloudEvent) -> bool:
+    def translate_event(self, context: TargetContext, event: CloudEvent) -> bool:
         prefix = "io.riverhog.munchy."
         if not event.type.startswith(prefix):
             return False
         job_id = str(event.data.get("job_id") or event.subject or "")
         if not job_id:
             return False
-        with collector.connect() as conn:
+        with context.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT a.id AS attempt_id, a.state, b.source_id, b.target_name, b.run_id
@@ -296,24 +294,23 @@ class MunchyTargetAdapter:
         )
         translated = caused_event(
             cause=event,
-            source=collector.config.events.source,
+            source=context.config.events.source,
             type=f"io.riverhog.jeb.attempt.target.{suffix}",
             subject=str(row["attempt_id"]),
             data=details,
         )
-        context = normalize_event_context(event.data.get("context"))
+        event_context = normalize_event_context(event.data.get("context"))
         context_expires_at = (
             event_timestamp(
-                current_time()
-                + timedelta(seconds=collector.config.events.context_retention_seconds)
+                current_time() + timedelta(seconds=context.config.events.context_retention_seconds)
             )
-            if context is not None
+            if event_context is not None
             else None
         )
-        collector.event_log.append_once(
+        context.event_log.append_once(
             translated,
             owner="jeb",
-            context=context,
+            context=event_context,
             context_expires_at=context_expires_at,
         )
         return True

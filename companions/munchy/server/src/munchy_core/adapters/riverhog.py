@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -26,7 +27,18 @@ from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_protocol.manifest import collection_content_etag
 from time_formats import utc_timestamp_now
 
-from munchy_core import coordinator as core
+import munchy_core.domain.errors as domain_errors
+import munchy_core.domain.models as domain_models
+import munchy_core.persistence.lifecycle_events as lifecycle_store
+import munchy_core.persistence.sqlite_state as state_store
+import munchy_core.runtime.config as runtime_config
+import munchy_core.services.events as event_service
+import munchy_core.services.handoffs as handoff_service
+import munchy_core.services.processing as processing_service
+import munchy_core.services.routing as routing_service
+import munchy_core.services.uploads as upload_service
+
+log = logging.getLogger("munchy.server")
 
 RIVERHOG_HANDOFF_ENABLED = os.getenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "0").lower() in {
     "1",
@@ -185,8 +197,8 @@ def merge_last_eager_upload_metrics(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
 ) -> None:
-    current_at = core.safe_parse_timestamp(current_riverhog.get("last_eager_upload_at"))
-    payload_at = core.safe_parse_timestamp(payload_riverhog.get("last_eager_upload_at"))
+    current_at = state_store.safe_parse_timestamp(current_riverhog.get("last_eager_upload_at"))
+    payload_at = state_store.safe_parse_timestamp(payload_riverhog.get("last_eager_upload_at"))
     if current_at is None and payload_at is None:
         return
     source = (
@@ -208,8 +220,8 @@ def merge_riverhog_handoff_state(
     current_riverhog: dict[str, Any],
     payload_riverhog: dict[str, Any],
 ) -> dict[str, Any]:
-    current_updated = core.safe_parse_timestamp(current_riverhog.get("updated_at"))
-    payload_updated = core.safe_parse_timestamp(payload_riverhog.get("updated_at"))
+    current_updated = state_store.safe_parse_timestamp(current_riverhog.get("updated_at"))
+    payload_updated = state_store.safe_parse_timestamp(payload_riverhog.get("updated_at"))
     if current_updated and (payload_updated is None or current_updated > payload_updated):
         merged = {**payload_riverhog, **current_riverhog}
     else:
@@ -227,15 +239,15 @@ def expected_riverhog_primary_files_total(
     groups: dict[str, dict[str, Any]],
 ) -> int:
     return sum(
-        len(core.primary_upload_files_for_groups(input_upload, {str(group_name)}))
+        len(upload_service.primary_upload_files_for_groups(input_upload, {str(group_name)}))
         for group_name, group_config in groups.items()
-        if core.group_produces_primary_archive_output(group_config)
+        if routing_service.group_produces_primary_archive_output(group_config)
     )
 
 
 def routing_path_resolvable(routing: Mapping[str, Any]) -> bool:
-    for gate in core.dict_or_empty(routing.get("gates")).values():
-        if isinstance(gate, Mapping) and core.predicate_requires_non_path_facts(gate):
+    for gate in state_store.dict_or_empty(routing.get("gates")).values():
+        if isinstance(gate, Mapping) and routing_service.predicate_requires_non_path_facts(gate):
             return False
     pairings = routing.get("pairings")
     if isinstance(pairings, list):
@@ -249,18 +261,18 @@ def routing_path_resolvable(routing: Mapping[str, Any]) -> bool:
                 predicate = pairing.get(predicate_name)
                 if not isinstance(predicate, Mapping):
                     return False
-                if core.predicate_requires_non_path_facts(predicate):
+                if routing_service.predicate_requires_non_path_facts(predicate):
                     return False
     for rule in sidecar_rules(routing):
         if isinstance(rule.get("facts"), Mapping):
             return False
-    if not core.sidecar_rules_are_path_resolvable(routing):
+    if not routing_service.sidecar_rules_are_path_resolvable(routing):
         return False
     for route in routing.get("routes") or []:
         if not isinstance(route, Mapping):
             return False
         when = route.get("when")
-        if isinstance(when, Mapping) and core.predicate_requires_non_path_facts(when):
+        if isinstance(when, Mapping) and routing_service.predicate_requires_non_path_facts(when):
             return False
     return True
 
@@ -289,7 +301,7 @@ def expected_riverhog_primary_files_total_from_path_routing(
     primary_groups = {
         str(group_name)
         for group_name, group_config in groups.items()
-        if core.group_produces_primary_archive_output(group_config)
+        if routing_service.group_produces_primary_archive_output(group_config)
     }
     return sum(
         1
@@ -312,7 +324,7 @@ def job_for_riverhog_collection(
     *,
     event_time: str | None = None,
 ) -> dict[str, Any] | None:
-    with closing(core.state_db()) as conn:
+    with closing(state_store.state_db()) as conn:
         rows = conn.execute(
             """
             SELECT payload, updated_at
@@ -329,16 +341,16 @@ def job_for_riverhog_collection(
         ).fetchall()
     if not rows:
         return None
-    occurred_at = core.safe_parse_timestamp(event_time)
+    occurred_at = state_store.safe_parse_timestamp(event_time)
     candidates: list[tuple[datetime, dict[str, Any]]] = []
     for row in rows:
         payload = json.loads(str(row["payload"]))
         if not isinstance(payload, dict):
             continue
-        created_at = core.safe_parse_timestamp(payload.get("created_at"))
+        created_at = state_store.safe_parse_timestamp(payload.get("created_at"))
         if occurred_at is not None and created_at is not None and created_at > occurred_at:
             continue
-        rank = created_at or core.safe_parse_timestamp(row["updated_at"])
+        rank = created_at or state_store.safe_parse_timestamp(row["updated_at"])
         if rank is not None:
             candidates.append((rank, payload))
     if not candidates:
@@ -356,7 +368,7 @@ def translate_riverhog_event(event: CloudEvent) -> bool:
     collection_id = int(raw_collection_id)
     job = job_for_riverhog_collection(collection_id, event_time=event.time)
     if job is None:
-        core.log.warning(
+        log.warning(
             "Riverhog event %s for collection %s has no owning Munchy job",
             event.id,
             collection_id,
@@ -385,18 +397,18 @@ def translate_riverhog_event(event: CloudEvent) -> bool:
     )
     translated = caused_event(
         cause=event,
-        source=core.EVENT_SOURCE,
+        source=runtime_config.EVENT_SOURCE,
         type=f"io.riverhog.munchy.{mapped_type}",
         subject=job_id or None,
         data=details,
     )
     context = normalize_event_context(job.get("event_context"))
     expiry = (
-        core.event_context_expiry()
-        if str(job.get("state") or "") in core.TERMINAL_JOB_STATES
+        event_service.event_context_expiry()
+        if str(job.get("state") or "") in domain_models.TERMINAL_JOB_STATES
         else None
     )
-    core.lifecycle_event_log().append_once(
+    lifecycle_store.lifecycle_event_log().append_once(
         translated,
         owner=owner,
         context=context,
@@ -406,7 +418,7 @@ def translate_riverhog_event(event: CloudEvent) -> bool:
 
 
 def consume_riverhog_events_once(api: ApiClient) -> int:
-    cursors = core.lifecycle_event_cursors()
+    cursors = lifecycle_store.lifecycle_event_cursors()
     cursor = cursors.cursor("riverhog")
     page = api.list_lifecycle_events(after=cursor, limit=100)
     translated = sum(1 for event in page.events if translate_riverhog_event(event))
@@ -423,19 +435,19 @@ def riverhog_event_loop() -> None:
                 if translated:
                     continue
             except Exception:
-                core.log.exception("Riverhog lifecycle event consumption failed")
+                log.exception("Riverhog lifecycle event consumption failed")
             upstream_event_stop.wait(UPSTREAM_EVENT_POLL_SECONDS)
 
 
 def riverhog_config_enabled(job: dict[str, Any]) -> bool:
-    return str(core.dict_or_empty(job.get("handoff")).get("destination") or "") == "riverhog"
+    return str(state_store.dict_or_empty(job.get("handoff")).get("destination") or "") == "riverhog"
 
 
 def riverhog_handoff_options(job: Mapping[str, Any]) -> dict[str, Any]:
     handoff = job.get("handoff")
     if not isinstance(handoff, Mapping):
         return {}
-    return core.dict_or_empty(handoff.get("options"))
+    return state_store.dict_or_empty(handoff.get("options"))
 
 
 def riverhog_collection_id_for_job(job: dict[str, Any]) -> int | None:
@@ -567,9 +579,9 @@ def refresh_riverhog_session_from_remote(job: dict[str, Any]) -> None:
     api = ApiClient()
     try:
         sync_riverhog_session_from_remote(job, api)
-        core.save_job(job)
+        state_store.save_job(job)
     except Exception as exc:
-        core.log.debug("riverhog session status refresh failed for %s: %s", job.get("job_id"), exc)
+        log.debug("riverhog session status refresh failed for %s: %s", job.get("job_id"), exc)
     finally:
         close = getattr(api, "close", None)
         if callable(close):
@@ -611,7 +623,7 @@ def ensure_riverhog_session(
         update_remote_state_from_payload(job, payload)
         state = riverhog_session_state(job)
         state["opened_at"] = state.get("opened_at") or utc_timestamp_now()
-        core.save_job(job)
+        state_store.save_job(job)
         collection_id = state.get("collection_id")
         if collection_id is None:
             raise RuntimeError("riverhog upload session did not return a collection_id")
@@ -650,7 +662,7 @@ def riverhog_file_record(
         record["state"] = record.get("state") or "pending"
         touch_riverhog_session_state(job)
     if needs_sha256:
-        digest = core.file_sha256(source_path)
+        digest = upload_service.file_sha256(source_path)
         with lock:
             state = riverhog_session_state(job)
             files = state.setdefault("files", {})
@@ -662,7 +674,7 @@ def riverhog_file_record(
                 record["sha256"] = digest
                 touch_riverhog_session_state(job)
     with lock:
-        files = core.dict_or_empty(riverhog_session_state(job).get("files"))
+        files = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
         record = files.get(rel_path)
         if isinstance(record, dict):
             return cast(dict[str, Any], record)
@@ -736,14 +748,14 @@ def remove_uploaded_riverhog_artifact(
         record["state"] = "deleted"
         record["deleted_at"] = record.get("deleted_at") or utc_timestamp_now()
         touch_riverhog_session_state(job)
-    core.log.debug(
+    log.debug(
         "riverhog upload accepted; removed local artifact job=%s path=%s bytes=%s",
         job.get("job_id"),
         record.get("path"),
-        core.format_log_bytes(record.get("bytes")),
+        processing_service.format_log_bytes(record.get("bytes")),
     )
     if persist:
-        core.save_job(job)
+        state_store.save_job(job)
 
 
 def riverhog_upload_artifact(
@@ -833,7 +845,7 @@ def riverhog_upload_artifact(
             )
         )
         try:
-            core.raise_if_job_canceled(job_id)
+            state_store.raise_if_job_canceled(job_id)
             next_offset = api.tus_client().patch_chunk(
                 str(session["upload_url"]),
                 offset=offset,
@@ -841,7 +853,7 @@ def riverhog_upload_artifact(
                 content=part.ciphertext,
             )
         except (httpx.TransportError, Conflict, ServiceUnavailable) as exc:
-            core.log.warning(
+            log.warning(
                 "riverhog upload interrupted job=%s path=%s offset=%s: %s",
                 job_id,
                 rel_path,
@@ -860,7 +872,7 @@ def riverhog_upload_artifact(
                     f"riverhog upload offset for {rel_path} is past expected length"
                 ) from exc
             if recovered_offset == offset:
-                core.retry_sleep(interruption_delay, job_id=job_id)
+                handoff_service.retry_sleep(interruption_delay, job_id=job_id)
                 interruption_delay = min(30.0, interruption_delay * 2)
             else:
                 interruption_delay = 1.0
@@ -915,7 +927,7 @@ def eager_riverhog_artifact_paths(job: dict[str, Any]) -> list[Path]:
         output = Path(str(output_value))
         if output.exists():
             paths.append(output)
-        sidecar = core.source_artifact_sidecar_for_archive_output(output)
+        sidecar = routing_service.source_artifact_sidecar_for_archive_output(output)
         if sidecar.exists():
             paths.append(sidecar)
     return paths
@@ -952,7 +964,7 @@ def riverhog_artifact_paths(
     final: bool,
 ) -> list[Path]:
     paths = (
-        core.archive_dir_artifact_paths(archive_dir)
+        routing_service.archive_dir_artifact_paths(archive_dir)
         if final
         else eager_riverhog_artifact_paths(job)
     )
@@ -985,7 +997,7 @@ def upload_riverhog_artifacts(
     lock = riverhog_upload_call_lock(job_id)
     with lock:
         if not final:
-            current = core.read_state("job", job_id)
+            current = state_store.read_state("job", job_id)
             if isinstance(current, dict):
                 if not riverhog_eager_upload_allowed(current):
                     return zero_riverhog_upload_metrics()
@@ -1051,7 +1063,7 @@ def _upload_riverhog_artifacts_unlocked(
             or processed % RIVERHOG_HANDOFF_SAVE_EVERY_FILES == 0
             or now - last_save_at >= RIVERHOG_HANDOFF_SAVE_EVERY_SECONDS
         ):
-            core.save_job(job)
+            state_store.save_job(job)
             last_save_at = now
 
     worker_clients: list[ApiClient] = []
@@ -1157,16 +1169,16 @@ def maybe_upload_riverhog_artifacts(job: dict[str, Any], archive_dir: Path) -> N
             state["last_eager_upload_bytes"] = int(result["uploaded_bytes"])
             state["last_eager_upload_elapsed_seconds"] = float(result["elapsed_seconds"])
             touch_riverhog_session_state(job)
-            core.save_job(job)
-    except core.JobCanceled:
+            state_store.save_job(job)
+    except domain_errors.JobCanceled:
         raise
     except HashMismatch as exc:
-        core.emit_job_issue(job, component="riverhog_upload", error=exc, severity="error")
-        core.log.error("riverhog eager upload failed integrity check: %s", exc)
+        event_service.emit_job_issue(job, component="riverhog_upload", error=exc, severity="error")
+        log.error("riverhog eager upload failed integrity check: %s", exc)
     except RuntimeError as exc:
-        core.log.warning("riverhog eager upload failed; will retry later: %s", exc)
+        log.warning("riverhog eager upload failed; will retry later: %s", exc)
     except Exception as exc:
-        core.log.warning("riverhog eager upload issue; will retry later: %s", exc)
+        log.warning("riverhog eager upload issue; will retry later: %s", exc)
 
 
 RIVERHOG_EAGER_HANDOFF_BLOCKED_PHASES = {"metadata_projection", "handoff"}
@@ -1177,7 +1189,7 @@ def riverhog_eager_upload_allowed(job: dict[str, Any]) -> bool:
         return False
     if str(job.get("workflow_mode") or "collection_archive") != "collection_archive":
         return False
-    if str(core.dict_or_empty(job.get("handoff")).get("destination") or "") != "riverhog":
+    if str(state_store.dict_or_empty(job.get("handoff")).get("destination") or "") != "riverhog":
         return False
     if not riverhog_config_enabled(job):
         return False
@@ -1220,7 +1232,7 @@ def riverhog_session_visible_for_resume(job: dict[str, Any]) -> bool:
     except NotFound:
         return False
     except Exception as exc:
-        core.log.warning(
+        log.warning(
             "could not verify riverhog session before preserving resume for %s: %s",
             job.get("job_id"),
             exc,
@@ -1237,7 +1249,7 @@ def complete_riverhog_session(
 ) -> dict[str, Any]:
     collection_id = ensure_riverhog_session(job, api, archive_dir)
     try:
-        files = core.dict_or_empty(riverhog_session_state(job).get("files"))
+        files = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
         manifest = [
             (str(record["path"]), int(record["bytes"]), str(record["sha256"]))
             for record in files.values()
@@ -1247,7 +1259,7 @@ def complete_riverhog_session(
             and record.get("sha256")
         ]
         if not manifest or len(manifest) != len(files):
-            raise core.HandoffFailed("riverhog upload manifest is incomplete")
+            raise domain_errors.HandoffFailed("riverhog upload manifest is incomplete")
         payload = api.complete_collection_upload_session(
             collection_id,
             files_total=len(manifest),
@@ -1268,16 +1280,16 @@ def complete_riverhog_session(
             if page >= pages:
                 break
             page += 1
-        files = core.dict_or_empty(riverhog_session_state(job).get("files"))
+        files = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
         missing_paths = [
             str(path)
             for path, record in files.items()
             if isinstance(record, dict) and not riverhog_upload_file_complete(record)
         ]
         unavailable = sum(1 for path in missing_paths if not (archive_dir / path).is_file())
-        core.save_job(job)
+        state_store.save_job(job)
         if unavailable:
-            raise core.HandoffFailed(
+            raise domain_errors.HandoffFailed(
                 f"riverhog reports missing ingress objects ({len(missing_paths)}); "
                 f"local handoff artifacts unavailable ({unavailable})"
             ) from None
@@ -1285,7 +1297,7 @@ def complete_riverhog_session(
     update_remote_state_from_payload(job, payload)
     state = riverhog_session_state(job)
     state["completed_at"] = state.get("completed_at") or utc_timestamp_now()
-    core.save_job(job)
+    state_store.save_job(job)
     return payload
 
 
@@ -1321,29 +1333,29 @@ def wait_for_riverhog_finalized(
     collection_id: int,
 ) -> dict[str, Any]:
     while True:
-        core.raise_if_job_canceled(str(job["job_id"]))
+        state_store.raise_if_job_canceled(str(job["job_id"]))
         payload = api.get_collection_upload_session(collection_id)
         update_remote_state_from_payload(job, payload)
-        core.save_job(job)
+        state_store.save_job(job)
         if str(payload.get("state") or "") == "finalized":
             state = riverhog_session_state(job)
             state["remote_state"] = "finalized"
             state["state"] = "finalized"
             state["finalized_at"] = state.get("finalized_at") or utc_timestamp_now()
             state["last_payload"] = compact_riverhog_payload(payload)
-            core.save_job(job)
+            state_store.save_job(job)
             return payload
         if str(payload.get("state") or "") == "failed":
             raise RuntimeError(
                 f"riverhog collection upload failed: {payload.get('latest_failure')}"
             )
-        core.retry_sleep(RIVERHOG_FINALIZE_POLL_SECONDS, job_id=str(job["job_id"]))
+        handoff_service.retry_sleep(RIVERHOG_FINALIZE_POLL_SECONDS, job_id=str(job["job_id"]))
 
 
 def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any] | None:
     if not riverhog_config_enabled(job):
         return None
-    core.emit_job_event(
+    event_service.emit_job_event(
         job,
         "archive.handoff",
         "Archive collection is complete; handing off to Riverhog.",
@@ -1358,7 +1370,7 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
         api = ApiClient()
         metrics: dict[str, Any] = {"started_at": utc_timestamp_now()}
         job["handoff_metrics"] = metrics
-        core.save_job(job)
+        state_store.save_job(job)
         try:
             metrics["final_sweep_started_at"] = utc_timestamp_now()
             metrics["final_sweep_before"] = compact_riverhog_progress_metrics(
@@ -1374,12 +1386,12 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             metrics["final_sweep_after"] = compact_riverhog_progress_metrics(
                 riverhog_handoff_progress(job)
             )
-            core.save_job(job)
+            state_store.save_job(job)
             if not all_riverhog_session_files_uploaded(job):
                 raise RuntimeError("riverhog upload did not upload every registered file")
             complete_started = time.monotonic()
             metrics["session_complete_started_at"] = utc_timestamp_now()
-            core.save_job(job)
+            state_store.save_job(job)
             payload = complete_riverhog_session(job, api, archive_dir)
             metrics["session_complete_finished_at"] = utc_timestamp_now()
             metrics["session_complete_elapsed_seconds"] = round(
@@ -1391,7 +1403,7 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             if collection_id is not None:
                 finalize_started = time.monotonic()
                 metrics["wait_finalized_started_at"] = utc_timestamp_now()
-                core.save_job(job)
+                state_store.save_job(job)
                 payload = wait_for_riverhog_finalized(job, api, collection_id)
                 metrics["wait_finalized_finished_at"] = utc_timestamp_now()
                 metrics["wait_finalized_elapsed_seconds"] = round(
@@ -1399,26 +1411,26 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
                     6,
                 )
             metrics["finished_at"] = utc_timestamp_now()
-            core.save_job(job)
+            state_store.save_job(job)
             return {
                 "destination": "riverhog",
                 "external_id": collection_id,
                 "metrics": dict(metrics),
                 "payload": compact_riverhog_payload(payload),
             }
-        except core.JobCanceled:
+        except domain_errors.JobCanceled:
             metrics["canceled_at"] = utc_timestamp_now()
-            core.save_job(job)
+            state_store.save_job(job)
             raise
         except Exception as exc:
             metrics["failed_at"] = utc_timestamp_now()
             metrics["error"] = str(exc)
-            core.save_job(job)
+            state_store.save_job(job)
             raise
         finally:
             api.close()
 
-    return core.retry_handoff_until_success(
+    return handoff_service.retry_handoff_until_success(
         job,
         result_key="handoff_receipt",
         phase="handoff",
@@ -1444,7 +1456,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     if not RIVERHOG_HANDOFF_ENABLED:
         state["cancel_skipped_at"] = utc_timestamp_now()
         state["cancel_skipped_reason"] = "riverhog upload disabled"
-        core.save_job(job)
+        state_store.save_job(job)
         return
     api = ApiClient()
     try:
@@ -1453,7 +1465,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         state = riverhog_session_state(job)
         state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
-        core.log.info(
+        log.info(
             "canceled riverhog upload session job=%s collection=%s reason=%s",
             job.get("job_id"),
             collection_id,
@@ -1465,7 +1477,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         state["canceled_at"] = utc_timestamp_now()
         state["cancel_reason"] = reason
         state["cancel_not_found"] = True
-        core.log.info(
+        log.info(
             "riverhog upload session already absent job=%s collection=%s reason=%s",
             job.get("job_id"),
             collection_id,
@@ -1474,7 +1486,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
     except Exception as exc:
         state["cancel_failed_at"] = utc_timestamp_now()
         state["cancel_error"] = str(exc)
-        core.log.warning(
+        log.warning(
             "failed to cancel riverhog upload session job=%s collection=%s: %s",
             job.get("job_id"),
             collection_id,
@@ -1482,7 +1494,7 @@ def cancel_riverhog_upload_session(job: dict[str, Any], *, reason: str) -> None:
         )
     finally:
         api.close()
-        core.save_job(job)
+        state_store.save_job(job)
 
 
 class RiverhogHandoffAdapter:
@@ -1525,17 +1537,17 @@ class RiverhogHandoffAdapter:
         context: Mapping[str, str] | None = None,
     ) -> dict[str, Any] | None:
         del source_label, context
-        configured = core.handoff_config(job)
+        configured = handoff_service.handoff_config(job)
         configured["state"] = "transferring"
         if not final:
             maybe_upload_riverhog_artifacts(job, source_dir)
             return None
         receipt = upload_to_riverhog(job, source_dir)
         self.refresh(job)
-        configured = core.handoff_config(job)
+        configured = handoff_service.handoff_config(job)
         configured["state"] = "complete"
         configured["safe_to_delete"] = self.safe_to_delete(job)
-        core.save_job(job)
+        state_store.save_job(job)
         return receipt
 
     def cancel(self, job: dict[str, Any], *, reason: str) -> None:
@@ -1632,7 +1644,7 @@ class RiverhogHandoffAdapter:
         state = job.get("handoff_adapter_state")
         if not isinstance(state, dict):
             return None
-        record = core.dict_or_empty(state.get("files")).get(path)
+        record = state_store.dict_or_empty(state.get("files")).get(path)
         return record if isinstance(record, dict) else None
 
     def artifact_complete(self, record: dict[str, Any]) -> bool:
@@ -1654,26 +1666,31 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
     local_artifacts_total = 0
     local_artifact_paths: set[str] = set()
     if riverhog_config_enabled(job):
-        archive_dir = core.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        archive_dir = (
+            runtime_config.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        )
         local_artifact_paths = {
             rel_path
             for path in eager_riverhog_artifact_paths(job)
-            if (rel_path := core.path_relative_to_archive(path, archive_dir)) is not None
+            if (rel_path := routing_service.path_relative_to_archive(path, archive_dir)) is not None
         }
         local_artifacts_total = len(local_artifact_paths)
         if not local_artifacts_total:
             local_artifact_paths = {
                 rel_path
-                for path in core.archive_dir_artifact_paths(archive_dir)
-                if (rel_path := core.path_relative_to_archive(path, archive_dir)) is not None
+                for path in routing_service.archive_dir_artifact_paths(archive_dir)
+                if (rel_path := routing_service.path_relative_to_archive(path, archive_dir))
+                is not None
             }
             local_artifacts_total = len(local_artifact_paths)
     else:
-        archive_dir = core.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        archive_dir = (
+            runtime_config.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+        )
     registered_artifact_paths = {str(path) for path in files if isinstance(path, str)}
     known_artifact_paths = registered_artifact_paths | local_artifact_paths
     expected_primary_files_total = int(job.get("handoff_expected_primary_files_total") or 0)
-    encode_progress = core.encode_progress_for_job(job)
+    encode_progress = processing_service.encode_progress_for_job(job)
     encode_files_total = 0
     encode_files_encoded = 0
     if isinstance(encode_progress, dict):
@@ -1695,7 +1712,7 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
         uploaded_bytes += item_uploaded
 
     uploaded_paths = uploaded_riverhog_paths(job)
-    primary_paths = core.primary_archive_output_paths(job, archive_dir)
+    primary_paths = routing_service.primary_archive_output_paths(job, archive_dir)
     primary_files_total = max(expected_primary_files_total, encode_files_total, len(primary_paths))
     primary_files_encoded = max(encode_files_encoded, len(primary_paths))
     if primary_paths:
@@ -1715,15 +1732,15 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
         len(known_artifact_paths), registered_files_total, local_artifacts_total
     )
 
-    started_at = core.safe_parse_timestamp(state.get("opened_at"))
+    started_at = state_store.safe_parse_timestamp(state.get("opened_at"))
     if started_at is None:
-        started_at = core.safe_parse_timestamp(state.get("started_at"))
+        started_at = state_store.safe_parse_timestamp(state.get("started_at"))
     elapsed_seconds = (
         max(0.001, (datetime.now(UTC) - started_at).total_seconds()) if started_at else 0.0
     )
     average_rate = int(uploaded_bytes / elapsed_seconds) if elapsed_seconds else 0
     recent_rate = 0
-    last_eager_upload_at = core.safe_parse_timestamp(state.get("last_eager_upload_at"))
+    last_eager_upload_at = state_store.safe_parse_timestamp(state.get("last_eager_upload_at"))
     if last_eager_upload_at is not None:
         recent_age = (datetime.now(UTC) - last_eager_upload_at).total_seconds()
         recent_elapsed = float(state.get("last_eager_upload_elapsed_seconds") or 0.0)

@@ -158,7 +158,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   jeb-server \
   'jeb_server-*.whl' \
-  'import importlib.metadata as m; import jeb_api.app; import jeb_core.collector; m.version("jeb-server")' \
+  'import importlib.metadata as m; import jeb_api.app; import jeb_api.composition; import jeb_core.services.attempts; m.version("jeb-server")' \
   jeb-service
 smoke_workspace_distribution \
   munchy-client \
@@ -168,7 +168,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   munchy-server \
   'munchy_server-*.whl' \
-  'import importlib.metadata as m; import munchy_api.app; import munchy_core.coordinator; m.version("munchy-server")'
+  'import importlib.metadata as m; import munchy_api.app; import munchy_api.composition; import munchy_core.services.jobs; m.version("munchy-server")'
 smoke_workspace_distribution \
   munchy-av1-nvenc-target \
   'munchy_av1_nvenc_target-*.whl' \

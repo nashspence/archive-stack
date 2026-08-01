@@ -1,3 +1,5 @@
+"""SQLite-backed Jeb source registry."""
+
 from __future__ import annotations
 
 import json
@@ -7,60 +9,26 @@ import secrets
 import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from jeb_protocol import MAX_LIST_PAGE_SIZE, SOURCE_LIST_SORT_FIELDS
 from time_formats import format_utc_timestamp, utc_now
 
-Cadence = Literal["weekly", "monthly", "seasonal", "manual"]
-Cleanup = Literal["never", "after_target_success"]
+from jeb_core.domain.sources import (
+    Cadence,
+    Cleanup,
+    SourceConfig,
+    SourceRegistryError,
+)
+from jeb_core.persistence.sql import like_literal
+
 SOURCE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 INGRESS_ADAPTERS = frozenset({"ftp", "tus"})
 DEFAULT_INCLUDE_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"})
 PASSWORD_HASHER = PasswordHasher()
-
-
-class SourceRegistryError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class SourceConfig:
-    id: str
-    enabled: bool
-    path: Path
-    adapters: tuple[str, ...]
-    stable_seconds: int
-    include_extensions: frozenset[str]
-    target: str
-    target_config: dict[str, Any]
-    threshold_bytes: int
-    cleanup: Cleanup
-    cadence: Cadence
-    weekday: int
-    hour: int
-    minute: int
-
-    def summary(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "enabled": self.enabled,
-            "adapters": list(self.adapters),
-            "stable_seconds": self.stable_seconds,
-            "include_extensions": sorted(self.include_extensions),
-            "target": self.target,
-            "target_config": self.target_config,
-            "threshold_bytes": self.threshold_bytes,
-            "cleanup": self.cleanup,
-            "cadence": self.cadence,
-            "weekday": self.weekday,
-            "hour": self.hour,
-            "minute": self.minute,
-        }
 
 
 class SourceRegistry:
@@ -223,7 +191,7 @@ class SourceRegistry:
         clauses: list[str] = []
         values: list[object] = []
         if query:
-            like = f"%{_sqlite_like_literal(query.casefold())}%"
+            like = f"%{like_literal(query.casefold())}%"
             clauses.append(
                 """
                 (
@@ -590,10 +558,6 @@ def _settings(
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def _sqlite_like_literal(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _json_object(value: object, name: str) -> dict[str, Any]:

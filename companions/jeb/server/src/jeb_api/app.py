@@ -13,7 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb_core.collector import Collector, UnrecoverableJebError, event_timestamp
+from jeb_core.domain.models import UnrecoverableJebError, event_timestamp
+from jeb_core.domain.sources import SourceRegistryError
 from jeb_core.ingress import (
     JebIngressAuthenticationError,
     JebIngressError,
@@ -21,8 +22,9 @@ from jeb_core.ingress import (
     prepare_tus_upload,
     publish_tus_upload,
 )
-from jeb_core.sources import SourceRegistryError
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
+
+from jeb_api.composition import JebServices
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)
@@ -159,7 +161,7 @@ class JebServiceOperations:
 
 @dataclass(frozen=True)
 class JebServiceState:
-    collector: Collector
+    services: JebServices
     operations: JebServiceOperations = field(default_factory=JebServiceOperations)
     api_token: str = field(
         default_factory=lambda: os.getenv("JEB_API_TOKEN") or DEFAULT_JEB_API_TOKEN
@@ -336,10 +338,10 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
             params = parse_qs(split.query, keep_blank_values=True)
             try:
                 if split.path == "/internal/ingress/tus/auth":
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     try:
                         authenticate_tus_source(
-                            state.collector.source_registry,
+                            state.services.source_registry,
                             self.headers.get("Authorization"),
                         )
                     except JebIngressAuthenticationError:
@@ -355,8 +357,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     _response(self, HTTPStatus.OK, {"service": "jeb", "status": "ok"})
                     return
                 if split.path == "/health/ready":
-                    state.collector.init_db()
-                    sources = state.collector.source_registry.list()
+                    state.services.runtime.initialize()
+                    sources = state.services.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
@@ -370,16 +372,16 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                 if not _authorize_management_api(self, expected_token=state.api_token):
                     return
                 if split.path == "/v1/events":
-                    state.collector.init_db()
-                    page = state.collector.event_log.page(
+                    state.services.runtime.initialize()
+                    page = state.services.event_log.page(
                         after=_first(params, "after"),
                         limit=_positive_int(params, "limit", 100),
                     )
                     _response(self, HTTPStatus.OK, page.model_dump(mode="json"))
                     return
                 if split.path == "/v1/config/check":
-                    state.collector.init_db()
-                    sources = state.collector.source_registry.list()
+                    state.services.runtime.initialize()
+                    sources = state.services.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
@@ -391,11 +393,11 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 if split.path == "/v1/sources":
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     _response(
                         self,
                         HTTPStatus.OK,
-                        state.collector.source_registry.list_page(
+                        state.services.source_registry.list_page(
                             page=_positive_int(params, "page", 1),
                             per_page=_positive_int(params, "per_page", 25),
                             sort=_first(params, "sort", "id") or "id",
@@ -410,16 +412,16 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 source_id = _source_path(split.path)
                 if source_id is not None:
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     _response(
                         self,
                         HTTPStatus.OK,
-                        state.collector.source_registry.get(source_id).summary(),
+                        state.services.source_registry.get(source_id).summary(),
                     )
                     return
                 if split.path == "/v1/status":
-                    state.collector.init_db()
-                    payload = state.collector.status_summary(
+                    state.services.runtime.initialize()
+                    payload = state.services.runtime.status_summary(
                         include_backlog=_bool(params, "include_backlog", True)
                     )
                     payload["active_operation"] = state.operations.active_summary()
@@ -431,11 +433,11 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         raise ValueError(
                             "sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS))
                         )
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     _response(
                         self,
                         HTTPStatus.OK,
-                        state.collector.list_attempts(
+                        state.services.store.list_attempts(
                             page=_positive_int(params, "page", 1),
                             per_page=_positive_int(params, "per_page", 25),
                             sort=sort,
@@ -469,8 +471,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             metadata = {}
                         try:
                             prepared = prepare_tus_upload(
-                                state.collector.config.ingress,
-                                state.collector.source_registry,
+                                state.services.config.ingress,
+                                state.services.source_registry,
                                 authorization=self.headers.get("Authorization"),
                                 metadata=metadata,
                                 size=upload.get("Size"),
@@ -502,8 +504,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         return
                     if hook_type == "post-finish":
                         publish_tus_upload(
-                            state.collector.config.ingress,
-                            state.collector.source_registry,
+                            state.services.config.ingress,
+                            state.services.source_registry,
                             upload=upload,
                         )
                     _response(self, HTTPStatus.OK, {})
@@ -515,7 +517,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     source_id = str(payload.get("id") or "").strip()
                     if not source_id:
                         raise ValueError("id is required")
-                    source_config, credential = state.collector.add_source(
+                    source_config, credential = state.services.sources.add_source(
                         source_id,
                         adapters=_sequence(payload, "adapters"),
                         target_config=_mapping(payload, "target_config"),
@@ -553,8 +555,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                 for action, enabled in (("enable", True), ("disable", False)):
                     selected_source = _source_path(split.path, action=action)
                     if selected_source is not None:
-                        state.collector.init_db()
-                        source_config = state.collector.source_registry.set_enabled(
+                        state.services.runtime.initialize()
+                        source_config = state.services.source_registry.set_enabled(
                             selected_source,
                             enabled,
                         )
@@ -563,8 +565,8 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                 selected_source = _source_path(split.path, action="credential")
                 if selected_source is not None:
                     payload = _json_body(self)
-                    state.collector.init_db()
-                    source_config, credential = state.collector.source_registry.rotate_credential(
+                    state.services.runtime.initialize()
+                    source_config, credential = state.services.source_registry.rotate_credential(
                         selected_source,
                         credential=(
                             str(payload["credential"])
@@ -587,17 +589,17 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     _response(
                         self,
                         HTTPStatus.OK,
-                        state.collector.source_removal_plan(
+                        state.services.sources.source_removal_plan(
                             selected_source,
                             purge=_payload_bool(payload, "purge", False),
                         ),
                     )
                     return
                 if split.path == "/v1/once":
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     operation_summary = state.operations.start(
                         operation="once",
-                        run=state.collector.run_once,
+                        run=state.services.runtime.run_once,
                     )
                     _response(
                         self,
@@ -612,12 +614,12 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         raise ValueError("source is required")
                     process = _payload_bool(payload, "process", True)
                     dry_run = _payload_bool(payload, "dry_run", False)
-                    state.collector.init_db()
+                    state.services.runtime.initialize()
                     if dry_run:
                         _response(
                             self,
                             HTTPStatus.OK,
-                            state.collector.archive_plan(source_id=source, process=process),
+                            state.services.attempts.archive_plan(source_id=source, process=process),
                         )
                         return
                     archive_operation: dict[str, Any] | None = None
@@ -625,14 +627,16 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                         attempt_id, archive_operation = state.operations.prepare_and_start(
                             operation="archive-now",
                             source=source,
-                            prepare=lambda: state.collector.archive_now(
+                            prepare=lambda: state.services.attempts.archive_now(
                                 source_id=source,
                                 process=False,
                             ),
-                            run=state.collector.process_attempt,
+                            run=state.services.attempts.process_attempt,
                         )
                     else:
-                        attempt_id = state.collector.archive_now(source_id=source, process=False)
+                        attempt_id = state.services.attempts.archive_now(
+                            source_id=source, process=False
+                        )
                     if attempt_id is None:
                         _response(
                             self,
@@ -640,7 +644,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             {"status": "no_eligible_files", "source": source},
                         )
                         return
-                    attempt = state.collector.load_attempt(attempt_id)
+                    attempt = state.services.store.load_attempt(attempt_id)
                     _response(
                         self,
                         HTTPStatus.ACCEPTED,
@@ -680,7 +684,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 payload = _json_body(self)
-                source = state.collector.update_source(source_id, payload)
+                source = state.services.sources.update_source(source_id, payload)
                 _response(self, HTTPStatus.OK, source.summary())
             except (SourceRegistryError, ValueError) as exc:
                 _handle_bad_request(self, exc)
@@ -709,7 +713,7 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                 _response(
                     self,
                     HTTPStatus.OK,
-                    state.collector.remove_source(source_id, challenge=challenge),
+                    state.services.sources.remove_source(source_id, challenge=challenge),
                 )
             except (SourceRegistryError, ValueError) as exc:
                 _handle_bad_request(self, exc)

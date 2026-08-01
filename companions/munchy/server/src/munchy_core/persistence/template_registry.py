@@ -10,7 +10,11 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
-from munchy_core.job_templates import JobTemplateError, job_template_digest, normalize_job_template
+from munchy_core.domain.job_templates import (
+    JobTemplateError,
+    job_template_digest,
+    normalize_job_template,
+)
 
 JOB_TEMPLATE_COLUMNS = (
     "template_id",

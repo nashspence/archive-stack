@@ -8,7 +8,7 @@ from pathlib import Path
 import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
 from jeb_api.cli import main as jeb_main
-from jeb_api.composition import config_from_env, create_collector
+from jeb_api.composition import config_from_env, create_services
 
 
 def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
@@ -22,9 +22,9 @@ def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
 
 def enroll(env: dict[str, str]) -> dict[str, str]:
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
-    collector = create_collector(config_from_env(runtime_env))
+    services = create_services(config_from_env(runtime_env))
     for source_id in env["TEST_SOURCE_IDS"].split(","):
-        collector.add_source(
+        services.sources.add_source(
             source_id,
             adapters=("tus",),
             target_config={"template_id": "camera-archive"},
@@ -75,10 +75,12 @@ def test_jeb_archive_now_starts_batch_without_processing(
     output = capsys.readouterr().out
     assert "jeb archive" in output
     assert "jeb archive: staged" in output
-    collector = create_collector(config_from_env(env))
-    collector.init_db()
-    [batch_id] = collector.active_attempt_ids()
-    assert [row["target_path"] for row in collector.attempt_files(batch_id)] == ["phone/note.txt"]
+    services = create_services(config_from_env(env))
+    services.runtime.initialize()
+    [batch_id] = services.store.active_attempt_ids()
+    assert [row["target_path"] for row in services.store.attempt_files(batch_id)] == [
+        "phone/note.txt"
+    ]
 
 
 def test_jeb_archive_now_dry_run_reports_plan_without_batch(
@@ -97,10 +99,10 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     output = capsys.readouterr().out
     assert "Jeb archive plan: phone" in output
     assert "eligible files: 1" in output
-    collector = create_collector(config_from_env(env))
-    collector.init_db()
-    assert collector.active_attempt_ids() == []
-    assert collector.list_attempts(terminal="all")["total"] == 0
+    services = create_services(config_from_env(env))
+    services.runtime.initialize()
+    assert services.store.active_attempt_ids() == []
+    assert services.store.list_attempts(terminal="all")["total"] == 0
 
 
 def test_jeb_archive_now_reports_unknown_source_concisely(

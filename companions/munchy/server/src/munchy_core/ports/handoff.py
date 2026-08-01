@@ -57,3 +57,6 @@ class HandoffAdapter(Protocol):
     def artifact_record(self, job: dict[str, Any], path: str) -> dict[str, Any] | None: ...
 
     def artifact_complete(self, record: dict[str, Any]) -> bool: ...
+
+
+HANDOFF_ADAPTERS: dict[str, HandoffAdapter] = {}

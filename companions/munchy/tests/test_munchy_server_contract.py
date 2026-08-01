@@ -30,6 +30,35 @@ from riverhog_core.ingress_crypto import (
     ingress_encryption_descriptor,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from time_formats import utc_timestamp_now
+
+SERVER_MODULES = {
+    "external": "munchy_core.adapters.external",
+    "riverhog": "munchy_core.adapters.riverhog",
+    "persistence": "munchy_core.persistence",
+    "domain_errors": "munchy_core.domain.errors",
+    "template_domain": "munchy_core.domain.job_templates",
+    "domain_models": "munchy_core.domain.models",
+    "application_keys": "munchy_core.persistence.application_keys",
+    "lifecycle_store": "munchy_core.persistence.lifecycle_events",
+    "state_store": "munchy_core.persistence.sqlite_state",
+    "template_registry": "munchy_core.persistence.template_registry",
+    "handoff_port": "munchy_core.ports.handoff",
+    "command_runtime": "munchy_core.runtime.commands",
+    "runtime_config": "munchy_core.runtime.config",
+    "execution_runtime": "munchy_core.runtime.execution",
+    "admission_service": "munchy_core.services.admission",
+    "cleanup_service": "munchy_core.services.cleanup",
+    "event_service": "munchy_core.services.events",
+    "handoff_service": "munchy_core.services.handoffs",
+    "job_service": "munchy_core.services.jobs",
+    "media_service": "munchy_core.services.media",
+    "processing_service": "munchy_core.services.processing",
+    "routing_service": "munchy_core.services.routing",
+    "scheduling_service": "munchy_core.services.scheduling",
+    "template_service": "munchy_core.services.templates",
+    "upload_service": "munchy_core.services.uploads",
+}
 
 
 def secure_link_token(*, expires: str, path: str, secret: str) -> str:
@@ -44,19 +73,18 @@ def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     monkeypatch.setenv("MUNCHY_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("MUNCHY_TUSD_DIR", str(tmp_path / "tusd"))
     monkeypatch.setenv("MUNCHY_GPU_RUNTIME_DIR", str(tmp_path / "gpu-runtime"))
-    for module_name in (
-        "munchy_api.app",
-        "munchy_core.adapters.external",
-        "munchy_core.adapters.gpu",
-        "munchy_core.adapters.riverhog",
-        "munchy_core.coordinator",
-    ):
+    for module_name in tuple(sys.modules):
+        if module_name != "munchy_api.app" and not module_name.startswith("munchy_core."):
+            continue
         sys.modules.pop(module_name, None)
         package_name, _, attribute = module_name.rpartition(".")
         package = sys.modules.get(package_name)
         if package is not None and hasattr(package, attribute):
             delattr(package, attribute)
-    return importlib.import_module("munchy_api.app")
+    server = importlib.import_module("munchy_api.app")
+    for alias, module_name in SERVER_MODULES.items():
+        setattr(server, alias, importlib.import_module(module_name))
+    return server
 
 
 def _request_with_principal(
@@ -102,8 +130,8 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
 def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_APPLICATION_AUTH_REQUIRED", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.init_state_store()
-    server_token = server.core.application_keys().create(
+    server.persistence.initialize_persistence()
+    server_token = server.state_store.application_keys().create(
         app="desktop-client",
         permissions=["submissions:manage"],
     )["token"]
@@ -134,7 +162,7 @@ def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monk
             "kind": "munchy.job",
             "job": {"handoff": {"destination": "unsupported"}},
         }
-        with sqlite3.connect(server.core.STATE_DB_PATH) as conn:
+        with sqlite3.connect(server.runtime_config.STATE_DB_PATH) as conn:
             conn.execute(
                 """
                 INSERT INTO job_templates(
@@ -146,7 +174,7 @@ def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monk
                     "invalid-example",
                     json.dumps(definition, sort_keys=True),
                     "{}",
-                    server.core.job_template_digest(definition),
+                    server.template_domain.job_template_digest(definition),
                     1,
                     1,
                     "2026-07-18T00:00:00.000001Z",
@@ -182,8 +210,8 @@ def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch
     monkeypatch.setenv("MUNCHY_APPLICATION_AUTH_REQUIRED", "1")
     monkeypatch.setenv("MUNCHY_ADMIN_TOKEN", "admin-token")
     server = load_server(tmp_path, monkeypatch)
-    server.core.init_state_store()
-    submission_token = server.core.application_keys().create(
+    server.persistence.initialize_persistence()
+    submission_token = server.state_store.application_keys().create(
         app="desktop-client",
         permissions=["submissions:manage"],
     )["token"]
@@ -240,7 +268,7 @@ def test_munchy_event_stream_is_scoped_to_authenticated_application(
         assert jeb_created.status_code == 201
         assert operator_created.status_code == 201
 
-        server.core.lifecycle_event_log().append(
+        server.lifecycle_store.lifecycle_event_log().append(
             server.cloud_event(
                 source="urn:munchy",
                 type="io.riverhog.munchy.job.received",
@@ -249,7 +277,7 @@ def test_munchy_event_stream_is_scoped_to_authenticated_application(
             ),
             owner="desktop-client",
         )
-        server.core.lifecycle_event_log().append(
+        server.lifecycle_store.lifecycle_event_log().append(
             server.cloud_event(
                 source="urn:munchy",
                 type="io.riverhog.munchy.job.received",
@@ -389,7 +417,7 @@ def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatc
 
 def test_riverhog_handoff_template_owns_tags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
     definition = job_template_definition()
     definition["job"]["handoff"]["options"]["tags"] = ["camera"]  # type: ignore[index]
 
@@ -410,7 +438,7 @@ def test_riverhog_handoff_template_owns_tags(tmp_path: Path, monkeypatch) -> Non
 
     assert created.status_code == 201, created.json()
     assert submitted.status_code == 202, submitted.json()
-    assert server.core.load_job("submission-1")["handoff"]["options"]["tags"] == ["camera"]
+    assert server.state_store.load_job("submission-1")["handoff"]["options"]["tags"] == ["camera"]
 
 
 def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -460,7 +488,7 @@ def test_job_template_accepts_named_sidecar_rules(tmp_path: Path, monkeypatch) -
 
 def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
     definition = {
         "schema_version": 1,
         "kind": "munchy.job",
@@ -509,7 +537,7 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
 
     assert response.status_code == 202, response.json()
     assert response.json()["inputs"] == {"route": "camera-telephoto"}
-    assert server.core.load_job("submission-1")["review"]["route_id"] == "camera-telephoto"
+    assert server.state_store.load_job("submission-1")["review"]["route_id"] == "camera-telephoto"
 
 
 def test_submission_preflight_resolves_template_without_creating_state(
@@ -545,8 +573,8 @@ def test_submission_preflight_resolves_template_without_creating_state(
     assert payload["template_revision"] == 1
     assert payload["content_inspection"] == "after_upload"
     assert payload["files_total"] == 1
-    assert server.core.list_states("job") == []
-    assert server.core.list_states("input-upload") == []
+    assert server.state_store.list_states("job") == []
+    assert server.state_store.list_states("input-upload") == []
 
 
 def test_submission_creation_is_idempotent_and_snapshots_template_revision(
@@ -554,7 +582,7 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
     request = {
         "submission_id": "submission-1",
         "template_id": "camera-archive",
@@ -599,7 +627,7 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["error"] == "submission_conflict"
 
-    job = server.core.load_job("submission-1")
+    job = server.state_store.load_job("submission-1")
     assert job["template_id"] == "camera-archive"
     assert job["template_revision"] == 1
     assert job["handoff"]["options"] == {"archive_store": "b2"}
@@ -610,10 +638,10 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(server.core, "head_tusd_upload", lambda _url: -1)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: -1)
     monkeypatch.setattr(
-        server.core, "create_tusd_upload", lambda _path, _length: "http://tusd/files/1"
+        server.upload_service, "create_tusd_upload", lambda _path, _length: "http://tusd/files/1"
     )
 
     with TestClient(server.app) as client:
@@ -673,12 +701,12 @@ def test_handoff_failure_policy_is_runtime_job_option(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"x")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -693,8 +721,8 @@ def test_handoff_failure_policy_is_runtime_job_option(
         }
     )
 
-    job = server.core.create_job_state_from_request(
-        server.core.CreateJobRequest(
+    job = server.job_service.create_job_state_from_request(
+        server.domain_models.CreateJobRequest(
             input_upload_id="upload-1",
             run_id="20260101T000000Z",
             tasks=["archive_video"],
@@ -722,7 +750,7 @@ def test_public_tusd_upload_url_signs_nginx_normalized_path(
     monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "fixture-secret")
     server = load_server(tmp_path, monkeypatch)
 
-    url = server.core.public_tusd_upload_url(
+    url = server.upload_service.public_tusd_upload_url(
         "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
     )
 
@@ -747,7 +775,7 @@ def test_public_tusd_upload_url_omits_signature_without_secret(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    url = server.core.public_tusd_upload_url(
+    url = server.upload_service.public_tusd_upload_url(
         "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
     )
 
@@ -760,14 +788,14 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateInputUploadRequest(
-        files=[server.core.InputFileSpec(path="front-door/telephoto/clip.mp4", bytes=12)],
-        storage_hint=server.core.InputUploadStorageHint(
+    req = server.domain_models.CreateInputUploadRequest(
+        files=[server.domain_models.InputFileSpec(path="front-door/telephoto/clip.mp4", bytes=12)],
+        storage_hint=server.domain_models.InputUploadStorageHint(
             workflow_mode="collection_archive",
             handoff_destination="riverhog",
             structured_routing=True,
             groups={
-                "video": server.core.StorageGroupHint(
+                "video": server.domain_models.StorageGroupHint(
                     output_mode="video",
                     tasks=["archive_video"],
                 )
@@ -777,7 +805,7 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
 
     assert req.files[0].path == "front-door/telephoto/clip.mp4"
     assert (
-        server.core.upload_file_resolved_group(
+        server.upload_service.upload_file_resolved_group(
             {"path": "front-door/telephoto/clip.mp4", "structured_routing": True}
         )
         == ""
@@ -790,11 +818,11 @@ def test_preserve_groups_are_copy_only(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    group = server.core.GroupConfig(
+    group = server.domain_models.GroupConfig(
         output_mode="preserve",
         tasks=["archive_video"],
     )
-    storage_group = server.core.StorageGroupHint(
+    storage_group = server.domain_models.StorageGroupHint(
         output_mode="preserve",
         tasks=["archive_video"],
     )
@@ -811,7 +839,7 @@ def test_review_job_request_accepts_clip_plan_config(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="review",
         tasks=["qcut_video"],
         handoff={
@@ -832,7 +860,7 @@ def test_review_job_request_accepts_clip_plan_config(
     assert req.review.clip_plan.max_seconds == 9
 
     with pytest.raises(ValueError, match="min_seconds"):
-        server.core.CreateJobRequest(
+        server.domain_models.CreateJobRequest(
             workflow_mode="review",
             tasks=["qcut_video"],
             handoff={
@@ -853,7 +881,7 @@ def test_review_job_request_accepts_general_sweep_config(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="review",
         handoff={
             "destination": "rclone",
@@ -897,7 +925,7 @@ def test_review_job_storage_hint_uses_handoff_destination(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="review",
         output_mode="video",
         tasks=["qcut_video"],
@@ -921,7 +949,7 @@ def test_review_job_storage_hint_uses_handoff_destination(
 
     assert req.groups["camera-main-video"].max_parallel_encodes == 4
     assert req.groups["camera-main-video"].eager_pipeline_batches == 1
-    hint = server.core.storage_hint_for_job_request(req).model_dump(exclude_none=True)
+    hint = server.admission_service.storage_hint_for_job_request(req).model_dump(exclude_none=True)
 
     assert hint == {
         "workflow_mode": "review",
@@ -945,7 +973,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -969,7 +997,7 @@ def test_create_job_request_accepts_full_metadata_projection_config(
         },
     )
 
-    projection = server.core.group_dump(req.groups["phone-video"])["metadata_projection"]
+    projection = server.upload_service.group_dump(req.groups["phone-video"])["metadata_projection"]
 
     assert projection["creators"] == ["Example Operator", "Example Collaborator"]
     assert projection["device"] == {
@@ -990,7 +1018,7 @@ def test_create_job_request_accepts_disabled_group_metadata_projection(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1001,7 +1029,9 @@ def test_create_job_request_accepts_disabled_group_metadata_projection(
         },
     )
 
-    assert server.core.group_dump(req.groups["device-state"])["metadata_projection"] is False
+    assert (
+        server.upload_service.group_dump(req.groups["device-state"])["metadata_projection"] is False
+    )
 
 
 def test_create_job_request_accepts_routing_extra_exiftool_tags(
@@ -1010,7 +1040,7 @@ def test_create_job_request_accepts_routing_extra_exiftool_tags(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1046,7 +1076,7 @@ def test_create_job_request_accepts_sidecar_fact_extractors(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         workflow_mode="collection_archive",
         handoff={"destination": "riverhog"},
         groups={
@@ -1108,12 +1138,12 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_file = server.core.shared_input_upload_root("upload-1") / "front-door/clip.mp4"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_file = server.upload_service.shared_input_upload_root("upload-1") / "front-door/clip.mp4"
     shared_file.parent.mkdir(parents=True, exist_ok=True)
     shared_file.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -1162,13 +1192,13 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
         "preserve": {"output_mode": "preserve", "tasks": []},
     }
 
-    routed = server.core.route_completed_input_files(job, upload, groups)
-    video_files = server.core.upload_files_for_groups(routed, {"video"})
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
+    video_files = server.upload_service.upload_files_for_groups(routed, {"video"})
 
     assert [item["path"] for item in video_files] == ["front-door/clip.mp4"]
     assert video_files[0]["resolved_group"] == "video"
     assert video_files[0]["resolved_group_rel"] == "front-door/clip.mp4"
-    assert server.core.upload_file_group_rel_for_state(video_files[0], "video") == Path(
+    assert server.upload_service.upload_file_group_rel_for_state(video_files[0], "video") == Path(
         "front-door/clip.mp4"
     )
 
@@ -1178,12 +1208,12 @@ def test_routing_manifest_records_actual_route_and_output(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_file = server.core.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_file = server.upload_service.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
     shared_file.parent.mkdir(parents=True, exist_ok=True)
     shared_file.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -1231,10 +1261,10 @@ def test_routing_manifest_records_actual_route_and_output(
         }
     }
 
-    routed = server.core.route_completed_input_files(job, upload, groups)
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
     archive_dir = tmp_path / "archive"
-    output = server.core.archive_output_for_upload_file(
-        server.core.upload_files_for_groups(routed, {"video"})[0],
+    output = server.routing_service.archive_output_for_upload_file(
+        server.upload_service.upload_files_for_groups(routed, {"video"})[0],
         group_name="video",
         group_config=groups["video"],
         archive_dir=archive_dir,
@@ -1242,9 +1272,11 @@ def test_routing_manifest_records_actual_route_and_output(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"webm")
 
-    server.core.write_routing_manifest(job, routed, groups, archive_dir)
+    server.routing_service.write_routing_manifest(job, routed, groups, archive_dir)
 
-    manifest = json.loads((archive_dir / server.core.ROUTING_MANIFEST_FILENAME).read_text())
+    manifest = json.loads(
+        (archive_dir / server.runtime_config.ROUTING_MANIFEST_FILENAME).read_text()
+    )
     assert manifest["schema"] == "munchy_api_client.routing-manifest"
     assert manifest["job_id"] == "job-1"
     assert manifest["files"] == [
@@ -1274,13 +1306,13 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_root = server.core.shared_input_upload_root("upload-1") / "phone"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_root = server.upload_service.shared_input_upload_root("upload-1") / "phone"
     shared_root.mkdir(parents=True, exist_ok=True)
     (shared_root / "IMG_0001.MOV").write_bytes(b"video")
     (shared_root / "IMG_0001.MOV.xmp").write_text("<xmpmeta />", encoding="utf-8")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -1342,10 +1374,10 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
             "encode_profile": {"archive": {"container": "webm"}},
         }
     }
-    routed = server.core.route_completed_input_files(job, upload, groups)
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
     archive_dir = tmp_path / "archive"
-    output = server.core.archive_output_for_upload_file(
-        server.core.upload_files_for_groups(routed, {"video"})[0],
+    output = server.routing_service.archive_output_for_upload_file(
+        server.upload_service.upload_files_for_groups(routed, {"video"})[0],
         group_name="video",
         group_config=groups["video"],
         archive_dir=archive_dir,
@@ -1353,9 +1385,11 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"webm")
 
-    server.core.write_routing_manifest(job, routed, groups, archive_dir)
+    server.routing_service.write_routing_manifest(job, routed, groups, archive_dir)
 
-    manifest = json.loads((archive_dir / server.core.ROUTING_MANIFEST_FILENAME).read_text())
+    manifest = json.loads(
+        (archive_dir / server.runtime_config.ROUTING_MANIFEST_FILENAME).read_text()
+    )
     files_by_source = {item["source"]["path"]: item for item in manifest["files"]}
     evidence = files_by_source["phone/IMG_0001.MOV.xmp"]
     assert evidence["route"]["action"] == "evidence"
@@ -1381,9 +1415,9 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    upload = server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -1418,7 +1452,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
         "template_id": "phone-archive",
         "handoff": {"destination": "riverhog", "options": {}},
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     groups = {
         "video": {
             "output_mode": "video",
@@ -1433,7 +1467,7 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
         }
     }
     archive_dir = tmp_path / "archive"
-    output = server.core.archive_output_for_upload_file(
+    output = server.routing_service.archive_output_for_upload_file(
         upload["files"][0],
         group_name="video",
         group_config=groups["video"],
@@ -1442,7 +1476,9 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"webm")
 
-    updated = server.core.write_metadata_projection_sidecars(job, upload, groups, archive_dir)
+    updated = server.routing_service.write_metadata_projection_sidecars(
+        job, upload, groups, archive_dir
+    )
 
     sidecar = output.with_name("IMG_0001.webm.xmp")
     assert sidecar.exists()
@@ -1462,8 +1498,8 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     assert updated["files"][0]["metadata_projection_sidecar"] == (
         "video/iphone/video/IMG_0001.webm.xmp"
     )
-    assert server.core.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
-    assert server.core.routing_manifest_output_entry(output, archive_dir=archive_dir)[
+    assert server.state_store.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
+    assert server.routing_service.routing_manifest_output_entry(output, archive_dir=archive_dir)[
         "metadata_sidecars"
     ] == [
         {
@@ -1474,21 +1510,21 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     ]
 
     updated["files"][0]["metadata_projection_captured_at"] = "2026-07-01T00:00:00Z"
-    server.core.save_input_upload_raw(updated)
+    server.upload_service.save_input_upload_raw(updated)
     job["handoff_adapter_state"] = {
         "state": "open",
         "files": {
             sidecar.relative_to(archive_dir).as_posix(): {
                 "path": sidecar.relative_to(archive_dir).as_posix(),
                 "bytes": sidecar.stat().st_size,
-                "sha256": server.core.file_sha256(sidecar),
+                "sha256": server.upload_service.file_sha256(sidecar),
                 "uploaded_bytes": 0,
                 "state": "uploading",
             }
         },
     }
 
-    server.core.write_metadata_projection_sidecars(job, updated, groups, archive_dir)
+    server.routing_service.write_metadata_projection_sidecars(job, updated, groups, archive_dir)
 
     assert sidecar.read_text(encoding="utf-8") == xmp
 
@@ -1498,9 +1534,9 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    upload = server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -1539,14 +1575,14 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
         }
     }
     archive_dir = tmp_path / "archive"
-    output = server.core.archive_output_for_upload_file(
+    output = server.routing_service.archive_output_for_upload_file(
         upload["files"][0],
         group_name="video",
         group_config=groups["video"],
         archive_dir=archive_dir,
     )
     output_rel = output.relative_to(archive_dir).as_posix()
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "input_upload_id": "upload-1",
@@ -1572,7 +1608,9 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
         "handoff": {"destination": "riverhog", "options": {}},
     }
 
-    updated = server.core.write_metadata_projection_sidecars(stale_job, upload, groups, archive_dir)
+    updated = server.routing_service.write_metadata_projection_sidecars(
+        stale_job, upload, groups, archive_dir
+    )
 
     sidecar = output.with_name("IMG_0001.webm.xmp")
     assert not output.exists()
@@ -1581,7 +1619,7 @@ def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
     assert updated["files"][0]["metadata_projection_sidecar"] == (
         "video/iphone/video/IMG_0001.webm.xmp"
     )
-    assert server.core.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
+    assert server.state_store.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
 
 
 def test_metadata_projection_still_fails_for_missing_unhanded_output(
@@ -1589,9 +1627,9 @@ def test_metadata_projection_still_fails_for_missing_unhanded_output(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    upload = server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -1622,7 +1660,9 @@ def test_metadata_projection_still_fails_for_missing_unhanded_output(
     }
 
     with pytest.raises(RuntimeError, match="metadata projection output is missing"):
-        server.core.write_metadata_projection_sidecars(job, upload, groups, tmp_path / "archive")
+        server.routing_service.write_metadata_projection_sidecars(
+            job, upload, groups, tmp_path / "archive"
+        )
 
 
 def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
@@ -1630,10 +1670,10 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.tusd_data_path("phone-xmp-1").parent.mkdir(parents=True, exist_ok=True)
-    server.core.tusd_data_path("phone-xmp-1").write_text(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.tusd_data_path("phone-xmp-1").parent.mkdir(parents=True, exist_ok=True)
+    server.upload_service.tusd_data_path("phone-xmp-1").write_text(
         """<x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -1644,7 +1684,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
 """,
         encoding="utf-8",
     )
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -1687,7 +1727,7 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
         "input_upload_id": "upload-1",
         "template_id": "phone-archive",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     groups = {
         "photos": {
             "output_mode": "preserve",
@@ -1704,7 +1744,9 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
     output.parent.mkdir(parents=True)
     output.write_bytes(b"heic")
 
-    updated = server.core.write_metadata_projection_sidecars(job, upload, groups, archive_dir)
+    updated = server.routing_service.write_metadata_projection_sidecars(
+        job, upload, groups, archive_dir
+    )
 
     sidecar = output.with_name("IMG_0001.HEIC.xmp")
     assert sidecar.exists()
@@ -1748,7 +1790,7 @@ def test_source_artifact_entries_include_sidecar_evidence_for_reencodes(
         ]
     }
 
-    entries = server.core.source_artifacts_sidecar_entries(
+    entries = server.upload_service.source_artifacts_sidecar_entries(
         upload,
         [primary_state],
         group_name="video",
@@ -1776,11 +1818,11 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
     source = tmp_path / "REC_20260628_203040.WAV"
     source.write_bytes(b"wav")
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
-    monkeypatch.setattr(server.core, "exiftool_for_routing", lambda _path, **_kwargs: {})
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
-    metadata = server.core.projection_metadata_from_source(
+    metadata = server.routing_service.projection_metadata_from_source(
         "voice/REC_20260628_203040.WAV",
         source,
         group_config={
@@ -1811,15 +1853,15 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.tusd_data_path("camera-video-1").parent.mkdir(parents=True, exist_ok=True)
-    primary_path = server.core.tusd_data_path("camera-video-1")
-    sidecar_path = server.core.tusd_data_path("camera-xml-1")
+    server.upload_service.tusd_data_path("camera-video-1").parent.mkdir(parents=True, exist_ok=True)
+    primary_path = server.upload_service.tusd_data_path("camera-video-1")
+    sidecar_path = server.upload_service.tusd_data_path("camera-xml-1")
     primary_path.write_bytes(b"video")
     sidecar_path.write_text("<metadata />", encoding="utf-8")
     exiftool_calls: list[tuple[Path, tuple[str, ...]]] = []
 
     monkeypatch.setattr(
-        server.core,
+        server.routing_service,
         "ffprobe_for_routing",
         lambda _path: {"format": {}, "streams": []},
     )
@@ -1864,7 +1906,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
             }
         return {}
 
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool)
     upload = {
         "input_upload_id": "upload-1",
         "files": [
@@ -1955,7 +1997,7 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
         }
     }
 
-    changed = server.core.ensure_file_projection_metadata(
+    changed = server.routing_service.ensure_file_projection_metadata(
         upload,
         upload["files"][0],
         job=job,
@@ -1991,15 +2033,15 @@ def test_metadata_projection_can_use_configured_gps(
     source = tmp_path / "RecM0A_20260628_203040_203100_0_main.mp4"
     source.write_bytes(b"video")
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
     monkeypatch.setattr(
-        server.core,
+        server.routing_service,
         "exiftool_for_routing",
         lambda _path, **_kwargs: {"DateTimeOriginal": "2026:06:28 20:30:40Z"},
     )
 
-    metadata = server.core.projection_metadata_from_source(
+    metadata = server.routing_service.projection_metadata_from_source(
         "camera/RecM0A_20260628_203040_203100_0_main.mp4",
         source,
         group_config={
@@ -2028,15 +2070,15 @@ def test_metadata_projection_path_regex_fallback_survives_exiftool_failure(
     source = tmp_path / "Back Yard_00_20260630150631.mp4"
     source.write_bytes(b"video")
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
 
     def fail_exiftool(path: Path, **_kwargs: object) -> dict[str, object]:
-        raise server.core.RoutingFailed(f"exiftool failed for {path.name}")
+        raise server.domain_errors.RoutingFailed(f"exiftool failed for {path.name}")
 
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fail_exiftool)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fail_exiftool)
 
-    metadata = server.core.projection_metadata_from_source(
+    metadata = server.routing_service.projection_metadata_from_source(
         "back-yard-camera/Back Yard_00_20260630150631.mp4",
         source,
         group_config={
@@ -2081,7 +2123,7 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
         creators=["Example Operator"],
     )
 
-    assert server.core.audio_container_metadata_args(metadata) == [
+    assert server.media_service.audio_container_metadata_args(metadata) == [
         "-metadata",
         "DATE=2026-06-28T20:30:40-07:00",
         "-metadata",
@@ -2134,7 +2176,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         },
     }
 
-    container_metadata, changed = server.core.container_metadata_for_gpu_payload(
+    container_metadata, changed = server.routing_service.container_metadata_for_gpu_payload(
         {"job_id": "job-1"},
         {"input_upload_id": "upload-1", "files": [file_state]},
         [file_state],
@@ -2142,7 +2184,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         group_config=group_config,
         tasks=["archive_video"],
     )
-    payload = server.core.build_eager_gpu_payload(
+    payload = server.processing_service.build_eager_gpu_payload(
         {"job_id": "job-1", "template_id": "phone-archive"},
         batch_id="batch-1",
         group_name="camera",
@@ -2166,12 +2208,12 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    tusd_source = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    tusd_source = server.upload_service.tusd_data_path("upload-a")
     tusd_source.parent.mkdir(parents=True, exist_ok=True)
     tusd_source.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "storage_hint": {
@@ -2196,7 +2238,7 @@ def test_eager_gpu_projection_reads_materialized_original_name(
         "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     group_config = {
         "output_mode": "video",
         "tasks": ["archive_video"],
@@ -2210,19 +2252,23 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     exiftool_paths: list[Path] = []
 
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
 
     def fake_exiftool(path: Path, **_kwargs: object) -> dict[str, object]:
         exiftool_paths.append(path)
         if path == tusd_source:
-            raise server.core.RoutingFailed("extensionless tusd backing file was inspected")
+            raise server.domain_errors.RoutingFailed(
+                "extensionless tusd backing file was inspected"
+            )
         return {"DateTimeOriginal": "2026:06:30 12:34:56-0700"}
 
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fake_exiftool)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr(
+        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+    )
 
-    updated = server.core.start_eager_gpu_batch(
+    updated = server.processing_service.start_eager_gpu_batch(
         job,
         upload,
         group_name="camera",
@@ -2250,15 +2296,15 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
     source_path = "camera/Back Yard_00_20260630123456.mp4"
     pending_path = "other/pending.mp4"
-    tusd_source = server.core.tusd_data_path("upload-a")
+    tusd_source = server.upload_service.tusd_data_path("upload-a")
     tusd_source.parent.mkdir(parents=True, exist_ok=True)
     tusd_source.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": upload_id,
             "storage_hint": {
@@ -2274,13 +2320,13 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
                     "path": source_path,
                     "bytes": 5,
                     "file_upload_id": "upload-a",
-                    "target_path": server.core.target_path_for(upload_id, source_path),
+                    "target_path": server.upload_service.target_path_for(upload_id, source_path),
                 },
                 {
                     "path": pending_path,
                     "bytes": 7,
                     "file_upload_id": "upload-b",
-                    "target_path": server.core.target_path_for(upload_id, pending_path),
+                    "target_path": server.upload_service.target_path_for(upload_id, pending_path),
                     "upload_url": None,
                 },
             ],
@@ -2292,7 +2338,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
         "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     group_config = {
         "output_mode": "video",
         "tasks": ["archive_video"],
@@ -2311,7 +2357,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     errors: list[BaseException] = []
 
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
 
     def fake_exiftool(_path: Path, **_kwargs: object) -> dict[str, object]:
@@ -2321,16 +2367,16 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
 
     def fake_create_tusd_upload(target_path: str, _length: int) -> str:
         tusd_create_started.set()
-        return f"{server.core.TUSD_PUBLIC_BASE_URL}/{target_path}"
+        return f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
 
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fake_exiftool)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda _payload: None)
-    monkeypatch.setattr(server.core, "create_tusd_upload", fake_create_tusd_upload)
-    monkeypatch.setattr(server.core, "head_tusd_upload", lambda _url: 0)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool)
+    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda _payload: None)
+    monkeypatch.setattr(server.upload_service, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: 0)
 
     def capture_metadata() -> None:
         try:
-            server.core.start_eager_gpu_batch(
+            server.processing_service.start_eager_gpu_batch(
                 job,
                 upload,
                 group_name="camera",
@@ -2345,7 +2391,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     def create_pending_upload() -> None:
         request_started.set()
         try:
-            server.core._create_or_resume_input_file_upload(upload_id, pending_path)
+            server.job_service._create_or_resume_input_file_upload(upload_id, pending_path)
         except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
             errors.append(exc)
 
@@ -2364,17 +2410,19 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     assert not metadata_thread.is_alive()
     assert not request_thread.is_alive()
     assert tusd_create_started.is_set()
-    stored = server.core.load_input_upload(upload_id)
+    stored = server.upload_service.load_input_upload(upload_id)
     stored_by_path = {item["path"]: item for item in stored["files"]}
     assert stored_by_path[source_path]["metadata_projection_metadata"]["capture_date"] == (
         "2026-06-30T12:34:56-07:00"
     )
     assert stored_by_path[pending_path]["upload_url"]
 
-    stored = server.core.consume_input_upload_files(upload_id, {source_path})
-    server.core.shutil.rmtree(server.core.GPU_RUNTIME_DIR / "jobs" / "job-1" / "eager-input")
+    stored = server.processing_service.consume_input_upload_files(upload_id, {source_path})
+    server.cleanup_service.shutil.rmtree(
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "eager-input"
+    )
     archive_dir = tmp_path / "archive"
-    output = server.core.archive_output_for_upload_file(
+    output = server.routing_service.archive_output_for_upload_file(
         stored_by_path[source_path],
         group_name="camera",
         group_config=group_config,
@@ -2383,7 +2431,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(b"webm")
 
-    projected = server.core.write_metadata_projection_sidecars(
+    projected = server.routing_service.write_metadata_projection_sidecars(
         job,
         stored,
         {"camera": group_config},
@@ -2400,24 +2448,24 @@ def test_input_upload_state_compare_and_swap_rejects_stale_snapshots(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
-    stale = server.core.load_input_upload_raw("upload-1")
-    current = server.core.load_input_upload_raw("upload-1")
+    stale = server.upload_service.load_input_upload_raw("upload-1")
+    current = server.upload_service.load_input_upload_raw("upload-1")
     current["files"][0]["metadata_projection_metadata"] = {"capture_date": "2026-06-30"}
-    server.core.save_input_upload_raw(current)
+    server.upload_service.save_input_upload_raw(current)
     stale["files"][0]["upload_url"] = "https://uploads.example.invalid/upload-a"
 
     with pytest.raises(RuntimeError, match="stale input upload state"):
-        server.core.save_input_upload_raw(stale)
+        server.upload_service.save_input_upload_raw(stale)
 
-    stored = server.core.load_input_upload_raw("upload-1")
+    stored = server.upload_service.load_input_upload_raw("upload-1")
     assert stored["files"][0]["metadata_projection_metadata"] == {"capture_date": "2026-06-30"}
 
 
@@ -2426,8 +2474,8 @@ def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
     file_state = {
         "path": "phone/IMG_0001.HEIC",
@@ -2438,13 +2486,13 @@ def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
         "resolved_group": "phone-preserve",
         "resolved_group_rel": "iphone-se2/photo/rear-heic/IMG_0001.HEIC",
     }
-    materialized = server.core.shared_input_upload_root(upload_id) / (
+    materialized = server.upload_service.shared_input_upload_root(upload_id) / (
         "phone-preserve/iphone-se2/photo/rear-heic/IMG_0001.HEIC"
     )
     materialized.parent.mkdir(parents=True, exist_ok=True)
     materialized.write_bytes(b"image")
 
-    status = server.core.upload_file_status(file_state)
+    status = server.upload_service.upload_file_status(file_state)
 
     assert status["complete"] is True
     assert status["upload_state"] == "uploaded"
@@ -2456,12 +2504,12 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_file = server.core.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_file = server.upload_service.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
     shared_file.parent.mkdir(parents=True, exist_ok=True)
     shared_file.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2499,7 +2547,7 @@ def test_completed_structured_file_can_route_by_probe_metadata(
             ],
         }
 
-    monkeypatch.setattr(server.core, "ffprobe_for_routing", fake_ffprobe_for_routing)
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", fake_ffprobe_for_routing)
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
@@ -2521,10 +2569,11 @@ def test_completed_structured_file_can_route_by_probe_metadata(
     }
     groups = {"phone-video": {"output_mode": "video", "tasks": []}}
 
-    routed = server.core.route_completed_input_files(job, upload, groups)
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
 
     assert (
-        server.core.upload_files_for_groups(routed, {"phone-video"})[0]["route_id"] == "iphone-4k"
+        server.upload_service.upload_files_for_groups(routed, {"phone-video"})[0]["route_id"]
+        == "iphone-4k"
     )
 
 
@@ -2533,14 +2582,16 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    video_file = server.core.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
-    sidecar_file = server.core.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV.xmp"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    video_file = server.upload_service.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV"
+    sidecar_file = (
+        server.upload_service.shared_input_upload_root("upload-1") / "phone/IMG_0001.MOV.xmp"
+    )
     video_file.parent.mkdir(parents=True, exist_ok=True)
     video_file.write_bytes(b"video")
     sidecar_file.write_text("<xmpmeta />", encoding="utf-8")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2587,7 +2638,7 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
             ],
         }
 
-    monkeypatch.setattr(server.core, "ffprobe_for_routing", fake_ffprobe_for_routing)
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", fake_ffprobe_for_routing)
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
@@ -2615,7 +2666,7 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
     }
     groups = {"phone-video": {"output_mode": "video", "tasks": []}}
 
-    routed = server.core.route_completed_input_files(job, upload, groups)
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
 
     assert probed == [video_file]
     files_by_path = {item["path"]: item for item in routed["files"]}
@@ -2630,14 +2681,14 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_root = server.core.shared_input_upload_root("upload-1") / "camera"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_root = server.upload_service.shared_input_upload_root("upload-1") / "camera"
     shared_root.mkdir(parents=True, exist_ok=True)
     (shared_root / "C0001.MP4").write_bytes(b"video")
     (shared_root / "C0001M01.XML").write_text("<metadata />", encoding="utf-8")
     (shared_root / "C0002.MP4").write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2708,7 +2759,7 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
         }
     }
 
-    routed = server.core.route_completed_input_files(job, upload, groups)
+    routed = server.routing_service.route_completed_input_files(job, upload, groups)
 
     files_by_path = {item["path"]: item for item in routed["files"]}
     assert files_by_path["camera/C0001.MP4"]["route_id"] == "camera-video"
@@ -2716,7 +2767,7 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
     assert "route_id" not in files_by_path["camera/C0002.MP4"]
     assert "route_action" not in files_by_path["camera/C0002M01.XML"]
 
-    ready = server.core.ready_eager_files(
+    ready = server.processing_service.ready_eager_files(
         job,
         routed,
         groups,
@@ -2736,14 +2787,16 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    video_file = server.core.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
-    sidecar_file = server.core.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    video_file = server.upload_service.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
+    sidecar_file = (
+        server.upload_service.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    )
     video_file.parent.mkdir(parents=True, exist_ok=True)
     video_file.write_bytes(b"video")
     sidecar_file.write_text("<metadata />", encoding="utf-8")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2784,8 +2837,8 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
             "EXIF:Model": "Synthetic Camera",
         }
 
-    monkeypatch.setattr(server.core, "ffprobe_for_routing", fail_ffprobe_for_routing)
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fake_exiftool_for_routing)
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool_for_routing)
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
@@ -2817,7 +2870,7 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
         },
     }
 
-    routed = server.core.route_completed_input_files(
+    routed = server.routing_service.route_completed_input_files(
         job,
         upload,
         {"video": {"output_mode": "video", "tasks": []}},
@@ -2835,14 +2888,16 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    video_file = server.core.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
-    sidecar_file = server.core.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    video_file = server.upload_service.shared_input_upload_root("upload-1") / "camera/C0001.MP4"
+    sidecar_file = (
+        server.upload_service.shared_input_upload_root("upload-1") / "camera/C0001M01.XML"
+    )
     video_file.parent.mkdir(parents=True, exist_ok=True)
     video_file.write_bytes(b"video")
     sidecar_file.write_text("<metadata />", encoding="utf-8")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2884,8 +2939,8 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
             return {"QuickTime:VideoAvgBitrate": "200 Mbps"}
         raise AssertionError(f"unexpected exiftool path: {path}")
 
-    monkeypatch.setattr(server.core, "ffprobe_for_routing", fail_ffprobe_for_routing)
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fake_exiftool_for_routing)
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool_for_routing)
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
@@ -2922,7 +2977,7 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
         },
     }
 
-    routed = server.core.route_completed_input_files(
+    routed = server.routing_service.route_completed_input_files(
         job,
         upload,
         {"video": {"output_mode": "video", "tasks": []}},
@@ -2940,12 +2995,12 @@ def test_routing_skips_expensive_tools_for_path_only_runner_route(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    state_file = server.core.shared_input_upload_root("upload-1") / "camera/leinfo.sav"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    state_file = server.upload_service.shared_input_upload_root("upload-1") / "camera/leinfo.sav"
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_bytes(b"state")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -2973,8 +3028,8 @@ def test_routing_skips_expensive_tools_for_path_only_runner_route(
     def fail_exiftool_for_routing(path: Path, *, tags=None):  # type: ignore[no-untyped-def]
         raise AssertionError(f"unexpected exiftool call for {path} with {tags}")
 
-    monkeypatch.setattr(server.core, "ffprobe_for_routing", fail_ffprobe_for_routing)
-    monkeypatch.setattr(server.core, "exiftool_for_routing", fail_exiftool_for_routing)
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", fail_ffprobe_for_routing)
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fail_exiftool_for_routing)
     job = {
         "job_id": "job-1",
         "input_upload_id": "upload-1",
@@ -3000,7 +3055,7 @@ def test_routing_skips_expensive_tools_for_path_only_runner_route(
         },
     }
 
-    routed = server.core.route_completed_input_files(
+    routed = server.routing_service.route_completed_input_files(
         job,
         upload,
         {
@@ -3018,12 +3073,12 @@ def test_completed_structured_file_fails_when_no_route_matches(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    shared_file = server.core.shared_input_upload_root("upload-1") / "unknown/clip.mp4"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    shared_file = server.upload_service.shared_input_upload_root("upload-1") / "unknown/clip.mp4"
     shared_file.parent.mkdir(parents=True, exist_ok=True)
     shared_file.write_bytes(b"video")
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -3053,8 +3108,8 @@ def test_completed_structured_file_fails_when_no_route_matches(
         },
     }
 
-    with pytest.raises(server.core.RoutingFailed, match="no matching route"):
-        server.core.route_completed_input_files(
+    with pytest.raises(server.domain_errors.RoutingFailed, match="no matching route"):
+        server.routing_service.route_completed_input_files(
             job,
             upload,
             {"video": {"output_mode": "video", "tasks": []}},
@@ -3066,30 +3121,30 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_BATCH_FILES", 2)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_PIPELINE_BATCHES", 2)
-    monkeypatch.setattr(server.core, "GPU_SCRATCH_MULTIPLIER", 2.5)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_SCRATCH_MULTIPLIER", 0.5)
-    monkeypatch.setattr(server.core, "gpu_input_copy_multiplier", lambda: 0.0)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_BATCH_FILES", 2)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 2)
+    monkeypatch.setattr(server.runtime_config, "GPU_SCRATCH_MULTIPLIER", 2.5)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_SCRATCH_MULTIPLIER", 0.5)
+    monkeypatch.setattr(server.admission_service, "gpu_input_copy_multiplier", lambda: 0.0)
     files = [
-        server.core.InputFileSpec(path=f"camera/{index}.mp4", bytes=size)
+        server.domain_models.InputFileSpec(path=f"camera/{index}.mp4", bytes=size)
         for index, size in enumerate([100, 90, 80, 70, 60], start=1)
     ]
-    hint = server.core.InputUploadStorageHint(
+    hint = server.domain_models.InputUploadStorageHint(
         workflow_mode="collection_archive",
         handoff_destination="riverhog",
         groups={
-            "camera": server.core.StorageGroupHint(
+            "camera": server.domain_models.StorageGroupHint(
                 output_mode="video",
                 tasks=["archive_video"],
             )
         },
     )
 
-    required = server.core.gpu_scratch_admission_required_bytes(files, hint)
+    required = server.admission_service.gpu_scratch_admission_required_bytes(files, hint)
 
     assert required == int((100 + 90 + 80 + 70) * 0.5)
-    assert required < server.core.gpu_scratch_required_bytes(
+    assert required < server.admission_service.gpu_scratch_required_bytes(
         sum(item.bytes for item in files), hint
     )
 
@@ -3099,18 +3154,18 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    files = [server.core.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
-    hint = server.core.InputUploadStorageHint(
+    files = [server.domain_models.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
+    hint = server.domain_models.InputUploadStorageHint(
         workflow_mode="collection_archive",
         handoff_destination="riverhog",
         output_mode="audio",
-        groups={"voice": server.core.StorageGroupHint(output_mode="audio")},
+        groups={"voice": server.domain_models.StorageGroupHint(output_mode="audio")},
     )
 
     assert hint.groups["voice"].tasks == ["archive_audio"]
-    assert server.core.storage_hint_has_gpu_work(hint) is False
-    assert server.core.gpu_scratch_required_bytes(100, hint) == 0
-    assert server.core.gpu_scratch_admission_required_bytes(files, hint) == 0
+    assert server.admission_service.storage_hint_has_gpu_work(hint) is False
+    assert server.admission_service.gpu_scratch_required_bytes(100, hint) == 0
+    assert server.admission_service.gpu_scratch_admission_required_bytes(files, hint) == 0
 
 
 def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
@@ -3118,10 +3173,10 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-voice"
-    source_data = server.core.tusd_data_path("upload-a")
+    source_data = server.upload_service.tusd_data_path("upload-a")
     source_data.parent.mkdir(parents=True, exist_ok=True)
     source_data.write_bytes(b"mp3")
     group_config = {
@@ -3129,7 +3184,7 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
         "tasks": ["archive_audio"],
         "metadata_projection": {"enabled": False},
     }
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": upload_id,
             "files": [
@@ -3148,7 +3203,7 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
         "input_upload_id": upload_id,
         "template_id": "voice-archive",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     archive_dir = tmp_path / "archive"
     calls: list[tuple[Path, Path]] = []
 
@@ -3164,10 +3219,12 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
         (output_root / "R-00001_2606291200_REC.opus").write_bytes(b"opus")
         return {"status": "succeeded", "count": 1, "items": []}
 
-    monkeypatch.setattr(server.core, "run_archive_audio_group", fake_run_archive_audio_group)
+    monkeypatch.setattr(
+        server.media_service, "run_archive_audio_group", fake_run_archive_audio_group
+    )
 
-    assert server.core.eager_archive_group_names({"voice": group_config}) == {"voice"}
-    updated = server.core.start_eager_audio_batch(
+    assert server.processing_service.eager_archive_group_names({"voice": group_config}) == {"voice"}
+    updated = server.processing_service.start_eager_audio_batch(
         job,
         upload,
         group_name="voice",
@@ -3176,9 +3233,9 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
         archive_dir=archive_dir,
     )
 
-    stored_job = server.core.load_job("job-voice")
-    stored_upload = server.core.load_input_upload(upload_id)
-    progress = server.core.encode_progress_for_job(stored_job)
+    stored_job = server.state_store.load_job("job-voice")
+    stored_upload = server.upload_service.load_input_upload(upload_id)
+    progress = server.processing_service.encode_progress_for_job(stored_job)
     assert calls
     assert (archive_dir / "voice" / "R-00001_2606291200_REC.opus").read_bytes() == b"opus"
     assert updated["files"][0]["consumed_at"]
@@ -3257,16 +3314,16 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         assert metadata["stat"]["birthtime"] == "2026-06-28T20:30:40+00:00"
         return {"path": str(kwargs["archive_mkv"]) + ".source-artifacts.tar.zst"}
 
-    monkeypatch.setattr(server.core, "run_command", fake_run_command)
+    monkeypatch.setattr(server.command_runtime, "run_command", fake_run_command)
     monkeypatch.setattr(
-        server.core, "build_strict_source_artifacts", fake_build_strict_source_artifacts
+        server.media_service, "build_strict_source_artifacts", fake_build_strict_source_artifacts
     )
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
-    monkeypatch.setattr(server.core, "exiftool_for_routing", lambda _path, **_kwargs: {})
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
-    result = server.core.run_archive_audio_group(
+    result = server.media_service.run_archive_audio_group(
         input_root=input_root,
         output_root=output_root,
         group_config=group_config,
@@ -3331,10 +3388,10 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-voice"
-    input_root = server.core.shared_input_upload_root(upload_id) / "voice"
+    input_root = server.upload_service.shared_input_upload_root(upload_id) / "voice"
     output_root = tmp_path / "archive" / "voice"
     source = input_root / "memo" / "R-00013_2606222246_REC.MP3"
     source.parent.mkdir(parents=True)
@@ -3397,22 +3454,22 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
             },
         }
 
-    monkeypatch.setattr(server.core, "run_command", fake_run_command)
+    monkeypatch.setattr(server.command_runtime, "run_command", fake_run_command)
     monkeypatch.setattr(
-        server.core, "build_strict_source_artifacts", fake_build_strict_source_artifacts
+        server.media_service, "build_strict_source_artifacts", fake_build_strict_source_artifacts
     )
     monkeypatch.setattr(
-        server.core, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
+        server.routing_service, "ffprobe_for_routing", lambda _path: {"format": {}, "streams": []}
     )
-    monkeypatch.setattr(server.core, "exiftool_for_routing", lambda _path, **_kwargs: {})
+    monkeypatch.setattr(server.routing_service, "exiftool_for_routing", lambda _path, **_kwargs: {})
 
-    result = server.core.run_archive_audio_group(
+    result = server.media_service.run_archive_audio_group(
         input_root=input_root,
         output_root=output_root,
         group_config=group_config,
     )
     output = output_root / "memo" / "R-00013_2606222246_REC.opus"
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": upload_id,
             "files": [
@@ -3431,9 +3488,9 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
         "input_upload_id": upload_id,
         "template_id": "esonic-archive",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
-    updated = server.core.write_metadata_projection_sidecars(
+    updated = server.routing_service.write_metadata_projection_sidecars(
         job,
         upload,
         {"voice": group_config},
@@ -3463,9 +3520,9 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_MAX_RUNNING_JOBS", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-a",
             "state": "queued",
@@ -3474,7 +3531,7 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
             "handoff": {"destination": "command", "options": {}},
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-b",
             "state": "queued",
@@ -3489,13 +3546,13 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
         def add_task(self, func, *args):  # type: ignore[no-untyped-def]
             scheduled_tasks.append((func, args))
 
-    first = server.core.schedule_pending_jobs(Tasks())
-    second = server.core.schedule_pending_jobs(Tasks())
-    job_b = server.core.job_response(server.core.load_job("job-b"))
+    first = server.job_service.schedule_pending_jobs(Tasks())
+    second = server.job_service.schedule_pending_jobs(Tasks())
+    job_b = server.processing_service.job_response(server.state_store.load_job("job-b"))
 
     assert first == ["job-a"]
     assert second == []
-    assert scheduled_tasks == [(server.core.run_job, ("job-a",))]
+    assert scheduled_tasks == [(server.job_service.run_job, ("job-a",))]
     assert server.scheduler_status()["scheduled_jobs"] == ["job-a"]
     assert job_b["queue"]["position"] == 2
     assert job_b["queue"]["running_job_limit"] == 1
@@ -3507,7 +3564,7 @@ def test_submission_accepts_bounded_lifecycle_event_context(
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
 
-    req = server.core.CreateJobRequest(
+    req = server.domain_models.CreateJobRequest(
         handoff={"destination": "riverhog"},
         event_context={"workflow": "desktop-archive", "run": 3},
     )
@@ -3520,8 +3577,8 @@ def test_job_lifecycle_event_is_a_structured_cloudevent(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "template_id": "camera-archive",
@@ -3535,10 +3592,10 @@ def test_job_lifecycle_event_is_a_structured_cloudevent(
         "workflow_mode": "collection_archive",
         "event_context": {"workflow": "desktop-archive"},
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
-    result = server.core.emit_job_event(job, "job.received", "received")
-    page = server.core.lifecycle_event_log().page(
+    result = server.event_service.emit_job_event(job, "job.received", "received")
+    page = server.lifecycle_store.lifecycle_event_log().page(
         after=None,
         limit=100,
         owner="desktop-client",
@@ -3567,10 +3624,10 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     collection_id = 41
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "initiated_by_app": "jeb",
@@ -3599,10 +3656,10 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     assert server.riverhog.translate_riverhog_event(upstream)
     assert server.riverhog.translate_riverhog_event(upstream)
 
-    page = server.core.lifecycle_event_log().page(after=None, limit=100, owner="jeb")
+    page = server.lifecycle_store.lifecycle_event_log().page(after=None, limit=100, owner="jeb")
     assert len(page.events) == 1
     assert (
-        server.core.lifecycle_event_log()
+        server.lifecycle_store.lifecycle_event_log()
         .page(
             after=None,
             limit=100,
@@ -3631,14 +3688,14 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     collection_id = 41
     for job_id, created_at in (
         ("job-1", "2026-06-05T12:00:00.000000Z"),
         ("job-2", "2026-06-05T13:00:00.000000Z"),
     ):
-        server.core.save_job(
+        server.state_store.save_job(
             {
                 "job_id": job_id,
                 "created_at": created_at,
@@ -3666,8 +3723,8 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
     collection_id = 41
     job = {
@@ -3690,7 +3747,7 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
             },
         },
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
     class MissingApi:
         def complete_collection_upload_session(self, requested: str, **_kwargs: object):
@@ -3719,10 +3776,10 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
                 ],
             }
 
-    with pytest.raises(server.core.HandoffFailed, match=r"missing ingress objects \(1\)"):
+    with pytest.raises(server.domain_errors.HandoffFailed, match=r"missing ingress objects \(1\)"):
         server.riverhog.complete_riverhog_session(job, MissingApi(), tmp_path / "archive")
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     record = stored["handoff_adapter_state"]["files"]["camera/a.webm"]
     assert record["uploaded_bytes"] == 0
     assert record["state"] == "missing"
@@ -3733,8 +3790,8 @@ def test_job_issue_event_carries_operational_facts_without_presentation(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "template_id": "camera-archive",
@@ -3742,15 +3799,15 @@ def test_job_issue_event_carries_operational_facts_without_presentation(
         "phase": "queued",
         "state": "queued",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
-    result = server.core.emit_job_issue(
+    result = server.event_service.emit_job_issue(
         job,
         component="routing",
         error="route could not be resolved",
         severity="critical",
     )
-    event = server.core.lifecycle_event_log().page(after=None, limit=100).events[0]
+    event = server.lifecycle_store.lifecycle_event_log().page(after=None, limit=100).events[0]
 
     assert result["status"] == "emitted"
     assert event.type == "io.riverhog.munchy.job.issue"
@@ -3764,11 +3821,11 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
     result = server.record_preflight_failure(
-        server.core.ClientPreflightFailureRequest(
+        server.domain_models.ClientPreflightFailureRequest(
             message="Local media preflight failed for camera.",
             template_id="camera-archive",
             workflow_mode="collection_archive",
@@ -3789,7 +3846,7 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
         ),
         _request_with_principal(server, app="desktop-client", key_id="key-1"),
     )
-    event = server.core.lifecycle_event_log().page(after=None, limit=100).events[0]
+    event = server.lifecycle_store.lifecycle_event_log().page(after=None, limit=100).events[0]
 
     assert result["status"] == "recorded"
     assert event.type == "io.riverhog.munchy.submission.preflight_failed"
@@ -3807,8 +3864,8 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_EVENT_REPEAT_INTERVAL", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "template_id": "camera-archive",
@@ -3816,7 +3873,7 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
         "state": "running",
         "phase": "waiting_for_eager_files:1/2",
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     upload = {
         "input_upload_id": "upload-1",
         "created_at": "2026-01-01T00:00:00Z",
@@ -3832,9 +3889,9 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
         "uploaded_bytes": 1,
     }
 
-    first = server.core.emit_upload_stalled(job, upload, progress)
-    second = server.core.emit_upload_stalled(job, upload, progress)
-    event = server.core.lifecycle_event_log().page(after=None, limit=100).events[0]
+    first = server.processing_service.emit_upload_stalled(job, upload, progress)
+    second = server.processing_service.emit_upload_stalled(job, upload, progress)
+    event = server.lifecycle_store.lifecycle_event_log().page(after=None, limit=100).events[0]
 
     assert first["status"] == "emitted"
     assert second["status"] == "suppressed"
@@ -3851,12 +3908,12 @@ def test_retry_handoff_transient_failure_does_not_emit_event(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    monkeypatch.setattr(server.core, "retry_sleep", lambda *args, **kwargs: None)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.handoff_service, "retry_sleep", lambda *args, **kwargs: None)
     event_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
-        server.core,
+        server.event_service,
         "emit_job_issue",
         lambda *args, **kwargs: event_calls.append(dict(kwargs)),
     )
@@ -3866,7 +3923,7 @@ def test_retry_handoff_transient_failure_does_not_emit_event(
         "phase": "handoff",
         "handoff": {"destination": "riverhog", "options": {}},
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     attempts = 0
 
     def operation() -> dict[str, object]:
@@ -3876,7 +3933,7 @@ def test_retry_handoff_transient_failure_does_not_emit_event(
             raise RuntimeError("Connection reset by peer")
         return {"ok": True}
 
-    result = server.core.retry_handoff_until_success(
+    result = server.handoff_service.retry_handoff_until_success(
         job,
         result_key="handoff_receipt",
         phase="handoff",
@@ -3899,7 +3956,7 @@ def test_eager_gpu_transient_failure_does_not_emit_event(
     event_calls: list[dict[str, object]] = []
     submit_calls: list[str] = []
     monkeypatch.setattr(
-        server.core,
+        server.event_service,
         "emit_job_issue",
         lambda *args, **kwargs: event_calls.append(dict(kwargs)),
     )
@@ -3907,9 +3964,9 @@ def test_eager_gpu_transient_failure_does_not_emit_event(
     def fail_gpu_request(method: str, path: str, payload=None):  # type: ignore[no-untyped-def]
         raise RuntimeError("Server disconnected without sending a response.")
 
-    monkeypatch.setattr(server.core, "gpu_target_request", fail_gpu_request)
+    monkeypatch.setattr(server.media_service, "gpu_target_request", fail_gpu_request)
     monkeypatch.setattr(
-        server.core,
+        server.processing_service,
         "submit_eager_gpu_job",
         lambda job, batch, force=False: submit_calls.append(str(batch["gpu_job_id"])),
     )
@@ -3921,7 +3978,9 @@ def test_eager_gpu_transient_failure_does_not_emit_event(
         "payload": {"job_id": "gpu-1"},
     }
 
-    result = server.core.poll_eager_gpu_batch(job, upload, batch, {}, tmp_path / "archive")
+    result = server.processing_service.poll_eager_gpu_batch(
+        job, upload, batch, {}, tmp_path / "archive"
+    )
 
     assert result is upload
     assert submit_calls == ["gpu-1"]
@@ -3933,24 +3992,24 @@ def test_terminal_encoding_failure_with_retained_input_reports_error(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {"job_id": "job-1", "state": "running", "phase": "encoding"}
-    server.core.save_job(job)
+    server.state_store.save_job(job)
     events: list[dict[str, object]] = []
     monkeypatch.setattr(
-        server.core,
+        server.media_service,
         "gpu_target_request",
         lambda *args, **kwargs: {"state": "failed", "error": "encoder refused"},
     )
     monkeypatch.setattr(
-        server.core,
+        server.event_service,
         "emit_job_issue",
         lambda *args, **kwargs: events.append(dict(kwargs)),
     )
 
-    with pytest.raises(server.core.EncodingFailed, match="encoder refused"):
-        server.core.wait_gpu_job("gpu-1", gpu_payload={}, job=job)
+    with pytest.raises(server.domain_errors.EncodingFailed, match="encoder refused"):
+        server.media_service.wait_gpu_job("gpu-1", gpu_payload={}, job=job)
 
     assert events == [
         {
@@ -3966,20 +4025,20 @@ def test_load_input_upload_does_not_refresh_state_timestamp(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    before = server.core.read_state("input-upload", "upload-1")["updated_at"]
+    before = server.state_store.read_state("input-upload", "upload-1")["updated_at"]
 
-    loaded = server.core.load_input_upload("upload-1")
+    loaded = server.upload_service.load_input_upload("upload-1")
 
-    after = server.core.read_state("input-upload", "upload-1")["updated_at"]
+    after = server.state_store.read_state("input-upload", "upload-1")["updated_at"]
     assert loaded["files_total"] == 1
     assert after == before
 
@@ -3989,16 +4048,16 @@ def test_resume_job_clears_failed_runtime_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     canceled: list[str] = []
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda _background_tasks: None)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda _background_tasks: None)
     monkeypatch.setattr(
         server.riverhog,
         "cancel_riverhog_upload_session",
         lambda job, reason: canceled.append(f"{job['job_id']}:{reason}"),
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "failed",
@@ -4016,7 +4075,7 @@ def test_resume_job_clears_failed_runtime_state(
     )
 
     resumed = server.resume_job("job-1", server.BackgroundTasks())
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
 
     assert resumed["state"] == "queued"
     assert stored["phase"] == "queued"
@@ -4035,9 +4094,9 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda _background_tasks: None)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda _background_tasks: None)
     monkeypatch.setattr(server.riverhog, "riverhog_session_visible_for_resume", lambda _job: True)
     monkeypatch.setattr(
         server.riverhog,
@@ -4064,7 +4123,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             },
         },
     }
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "failed",
@@ -4083,7 +4142,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     )
 
     resumed = server.resume_job("job-1", server.BackgroundTasks())
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
 
     assert resumed["state"] == "queued"
     assert stored["phase"] == "queued"
@@ -4101,10 +4160,10 @@ def test_review_rclone_upload_excludes_platform_cruft(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_EXTERNAL_HANDOFF_ENABLED", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(
-        server.core,
+        server.handoff_service,
         "retry_handoff_until_success",
         lambda _job, **kwargs: kwargs["operation"](),
     )
@@ -4121,7 +4180,7 @@ def test_review_rclone_upload_excludes_platform_cruft(
         commands.append(list(cmd))
         return {"returncode": 0}
 
-    monkeypatch.setattr(server.core, "run_command", fake_run_handoff_command)
+    monkeypatch.setattr(server.command_runtime, "run_command", fake_run_handoff_command)
 
     result = server.external.run_external_handoff(
         {
@@ -4161,26 +4220,26 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -4195,7 +4254,7 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
 
     assert job["state"] == "canceled"
     assert job["cleanup_requested"] is True
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
@@ -4207,21 +4266,21 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -4231,7 +4290,7 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
             "handoff": {"destination": "command", "options": {}},
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-2",
             "state": "queued",
@@ -4245,7 +4304,7 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
     job = server.cancel_job("job-1", cleanup=True)
 
     assert job["state"] == "canceled"
-    assert server.core.read_state("input-upload", "upload-1") is not None
+    assert server.state_store.read_state("input-upload", "upload-1") is not None
     assert data_path.exists()
     assert shared_root.exists()
     assert "input-upload:upload-1" not in job.get("cleanup_removed", [])
@@ -4256,26 +4315,26 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    job = server.core.save_job(
+    job = server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -4297,8 +4356,8 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
 
     monkeypatch.setattr(server.riverhog, "cancel_riverhog_upload_session", fail_cancel)
 
-    finalized = server.core.finalize_canceled_job(job, reason="test_cancel")
-    stored = server.core.load_job("job-1")
+    finalized = server.cleanup_service.finalize_canceled_job(job, reason="test_cancel")
+    stored = server.state_store.load_job("job-1")
 
     assert finalized["state"] == "canceled"
     assert stored["state"] == "canceled"
@@ -4306,7 +4365,7 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
     assert "cancel_requested" not in stored
     assert stored["handoff_cancel_failed_at"]
     assert stored["handoff_cancel_error"] == "handoff cancellation failed"
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
@@ -4317,26 +4376,26 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "failed",
@@ -4352,7 +4411,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     job = server.cancel_job("job-1", cleanup=True)
 
     assert job["state"] == "failed"
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
@@ -4367,15 +4426,15 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    computed_id = server.core.gpu_eager_batch_job_id("job-1", "batch-2")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    computed_id = server.routing_service.gpu_eager_batch_job_id("job-1", "batch-2")
     roots = [
-        server.core.GPU_RUNTIME_DIR / "jobs" / "job-1",
-        server.core.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
-        server.core.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
-        server.core.GPU_RUNTIME_DIR / "jobs" / computed_id,
-        server.core.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-batch__abcdef0123",
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1",
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / computed_id,
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-batch__abcdef0123",
     ]
     for root in roots:
         root.mkdir(parents=True)
@@ -4397,7 +4456,7 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
         },
     }
 
-    removed = server.core.cleanup_terminal_job(job)
+    removed = server.cleanup_service.cleanup_terminal_job(job)
 
     assert len(removed) == len(roots)
     for root in roots:
@@ -4410,26 +4469,26 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "failed",
@@ -4442,16 +4501,16 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     )
     canceled: list[str] = []
     monkeypatch.setattr(
-        server.core,
+        server.handoff_service,
         "cancel_handoff",
         lambda _job, *, reason: canceled.append(reason),
     )
 
-    result = server.core.cleanup_once()
+    result = server.job_service.cleanup_once()
 
     assert "job-cleanup:job-1" in result["removed"]
     assert canceled == ["terminal_cleanup"]
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
@@ -4462,26 +4521,26 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -4493,15 +4552,15 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
         }
     )
 
-    result = server.core.cleanup_once()
-    job = server.core.load_job("job-1")
+    result = server.job_service.cleanup_once()
+    job = server.state_store.load_job("job-1")
 
     assert result["repaired_canceled"] == ["job-1"]
     assert job["state"] == "canceled"
     assert job["phase"] == "canceled"
     assert "cancel_requested" not in job
     assert job["cancel_reason"] == "stale_cancel_requested"
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
@@ -4512,20 +4571,22 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     for upload_id, _path in (("upload-a", "camera/a.mp4"), ("upload-b", "camera/b.mp4")):
-        data_path = server.core.tusd_data_path(upload_id)
+        data_path = server.upload_service.tusd_data_path(upload_id)
         data_path.parent.mkdir(parents=True, exist_ok=True)
         data_path.write_bytes(b"a")
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     (shared_root / "camera").mkdir(parents=True)
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
     (shared_root / "camera" / "b.mp4").write_bytes(b"a")
-    output = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
+    output = (
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
+    )
     output.parent.mkdir(parents=True)
     output.write_bytes(b"encoded")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -4535,7 +4596,7 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
             ],
         }
     )
-    job = server.core.save_job(
+    job = server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -4565,14 +4626,14 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
         }
     )
 
-    server.core.finalize_canceled_job(job, reason="test_cancel")
-    stored = server.core.load_job("job-1")
+    server.cleanup_service.finalize_canceled_job(job, reason="test_cancel")
+    stored = server.state_store.load_job("job-1")
 
     assert stored["state"] == "canceled"
     assert stored["encode_progress"]["files_total"] == 2
     assert stored["encode_progress"]["files_encoded"] == 1
     assert stored["upload_progress"]["files_total"] == 2
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
 
 
 def test_compact_job_response_includes_cleanup_metadata(
@@ -4580,8 +4641,8 @@ def test_compact_job_response_includes_cleanup_metadata(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "failed",
@@ -4595,7 +4656,7 @@ def test_compact_job_response_includes_cleanup_metadata(
         "eager_archive": {"large": ["payload"]},
     }
 
-    compact = server.core.compact_job_response(job)
+    compact = server.processing_service.compact_job_response(job)
 
     assert compact["cleanup_removed"] == ["input-upload:upload-1"]
     assert compact["cleanup_completed_at"] == "2026-01-01T00:00:00Z"
@@ -4609,9 +4670,9 @@ def test_save_job_preserves_terminal_cleanup_metadata(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "canceled",
@@ -4624,7 +4685,7 @@ def test_save_job_preserves_terminal_cleanup_metadata(
         }
     )
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "canceled",
@@ -4633,7 +4694,7 @@ def test_save_job_preserves_terminal_cleanup_metadata(
         }
     )
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["cleanup_completed_at"] == "2026-01-01T00:00:00Z"
     assert stored["cleanup_removed_count"] == 25
     assert stored["cleanup_removed_sample"] == ["job-work:job-1"]
@@ -4645,8 +4706,8 @@ def test_cleanup_terminal_job_records_empty_cleanup_completion(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "canceled",
@@ -4654,8 +4715,8 @@ def test_cleanup_terminal_job_records_empty_cleanup_completion(
         "handoff": {"destination": "command", "options": {}},
     }
 
-    removed = server.core.cleanup_terminal_job(job)
-    server.core.compact_terminal_job_state(job)
+    removed = server.cleanup_service.cleanup_terminal_job(job)
+    server.cleanup_service.compact_terminal_job_state(job)
 
     assert removed == []
     assert job["cleanup_completed_at"]
@@ -4667,8 +4728,8 @@ def test_cleanup_terminal_job_preserves_repeat_cleanup_summary(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "canceled",
@@ -4677,10 +4738,10 @@ def test_cleanup_terminal_job_preserves_repeat_cleanup_summary(
         "cleanup_removed": [f"/gpu/jobs/job-1-{index}" for index in range(12)],
         "cleanup_completed_at": "2026-01-01T00:00:00Z",
     }
-    server.core.compact_terminal_job_state(job)
+    server.cleanup_service.compact_terminal_job_state(job)
 
-    removed = server.core.cleanup_terminal_job(job)
-    server.core.compact_terminal_job_state(job)
+    removed = server.cleanup_service.cleanup_terminal_job(job)
+    server.cleanup_service.compact_terminal_job_state(job)
 
     assert removed == []
     assert job["cleanup_completed_at"] != "2026-01-01T00:00:00Z"
@@ -4694,8 +4755,8 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "succeeded",
@@ -4761,7 +4822,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         },
     }
 
-    changed = server.core.compact_terminal_job_state(job)
+    changed = server.cleanup_service.compact_terminal_job_state(job)
 
     assert changed is True
     assert job["encode_progress"]["files_total"] == 1
@@ -4792,8 +4853,8 @@ def test_failed_job_debug_bundle_preserves_pre_compaction_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "failed",
@@ -4805,12 +4866,12 @@ def test_failed_job_debug_bundle_preserves_pre_compaction_state(
         "gpu_results": {"camera": {"state": "failed"}},
     }
 
-    changed = server.core.write_job_debug_bundle(
+    changed = server.upload_service.write_job_debug_bundle(
         job,
         reason="encoding_failed",
-        error=server.core.EncodingFailed("gpu job failed: bad encode"),
+        error=server.domain_errors.EncodingFailed("gpu job failed: bad encode"),
     )
-    server.core.compact_terminal_job_state(job)
+    server.cleanup_service.compact_terminal_job_state(job)
 
     bundle = Path(job["debug_bundle_dir"])
     assert changed is True
@@ -4830,13 +4891,13 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
     source_inode = data_path.stat().st_ino
     monkeypatch.setattr(
-        server.core,
+        server.upload_service,
         "file_sha256",
         lambda path: (_ for _ in ()).throw(AssertionError("sha256 should not run")),
     )
@@ -4852,7 +4913,7 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
         ],
     }
 
-    root = server.core.prepare_shared_input_tree(upload, {"camera"})
+    root = server.upload_service.prepare_shared_input_tree(upload, {"camera"})
 
     linked = root / "camera" / "a.mp4"
     assert linked.read_bytes() == b"video"
@@ -4863,14 +4924,14 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
     assert metadata["input_upload_id"] == "upload-1"
     assert metadata["files"] == 1
     monkeypatch.setattr(
-        server.core,
+        server.upload_service,
         "materialize_upload_file",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("prepared shared input tree should be reused")
         ),
     )
 
-    assert server.core.prepare_shared_input_tree(upload, {"camera"}) == root
+    assert server.upload_service.prepare_shared_input_tree(upload, {"camera"}) == root
 
 
 def test_sync_shared_input_tree_links_completed_files_incrementally(
@@ -4878,9 +4939,9 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    complete_path = server.core.tusd_data_path("upload-a")
-    partial_path = server.core.tusd_data_path("upload-b")
+    server.upload_service.ensure_dirs()
+    complete_path = server.upload_service.tusd_data_path("upload-a")
+    partial_path = server.upload_service.tusd_data_path("upload-b")
     complete_path.parent.mkdir(parents=True, exist_ok=True)
     complete_path.write_bytes(b"video-a")
     partial_path.write_bytes(b"vid")
@@ -4902,9 +4963,9 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
         ],
     }
 
-    summary = server.core.sync_shared_input_tree(upload, {"camera"})
-    progress = server.core.upload_group_progress(upload, {"camera"})
-    root = server.core.shared_input_upload_root("upload-1")
+    summary = server.upload_service.sync_shared_input_tree(upload, {"camera"})
+    progress = server.upload_service.upload_group_progress(upload, {"camera"})
+    root = server.upload_service.shared_input_upload_root("upload-1")
 
     assert summary["linked"] == 1
     assert (root / "camera" / "a.mp4").read_bytes() == b"video-a"
@@ -4915,8 +4976,8 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert progress["input_tree_files_ready"] == 1
 
     partial_path.write_bytes(b"video-b")
-    summary = server.core.sync_shared_input_tree(upload, {"camera"})
-    progress = server.core.upload_group_progress(upload, {"camera"})
+    summary = server.upload_service.sync_shared_input_tree(upload, {"camera"})
+    progress = server.upload_service.upload_group_progress(upload, {"camera"})
 
     assert summary["linked"] == 2
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
@@ -4935,9 +4996,9 @@ def test_refresh_input_upload_does_not_sync_shared_input_tree(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
     upload = {
@@ -4950,20 +5011,24 @@ def test_refresh_input_upload_does_not_sync_shared_input_tree(
             },
         ],
     }
-    server.core.save_input_upload_raw(upload)
+    server.upload_service.save_input_upload_raw(upload)
 
     monkeypatch.setattr(
-        server.core,
+        server.upload_service,
         "sync_shared_input_tree",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("status read must not materialize input tree")
         ),
     )
 
-    status = server.core.refresh_input_upload(server.core.load_input_upload_raw("upload-1"))
+    status = server.upload_service.refresh_input_upload(
+        server.upload_service.load_input_upload_raw("upload-1")
+    )
 
     assert status["files_uploaded"] == 1
-    assert not (server.core.shared_input_upload_root("upload-1") / "camera" / "a.mp4").exists()
+    assert not (
+        server.upload_service.shared_input_upload_root("upload-1") / "camera" / "a.mp4"
+    ).exists()
 
 
 def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
@@ -4971,9 +5036,9 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -4986,17 +5051,17 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
             ],
         }
     )
-    server.core.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
-    server.core.tusd_data_path("upload-a").write_bytes(b"video-a")
+    server.upload_service.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    server.upload_service.tusd_data_path("upload-a").write_bytes(b"video-a")
     monkeypatch.setattr(
-        server.core,
+        server.upload_service,
         "shared_input_tree_progress",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("eager archive progress should not scan shared input tree")
         ),
     )
 
-    progress = server.core.upload_progress_for_job(
+    progress = server.processing_service.upload_progress_for_job(
         {
             "input_upload_id": "upload-1",
             "groups": {
@@ -5019,9 +5084,9 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -5044,11 +5109,11 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
             ],
         }
     )
-    server.core.tusd_data_path("upload-photo").parent.mkdir(parents=True, exist_ok=True)
-    server.core.tusd_data_path("upload-photo").write_bytes(b"jpg")
-    server.core.tusd_data_path("upload-video").write_bytes(b"video")
+    server.upload_service.tusd_data_path("upload-photo").parent.mkdir(parents=True, exist_ok=True)
+    server.upload_service.tusd_data_path("upload-photo").write_bytes(b"jpg")
+    server.upload_service.tusd_data_path("upload-video").write_bytes(b"video")
 
-    progress = server.core.upload_progress_for_job(
+    progress = server.processing_service.upload_progress_for_job(
         {
             "input_upload_id": "upload-1",
             "groups": {
@@ -5071,9 +5136,9 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "storage_hint": {"workflow_mode": "collection_archive", "structured_routing": True},
@@ -5088,10 +5153,10 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
             ],
         }
     )
-    server.core.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
-    server.core.tusd_data_path("upload-a").write_bytes(b"video-a")
+    server.upload_service.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    server.upload_service.tusd_data_path("upload-a").write_bytes(b"video-a")
 
-    progress = server.core.upload_progress_for_job(
+    progress = server.processing_service.upload_progress_for_job(
         {
             "input_upload_id": "upload-1",
             "groups": {
@@ -5116,9 +5181,9 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploaded",
@@ -5134,17 +5199,17 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
             ],
         }
     )
-    server.core.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
-    server.core.tusd_data_path("upload-a").write_bytes(b"video-a")
+    server.upload_service.tusd_data_path("upload-a").parent.mkdir(parents=True, exist_ok=True)
+    server.upload_service.tusd_data_path("upload-a").write_bytes(b"video-a")
     job = {
         "job_id": "job-1",
         "state": "running",
         "input_upload_id": "upload-1",
         "routing": {"routes": []},
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
-    upload = server.core.wait_for_upload_groups(
+    upload = server.job_service.wait_for_upload_groups(
         job,
         "upload-1",
         {"preserve"},
@@ -5161,9 +5226,9 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -5176,11 +5241,11 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
             ],
         }
     )
-    root = server.core.shared_input_upload_root("upload-1")
+    root = server.upload_service.shared_input_upload_root("upload-1")
     (root / "camera").mkdir(parents=True)
     (root / "camera" / "a.mp4").write_bytes(b"video-a")
 
-    progress = server.core.upload_progress_for_job(
+    progress = server.processing_service.upload_progress_for_job(
         {
             "input_upload_id": "upload-1",
             "groups": {
@@ -5202,18 +5267,18 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
     rel_path = "camera/a.mp4"
-    target_path = server.core.target_path_for(upload_id, rel_path)
-    server.core.write_state(
+    target_path = server.upload_service.target_path_for(upload_id, rel_path)
+    server.state_store.write_state(
         "input-upload",
         upload_id,
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": server.core.utc_timestamp_now(),
+            "created_at": utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "handoff_destination": "riverhog",
@@ -5232,15 +5297,17 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "file_upload_id": server.core.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
+                        target_path
+                    ),
                     "upload_url": None,
                 }
             ],
-            "tusd_creation_url": server.core.TUSD_PUBLIC_BASE_URL,
+            "tusd_creation_url": server.runtime_config.TUSD_PUBLIC_BASE_URL,
         },
     )
     monkeypatch.setattr(
-        server.core,
+        server.upload_service,
         "sync_shared_input_tree",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full sync")),
     )
@@ -5258,16 +5325,16 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
 
     def fake_create_tusd_upload(target_path: str, _length: int) -> str:
         assert tracking_lock.active is False
-        return f"{server.core.TUSD_PUBLIC_BASE_URL}/{target_path}"
+        return f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
 
-    monkeypatch.setattr(server.core, "state_lock", tracking_lock)
-    monkeypatch.setattr(server.core, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(server.execution_runtime, "state_lock", tracking_lock)
+    monkeypatch.setattr(server.upload_service, "create_tusd_upload", fake_create_tusd_upload)
 
-    response = server.core._create_or_resume_input_file_upload(upload_id, rel_path)
+    response = server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
 
     assert response["offset"] == 0
     assert response["length"] == 10
-    stored = server.core.read_state("input-upload", upload_id)
+    stored = server.state_store.read_state("input-upload", upload_id)
     assert stored is not None
     assert stored["files"][0]["upload_url"] == response["upload_url"]
 
@@ -5277,18 +5344,18 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
     rel_path = "camera/a.mp4"
-    target_path = server.core.target_path_for(upload_id, rel_path)
-    server.core.write_state(
+    target_path = server.upload_service.target_path_for(upload_id, rel_path)
+    server.state_store.write_state(
         "input-upload",
         upload_id,
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": server.core.utc_timestamp_now(),
+            "created_at": utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "handoff_destination": "riverhog",
@@ -5307,11 +5374,13 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "file_upload_id": server.core.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
+                        target_path
+                    ),
                     "upload_url": None,
                 }
             ],
-            "tusd_creation_url": server.core.TUSD_PUBLIC_BASE_URL,
+            "tusd_creation_url": server.runtime_config.TUSD_PUBLIC_BASE_URL,
         },
     )
 
@@ -5322,14 +5391,14 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
     finish_create = threading.Event()
     caller_started = [threading.Event(), threading.Event()]
     created_targets_lock = threading.Lock()
-    setup_lock = server.core.input_file_upload_setup_lock(upload_id, rel_path)
+    setup_lock = server.execution_runtime.input_file_upload_setup_lock(upload_id, rel_path)
 
     def fake_create_tusd_upload(target_path: str, _length: int) -> str:
         with created_targets_lock:
             created_targets.append(target_path)
         create_started.set()
         assert finish_create.wait(timeout=5)
-        return f"{server.core.TUSD_PUBLIC_BASE_URL}/{target_path}"
+        return f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
 
     def fake_head_tusd_upload(_upload_url: str) -> int:
         return 0
@@ -5337,15 +5406,15 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
     def call_upload(index: int) -> None:
         caller_started[index].set()
         try:
-            with server.core.input_file_upload_setup_lock(upload_id, rel_path):
+            with server.execution_runtime.input_file_upload_setup_lock(upload_id, rel_path):
                 responses.append(
-                    server.core._create_or_resume_input_file_upload(upload_id, rel_path)
+                    server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
                 )
         except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
             errors.append(exc)
 
-    monkeypatch.setattr(server.core, "create_tusd_upload", fake_create_tusd_upload)
-    monkeypatch.setattr(server.core, "head_tusd_upload", fake_head_tusd_upload)
+    monkeypatch.setattr(server.upload_service, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", fake_head_tusd_upload)
 
     setup_lock.acquire()
     holding_setup_lock = True
@@ -5370,9 +5439,12 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
     assert errors == []
     assert len(responses) == 2
     assert created_targets == [target_path]
-    stored = server.core.read_state("input-upload", upload_id)
+    stored = server.state_store.read_state("input-upload", upload_id)
     assert stored is not None
-    assert stored["files"][0]["upload_url"] == f"{server.core.TUSD_PUBLIC_BASE_URL}/{target_path}"
+    assert (
+        stored["files"][0]["upload_url"]
+        == f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
+    )
 
 
 def test_resume_file_upload_heads_tusd_outside_state_lock(
@@ -5380,19 +5452,19 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
     rel_path = "camera/a.mp4"
-    target_path = server.core.target_path_for(upload_id, rel_path)
-    upload_url = f"{server.core.TUSD_PUBLIC_BASE_URL}/{target_path}"
-    server.core.write_state(
+    target_path = server.upload_service.target_path_for(upload_id, rel_path)
+    upload_url = f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
+    server.state_store.write_state(
         "input-upload",
         upload_id,
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": server.core.utc_timestamp_now(),
+            "created_at": utc_timestamp_now(),
             "files": [
                 {
                     "path": rel_path,
@@ -5401,12 +5473,14 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
                     "filesystem_metadata": {},
                     "target_path": target_path,
                     "input_upload_id": upload_id,
-                    "file_upload_id": server.core.tusd_upload_id_for_target_path(target_path),
+                    "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
+                        target_path
+                    ),
                     "upload_url": upload_url,
                 }
             ],
             "storage_hint": {"source_bytes": 10},
-            "tusd_creation_url": server.core.TUSD_PUBLIC_BASE_URL,
+            "tusd_creation_url": server.runtime_config.TUSD_PUBLIC_BASE_URL,
         },
     )
 
@@ -5425,10 +5499,10 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
         assert tracking_lock.active is False
         return 4
 
-    monkeypatch.setattr(server.core, "state_lock", tracking_lock)
-    monkeypatch.setattr(server.core, "head_tusd_upload", fake_head_tusd_upload)
+    monkeypatch.setattr(server.execution_runtime, "state_lock", tracking_lock)
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", fake_head_tusd_upload)
 
-    response = server.core._create_or_resume_input_file_upload(upload_id, rel_path)
+    response = server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
 
     assert response["offset"] == 4
     assert response["length"] == 10
@@ -5439,21 +5513,21 @@ def test_sync_shared_input_file_materializes_only_completed_file(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     upload_id = "upload-1"
-    complete_path = server.core.tusd_data_path("upload-a")
-    partial_path = server.core.tusd_data_path("upload-b")
+    complete_path = server.upload_service.tusd_data_path("upload-a")
+    partial_path = server.upload_service.tusd_data_path("upload-b")
     complete_path.parent.mkdir(parents=True, exist_ok=True)
     complete_path.write_bytes(b"video-a")
     partial_path.write_bytes(b"vid")
-    server.core.write_state(
+    server.state_store.write_state(
         "input-upload",
         upload_id,
         {
             "input_upload_id": upload_id,
             "state": "uploading",
-            "created_at": server.core.utc_timestamp_now(),
+            "created_at": utc_timestamp_now(),
             "storage_hint": {
                 "workflow_mode": "collection_archive",
                 "handoff_destination": "riverhog",
@@ -5469,7 +5543,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                     "path": "camera/a.mp4",
                     "bytes": 7,
                     "file_upload_id": "upload-a",
-                    "target_path": server.core.target_path_for(upload_id, "camera/a.mp4"),
+                    "target_path": server.upload_service.target_path_for(upload_id, "camera/a.mp4"),
                     "input_upload_id": upload_id,
                     "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
                 },
@@ -5477,7 +5551,7 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                     "path": "camera/b.mp4",
                     "bytes": 7,
                     "file_upload_id": "upload-b",
-                    "target_path": server.core.target_path_for(upload_id, "camera/b.mp4"),
+                    "target_path": server.upload_service.target_path_for(upload_id, "camera/b.mp4"),
                     "input_upload_id": upload_id,
                     "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
                 },
@@ -5485,9 +5559,9 @@ def test_sync_shared_input_file_materializes_only_completed_file(
         },
     )
 
-    assert server.core.sync_shared_input_file(upload_id, "camera/a.mp4") is True
+    assert server.upload_service.sync_shared_input_file(upload_id, "camera/a.mp4") is True
 
-    root = server.core.shared_input_upload_root(upload_id)
+    root = server.upload_service.shared_input_upload_root(upload_id)
     assert (root / "camera" / "a.mp4").read_bytes() == b"video-a"
     assert not complete_path.exists()
     assert not (root / "camera" / "b.mp4").exists()
@@ -5500,9 +5574,9 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    upload = server.core.save_input_upload(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    upload = server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -5521,14 +5595,14 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
             ],
         }
     )
-    root = server.core.shared_input_upload_root("upload-1")
+    root = server.upload_service.shared_input_upload_root("upload-1")
     (root / "camera").mkdir(parents=True)
     (root / "camera" / "a.mp4").write_bytes(b"video-a")
     (root / "camera" / "b.mp4").write_bytes(b"video-b")
     metadata_path = root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME
     metadata_path.write_text("{}", encoding="utf-8")
 
-    upload = server.core.consume_input_upload_files("upload-1", {"camera/a.mp4"})
+    upload = server.processing_service.consume_input_upload_files("upload-1", {"camera/a.mp4"})
 
     assert not (root / "camera" / "a.mp4").exists()
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
@@ -5544,7 +5618,7 @@ def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
+    server.upload_service.ensure_dirs()
     upload = {
         "input_upload_id": "upload-1",
         "files": [
@@ -5563,13 +5637,13 @@ def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
             },
         ],
     }
-    root = server.core.shared_input_upload_root("upload-1")
+    root = server.upload_service.shared_input_upload_root("upload-1")
     (root / "camera").mkdir(parents=True)
     (root / "camera" / "a.mp4").write_bytes(b"video-a")
     (root / "camera" / "b.mp4").write_bytes(b"video-b")
 
-    removed = server.core.cleanup_consumed_shared_input_files(upload, {"camera"})
-    progress = server.core.shared_input_tree_progress(upload, {"camera"})
+    removed = server.upload_service.cleanup_consumed_shared_input_files(upload, {"camera"})
+    progress = server.upload_service.shared_input_tree_progress(upload, {"camera"})
 
     assert removed == 1
     assert not (root / "camera" / "a.mp4").exists()
@@ -5600,10 +5674,10 @@ def test_link_or_copy_replaces_destination_atomically_on_copy_fallback(
         copy_dest.write_bytes(copy_source.read_bytes())
         return copy_dest
 
-    monkeypatch.setattr(server.core.os, "link", fake_link)
-    monkeypatch.setattr(server.core.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(server.upload_service.os, "link", fake_link)
+    monkeypatch.setattr(server.upload_service.shutil, "copy2", fake_copy2)
 
-    server.core.link_or_copy(source, dest)
+    server.upload_service.link_or_copy(source, dest)
 
     assert dest.read_bytes() == b"new-video"
     assert len(copy_dests) == 1
@@ -5617,14 +5691,14 @@ def test_materialize_upload_file_reuses_existing_dest_when_tusd_data_is_gone(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
+    server.upload_service.ensure_dirs()
     dest_root = tmp_path / "shared"
     dest = dest_root / "camera" / "a.mp4"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"video-a")
     file_state = {"path": "camera/a.mp4", "bytes": 7, "file_upload_id": "missing-upload"}
 
-    server.core.materialize_upload_file(file_state, dest_root)
+    server.upload_service.materialize_upload_file(file_state, dest_root)
 
     assert dest.read_bytes() == b"video-a"
 
@@ -5634,7 +5708,7 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
+    server.upload_service.ensure_dirs()
     upload_id = "upload-1"
     file_state = {
         "path": "camera/a.mp4",
@@ -5642,8 +5716,8 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
         "file_upload_id": "upload-a",
         "input_upload_id": upload_id,
     }
-    tusd_source = server.core.tusd_data_path("upload-a")
-    shared_source = server.core.shared_input_file_path(file_state)
+    tusd_source = server.upload_service.tusd_data_path("upload-a")
+    shared_source = server.upload_service.shared_input_file_path(file_state)
     assert shared_source is not None
     tusd_source.parent.mkdir(parents=True, exist_ok=True)
     tusd_source.write_bytes(b"video-a")
@@ -5660,9 +5734,9 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(source.read_bytes())
 
-    monkeypatch.setattr(server.core, "link_or_copy", fake_link_or_copy)
+    monkeypatch.setattr(server.upload_service, "link_or_copy", fake_link_or_copy)
 
-    server.core.materialize_upload_file(file_state, dest_root)
+    server.upload_service.materialize_upload_file(file_state, dest_root)
 
     assert calls == [tusd_source, shared_source]
     assert (dest_root / "camera" / "a.mp4").read_bytes() == b"video-a"
@@ -5673,15 +5747,15 @@ def test_shared_input_file_rejects_a_symlink_escape(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    root = server.core.shared_input_upload_root("upload-1")
+    server.upload_service.ensure_dirs()
+    root = server.upload_service.shared_input_upload_root("upload-1")
     root.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
     (root / "camera").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(RuntimeError, match="escaped its configured root"):
-        server.core.shared_input_file_path(
+        server.upload_service.shared_input_file_path(
             {
                 "path": "camera/a.mp4",
                 "input_upload_id": "upload-1",
@@ -5694,12 +5768,12 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -5713,7 +5787,7 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
             "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -5737,33 +5811,35 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
         }
     )
     payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(
-        server.core,
+        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+    )
+    monkeypatch.setattr(
+        server.media_service,
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
     )
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
     assert len(payloads) == 1
     assert payloads[0]["max_parallel_encodes"] == 4
     assert str(payloads[0]["input_dir"]).startswith("/data/input-uploads/")
     assert str(payloads[0]["input_dir"]).endswith("/camera")
     assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])
-    job = server.core.load_job("job-1")
+    job = server.state_store.load_job("job-1")
     assert job["state"] == "succeeded"
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
-    assert not server.core.shared_input_upload_root("upload-1").exists()
+    assert not server.upload_service.shared_input_upload_root("upload-1").exists()
 
 
 def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
@@ -5771,12 +5847,12 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -5804,7 +5880,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             }
         },
     }
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "template_id": "camera-review-q42",
@@ -5815,7 +5891,7 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             **common_job,
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-2",
             "template_id": "camera-review-q44",
@@ -5826,28 +5902,28 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             **common_job,
         }
     )
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
     monkeypatch.setattr(
-        server.core,
+        server.media_service,
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
     )
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *args, **kwargs: [])
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
-    assert server.core.load_job("job-1")["state"] == "succeeded"
-    assert server.core.load_job("job-2")["state"] == "queued"
-    assert server.core.read_state("input-upload", "upload-1") is not None
+    assert server.state_store.load_job("job-1")["state"] == "succeeded"
+    assert server.state_store.load_job("job-2")["state"] == "queued"
+    assert server.state_store.read_state("input-upload", "upload-1") is not None
     assert not data_path.exists()
-    shared_root = server.core.shared_input_upload_root("upload-1")
+    shared_root = server.upload_service.shared_input_upload_root("upload-1")
     assert (shared_root / "camera" / "a.mp4").read_bytes() == b"video"
 
 
@@ -5856,12 +5932,12 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -5880,7 +5956,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -5900,15 +5976,15 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "handoff": {"destination": "riverhog", "options": {}},
         }
     )
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
 
     def wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
-        (server.core.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive").mkdir(parents=True)
+        (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive").mkdir(parents=True)
         return {"state": "succeeded"}
 
-    monkeypatch.setattr(server.core, "wait_gpu_job", wait_gpu_job)
+    monkeypatch.setattr(server.media_service, "wait_gpu_job", wait_gpu_job)
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
     )
@@ -5921,20 +5997,20 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
         "safe_to_delete",
         lambda self, job: True,
     )
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
-    job = server.core.load_job("job-1")
+    job = server.state_store.load_job("job-1")
     assert job["state"] == "succeeded"
     assert job["handoff_receipt"] == {"returncode": 0}
     assert job["cleanup_completed_at"]
     assert "input-upload:upload-1" in job["cleanup_removed"]
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
-    assert not server.core.shared_input_upload_root("upload-1").exists()
-    assert not (server.core.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
+    assert not server.upload_service.shared_input_upload_root("upload-1").exists()
+    assert not (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
 def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
@@ -5943,11 +6019,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_CHUNK_BYTES", 2)
 
-    archive_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     video = archive_dir / "camera" / "a.webm"
     sidecar = archive_dir / "camera" / "a.webm.source-artifacts.tar.zst"
     video.parent.mkdir(parents=True)
@@ -5968,7 +6044,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         },
         "event_context": {"workflow": "desktop-archive"},
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
     class FakeRiverhogApi:
         def __init__(self) -> None:
@@ -6111,8 +6187,8 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
     fake = FakeRiverhogApi()
     monkeypatch.setattr(server.riverhog, "ApiClient", lambda: fake)
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
 
     result = server.riverhog.upload_to_riverhog(job, archive_dir)
 
@@ -6177,9 +6253,9 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "state": "uploading",
@@ -6197,8 +6273,8 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
         }
     )
 
-    job = server.core.create_job_state_from_request(
-        server.core.CreateJobRequest(
+    job = server.job_service.create_job_state_from_request(
+        server.domain_models.CreateJobRequest(
             input_upload_id="upload-1",
             run_id="20260101T000000Z",
             tasks=["archive_video"],
@@ -6224,8 +6300,8 @@ def test_eager_riverhog_upload_can_be_bounded_per_tick(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
     archive_dir = tmp_path / "archive"
     first = archive_dir / "camera" / "a.webm"
@@ -6286,7 +6362,7 @@ def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
     record = {
         "path": "camera/a.webm.xmp",
         "bytes": source.stat().st_size,
-        "sha256": server.core.file_sha256(source),
+        "sha256": server.upload_service.file_sha256(source),
         "uploaded_bytes": source.stat().st_size,
         "state": "uploaded",
     }
@@ -6322,14 +6398,14 @@ def test_stale_eager_handoff_stops_at_metadata_projection(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
     archive_dir = tmp_path / "archive"
     output = archive_dir / "camera" / "a.webm"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"a")
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6385,8 +6461,8 @@ def test_metadata_projection_waits_for_inflight_eager_riverhog_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "handoff": {"destination": "riverhog", "options": {}},
@@ -6398,7 +6474,7 @@ def test_metadata_projection_waits_for_inflight_eager_riverhog_upload(
     try:
         waiter = threading.Thread(
             target=lambda: (
-                server.core.handoff_adapter(job).wait_until_idle(job),
+                server.handoff_service.handoff_adapter(job).wait_until_idle(job),
                 finished.set(),
             )
         )
@@ -6416,8 +6492,8 @@ def test_eager_riverhog_upload_can_be_bounded_by_bytes(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
     archive_dir = tmp_path / "archive"
     first = archive_dir / "camera" / "a.webm"
@@ -6477,8 +6553,8 @@ def test_eager_riverhog_upload_uses_parallel_workers(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 2)
 
     archive_dir = tmp_path / "archive"
@@ -6546,8 +6622,8 @@ def test_eager_riverhog_upload_reuses_client_per_worker_thread(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 2)
 
     archive_dir = tmp_path / "archive"
@@ -6620,8 +6696,8 @@ def test_riverhog_upload_bounds_single_chunk_completion_concurrency(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 4)
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS", 2)
 
@@ -6676,9 +6752,9 @@ def test_save_job_preserves_newer_riverhog_upload_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6692,7 +6768,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
         }
     )
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6706,7 +6782,7 @@ def test_save_job_preserves_newer_riverhog_upload_state(
         }
     )
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["phase"] == "eager_archive:pipeline=3/3"
     assert stored["handoff_adapter_state"]["files"] == {"camera/a.webm": {"state": "uploaded"}}
 
@@ -6716,10 +6792,10 @@ def test_handoff_retry_refreshes_persisted_job_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    monkeypatch.setattr(server.core, "HANDOFF_RETRY_INITIAL_SECONDS", 0.01)
-    monkeypatch.setattr(server.core, "HANDOFF_RETRY_MAX_SECONDS", 0.01)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.runtime_config, "HANDOFF_RETRY_INITIAL_SECONDS", 0.01)
+    monkeypatch.setattr(server.runtime_config, "HANDOFF_RETRY_MAX_SECONDS", 0.01)
 
     stale_job = {
         "job_id": "job-1",
@@ -6739,14 +6815,14 @@ def test_handoff_retry_refreshes_persisted_job_state(
             },
         },
     }
-    server.core.save_job(stale_job)
+    server.state_store.save_job(stale_job)
     attempts = 0
 
     def operation() -> dict[str, object]:
         nonlocal attempts
         attempts += 1
         if not server.riverhog.all_riverhog_session_files_uploaded(stale_job):
-            server.core.save_job(
+            server.state_store.save_job(
                 {
                     "job_id": "job-1",
                     "state": "running",
@@ -6772,7 +6848,7 @@ def test_handoff_retry_refreshes_persisted_job_state(
             raise RuntimeError("riverhog upload did not upload every registered file")
         return {"ok": True}
 
-    result = server.core.retry_handoff_until_success(
+    result = server.handoff_service.retry_handoff_until_success(
         stale_job,
         result_key="handoff_receipt",
         phase="handoff",
@@ -6791,10 +6867,10 @@ def test_save_job_compacts_gpu_results_before_persisting(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6832,7 +6908,7 @@ def test_save_job_compacts_gpu_results_before_persisting(
         }
     )
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     batch_result = stored["eager_archive"]["batches"]["batch-1"]["gpu_result"]
     stored_result = stored["eager_archive"]["gpu_results"]["batch-1"]
     assert batch_result == {
@@ -6853,9 +6929,9 @@ def test_save_job_merges_newer_eager_archive_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6880,7 +6956,7 @@ def test_save_job_merges_newer_eager_archive_state(
         }
     )
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6911,7 +6987,7 @@ def test_save_job_merges_newer_eager_archive_state(
         }
     )
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     eager = stored["eager_archive"]
     assert eager["next_batch_number"] == 7
     assert eager["files"]["camera/a.mp4"]["state"] == "encoded"
@@ -6927,9 +7003,9 @@ def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "canceled",
@@ -6938,7 +7014,7 @@ def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
         }
     )
 
-    saved = server.core.save_job(
+    saved = server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -6949,7 +7025,7 @@ def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
     )
 
     assert saved["state"] == "canceled"
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["state"] == "canceled"
     assert stored["phase"] == "canceled"
 
@@ -6959,9 +7035,9 @@ def test_save_job_allows_explicit_resume_from_canceled_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "canceled",
@@ -6970,7 +7046,7 @@ def test_save_job_allows_explicit_resume_from_canceled_state(
         }
     )
 
-    saved = server.core.save_job(
+    saved = server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -6980,7 +7056,7 @@ def test_save_job_allows_explicit_resume_from_canceled_state(
     )
 
     assert saved["state"] == "queued"
-    assert server.core.load_job("job-1")["state"] == "queued"
+    assert server.state_store.load_job("job-1")["state"] == "queued"
 
 
 def test_handoff_progress_uses_expected_archive_output_count(
@@ -6988,10 +7064,10 @@ def test_handoff_progress_uses_expected_archive_output_count(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(
-        server.core,
+        server.processing_service,
         "encode_progress_for_job",
         lambda job: {"files_total": 69},
     )
@@ -7036,8 +7112,8 @@ def test_sync_riverhog_session_uses_durable_finalized_upload_status(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "handoff": {"destination": "riverhog", "options": {}},
@@ -7080,8 +7156,8 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "succeeded",
@@ -7091,7 +7167,7 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
             "external_id": 42,
         },
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
     class FakeApi:
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
@@ -7115,9 +7191,9 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
 
     monkeypatch.setattr(server.riverhog, "ApiClient", FakeApi)
 
-    job = server.core.load_job("job-1")
+    job = server.state_store.load_job("job-1")
     server.riverhog.refresh_riverhog_session_from_remote(job)
-    refreshed = server.core.job_response(job)
+    refreshed = server.processing_service.job_response(job)
     progress = refreshed["handoff_progress"]
 
     assert progress["external_id"] == 42
@@ -7136,9 +7212,11 @@ def test_handoff_progress_prefers_recent_burst_rate(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    monkeypatch.setattr(server.core, "encode_progress_for_job", lambda job: {"files_total": 1})
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(
+        server.processing_service, "encode_progress_for_job", lambda job: {"files_total": 1}
+    )
 
     job = {
         "job_id": "job-1",
@@ -7146,7 +7224,7 @@ def test_handoff_progress_prefers_recent_burst_rate(
         "handoff_adapter_state": {
             "state": "open",
             "collection_id": 42,
-            "last_eager_upload_at": server.core.utc_timestamp_now(),
+            "last_eager_upload_at": utc_timestamp_now(),
             "last_eager_upload_bytes": 2048,
             "last_eager_upload_elapsed_seconds": 2.0,
             "files": {
@@ -7171,8 +7249,8 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
     monkeypatch.setattr(server.riverhog, "utc_timestamp_now", lambda: "2026-01-01T00:00:03Z")
     monkeypatch.setattr(
@@ -7186,7 +7264,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
         },
     )
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -7212,7 +7290,7 @@ def test_eager_handoff_metrics_survive_newer_persisted_job_state(
     }
 
     server.riverhog.maybe_upload_riverhog_artifacts(stale_worker_job, tmp_path / "archive")
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     state = stored["handoff_adapter_state"]
 
     assert state["last_eager_upload_at"] == "2026-01-01T00:00:03Z"
@@ -7227,10 +7305,10 @@ def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -7247,7 +7325,7 @@ def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
         }
     )
 
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -7263,7 +7341,7 @@ def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
             },
         }
     )
-    state = server.core.load_job("job-1")["handoff_adapter_state"]
+    state = server.state_store.load_job("job-1")["handoff_adapter_state"]
 
     assert state["last_eager_upload_at"] == "2026-01-01T00:00:04Z"
     assert state["last_eager_upload_files"] == 4
@@ -7276,16 +7354,18 @@ def test_handoff_progress_counts_known_local_sidecars(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     monkeypatch.setattr(
-        server.core,
+        server.processing_service,
         "encode_progress_for_job",
         lambda job: {"files_total": 1},
     )
 
-    video = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
-    sidecar = server.core.source_artifact_sidecar_for_archive_output(video)
+    video = (
+        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
+    )
+    sidecar = server.routing_service.source_artifact_sidecar_for_archive_output(video)
     video.parent.mkdir(parents=True)
     video.write_bytes(b"video")
     sidecar.write_bytes(b"meta")
@@ -7325,8 +7405,8 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
     job = {
         "job_id": "job-1",
@@ -7339,7 +7419,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
             "files": {},
         },
     }
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
     class FakeRiverhogApi:
         def __init__(self) -> None:
@@ -7367,7 +7447,7 @@ def test_cancel_riverhog_upload_session_cancels_open_session(
     server.riverhog.cancel_riverhog_upload_session(job, reason="test")
 
     assert fake.canceled == [42]
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["handoff_adapter_state"]["state"] == "canceled"
     assert stored["handoff_adapter_state"]["canceled_at"]
     assert stored["handoff_adapter_state"]["cancel_reason"] == "test"
@@ -7378,9 +7458,9 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -7394,7 +7474,7 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
             "files": [],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -7420,9 +7500,9 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
             },
         }
     )
-    monkeypatch.setattr(server.core, "ensure_job_groups", lambda _job, _upload: {})
+    monkeypatch.setattr(server.processing_service, "ensure_job_groups", lambda _job, _upload: {})
     monkeypatch.setattr(
-        server.core,
+        server.routing_service,
         "write_metadata_projection_sidecars",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("projection failed")),
     )
@@ -7433,12 +7513,12 @@ def test_failed_job_default_policy_preserves_uploaded_riverhog_session(
             AssertionError("default policy should preserve the uploaded session")
         ),
     )
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["state"] == "failed"
     assert stored["handoff_adapter_state"]["preserved_after_failure_at"]
 
@@ -7448,9 +7528,9 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload_raw(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -7464,7 +7544,7 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
             "files": [],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -7491,9 +7571,9 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
         }
     )
     canceled: list[str] = []
-    monkeypatch.setattr(server.core, "ensure_job_groups", lambda _job, _upload: {})
+    monkeypatch.setattr(server.processing_service, "ensure_job_groups", lambda _job, _upload: {})
     monkeypatch.setattr(
-        server.core,
+        server.routing_service,
         "write_metadata_projection_sidecars",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("projection failed")),
     )
@@ -7502,12 +7582,12 @@ def test_failed_job_cancel_policy_cancels_uploaded_riverhog_session(
         "cancel_riverhog_upload_session",
         lambda _job, *, reason: canceled.append(reason),
     )
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "schedule_pending_jobs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["state"] == "failed"
     assert canceled == ["job_failed"]
     assert "preserved_after_failure_at" not in stored["handoff_adapter_state"]
@@ -7519,10 +7599,10 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
 ) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
 
-    job = server.core.save_job(
+    job = server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -7545,7 +7625,7 @@ def test_cancel_riverhog_upload_session_treats_missing_session_as_clean(
 
     server.riverhog.cancel_riverhog_upload_session(job, reason="test")
 
-    stored = server.core.load_job("job-1")
+    stored = server.state_store.load_job("job-1")
     assert stored["handoff_adapter_state"]["state"] == "canceled"
     assert stored["handoff_adapter_state"]["remote_state"] == "absent"
     assert stored["handoff_adapter_state"]["cancel_not_found"] is True
@@ -7557,9 +7637,9 @@ def test_repeated_cleanup_updates_empty_cleanup_summary(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    work_dir = server.core.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     job = {
@@ -7572,8 +7652,8 @@ def test_repeated_cleanup_updates_empty_cleanup_summary(
         "cleanup_removed_count": 0,
     }
 
-    server.core.cleanup_terminal_job(job)
-    server.core.compact_terminal_job_state(job)
+    server.cleanup_service.cleanup_terminal_job(job)
+    server.cleanup_service.compact_terminal_job_state(job)
 
     assert job["cleanup_removed_count"] == 1
     assert job["cleanup_removed"] == [str(work_dir)]
@@ -7585,12 +7665,12 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -7604,7 +7684,7 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -7626,30 +7706,30 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             },
         }
     )
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
     monkeypatch.setattr(
-        server.core,
+        server.media_service,
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: (_ for _ in ()).throw(
-            server.core.EncodingFailed("gpu job failed: bad encode")
+            server.domain_errors.EncodingFailed("gpu job failed: bad encode")
         ),
     )
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
-    job = server.core.load_job("job-1")
+    job = server.state_store.load_job("job-1")
     assert job["state"] == "failed"
     assert job["error"] == "gpu job failed: bad encode"
     assert job["cleanup_completed_at"]
     assert "input-upload:upload-1" in job["cleanup_removed"]
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
-    assert not server.core.shared_input_upload_root("upload-1").exists()
-    assert not (server.core.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
+    assert not server.upload_service.shared_input_upload_root("upload-1").exists()
+    assert not (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
 def test_run_job_reuses_stored_shared_review_plan(
@@ -7657,9 +7737,9 @@ def test_run_job_reuses_stored_shared_review_plan(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
     plan = {
@@ -7668,8 +7748,8 @@ def test_run_job_reuses_stored_shared_review_plan(
         "clips": [{"index": 1, "source": "/data/input-uploads/upload/camera/a.mp4"}],
         "files": [{"path": "/data/input-uploads/upload/camera/a.mp4"}],
     }
-    server.core.store_shared_review_plan("upload-1", "camera", "qcut_video", plan)
-    server.core.save_input_upload(
+    server.upload_service.store_shared_review_plan("upload-1", "camera", "qcut_video", plan)
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -7683,7 +7763,7 @@ def test_run_job_reuses_stored_shared_review_plan(
             "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-2",
             "state": "queued",
@@ -7711,21 +7791,23 @@ def test_run_job_reuses_stored_shared_review_plan(
         }
     )
     payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(
-        server.core,
+        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+    )
+    monkeypatch.setattr(
+        server.media_service,
         "wait_gpu_job",
         lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
     )
-    monkeypatch.setattr(server.core, "emit_job_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-2")
+    server.job_service.run_job("job-2")
 
     assert payloads[0]["review_plans"]["qcut_video"]["kind"] == "munchy.qcut-plan"  # type: ignore[index]
     assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["input_upload_id"] == "upload-1"  # type: ignore[index]
@@ -7741,12 +7823,12 @@ def test_run_job_runs_review_sweep_as_one_job(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    data_path = server.core.tusd_data_path("upload-a")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
@@ -7775,7 +7857,7 @@ def test_run_job_runs_review_sweep_as_one_job(
             ],
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "queued",
@@ -7815,9 +7897,11 @@ def test_run_job_runs_review_sweep_as_one_job(
     payloads: list[dict[str, object]] = []
     uploads: list[tuple[str, str, bool]] = []
     events: list[str] = []
-    monkeypatch.setattr(server.core, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.core, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.core, "start_gpu_job", lambda payload: payloads.append(payload))
+    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
+    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
+    monkeypatch.setattr(
+        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+    )
 
     def fake_wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
         return {
@@ -7846,16 +7930,16 @@ def test_run_job_runs_review_sweep_as_one_job(
         )
         return {"status": "uploaded", "source": str(source_dir)}
 
-    monkeypatch.setattr(server.core, "wait_gpu_job", fake_wait_gpu_job)
+    monkeypatch.setattr(server.media_service, "wait_gpu_job", fake_wait_gpu_job)
     monkeypatch.setattr(server.external, "run_external_handoff", fake_run_external_handoff)
     monkeypatch.setattr(
-        server.core,
+        server.event_service,
         "emit_job_event",
         lambda job, event, message, **kwargs: events.append(event),
     )
-    monkeypatch.setattr(server.core, "emit_job_issue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.event_service, "emit_job_issue", lambda *args, **kwargs: None)
 
-    server.core.run_job("job-1")
+    server.job_service.run_job("job-1")
 
     assert len(payloads) == 2
     assert [payload["encode_profile"]["archive"]["quality"] for payload in payloads] == [24, 28]
@@ -7868,14 +7952,14 @@ def test_run_job_runs_review_sweep_as_one_job(
     ]
     assert events.count("review.handoff") == 1
     assert events.count("job.succeeded") == 1
-    job = server.core.load_job("job-1")
+    job = server.state_store.load_job("job-1")
     assert job["state"] == "succeeded"
     assert "route_id" not in job["review"]
     assert "profile_id" not in job["review"]
     assert job["review_sweep_result"]["variants_total"] == 2
     assert job["review_sweep_result"]["variants_completed"] == 2
     assert not any(key.startswith("review_sweep_upload_") for key in job)
-    assert server.core.read_state("input-upload", "upload-1") is None
+    assert server.state_store.read_state("input-upload", "upload-1") is None
 
 
 def test_preflight_issue_event_error_keeps_truncated_filename_at_end(
@@ -7904,9 +7988,9 @@ def test_ready_eager_files_skips_claimed_encoding_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    (server.core.TUSD_DIR / "upload-b").write_bytes(b"b")
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    (server.runtime_config.TUSD_DIR / "upload-b").write_bytes(b"b")
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -7933,7 +8017,7 @@ def test_ready_eager_files_skips_claimed_encoding_files(
         ],
     }
 
-    ready = server.core.ready_eager_files(
+    ready = server.processing_service.ready_eager_files(
         job,
         upload,
         {"camera": {}},
@@ -7953,7 +8037,7 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -7969,7 +8053,7 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
     }
 
     assert (
-        server.core.eager_group_has_pipeline_capacity(
+        server.processing_service.eager_group_has_pipeline_capacity(
             job,
             "camera",
             {"eager_pipeline_batches": 1},
@@ -7977,7 +8061,7 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
         is False
     )
     assert (
-        server.core.eager_group_has_pipeline_capacity(
+        server.processing_service.eager_group_has_pipeline_capacity(
             job,
             "front-door",
             {"eager_pipeline_batches": 1},
@@ -7985,7 +8069,7 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
         is True
     )
     assert (
-        server.core.eager_group_has_pipeline_capacity(
+        server.processing_service.eager_group_has_pipeline_capacity(
             job,
             "camera",
             {"eager_pipeline_batches": 2},
@@ -7999,7 +8083,7 @@ def test_eager_group_pipeline_capacity_counts_mixed_executors_globally(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -8016,7 +8100,7 @@ def test_eager_group_pipeline_capacity_counts_mixed_executors_globally(
     }
 
     assert (
-        server.core.eager_group_has_pipeline_capacity(
+        server.processing_service.eager_group_has_pipeline_capacity(
             job,
             "front-door",
             {"eager_pipeline_batches": 3},
@@ -8030,7 +8114,7 @@ def test_eager_archive_pipeline_phase_uses_single_group_limit(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -8041,7 +8125,7 @@ def test_eager_archive_pipeline_phase_uses_single_group_limit(
     }
 
     assert (
-        server.core.eager_archive_pipeline_phase(
+        server.processing_service.eager_archive_pipeline_phase(
             job,
             {"camera": {"eager_pipeline_batches": 1}},
         )
@@ -8054,7 +8138,7 @@ def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    monkeypatch.setattr(server.core, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
+    monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 3)
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -8065,9 +8149,9 @@ def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
         },
     }
 
-    assert server.core.eager_archive_pipeline_phase(job, {"camera": {}, "voice": {}}) == (
-        "eager_archive:pipeline=2/3"
-    )
+    assert server.processing_service.eager_archive_pipeline_phase(
+        job, {"camera": {}, "voice": {}}
+    ) == ("eager_archive:pipeline=2/3")
 
 
 def test_ready_eager_files_limits_audio_batches_to_worker_count(
@@ -8075,11 +8159,11 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    monkeypatch.setattr(server.core, "AUDIO_ARCHIVE_MAX_PARALLEL", 2)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.runtime_config, "AUDIO_ARCHIVE_MAX_PARALLEL", 2)
     for upload_id in ("upload-a", "upload-b", "upload-c"):
-        (server.core.TUSD_DIR / upload_id).write_bytes(b"x")
+        (server.runtime_config.TUSD_DIR / upload_id).write_bytes(b"x")
     job = {"job_id": "job-1"}
     upload = {
         "input_upload_id": "upload-1",
@@ -8091,7 +8175,7 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
     }
     groups = {"voice": {"output_mode": "audio", "tasks": ["archive_audio"]}}
 
-    ready = server.core.ready_eager_files(
+    ready = server.processing_service.ready_eager_files(
         job,
         upload,
         groups,
@@ -8113,8 +8197,8 @@ def test_claim_running_eager_batch_files_marks_running_batch_paths(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "eager_archive": {
@@ -8136,7 +8220,7 @@ def test_claim_running_eager_batch_files_marks_running_batch_paths(
         "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
     }
 
-    changed = server.core.claim_running_eager_batch_files(
+    changed = server.processing_service.claim_running_eager_batch_files(
         job,
         upload,
         {"camera": {}},
@@ -8153,8 +8237,8 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     archive_dir = tmp_path / "archive"
     output = archive_dir / "camera" / "a.mkv"
     output.parent.mkdir(parents=True)
@@ -8172,14 +8256,14 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
             "next_batch_number": 2,
         },
     }
-    upload = server.core.save_input_upload_raw(
+    upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
         }
     )
 
-    updated_upload, changed = server.core.mark_existing_eager_outputs(
+    updated_upload, changed = server.processing_service.mark_existing_eager_outputs(
         job,
         upload,
         {"camera": {}},
@@ -8198,15 +8282,15 @@ def test_job_response_includes_eager_encode_progress(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     archive_dir = tmp_path / "archive"
     encoded_output = archive_dir / "camera" / "a.webm"
     active_output = archive_dir / "camera" / "b.webm"
     encoded_output.parent.mkdir(parents=True)
     encoded_output.write_bytes(b"encoded")
     active_output.write_bytes(b"active")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -8263,7 +8347,7 @@ def test_job_response_includes_eager_encode_progress(
         },
     }
 
-    response = server.core.job_response(job)
+    response = server.processing_service.job_response(job)
     upload_progress = response["upload_progress"]
     progress = response["encode_progress"]
 
@@ -8291,13 +8375,13 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     archive_dir = tmp_path / "archive"
     encoded_output = archive_dir / "camera" / "a.webm"
     encoded_output.parent.mkdir(parents=True)
     encoded_output.write_bytes(b"encoded")
-    server.core.save_input_upload(
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "files": [
@@ -8343,7 +8427,7 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
         },
     }
 
-    progress = server.core.job_response(job)["encode_progress"]
+    progress = server.processing_service.job_response(job)["encode_progress"]
 
     assert progress["files_total"] == 1
     assert progress["files_encoded"] == 1
@@ -8357,8 +8441,8 @@ def test_job_response_includes_review_clip_progress_from_gpu_status(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     job = {
         "job_id": "job-1",
         "state": "running",
@@ -8390,7 +8474,7 @@ def test_job_response_includes_review_clip_progress_from_gpu_status(
         },
     }
 
-    response = server.core.job_response(job)
+    response = server.processing_service.job_response(job)
     progress = response["encode_progress"]
 
     assert progress["mode"] == "qcut_video"
@@ -8413,9 +8497,9 @@ def test_compact_job_response_keeps_operational_fields_only(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_input_upload(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
             "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
@@ -8436,7 +8520,7 @@ def test_compact_job_response_keeps_operational_fields_only(
         "gpu_result": {"large": ["payload"]},
     }
 
-    compact = server.core.compact_job_response(job)
+    compact = server.processing_service.compact_job_response(job)
 
     assert compact["job_id"] == "job-1"
     assert compact["state"] == "running"
@@ -8451,9 +8535,9 @@ def test_list_jobs_returns_recent_compact_jobs(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "done",
             "state": "succeeded",
@@ -8463,7 +8547,7 @@ def test_list_jobs_returns_recent_compact_jobs(
             "eager_archive": {"gpu_results": {"large": ["payload"]}},
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "active",
             "state": "running",
@@ -8501,9 +8585,9 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "job-1",
             "state": "running",
@@ -8516,7 +8600,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "handoff": {"destination": "riverhog", "options": {}},
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-2",
             "state": "queued",
@@ -8533,7 +8617,7 @@ def test_list_jobs_pages_filters_and_searches_indexed_summaries(
             "updated_at": "2026-01-02T00:00:00Z",
         }
     )
-    server.core.save_job(
+    server.state_store.save_job(
         {
             "job_id": "job-3",
             "state": "succeeded",
@@ -8584,9 +8668,9 @@ def test_list_jobs_does_not_scan_all_job_states_for_current_page(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
-    server.core.save_job(
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
         {
             "job_id": "queued",
             "state": "queued",
@@ -8600,7 +8684,7 @@ def test_list_jobs_does_not_scan_all_job_states_for_current_page(
     def fail_job_states() -> list[dict[str, object]]:
         raise AssertionError("job list must not materialize every job state")
 
-    monkeypatch.setattr(server.core, "job_states", fail_job_states)
+    monkeypatch.setattr(server.scheduling_service, "job_states", fail_job_states)
 
     page = server.list_jobs(terminal="all")
 
@@ -8613,8 +8697,8 @@ def test_acquire_job_gpu_reuses_persisted_lease_token(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    server.core.ensure_dirs()
-    server.core.init_state_store()
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
     requests: list[dict[str, object]] = []
 
     def fake_manager_request(
@@ -8628,11 +8712,11 @@ def test_acquire_job_gpu_reuses_persisted_lease_token(
         requests.append(dict(payload))
         return {"lease_token": payload["lease_token"], "queued": False}
 
-    monkeypatch.setattr(server.core, "manager_request", fake_manager_request)
+    monkeypatch.setattr(server.media_service, "manager_request", fake_manager_request)
     job = {"job_id": "job-1", "gpu_lease_token": "saved-token"}
-    server.core.save_job(job)
+    server.state_store.save_job(job)
 
-    token = server.core.acquire_job_gpu(job)
+    token = server.media_service.acquire_job_gpu(job)
 
     assert token == "saved-token"
     assert requests[0]["lease_token"] == "saved-token"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 from jeb_api.composition import config_from_env
-from jeb_core.collector import parse_duration
+from jeb_core.domain.models import parse_duration
 
 REPO = Path(__file__).resolve().parents[3]
 

@@ -13,12 +13,12 @@ from jeb_cli_support.output import (
     format_operation,
     format_status,
 )
-from jeb_core.collector import UnrecoverableJebError
+from jeb_core.domain.models import UnrecoverableJebError
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 from riverhog_cli_support.output import emit, format_list_ids
 
 from jeb_api.app import JebServiceState, start_jeb_service_server
-from jeb_api.composition import config_from_env, create_collector
+from jeb_api.composition import config_from_env, create_services
 
 DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
 DEFAULT_HEALTH_PORT = "8081"
@@ -42,13 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser = argparse.ArgumentParser(
         prog="jeb-service",
-        description="Service-local Jeb collector and uploader.",
+        description="Service-local Jeb source and delivery server.",
         epilog=(
             "commands:\n"
             "  run           run continuously and process eligible batches\n"
             "  once          discover and process one scheduler pass\n"
             "  archive-now   archive one source immediately\n"
-            "  status        show read-only collector status\n"
+            "  status        show read-only service status\n"
             "  attempt list  list processing attempts\n"
             "  check-config  validate env configuration and initialize state"
         ),
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Preview the archive action without creating a batch or uploading files.",
     )
-    status = sub.add_parser("status", help="show read-only collector status")
+    status = sub.add_parser("status", help="show read-only service status")
     status.add_argument("--json", action="store_true", help="Emit JSON.")
     status.add_argument(
         "--no-backlog",
@@ -106,10 +106,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     command = args.command or "run"
 
-    collector = create_collector(config_from_env())
+    services = create_services(config_from_env())
     if command == "check-config":
-        collector.init_db()
-        sources = collector.source_registry.list()
+        services.runtime.initialize()
+        sources = services.source_registry.list()
         emit(
             format_config_check(
                 {
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if command == "once":
-        collector.run_once()
+        services.runtime.run_once()
         emit(
             format_operation(
                 {"status": "completed", "operation": {"operation": "once"}},
@@ -132,10 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if command == "archive-now":
-        collector.init_db()
+        services.runtime.initialize()
         if args.dry_run:
             try:
-                payload = collector.archive_plan(
+                payload = services.attempts.archive_plan(
                     source_id=args.source,
                     process=not args.no_process,
                 )
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             emit(format_archive_plan(payload), json_mode=False)
             return 0
         try:
-            attempt_id = collector.archive_now(
+            attempt_id = services.attempts.archive_now(
                 source_id=args.source,
                 process=not args.no_process,
             )
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                 json_mode=False,
             )
             return 1
-        attempt = collector.load_attempt(attempt_id)
+        attempt = services.store.load_attempt(attempt_id)
         emit(
             format_operation(
                 {
@@ -176,13 +176,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if command == "status":
-        collector.init_db()
-        payload = collector.status_summary(include_backlog=not args.no_backlog)
+        services.runtime.initialize()
+        payload = services.runtime.status_summary(include_backlog=not args.no_backlog)
         emit(payload if args.json else format_status(payload), json_mode=args.json)
         return 0
     if command == "attempt":
-        collector.init_db()
-        payload = collector.list_attempts(
+        services.runtime.initialize()
+        payload = services.store.list_attempts(
             page=args.page,
             per_page=args.per_page,
             sort=args.sort,
@@ -199,13 +199,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         emit(payload if args.json else format_attempts(payload), json_mode=args.json)
         return 0
-    collector.init_db()
+    services.runtime.initialize()
     start_jeb_service_server(
         DEFAULT_HEALTH_HOST,
         health_port(),
-        JebServiceState(collector=collector),
+        JebServiceState(services=services),
     )
-    collector.run_forever()
+    services.runtime.run_forever()
     return 0
 
 

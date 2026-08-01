@@ -13,9 +13,8 @@ from typing import Any
 import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
 from jeb_api.app import JebServiceState, start_jeb_service_server
-from jeb_api.composition import config_from_env, create_collector
+from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
-from jeb_core.collector import Collector
 
 API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
@@ -88,13 +87,13 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def collector_for(
+def services_for(
     env: dict[str, str],
     *,
     target_adapters=None,
-) -> Collector:
-    collector = create_collector(config_from_env(env), target_adapters=target_adapters)
-    collector.add_source(
+) -> JebServices:
+    services = create_services(config_from_env(env), target_adapters=target_adapters)
+    services.sources.add_source(
         "phone",
         adapters=("tus",),
         target_config={"template_id": "camera-archive"},
@@ -102,7 +101,7 @@ def collector_for(
         stable_seconds=0,
         include_extensions=(".txt",),
     )
-    return collector
+    return services
 
 
 @pytest.fixture(autouse=True)
@@ -137,8 +136,8 @@ def basic_authorization(source: str, password: str) -> str:
 def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
-    collector = collector_for(env)
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(env)
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
 
@@ -172,8 +171,8 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
 
 
 def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> None:
-    collector = collector_for(jeb_env(tmp_path))
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
         request = urllib.request.Request(f"http://{host}:{port}/v1/status")
@@ -187,9 +186,9 @@ def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> Non
 
 
 def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
-    collector = create_collector(config_from_env(jeb_env(tmp_path)))
-    collector.init_db()
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = create_services(config_from_env(jeb_env(tmp_path)))
+    services.runtime.initialize()
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
         base = f"http://{host}:{port}/v1/sources"
@@ -266,8 +265,8 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
 
 
 def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Path) -> None:
-    collector = collector_for(jeb_env(tmp_path))
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
         authorization = basic_authorization("phone", "phone-password")
@@ -299,13 +298,13 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         metadata = change["MetaData"]
         assert isinstance(metadata, dict)
 
-        staging = collector.config.ingress.tus_staging_dir
+        staging = services.config.ingress.tus_staging_dir
         staging.mkdir(parents=True)
         source = staging / upload_id
         info = staging / f"{upload_id}.info"
         source.write_bytes(b"notes")
         info.write_text("{}", encoding="utf-8")
-        assert collector.eligible_files(collector.source_by_id("phone")) == []
+        assert services.sources.eligible_files(services.sources.source_by_id("phone")) == []
 
         finished = {
             "Type": "post-finish",
@@ -338,7 +337,7 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         assert not info.exists()
         assert [
             item.rel.as_posix()
-            for item in collector.eligible_files(collector.source_by_id("phone"))
+            for item in services.sources.eligible_files(services.sources.source_by_id("phone"))
         ] == ["notes/note.txt"]
     finally:
         server.shutdown()
@@ -346,8 +345,8 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
 
 
 def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Path) -> None:
-    collector = collector_for(jeb_env(tmp_path))
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
 
@@ -371,12 +370,12 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
     processed = threading.Event()
 
     class FailingAdapter(MunchyTargetAdapter):
-        def advance(self, collector: Collector, attempt_id: str) -> None:
+        def advance(self, services: JebServices, attempt_id: str) -> None:
             processed.set()
             raise AssertionError("dry-run must not process a batch")
 
-    collector = collector_for(env, target_adapters={"munchy": FailingAdapter()})
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(env, target_adapters={"munchy": FailingAdapter()})
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
 
@@ -393,8 +392,8 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
         assert payload["total_bytes"] == 5
         assert payload["batch_id"]
         assert payload["target_submission_id"]
-        assert collector.active_attempt_ids() == []
-        assert collector.list_attempts(terminal="all")["total"] == 0
+        assert services.store.active_attempt_ids() == []
+        assert services.store.list_attempts(terminal="all")["total"] == 0
         assert not processed.is_set()
     finally:
         server.shutdown()
@@ -408,13 +407,13 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
     processed_attempt_ids: list[str] = []
 
     class CompleteAdapter(MunchyTargetAdapter):
-        def advance(self, collector: Collector, attempt_id: str) -> None:
+        def advance(self, services: JebServices, attempt_id: str) -> None:
             processed_attempt_ids.append(attempt_id)
-            collector.set_attempt_state(attempt_id, "target_complete")
+            services.store.set_attempt_state(attempt_id, "target_complete")
             processed.set()
 
-    collector = collector_for(env, target_adapters={"munchy": CompleteAdapter()})
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(env, target_adapters={"munchy": CompleteAdapter()})
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
 
@@ -441,8 +440,8 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
 
 
 def test_jeb_service_api_unknown_paths_are_not_healthy(tmp_path: Path) -> None:
-    collector = collector_for(jeb_env(tmp_path))
-    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
+    services = services_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
 

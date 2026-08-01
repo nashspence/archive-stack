@@ -263,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Remote Jeb operator CLI.",
         epilog=(
             "commands:\n"
-            "  status        show read-only collector status\n"
+            "  status        show read-only service status\n"
             "  attempt       inspect processing attempts\n"
             "  check-config  validate deployed Jeb configuration\n"
             "  once          request one scheduler pass\n"
@@ -274,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    status = sub.add_parser("status", help="show read-only collector status")
+    status = sub.add_parser("status", help="show read-only service status")
     status.add_argument("--json", action="store_true", help="Emit JSON.")
     status.add_argument(
         "--no-backlog",

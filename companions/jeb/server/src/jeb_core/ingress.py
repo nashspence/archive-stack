@@ -16,7 +16,9 @@ from urllib.parse import urljoin
 
 import httpx
 
-from jeb_core.sources import SourceRegistry, SourceRegistryError
+from jeb_core.domain.models import JebIngressConfig
+from jeb_core.domain.sources import SourceRegistryError
+from jeb_core.persistence.source_registry import SourceRegistry
 
 TUS_SOURCE_METADATA = "jeb_source"
 TUS_PATH_METADATA = "jeb_path"
@@ -45,17 +47,6 @@ def normalize_tus_upload_id(raw: object) -> str:
     if value != normalized:
         raise JebIngressError("Jeb TUS upload has an invalid ID")
     return normalized
-
-
-@dataclass(frozen=True)
-class JebIngressConfig:
-    landing_dir: Path
-    tus_staging_dir: Path
-    tusd_base_url: str = "http://jeb-tusd:1080/files/"
-    tus_incomplete_max_age_seconds: int = 14 * 86_400
-    ftp_projection: Path = Path("/state/ingress/ftp/passwd")
-    ftp_uid: int = 1000
-    ftp_gid: int = 1000
 
 
 @dataclass(frozen=True)

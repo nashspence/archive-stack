@@ -6,10 +6,9 @@ import os
 from pathlib import Path
 
 import httpx
-import jeb_core.collector as collector_module
+import jeb_core.runtime.service as service_runtime
 import pytest
-from jeb_api.composition import config_from_env, create_collector
-from jeb_core.collector import Collector
+from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.ingress import (
     JebIngressError,
     incomplete_tus_upload_status,
@@ -27,16 +26,16 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def collector_for(env: dict[str, str]) -> Collector:
-    collector = create_collector(config_from_env(env))
-    collector.add_source(
+def services_for(env: dict[str, str]) -> JebServices:
+    services = create_services(config_from_env(env))
+    services.sources.add_source(
         "phone",
         adapters=("tus",),
         target_config={"template_id": "phone-archive"},
         credential="phone-password",
         cadence="manual",
     )
-    return collector
+    return services
 
 
 def basic_authorization(source: str, password: str) -> str:
@@ -60,17 +59,17 @@ def test_jeb_tus_upload_id_normalization_returns_canonical_storage_segment() -> 
 
 
 def write_upload(
-    collector: Collector,
+    services: JebServices,
     *,
     size: int,
     offset: int,
     age_seconds: int,
     now: float,
 ) -> str:
-    ingress = collector.config.ingress
+    ingress = services.config.ingress
     prepared = prepare_tus_upload(
         ingress,
-        collector.source_registry,
+        services.source_registry,
         authorization=basic_authorization("phone", "phone-password"),
         metadata={"path": f"notes/{offset}.txt"},
         size=size,
@@ -100,7 +99,7 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
     tmp_path: Path,
 ) -> None:
     now = 2_000_000_000.0
-    collector = collector_for(
+    services = services_for(
         {
             **jeb_env(tmp_path),
             "JEB_TUSD_BASE_URL": "http://tusd.test/files/",
@@ -108,32 +107,32 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
         }
     )
     old_id = write_upload(
-        collector,
+        services,
         size=10,
         offset=4,
         age_seconds=15 * 86_400,
         now=now,
     )
     write_upload(
-        collector,
+        services,
         size=10,
         offset=3,
         age_seconds=1 * 86_400,
         now=now,
     )
     write_upload(
-        collector,
+        services,
         size=2,
         offset=2,
         age_seconds=20 * 86_400,
         now=now,
     )
-    invalid = collector.config.ingress.tus_staging_dir / f"{'f' * 32}.info"
+    invalid = services.config.ingress.tus_staging_dir / f"{'f' * 32}.info"
     invalid.write_text("{}", encoding="utf-8")
 
     status = incomplete_tus_upload_status(
-        collector.config.ingress,
-        collector.source_registry,
+        services.config.ingress,
+        services.source_registry,
         now=now,
     )
     requests: list[httpx.Request] = []
@@ -147,8 +146,8 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     result = reap_stale_incomplete_tus_uploads(
-        collector.config.ingress,
-        collector.source_registry,
+        services.config.ingress,
+        services.source_registry,
         now=now,
         client=client,
     )
@@ -176,7 +175,7 @@ def test_jeb_reports_and_terminates_only_stale_incomplete_tus_uploads(
 
 
 def test_jeb_scheduler_runs_incomplete_tus_cleanup(monkeypatch, tmp_path: Path) -> None:
-    collector = collector_for(jeb_env(tmp_path))
+    services = services_for(jeb_env(tmp_path))
     calls: list[object] = []
 
     def reap(config, registry):
@@ -188,11 +187,11 @@ def test_jeb_scheduler_runs_incomplete_tus_cleanup(monkeypatch, tmp_path: Path) 
             "scan_error": None,
         }
 
-    monkeypatch.setattr(collector_module, "reap_stale_incomplete_tus_uploads", reap)
+    monkeypatch.setattr(service_runtime, "reap_stale_incomplete_tus_uploads", reap)
 
-    collector.run_once()
+    services.runtime.run_once()
 
-    assert calls == [(collector.config.ingress, collector.source_registry)]
+    assert calls == [(services.config.ingress, services.source_registry)]
 
 
 def test_jeb_tus_cleanup_defaults_are_bounded(tmp_path: Path) -> None:
