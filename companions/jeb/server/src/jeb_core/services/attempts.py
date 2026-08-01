@@ -49,6 +49,7 @@ from jeb_core.services.files import (
 )
 
 LOG = logging.getLogger("jeb")
+_HASH_QUERY_BATCH_SIZE = 100
 
 
 class JebAttemptService:
@@ -292,7 +293,7 @@ class JebAttemptService:
         retryable_attempt: sqlite3.Row,
         source: SourceConfig,
     ) -> bool:
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             rows = conn.execute(
                 "SELECT input_path, target_path FROM files WHERE batch_id = ?",
                 (retryable_attempt["batch_id"],),
@@ -325,7 +326,7 @@ class JebAttemptService:
     def create_retry_attempt(self, retryable_attempt_id: str) -> str:
         retryable_attempt = self.store.load_attempt(retryable_attempt_id)
         batch_id = str(retryable_attempt["batch_id"])
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             row = conn.execute(
                 "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number "
                 "FROM batch_attempts WHERE batch_id = ?",
@@ -418,7 +419,7 @@ class JebAttemptService:
         target_submission_id = f"jeb-{source.id}-{run_id.lower()}-{digest}"
         batch_root = self.config.service.batch_dir / batch_id / "input"
         created_at = event_timestamp()
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             exists = conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone()
             if exists:
                 return batch_id
@@ -606,7 +607,7 @@ class JebAttemptService:
                 raise UnrecoverableJebError(
                     f"source and staging file are both missing: {source} -> {staging}"
                 )
-            with self.store.connect() as conn:
+            with self.store.transaction() as conn:
                 conn.execute(
                     """
                     UPDATE attempt_files
@@ -618,61 +619,80 @@ class JebAttemptService:
         self.store.set_attempt_state(attempt_id, "batched")
 
     def ensure_hashes(self, batch_id: str) -> None:
-        with self.store.connect() as conn:
-            rows = conn.execute(
+        with self.store.transaction() as conn:
+            totals = conn.execute(
                 """
-                SELECT f.batch_id, f.target_path, af.staging_path, f.bytes
+                SELECT COUNT(*) AS files, COALESCE(SUM(f.bytes), 0) AS bytes
                 FROM batch_attempts a
                 JOIN files f ON f.batch_id = a.batch_id
                 JOIN attempt_files af
                   ON af.attempt_id = a.id
                  AND af.target_path = f.target_path
                 WHERE a.id = ? AND f.sha256 IS NULL
-                ORDER BY f.target_path
                 """,
                 (batch_id,),
-            ).fetchall()
-        if not rows:
+            ).fetchone()
+        total_files = int(totals["files"] if totals is not None else 0)
+        total_bytes = int(totals["bytes"] if totals is not None else 0)
+        if total_files == 0:
             self.store.set_attempt_state(batch_id, "hashed")
             return
         started_at = time.monotonic()
         last_logged_at = started_at
-        total_files = len(rows)
-        total_bytes = sum(int(row["bytes"] or 0) for row in rows)
         done_bytes = 0
+        completed_files = 0
         LOG.info(
             "batch %s hashing %d file(s), %s",
             batch_id,
             total_files,
             format_progress_bytes(total_bytes),
         )
-        for index, row in enumerate(rows, start=1):
-            path = Path(str(row["staging_path"]))
-            if not path.exists():
-                raise UnrecoverableJebError(f"staged file disappeared before hashing: {path}")
-            digest = file_sha256(path)
-            done_bytes += int(row["bytes"] or 0)
-            with self.store.connect() as conn:
-                conn.execute(
-                    "UPDATE files SET sha256 = ? WHERE batch_id = ? AND target_path = ?",
-                    (digest, row["batch_id"], row["target_path"]),
-                )
-            now = time.monotonic()
-            is_final = index == total_files
-            if is_final or now - last_logged_at >= 15:
-                elapsed = max(now - started_at, 0.001)
-                percent = (done_bytes / total_bytes * 100.0) if total_bytes else 100.0
-                LOG.info(
-                    ("batch %s hash progress: %d/%d file(s), %s/%s, %.2f%%, %.1fs"),
-                    batch_id,
-                    index,
-                    total_files,
-                    format_progress_bytes(done_bytes),
-                    format_progress_bytes(total_bytes),
-                    percent,
-                    elapsed,
-                )
-                last_logged_at = now
+        while True:
+            with self.store.transaction() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT f.batch_id, f.target_path, af.staging_path, f.bytes
+                    FROM batch_attempts a
+                    JOIN files f ON f.batch_id = a.batch_id
+                    JOIN attempt_files af
+                      ON af.attempt_id = a.id
+                     AND af.target_path = f.target_path
+                    WHERE a.id = ? AND f.sha256 IS NULL
+                    ORDER BY f.target_path
+                    LIMIT ?
+                    """,
+                    (batch_id, _HASH_QUERY_BATCH_SIZE),
+                ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                path = Path(str(row["staging_path"]))
+                if not path.exists():
+                    raise UnrecoverableJebError(f"staged file disappeared before hashing: {path}")
+                digest = file_sha256(path)
+                done_bytes += int(row["bytes"] or 0)
+                completed_files += 1
+                with self.store.transaction() as conn:
+                    conn.execute(
+                        "UPDATE files SET sha256 = ? WHERE batch_id = ? AND target_path = ?",
+                        (digest, row["batch_id"], row["target_path"]),
+                    )
+                now = time.monotonic()
+                is_final = completed_files == total_files
+                if is_final or now - last_logged_at >= 15:
+                    elapsed = max(now - started_at, 0.001)
+                    percent = (done_bytes / total_bytes * 100.0) if total_bytes else 100.0
+                    LOG.info(
+                        ("batch %s hash progress: %d/%d file(s), %s/%s, %.2f%%, %.1fs"),
+                        batch_id,
+                        completed_files,
+                        total_files,
+                        format_progress_bytes(done_bytes),
+                        format_progress_bytes(total_bytes),
+                        percent,
+                        elapsed,
+                    )
+                    last_logged_at = now
         self.store.set_attempt_state(batch_id, "hashed")
 
     def ensure_media_preflight(self, batch_id: str) -> None:
@@ -854,7 +874,7 @@ class JebAttemptService:
             hardlink_stage_file(source, staging)
             stat = source.stat()
             digest = file_sha256(staging)
-            with self.store.connect() as conn:
+            with self.store.transaction() as conn:
                 conn.execute(
                     """
                     UPDATE files
@@ -899,7 +919,7 @@ class JebAttemptService:
             raise UnrecoverableJebError(
                 f"source and staging file are both missing: {source} -> {staging}"
             )
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute(
                 "DELETE FROM attempt_files WHERE attempt_id = ? AND target_path = ?",
                 (batch_id, target_path),

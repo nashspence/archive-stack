@@ -216,13 +216,24 @@ class SqlAlchemyDownloadAllowance:
         now = self._current_time()
         now_text = format_utc_timestamp(now)
         current_month = format_utc_timestamp(_month_start(now))
-        self._reap_all_expired_key_reservations(now=now)
         usage = (
             select(
                 KeyDownloadUsageRecord.key_id.label("key_id"),
                 KeyDownloadUsageRecord.accounted_bytes.label("accounted_bytes"),
             )
             .where(KeyDownloadUsageRecord.month_started_at == current_month)
+            .subquery()
+        )
+        expired_streams = (
+            select(
+                KeyDownloadReservationRecord.key_id.label("key_id"),
+                func.sum(KeyDownloadReservationRecord.reserved_bytes).label("accounted_bytes"),
+            )
+            .where(
+                KeyDownloadReservationRecord.kind == "stream",
+                KeyDownloadReservationRecord.expires_at <= now_text,
+            )
+            .group_by(KeyDownloadReservationRecord.key_id)
             .subquery()
         )
         reservations = (
@@ -234,7 +245,10 @@ class SqlAlchemyDownloadAllowance:
             .group_by(KeyDownloadReservationRecord.key_id)
             .subquery()
         )
-        accounted = func.coalesce(usage.c.accounted_bytes, 0)
+        accounted = func.coalesce(usage.c.accounted_bytes, 0) + func.coalesce(
+            expired_streams.c.accounted_bytes,
+            0,
+        )
         reserved = func.coalesce(reservations.c.reserved_bytes, 0)
         remainder = AppKeyRecord.monthly_download_quota_bytes - accounted - reserved
         remaining = case(
@@ -282,6 +296,7 @@ class SqlAlchemyDownloadAllowance:
                 AppKeyRecord.revoked_at.label("revoked_at"),
             )
             .outerjoin(usage, usage.c.key_id == AppKeyRecord.id)
+            .outerjoin(expired_streams, expired_streams.c.key_id == AppKeyRecord.id)
             .outerjoin(reservations, reservations.c.key_id == AppKeyRecord.id)
             .where(*filters)
         )
@@ -582,42 +597,6 @@ class SqlAlchemyDownloadAllowance:
             "remaining_bytes": remaining,
         }
 
-    def _reap_all_expired_key_reservations(self, *, now: datetime) -> None:
-        now_text = format_utc_timestamp(now)
-        current_month = format_utc_timestamp(_month_start(now))
-        with session_scope(self._session_factory) as session:
-            charged = session.execute(
-                select(
-                    KeyDownloadReservationRecord.key_id,
-                    func.sum(KeyDownloadReservationRecord.reserved_bytes),
-                )
-                .where(
-                    KeyDownloadReservationRecord.kind == "stream",
-                    KeyDownloadReservationRecord.expires_at <= now_text,
-                )
-                .group_by(KeyDownloadReservationRecord.key_id)
-            ).all()
-            for key_id, reserved_bytes in charged:
-                usage = session.get(KeyDownloadUsageRecord, str(key_id))
-                if usage is None:
-                    usage = KeyDownloadUsageRecord(
-                        key_id=str(key_id),
-                        month_started_at=current_month,
-                        accounted_bytes=0,
-                        updated_at=now_text,
-                    )
-                    session.add(usage)
-                elif usage.month_started_at != current_month:
-                    usage.month_started_at = current_month
-                    usage.accounted_bytes = 0
-                usage.accounted_bytes += int(reserved_bytes or 0)
-                usage.updated_at = now_text
-            session.execute(
-                delete(KeyDownloadReservationRecord).where(
-                    KeyDownloadReservationRecord.expires_at <= now_text
-                )
-            )
-
     def _require_key_capacity(
         self,
         session: Session,
@@ -658,21 +637,36 @@ class SqlAlchemyDownloadAllowance:
         usage: KeyDownloadUsageRecord,
         now: datetime,
     ) -> None:
-        expired = list(
-            session.scalars(
-                select(KeyDownloadReservationRecord).where(
+        now_text = format_utc_timestamp(now)
+        expired_count, charged_bytes = session.execute(
+            select(
+                func.count(KeyDownloadReservationRecord.id),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                KeyDownloadReservationRecord.kind == "stream",
+                                KeyDownloadReservationRecord.reserved_bytes,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            ).where(
+                KeyDownloadReservationRecord.key_id == usage.key_id,
+                KeyDownloadReservationRecord.expires_at <= now_text,
+            )
+        ).one()
+        usage.accounted_bytes += int(charged_bytes)
+        if expired_count:
+            usage.updated_at = format_utc_timestamp(now)
+            session.execute(
+                delete(KeyDownloadReservationRecord).where(
                     KeyDownloadReservationRecord.key_id == usage.key_id,
-                    KeyDownloadReservationRecord.expires_at <= format_utc_timestamp(now),
+                    KeyDownloadReservationRecord.expires_at <= now_text,
                 )
             )
-        )
-        usage.accounted_bytes += sum(
-            current.reserved_bytes for current in expired if current.kind == "stream"
-        )
-        if expired:
-            usage.updated_at = format_utc_timestamp(now)
-        for current in expired:
-            session.delete(current)
 
     def _key_lock(self, key_id: str) -> threading.Lock:
         with self._key_locks_guard:
@@ -811,20 +805,26 @@ class SqlAlchemyDownloadAllowance:
         usage: ArchiveDownloadUsageRecord,
         now: datetime,
     ) -> None:
-        expired = list(
-            session.scalars(
-                select(ArchiveDownloadReservationRecord).where(
-                    ArchiveDownloadReservationRecord.store == usage.store,
-                    ArchiveDownloadReservationRecord.expires_at <= format_utc_timestamp(now),
-                )
+        now_text = format_utc_timestamp(now)
+        expired_count, charged_bytes = session.execute(
+            select(
+                func.count(ArchiveDownloadReservationRecord.id),
+                func.coalesce(func.sum(ArchiveDownloadReservationRecord.reserved_bytes), 0),
+            ).where(
+                ArchiveDownloadReservationRecord.store == usage.store,
+                ArchiveDownloadReservationRecord.expires_at <= now_text,
+            )
+        ).one()
+        if not expired_count:
+            return
+        usage.accounted_bytes += int(charged_bytes)
+        usage.updated_at = format_utc_timestamp(now)
+        session.execute(
+            delete(ArchiveDownloadReservationRecord).where(
+                ArchiveDownloadReservationRecord.store == usage.store,
+                ArchiveDownloadReservationRecord.expires_at <= now_text,
             )
         )
-        if not expired:
-            return
-        usage.accounted_bytes += sum(current.reserved_bytes for current in expired)
-        usage.updated_at = format_utc_timestamp(now)
-        for current in expired:
-            session.delete(current)
         session.flush()
 
     @staticmethod

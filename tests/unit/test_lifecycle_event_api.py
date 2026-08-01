@@ -14,12 +14,49 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
-from riverhog_core.catalog_db import initialize_db
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_models import LifecycleEventRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 
 from tests.unit.db_helpers import sqlite_url
+
+
+def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None:
+    config = RuntimeConfig(database_url=sqlite_url(tmp_path / "catalog.sqlite3"))
+    initialize_db(config.database_url)
+    events = SqlAlchemyLifecycleEventService(config)
+    events.emit(
+        owner_app="alpha",
+        type="collection.uploading",
+        subject="one",
+        context_json='{"route":"phone"}',
+    )
+    events.emit(
+        owner_app="alpha",
+        type="collection.uploading",
+        subject="two",
+        context_json='{"route":"desktop"}',
+    )
+    expires_at = "2026-08-02T00:00:00.000000Z"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        events.expire_context(
+            owner_app="alpha",
+            subject="one",
+            expires_at=expires_at,
+            session=session,
+        )
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        records = {
+            record.subject: record
+            for record in session.query(LifecycleEventRecord).order_by(
+                LifecycleEventRecord.sequence
+            )
+        }
+        assert records["one"].context_expires_at == expires_at
+        assert records["two"].context_expires_at is None
 
 
 def test_lifecycle_event_api_scopes_normal_readers_to_their_application(

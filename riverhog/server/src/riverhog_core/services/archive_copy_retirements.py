@@ -12,7 +12,7 @@ from riverhog_protocol.errors import (
     NotFound,
     ServiceUnavailable,
 )
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
@@ -50,6 +50,7 @@ from riverhog_core.services.operation_plans import (
 
 _CHALLENGE_PREFIX = "retire-copy"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
+_BLOCKER_SAMPLE_LIMIT = 10
 _RETIREMENT_WARNING = (
     f"{ARCHIVE_DATA_LOSS_WARNING}\n\n"
     "This operation permanently removes one collection archive copy. Riverhog will "
@@ -285,6 +286,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                     RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
                 )
                 .order_by(RetrievalJobRecord.id)
+                .limit(_BLOCKER_SAMPLE_LIMIT + 1)
             ).all()
             if active_retrievals:
                 raise Conflict(
@@ -308,17 +310,18 @@ class SqlAlchemyArchiveCopyRetirementService:
                         for source_store, destination_store in copy_jobs
                     )
                 )
-            terminal_retrievals = session.scalars(
-                select(RetrievalJobRecord)
+            terminal_retrieval_ids = (
+                select(RetrievalJobRecord.id)
                 .join(RetrievalJobObjectRecord)
                 .where(
                     RetrievalJobObjectRecord.collection_id == collection_id,
                     RetrievalJobObjectRecord.source_store == store,
                     ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
                 )
-            ).unique()
-            for retrieval in terminal_retrievals:
-                session.delete(retrieval)
+            )
+            session.execute(
+                delete(RetrievalJobRecord).where(RetrievalJobRecord.id.in_(terminal_retrieval_ids))
+            )
             session.delete(active)
             session.flush()
             target = session.get(CollectionArchiveCopyRecord, (collection_id, store))
@@ -379,6 +382,7 @@ def _build_plan(
             RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
         )
         .order_by(RetrievalJobRecord.id)
+        .limit(_BLOCKER_SAMPLE_LIMIT + 1)
     ).all()
     copy_jobs = db.execute(
         select(
@@ -420,21 +424,27 @@ def _build_plan(
             CollectionMetadataPublicationRecord.state == "publishing",
         )
     )
-    terminal_retrieval_ids = db.scalars(
-        select(RetrievalJobRecord.id)
-        .join(RetrievalJobObjectRecord)
-        .where(
-            RetrievalJobObjectRecord.collection_id == collection_id,
-            RetrievalJobObjectRecord.source_store == store,
-            ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
+    terminal_retrieval_count = int(
+        db.scalar(
+            select(func.count(func.distinct(RetrievalJobRecord.id)))
+            .join(RetrievalJobObjectRecord)
+            .where(
+                RetrievalJobObjectRecord.collection_id == collection_id,
+                RetrievalJobObjectRecord.source_store == store,
+                ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
+            )
         )
-        .order_by(RetrievalJobRecord.id)
-    ).all()
+        or 0
+    )
 
     blockers: list[str] = []
     if db.get(CollectionDeletionRecord, collection_id) is not None:
         blockers.append(f"collection deletion is active: {collection_id}")
-    blockers.extend(f"retrieval is active: {job_id}" for job_id in active_retrievals)
+    blockers.extend(
+        f"retrieval is active: {job_id}" for job_id in active_retrievals[:_BLOCKER_SAMPLE_LIMIT]
+    )
+    if len(active_retrievals) > _BLOCKER_SAMPLE_LIMIT:
+        blockers.append("additional active retrievals exist; list retrievals for details")
     blockers.extend(
         f"archive copy is active: {source_store} -> {destination_store}"
         for source_store, destination_store in copy_jobs
@@ -477,7 +487,7 @@ def _build_plan(
             }
             for copy in retained
         ],
-        "retired_retrieval_job_count": len(terminal_retrieval_ids),
+        "retired_retrieval_job_count": terminal_retrieval_count,
         "blockers": blockers,
         "verification_note": (
             "Execution requires a different retained copy to pass current remote "

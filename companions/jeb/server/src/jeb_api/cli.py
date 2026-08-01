@@ -117,13 +117,11 @@ def main(argv: list[str] | None = None) -> int:
     services = create_services(config_from_env())
     if command == "check-config":
         services.runtime.initialize()
-        sources = services.source_registry.list()
         emit(
             format_config_check(
                 {
                     "status": "ok",
-                    "source_count": len(sources),
-                    "sources": [source.id for source in sources],
+                    "source_count": services.source_registry.count(),
                 }
             ),
             json_mode=False,

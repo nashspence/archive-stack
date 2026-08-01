@@ -178,7 +178,7 @@ def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
     if upload_id:
         with execution_runtime.input_upload_state_lock(upload_id):
             upload = state_store.read_state("input-upload", upload_id)
-            if upload is not None and not scheduling_service.jobs_referencing_input_upload(
+            if upload is not None and not scheduling_service.input_upload_has_active_job(
                 upload_id,
                 exclude_job_id=job_id,
             ):

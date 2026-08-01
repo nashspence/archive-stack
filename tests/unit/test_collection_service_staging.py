@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import riverhog_core.services.collections as collections_module
+from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_CREATE,
@@ -23,7 +27,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
-from riverhog_protocol.errors import Conflict, NotFound
+from riverhog_protocol.errors import Conflict, HashMismatch, NotFound
 from riverhog_protocol.manifest import collection_content_etag
 from sqlalchemy import select
 
@@ -71,9 +75,14 @@ class MissingTargetUploadStore(UploadStoreStub):
 
 
 class ConcurrentCancelUploadStore(UploadStoreStub):
-    def __init__(self, expected_concurrency: int) -> None:
+    def __init__(
+        self,
+        expected_concurrency: int,
+        transaction_depth: Callable[[], int] | None = None,
+    ) -> None:
         super().__init__()
         self.expected_concurrency = expected_concurrency
+        self.transaction_depth = transaction_depth
         self.canceled: list[str] = []
         self.deleted: list[str] = []
         self.active = 0
@@ -82,6 +91,8 @@ class ConcurrentCancelUploadStore(UploadStoreStub):
         self.all_active = threading.Event()
 
     def cancel_upload(self, tus_url: str) -> None:
+        if self.transaction_depth is not None:
+            assert self.transaction_depth() == 0
         with self.lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -99,9 +110,14 @@ class ConcurrentCancelUploadStore(UploadStoreStub):
 
 
 class ConcurrentVerifyUploadStore(UploadStoreStub):
-    def __init__(self, expected_concurrency: int) -> None:
+    def __init__(
+        self,
+        expected_concurrency: int,
+        transaction_depth: Callable[[], int] | None = None,
+    ) -> None:
         super().__init__()
         self.expected_concurrency = expected_concurrency
+        self.transaction_depth = transaction_depth
         self.verified: list[str] = []
         self.active = 0
         self.max_active = 0
@@ -117,6 +133,8 @@ class ConcurrentVerifyUploadStore(UploadStoreStub):
     ) -> Iterator[bytes]:
         assert offset == 0
         assert size == 1
+        if self.transaction_depth is not None:
+            assert self.transaction_depth() == 0
         with self.lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -128,6 +146,25 @@ class ConcurrentVerifyUploadStore(UploadStoreStub):
             self.verified.append(target_path)
             self.active -= 1
         yield b"x"
+
+
+class MemoryEncryptedUploadStore(UploadStoreStub):
+    def __init__(self) -> None:
+        super().__init__()
+        self.targets: dict[str, bytes] = {}
+
+    def iter_target(
+        self,
+        target_path: str,
+        *,
+        offset: int = 0,
+        size: int | None = None,
+    ) -> Iterator[bytes]:
+        content = self.targets[target_path]
+        yield content[offset:] if size is None else content[offset : offset + size]
+
+    def delete_target(self, target_path: str) -> None:
+        self.targets.pop(target_path, None)
 
 
 def _service(path: Path, store: UploadStoreStub | None = None) -> SqlAlchemyCollectionService:
@@ -668,6 +705,61 @@ def test_file_preflight_returns_random_ingress_secret_and_persists_only_envelope
         assert encryption["passphrase"] not in record.ingress_state_json
 
 
+def test_finished_upload_hash_mismatch_durably_resets_catalog_state(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed_tag(path, "mismatch")
+    upload_store = MemoryEncryptedUploadStore()
+    service = _service(path, upload_store)
+    created = service.create_or_resume_upload_session(
+        idempotency_key="mismatch-upload",
+        tags=["mismatch"],
+    )
+    collection_id = int(created["collection_id"])
+    expected = b"right"
+    service.register_upload_session_files(
+        collection_id,
+        [
+            {
+                "path": "one.txt",
+                "bytes": len(expected),
+                "sha256": hashlib.sha256(expected).hexdigest(),
+            }
+        ],
+    )
+    preflight = service.create_or_resume_file_upload(collection_id, "one.txt")
+    descriptor = preflight["encryption"]
+    assert isinstance(descriptor, dict)
+    source = tmp_path / "wrong.txt"
+    source.write_bytes(b"wrong")
+
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+        assert record is not None
+        target_path = collections_module._collection_upload_target_path(record)
+        upload_id = record.ingress_upload_id
+    upload_store.targets[target_path] = b"".join(
+        part.ciphertext
+        for part in iter_ingress_upload_parts(
+            source,
+            descriptor,
+            ciphertext_offset=0,
+            target_part_bytes=1024 * 1024,
+        )
+    )
+
+    with pytest.raises(HashMismatch, match="sha256 did not match"):
+        service.sync_finished_upload_id(upload_id)
+
+    assert target_path not in upload_store.targets
+    with session_scope(make_session_factory(sqlite_url(path))) as session:
+        record = session.get(CollectionUploadFileRecord, (collection_id, "one.txt"))
+        assert record is not None
+        assert record.ingress_uploaded_bytes == 0
+        assert record.tus_url is None
+        assert record.upload_expires_at is None
+
+
 def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
@@ -694,12 +786,31 @@ def test_each_file_registration_has_a_unique_ingress_object_identity(tmp_path: P
     assert len(set(upload_ids)) == 2
 
 
-def test_collection_upload_cancellation_cleans_targets_concurrently(tmp_path: Path) -> None:
+def test_collection_upload_cancellation_cleans_targets_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     file_count = 8
     worker_count = 4
-    upload_store = ConcurrentCancelUploadStore(worker_count)
+    active_transactions = 0
+
+    @contextmanager
+    def tracked_session_scope(*args: object, **kwargs: object) -> Iterator[object]:
+        nonlocal active_transactions
+        active_transactions += 1
+        try:
+            with session_scope(*args, **kwargs) as session:  # type: ignore[arg-type]
+                yield session
+        finally:
+            active_transactions -= 1
+
+    monkeypatch.setattr(collections_module, "session_scope", tracked_session_scope)
+    upload_store = ConcurrentCancelUploadStore(
+        worker_count,
+        transaction_depth=lambda: active_transactions,
+    )
     _seed_tag(path, "cancel-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(
@@ -751,12 +862,29 @@ def test_collection_upload_can_be_canceled_before_all_bytes_arrive(tmp_path: Pat
 
 def test_collection_upload_completion_verifies_targets_with_bounded_concurrency(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     file_count = 8
     worker_count = 4
-    upload_store = ConcurrentVerifyUploadStore(worker_count)
+    active_transactions = 0
+
+    @contextmanager
+    def tracked_session_scope(*args: object, **kwargs: object) -> Iterator[object]:
+        nonlocal active_transactions
+        active_transactions += 1
+        try:
+            with session_scope(*args, **kwargs) as session:  # type: ignore[arg-type]
+                yield session
+        finally:
+            active_transactions -= 1
+
+    monkeypatch.setattr(collections_module, "session_scope", tracked_session_scope)
+    upload_store = ConcurrentVerifyUploadStore(
+        worker_count,
+        transaction_depth=lambda: active_transactions,
+    )
     _seed_tag(path, "verify-me")
     service = _service(path, upload_store)
     created = service.create_or_resume_upload_session(

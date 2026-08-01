@@ -8,7 +8,6 @@ from time_formats import (
     utc_timestamp_now,
 )
 
-import munchy_core.domain.models as domain_models
 import munchy_core.persistence.sqlite_state as state_store
 import munchy_core.runtime.config as runtime_config
 import munchy_core.runtime.execution as execution_runtime
@@ -21,8 +20,36 @@ def input_upload_states() -> list[dict[str, Any]]:
     return state_store.list_states("input-upload")
 
 
+def unreferenced_input_upload_states(
+    *,
+    limit: int = runtime_config.RETENTION_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    return state_store.unreferenced_input_upload_states(limit=limit)
+
+
 def job_states() -> list[dict[str, Any]]:
     return state_store.list_states("job")
+
+
+def active_job_states(
+    *,
+    cancel_requested: bool | None = None,
+    limit: int = runtime_config.RETENTION_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    return state_store.load_jobs_by_ids(
+        state_store.job_ids_by_summary(
+            terminal=False,
+            cancel_requested=cancel_requested,
+            limit=limit,
+        )
+    )
+
+
+def terminal_job_states(
+    *,
+    limit: int = runtime_config.RETENTION_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    return state_store.load_jobs_by_ids(state_store.job_ids_by_summary(terminal=True, limit=limit))
 
 
 def scheduler_control() -> dict[str, Any]:
@@ -51,33 +78,15 @@ def runnable_job(job: dict[str, Any]) -> bool:
     return True
 
 
-def referenced_input_upload_ids() -> set[str]:
-    upload_ids: set[str] = set()
-    for job in job_states():
-        try:
-            if job.get("state") in domain_models.TERMINAL_JOB_STATES:
-                continue
-            upload_id = job.get("input_upload_id")
-        except Exception:
-            log.exception("failed to read job state")
-            continue
-        if upload_id:
-            upload_ids.add(str(upload_id))
-    return upload_ids
-
-
-def jobs_referencing_input_upload(
+def input_upload_has_active_job(
     upload_id: str,
     *,
     exclude_job_id: str | None = None,
-) -> list[str]:
-    return [
-        str(job["job_id"])
-        for job in job_states()
-        if str(job.get("input_upload_id") or "") == upload_id
-        and str(job.get("job_id") or "") != exclude_job_id
-        and job.get("state") not in domain_models.TERMINAL_JOB_STATES
-    ]
+) -> bool:
+    return state_store.input_upload_has_active_job(
+        upload_id,
+        exclude_job_id=exclude_job_id,
+    )
 
 
 def active_input_uploads() -> list[dict[str, Any]]:
@@ -110,25 +119,44 @@ def runnable_job_sort_key(job: dict[str, Any]) -> tuple[int, str, str]:
     return (state_priority, queued_at, str(job.get("job_id") or ""))
 
 
-def runnable_jobs_in_order() -> list[dict[str, Any]]:
-    jobs = [job for job in job_states() if runnable_job(job)]
-    jobs.sort(key=runnable_job_sort_key)
-    return jobs
+def runnable_jobs_in_order(
+    *,
+    limit: int = runtime_config.RETENTION_BATCH_SIZE,
+    exclude_claimed: bool = True,
+) -> list[dict[str, Any]]:
+    excluded = (
+        execution_runtime.active_jobs | execution_runtime.scheduled_jobs
+        if exclude_claimed
+        else set()
+    )
+    job_ids = state_store.job_ids_by_summary(
+        terminal=False,
+        cancel_requested=False,
+        states=("queued", "running"),
+        exclude_job_ids=excluded,
+        limit=limit,
+    )
+    return state_store.load_jobs_by_ids(job_ids)
+
+
+def runnable_job_count() -> int:
+    return state_store.job_count_by_summary(
+        terminal=False,
+        cancel_requested=False,
+        states=("queued", "running"),
+    )
 
 
 def queue_info_for_job(job_id: str) -> dict[str, Any] | None:
-    ordered = [
-        job
-        for job in runnable_jobs_in_order()
-        if str(job.get("job_id") or "") not in execution_runtime.active_jobs
-    ]
-    for index, job in enumerate(ordered, start=1):
-        if str(job.get("job_id") or "") != job_id:
-            continue
-        return {
-            "position": index,
-            "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
-            "running_jobs": len(execution_runtime.active_jobs),
-            "execution_runtime.scheduled_jobs": len(execution_runtime.scheduled_jobs),
-        }
-    return None
+    position = state_store.runnable_job_position(
+        job_id,
+        exclude_job_ids=execution_runtime.active_jobs,
+    )
+    if position is None:
+        return None
+    return {
+        "position": position,
+        "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
+        "running_jobs": len(execution_runtime.active_jobs),
+        "execution_runtime.scheduled_jobs": len(execution_runtime.scheduled_jobs),
+    }

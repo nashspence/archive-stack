@@ -96,6 +96,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "sequence",
         "event_id",
         "owner_app",
+        "subject",
         "event_json",
         "context_json",
         "context_expires_at",

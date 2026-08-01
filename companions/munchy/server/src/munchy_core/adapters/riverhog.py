@@ -25,7 +25,7 @@ from riverhog_api_client import Conflict, HashMismatch, NotFound, ServiceUnavail
 from riverhog_api_client.client import ApiClient
 from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_protocol.manifest import collection_content_etag
-from time_formats import utc_timestamp_now
+from time_formats import format_utc_timestamp, utc_timestamp_now
 
 import munchy_core.domain.errors as domain_errors
 import munchy_core.domain.models as domain_models
@@ -319,15 +319,39 @@ RIVERHOG_CAUSAL_EVENT_TYPES = {
 }
 
 
+def ensure_riverhog_event_lookup_indexes() -> None:
+    with closing(state_store.state_db()) as conn:
+        for name, expression in (
+            (
+                "riverhog_jobs_adapter_collection",
+                "json_extract(payload, '$.handoff_adapter_state.collection_id')",
+            ),
+            (
+                "riverhog_jobs_receipt_collection",
+                "json_extract(payload, '$.handoff_receipt.external_id')",
+            ),
+            (
+                "riverhog_jobs_progress_collection",
+                "json_extract(payload, '$.handoff_progress.external_id')",
+            ),
+        ):
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {name} ON states(kind, {expression}, updated_at)"
+            )
+        conn.commit()
+
+
 def job_for_riverhog_collection(
     collection_id: int,
     *,
     event_time: str | None = None,
 ) -> dict[str, Any] | None:
+    occurred_at = state_store.safe_parse_timestamp(event_time)
+    cutoff = format_utc_timestamp(occurred_at) if occurred_at is not None else None
     with closing(state_store.state_db()) as conn:
-        rows = conn.execute(
+        row = conn.execute(
             """
-            SELECT payload, updated_at
+            SELECT payload
             FROM states
             WHERE kind = 'job'
               AND (
@@ -335,27 +359,24 @@ def job_for_riverhog_collection(
                  OR json_extract(payload, '$.handoff_receipt.external_id') = ?
                  OR json_extract(payload, '$.handoff_progress.external_id') = ?
               )
-            ORDER BY updated_at DESC
+              AND (
+                    ? IS NULL
+                 OR COALESCE(json_extract(payload, '$.created_at'), '') = ''
+                 OR json_extract(payload, '$.created_at') <= ?
+              )
+            ORDER BY COALESCE(
+                         NULLIF(json_extract(payload, '$.created_at'), ''),
+                         updated_at
+                     ) DESC,
+                     id DESC
+            LIMIT 1
             """,
-            (collection_id, collection_id, collection_id),
-        ).fetchall()
-    if not rows:
+            (collection_id, collection_id, collection_id, cutoff, cutoff),
+        ).fetchone()
+    if row is None:
         return None
-    occurred_at = state_store.safe_parse_timestamp(event_time)
-    candidates: list[tuple[datetime, dict[str, Any]]] = []
-    for row in rows:
-        payload = json.loads(str(row["payload"]))
-        if not isinstance(payload, dict):
-            continue
-        created_at = state_store.safe_parse_timestamp(payload.get("created_at"))
-        if occurred_at is not None and created_at is not None and created_at > occurred_at:
-            continue
-        rank = created_at or state_store.safe_parse_timestamp(row["updated_at"])
-        if rank is not None:
-            candidates.append((rank, payload))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+    payload = json.loads(str(row["payload"]))
+    return payload if isinstance(payload, dict) else None
 
 
 def translate_riverhog_event(event: CloudEvent) -> bool:
@@ -1514,6 +1535,7 @@ class RiverhogHandoffAdapter:
         global upstream_event_thread
         if not self.enabled:
             return
+        ensure_riverhog_event_lookup_indexes()
         upstream_event_stop.clear()
         upstream_event_thread = threading.Thread(
             target=riverhog_event_loop,

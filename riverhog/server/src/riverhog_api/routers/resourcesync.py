@@ -11,6 +11,7 @@ from riverhog_api.deps import ContainerDep
 router = APIRouter(tags=["catalog"])
 _RS = "http://www.openarchives.org/rs/terms/"
 _SITEMAP = "http://www.sitemaps.org/schemas/sitemap/0.9"
+_RESOURCE_LIST_PAGE_SIZE = 10_000
 
 
 def _url(request: Request, path: str) -> str:
@@ -59,8 +60,44 @@ def resourcesync_resource_list(
     principal: CatalogReader,
     container: ContainerDep,
 ) -> Response:
+    pages = container.retrieval.resource_list_pages(
+        per_page=_RESOURCE_LIST_PAGE_SIZE,
+        principal=principal,
+    )
+    root = Element("sitemapindex", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
+    SubElement(root, "rs:md", {"capability": "resourcelist"})
+    for page in range(1, pages + 1):
+        sitemap = SubElement(root, "sitemap")
+        SubElement(sitemap, "loc").text = _url(
+            request,
+            f"/resourcesync/resourcelist/{page}.xml",
+        )
+    return _xml(root)
+
+
+@router.get("/resourcesync/resourcelist/{page}.xml")
+def resourcesync_resource_list_page(
+    page: int,
+    request: Request,
+    principal: CatalogReader,
+    container: ContainerDep,
+) -> Response:
+    payload = container.retrieval.resource_list_page(
+        page=page,
+        per_page=_RESOURCE_LIST_PAGE_SIZE,
+        principal=principal,
+    )
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
-    for resource in container.retrieval.resource_list(principal=principal):
+    SubElement(
+        root,
+        "rs:ln",
+        {
+            "rel": "index",
+            "href": _url(request, "/resourcesync/resourcelist.xml"),
+        },
+    )
+    SubElement(root, "rs:md", {"capability": "resourcelist"})
+    for resource in cast(list[dict[str, object]], payload["resources"]):
         url = SubElement(root, "url")
         collection_id = resource["collection_id"]
         SubElement(url, "loc").text = _url(

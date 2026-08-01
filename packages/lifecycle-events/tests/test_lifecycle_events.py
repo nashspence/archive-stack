@@ -50,3 +50,55 @@ def test_causal_events_and_sqlite_delivery_state_are_idempotent(tmp_path: Path) 
     page = log.page(after=None, limit=100)
     assert page.events == [translated]
     assert page.events[0].data["cause"]["id"] == upstream.id
+
+
+def test_context_expiry_is_scoped_to_owner_and_subject_in_sql(tmp_path: Path) -> None:
+    database = tmp_path / "events.sqlite3"
+
+    def connect() -> sqlite3.Connection:
+        return sqlite_connect(database)
+
+    log = SQLiteLifecycleEventLog(connect)
+    log.initialize()
+    matching = cloud_event(
+        source="urn:riverhog",
+        type="io.riverhog.riverhog.collection.finalized",
+        subject="collection-1",
+        data={"collection_id": 1},
+    )
+    other_subject = cloud_event(
+        source="urn:riverhog",
+        type="io.riverhog.riverhog.collection.finalized",
+        subject="collection-2",
+        data={"collection_id": 2},
+    )
+    log.append(matching, owner="client", context={"workflow": "matching"})
+    log.append(other_subject, owner="client", context={"workflow": "other-subject"})
+    log.append(
+        matching.model_copy(update={"id": "other-owner"}),
+        owner="other",
+        context={"workflow": "other-owner"},
+    )
+
+    assert (
+        log.expire_context(
+            owner="client",
+            subject="collection-1",
+            expires_at="2026-08-02T00:00:00.000000Z",
+        )
+        == 1
+    )
+    with sqlite_connect(database) as connection:
+        rows = connection.execute(
+            "SELECT owner, context_expires_at FROM lifecycle_events ORDER BY sequence"
+        ).fetchall()
+        indexes = {
+            str(row["name"]) for row in connection.execute("PRAGMA index_list('lifecycle_events')")
+        }
+
+    assert [tuple(row) for row in rows] == [
+        ("client", "2026-08-02T00:00:00.000000Z"),
+        ("client", None),
+        ("other", None),
+    ]
+    assert "lifecycle_events_owner_subject_context" in indexes

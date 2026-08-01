@@ -675,10 +675,13 @@ def scheduler_status() -> dict[str, Any]:
         "scheduled_jobs": sorted(execution_runtime.scheduled_jobs),
         "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
         "running_job_slots_available": scheduling_service.running_job_slots_available(),
+        "runnable_job_count": scheduling_service.runnable_job_count(),
         "runnable_jobs": [
             str(job["job_id"])
-            for job in scheduling_service.job_states()
-            if scheduling_service.runnable_job(job)
+            for job in scheduling_service.runnable_jobs_in_order(
+                limit=100,
+                exclude_claimed=False,
+            )
         ],
     }
 

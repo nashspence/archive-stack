@@ -59,6 +59,7 @@ from riverhog_core.services.operation_plans import (
 _CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _EXECUTION_KEY = "_execution"
+_BLOCKER_SAMPLE_LIMIT = 10
 
 
 class SqlAlchemyCollectionDeletionService:
@@ -174,10 +175,13 @@ class SqlAlchemyCollectionDeletionService:
                 return
             if upload.state not in {"canceled", "expired"}:
                 raise Conflict(f"collection upload is active: {upload.state or 'unknown'}")
-            for file in upload.files:
-                if file.tus_url:
-                    self._upload_store.cancel_upload(file.tus_url)
-                self._upload_store.delete_target(_collection_upload_target_path(file))
+            remnants = [
+                (file.tus_url, _collection_upload_target_path(file)) for file in upload.files
+            ]
+        for tus_url, target_path in remnants:
+            if tus_url:
+                self._upload_store.cancel_upload(tus_url)
+            self._upload_store.delete_target(target_path)
 
     def _delete_cached_objects(self, collection_id: int) -> None:
         with session_scope(self._session_factory) as session:
@@ -228,17 +232,12 @@ class SqlAlchemyCollectionDeletionService:
             blockers = _active_blockers(session, collection_id)
             if blockers:
                 raise Conflict("collection activity began during deletion: " + "; ".join(blockers))
-            job_ids = list(
-                session.scalars(
-                    select(RetrievalJobFileRecord.job_id).where(
-                        RetrievalJobFileRecord.collection_id == collection_id
-                    )
-                )
+            retrieval_job_ids = select(RetrievalJobFileRecord.job_id).where(
+                RetrievalJobFileRecord.collection_id == collection_id
             )
-            if job_ids:
-                session.execute(
-                    delete(RetrievalJobRecord).where(RetrievalJobRecord.id.in_(job_ids))
-                )
+            session.execute(
+                delete(RetrievalJobRecord).where(RetrievalJobRecord.id.in_(retrieval_job_ids))
+            )
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is not None:
                 session.delete(upload)
@@ -402,6 +401,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
                 RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
             )
             .order_by(RetrievalJobRecord.id)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(f"retrieval job is active: {job_id}" for job_id in retrieval_jobs)
@@ -413,6 +413,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
                 ArchiveCopyJobRecord.state.in_(ARCHIVE_COPY_BLOCKING_STATES),
             )
             .order_by(ArchiveCopyJobRecord.destination_store)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(
@@ -423,6 +424,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
             select(ArchiveCopyRetirementRecord.store)
             .where(ArchiveCopyRetirementRecord.collection_id == collection_id)
             .order_by(ArchiveCopyRetirementRecord.store)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(f"archive copy retirement is active: {store}" for store in retirements)
@@ -434,6 +436,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
                 CollectionProofMaturationRecord.state == "upgrading",
             )
             .order_by(CollectionProofMaturationRecord.store)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(f"archive proof maturation is active: {store}" for store in proof_maturations)
@@ -445,6 +448,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
                 CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
             )
             .order_by(CollectionArchiveAttestationRecord.store)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(f"archive attestation is active: {store}" for store in attestations)
@@ -456,6 +460,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
                 CollectionMetadataPublicationRecord.state == "publishing",
             )
             .order_by(CollectionMetadataPublicationRecord.store)
+            .limit(_BLOCKER_SAMPLE_LIMIT)
         )
     )
     blockers.extend(

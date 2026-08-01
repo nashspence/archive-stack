@@ -258,7 +258,7 @@ class MunchyTargetAdapter:
         job_id = str(event.data.get("job_id") or event.subject or "")
         if not job_id:
             return False
-        with context.connect() as conn:
+        with closing(context.connect()) as conn:
             rows = conn.execute(
                 """
                 SELECT a.id AS attempt_id, a.state, b.source_id, b.target_name, b.run_id

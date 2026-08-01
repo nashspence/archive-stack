@@ -479,12 +479,19 @@ class LifecycleEventRecord(Base):
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String, unique=True)
     owner_app: Mapped[str] = mapped_column(String)
+    subject: Mapped[str | None] = mapped_column(String, nullable=True)
     event_json: Mapped[str] = mapped_column(Text)
     context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     context_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("ix_lifecycle_events_owner_sequence", "owner_app", "sequence"),
+        Index(
+            "ix_lifecycle_events_owner_subject_context",
+            "owner_app",
+            "subject",
+            "context_expires_at",
+        ),
         Index("ix_lifecycle_events_context_expiry", "context_expires_at"),
     )
 
@@ -651,6 +658,7 @@ class RetrievalCacheObjectRecord(Base):
     stored_sha256: Mapped[str] = mapped_column(String(64))
     cached_at: Mapped[str] = mapped_column(String)
     verified_at: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="ready")
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -662,6 +670,7 @@ class RetrievalCacheObjectRecord(Base):
             ],
             ondelete="CASCADE",
         ),
+        Index("ix_retrieval_cache_objects_cleanup", "state", "cached_at"),
     )
 
 

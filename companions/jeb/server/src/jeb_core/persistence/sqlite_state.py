@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from datetime import datetime
 from typing import Any, Literal, cast
 
@@ -25,7 +26,7 @@ class SQLiteJebStore:
 
     def initialize(self) -> None:
         self.config.service.batch_dir.mkdir(parents=True, exist_ok=True)
-        with self.connect() as conn:
+        with self.transaction() as conn:
             self.create_batch_schema(conn)
             self.ensure_target_preflight_schema(conn)
             conn.execute(
@@ -52,6 +53,11 @@ class SQLiteJebStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        with closing(self.connect()) as connection, connection:
+            yield connection
 
     def create_batch_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -244,10 +250,17 @@ class SQLiteJebStore:
             "ON target_preflight_failures(state, updated_at)"
         )
 
-    def unresolved_attempts(self) -> list[sqlite3.Row]:
+    def unresolved_attempts(
+        self,
+        *,
+        after: tuple[str, str] | None = None,
+        limit: int = MAX_LIST_PAGE_SIZE,
+    ) -> list[sqlite3.Row]:
+        if not 1 <= limit <= MAX_LIST_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_LIST_PAGE_SIZE}")
         resolved = tuple(sorted(ATTEMPT_RESOLVED_STATES))
         placeholders = ", ".join("?" for _ in resolved)
-        with self.connect() as conn:
+        with self.transaction() as conn:
             return conn.execute(
                 f"""
                 SELECT
@@ -269,13 +282,42 @@ class SQLiteJebStore:
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE a.state NOT IN ({placeholders})
-                ORDER BY a.created_at
+                  AND (
+                        ? IS NULL
+                     OR a.created_at > ?
+                     OR (a.created_at = ? AND a.id > ?)
+                  )
+                ORDER BY a.created_at, a.id
+                LIMIT ?
                 """,
-                resolved,
+                (
+                    *resolved,
+                    after[0] if after is not None else None,
+                    after[0] if after is not None else None,
+                    after[0] if after is not None else None,
+                    after[1] if after is not None else None,
+                    limit,
+                ),
             ).fetchall()
 
     def unresolved_attempt_ids(self) -> list[str]:
         return [str(row["id"]) for row in self.unresolved_attempts()]
+
+    def source_has_unresolved_attempt(self, source_id: str) -> bool:
+        resolved = tuple(sorted(ATTEMPT_RESOLVED_STATES))
+        placeholders = ", ".join("?" for _ in resolved)
+        with self.transaction() as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1
+                FROM batch_attempts a
+                JOIN batches b ON b.id = a.batch_id
+                WHERE b.source_id = ? AND a.state NOT IN ({placeholders})
+                LIMIT 1
+                """,
+                (source_id, *resolved),
+            ).fetchone()
+        return row is not None
 
     def list_attempts(
         self,
@@ -383,7 +425,7 @@ class SQLiteJebStore:
         }[sort]
         order_sql = order.upper()
         offset = (page - 1) * per_page
-        with self.connect() as conn:
+        with self.transaction() as conn:
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM ({attempts_sql}) batch_page",
                 values,
@@ -431,7 +473,7 @@ class SQLiteJebStore:
         }
 
     def get_attempt(self, attempt_id: str) -> dict[str, Any]:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -508,7 +550,7 @@ class SQLiteJebStore:
         return {str(row["attempt_id"]): int(row["staged_file_count"]) for row in rows}
 
     def batch_state_counts(self) -> dict[str, int]:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             rows = conn.execute(
                 """
                 SELECT state, COUNT(*) AS count
@@ -554,7 +596,7 @@ class SQLiteJebStore:
         }
 
     def load_attempt(self, attempt_id: str) -> sqlite3.Row:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -584,7 +626,7 @@ class SQLiteJebStore:
         return cast(sqlite3.Row, row)
 
     def attempt_files(self, attempt_id: str) -> list[sqlite3.Row]:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             return conn.execute(
                 """
                 SELECT
@@ -609,7 +651,7 @@ class SQLiteJebStore:
             ).fetchall()
 
     def set_attempt_state(self, attempt_id: str, state: str, error: str | None = None) -> None:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             conn.execute(
                 """
                 UPDATE batch_attempts
@@ -638,7 +680,7 @@ class SQLiteJebStore:
         assignments.append("updated_at = ?")
         values.append(event_timestamp())
         values.append(attempt_id)
-        with self.connect() as conn:
+        with self.transaction() as conn:
             conn.execute(
                 f"UPDATE batch_attempts SET {', '.join(assignments)} "
                 "WHERE id = ? AND state != 'canceled'",
@@ -651,17 +693,18 @@ class SQLiteJebStore:
         period: datetime,
     ) -> bool:
         run_id = run_id_for(period)
-        with self.connect() as conn:
-            rows = conn.execute(
+        with self.transaction() as conn:
+            row = conn.execute(
                 """
-                SELECT a.id, a.state
+                SELECT 1
                 FROM batches b
                 JOIN batch_attempts a ON a.batch_id = b.id
-                WHERE b.source_id = ? AND b.run_id = ?
+                WHERE b.source_id = ? AND b.run_id = ? AND a.state != 'superseded'
+                LIMIT 1
                 """,
                 (source_id, run_id),
-            ).fetchall()
-        return any(str(row["state"]) != "superseded" for row in rows)
+            ).fetchone()
+        return row is not None
 
     def store_target_preflight_failure(
         self,
@@ -675,7 +718,7 @@ class SQLiteJebStore:
         now_text = event_timestamp()
         fingerprint = hashlib.sha256(stable_json(fingerprint_payload).encode()).hexdigest()[:24]
         input_paths = [item.target_path for item in files[:20]]
-        with self.connect() as conn:
+        with self.transaction() as conn:
             existing = conn.execute(
                 """
                 SELECT first_seen_at, emitted_error_fingerprint, emitted_error_at
@@ -736,7 +779,7 @@ class SQLiteJebStore:
 
     def clear_target_preflight_failure(self, source_id: str) -> None:
         now_text = event_timestamp()
-        with self.connect() as conn:
+        with self.transaction() as conn:
             conn.execute(
                 """
                 UPDATE target_preflight_failures
@@ -747,7 +790,7 @@ class SQLiteJebStore:
             )
 
     def target_preflight_failure_active(self, source_id: str) -> bool:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM target_preflight_failures
@@ -758,7 +801,7 @@ class SQLiteJebStore:
         return row is not None
 
     def failed_target_preflight_source_ids(self) -> set[str]:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             rows = conn.execute(
                 """
                 SELECT source_id FROM target_preflight_failures
@@ -771,29 +814,45 @@ class SQLiteJebStore:
         self,
         *,
         source_id: str | None = None,
+        after_source_id: str | None = None,
         state: Literal["failed", "resolved", "all"] = "failed",
+        limit: int = MAX_LIST_PAGE_SIZE,
     ) -> list[sqlite3.Row]:
+        if not 1 <= limit <= MAX_LIST_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_LIST_PAGE_SIZE}")
         clauses: list[str] = []
         values: list[object] = []
         if source_id:
             clauses.append("source_id = ?")
             values.append(source_id)
+        if after_source_id:
+            clauses.append("source_id > ?")
+            values.append(after_source_id)
         if state != "all":
             clauses.append("state = ?")
             values.append(state)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with self.connect() as conn:
+        with self.transaction() as conn:
             return conn.execute(
                 f"""
                 SELECT * FROM target_preflight_failures
                 {where}
                 ORDER BY state, source_id, updated_at DESC
+                LIMIT ?
                 """,
-                values,
+                [*values, limit],
             ).fetchall()
 
+    def target_preflight_failure_count(self, *, state: str = "failed") -> int:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM target_preflight_failures WHERE state = ?",
+                (state,),
+            ).fetchone()
+        return int(row["total"] if row is not None else 0)
+
     def latest_retryable_attempt_for_source(self, source_id: str) -> sqlite3.Row | None:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             row = conn.execute(
                 """
                 SELECT a.*
@@ -809,7 +868,7 @@ class SQLiteJebStore:
         return cast(sqlite3.Row | None, row)
 
     def supersede_attempt(self, attempt_id: str) -> None:
-        with self.connect() as conn:
+        with self.transaction() as conn:
             conn.execute(
                 """
                 UPDATE batch_attempts

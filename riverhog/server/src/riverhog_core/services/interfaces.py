@@ -185,11 +185,19 @@ class RetrievalService(Protocol):
         *,
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[JsonObject, str]: ...
-    def resource_list(
+    def resource_list_page(
         self,
         *,
+        page: int,
+        per_page: int,
         principal: ApplicationPrincipal | None = None,
-    ) -> list[dict[str, object]]: ...
+    ) -> JsonObject: ...
+    def resource_list_pages(
+        self,
+        *,
+        per_page: int,
+        principal: ApplicationPrincipal | None = None,
+    ) -> int: ...
     def change_list(
         self,
         *,
@@ -267,7 +275,8 @@ class RetrievalService(Protocol):
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
     def process_due(self, *, limit: int = 10) -> int: ...
-    def sweep(self) -> int: ...
+    def requeue_interrupted_cache_cleanup_for_startup(self) -> int: ...
+    def sweep(self, *, limit: int = 100) -> int: ...
 
 
 class AppKeyService(Protocol):

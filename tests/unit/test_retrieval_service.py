@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -72,6 +72,7 @@ class MemoryRetrievalCache:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str | None], bytes] = {}
         self.deleted: list[tuple[str, str | None]] = []
+        self.before_delete: Callable[[str, str | None], None] | None = None
 
     def put(
         self,
@@ -110,6 +111,8 @@ class MemoryRetrievalCache:
         yield payload
 
     def delete(self, *, object_path: str, version_id: str | None) -> None:
+        if self.before_delete is not None:
+            self.before_delete(object_path, version_id)
         self.deleted.append((object_path, version_id))
         del self.objects[(object_path, version_id)]
 
@@ -898,6 +901,17 @@ def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
         assert record is not None
         record.expires_at = "2026-01-01T00:00:00.000000Z"
 
+    def assert_cleanup_was_claimed(object_path: str, version_id: str | None) -> None:
+        with session_scope(make_session_factory(config.database_url)) as session:
+            cached = session.query(RetrievalCacheObjectRecord).one()
+            assert (cached.object_path, cached.version_id, cached.state) == (
+                object_path,
+                version_id,
+                "deleting",
+            )
+
+    cache.before_delete = assert_cleanup_was_claimed
+
     assert service.sweep() == 1
     expired = service.get(app=principal.app, key_id=key_id, job_id=str(created["id"]))
     assert expired["state"] == "expired"
@@ -906,6 +920,50 @@ def test_missed_ready_lease_expires_and_reclaims_cache(tmp_path: Path) -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.query(RetrievalCacheObjectRecord).count() == 0
         assert session.query(RetrievalCacheLeaseRecord).count() == 0
+
+
+def test_retrieval_cache_cleanup_failure_remains_bounded_and_retryable(tmp_path: Path) -> None:
+    config, archive = seed_archive_copy(tmp_path / "catalog.sqlite3", FILES)
+    cached_object = archive.data_objects[0]
+    cache = MemoryRetrievalCache()
+    object_path = "cache/deep/1/data-000000"
+    version_id = "version-1"
+    cache.objects[(object_path, version_id)] = b"ciphertext"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.add(
+            RetrievalCacheObjectRecord(
+                source_store="deep",
+                collection_id=COLLECTION_ID,
+                object_id=cached_object.object_id,
+                object_path=object_path,
+                version_id=version_id,
+                stored_bytes=len(b"ciphertext"),
+                stored_sha256=hashlib.sha256(b"ciphertext").hexdigest(),
+                cached_at="2026-07-18T00:00:00.000000Z",
+                verified_at="2026-07-18T00:00:00.000000Z",
+                state="ready",
+            )
+        )
+    service = SqlAlchemyRetrievalService(
+        config,
+        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        cache,  # type: ignore[arg-type]
+        proof_verifier=FixtureProofVerifier(),
+    )
+
+    def fail_delete(_object_path: str, _version_id: str | None) -> None:
+        raise RuntimeError("cache unavailable")
+
+    cache.before_delete = fail_delete
+    assert service.sweep(limit=1) == 0
+    with session_scope(make_session_factory(config.database_url)) as session:
+        record = session.query(RetrievalCacheObjectRecord).one()
+        assert record.state == "delete_pending"
+
+    cache.before_delete = None
+    assert service.sweep(limit=1) == 1
+    with session_scope(make_session_factory(config.database_url)) as session:
+        assert session.query(RetrievalCacheObjectRecord).count() == 0
 
 
 def test_invalid_cache_receipt_does_not_make_retrieval_ready(tmp_path: Path) -> None:

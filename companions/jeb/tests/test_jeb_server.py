@@ -215,7 +215,7 @@ def test_source_registry_lists_compact_filtered_pages_in_sql(tmp_path: Path) -> 
 def test_jeb_schema_indexes_operator_status_and_list_paths(tmp_path: Path) -> None:
     services = services_from_env(env_for(tmp_path))
 
-    with services.store.connect() as conn:
+    with services.store.transaction() as conn:
         indexes = {
             table: {str(row["name"]) for row in conn.execute(f"PRAGMA index_list({table})")}
             for table in (
@@ -272,7 +272,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     assert page["attempts"][0]["total_bytes"] == 8
 
     with pytest.raises(RuntimeError):
-        with services.store.connect() as conn:
+        with services.store.transaction() as conn:
             conn.execute(
                 "UPDATE files SET bytes = 99 WHERE batch_id = ? AND target_path = ?",
                 (batch_id, "camera/a.txt"),
@@ -282,7 +282,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 8
 
-    with services.store.connect() as conn:
+    with services.store.transaction() as conn:
         conn.execute(
             "UPDATE files SET bytes = 7 WHERE batch_id = ? AND target_path = ?",
             (batch_id, "camera/a.txt"),
@@ -292,7 +292,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 12
 
-    with services.store.connect() as conn:
+    with services.store.transaction() as conn:
         conn.execute(
             "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
             (batch_id, "camera/b.txt"),
@@ -304,7 +304,7 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
 
     assert services.store.list_attempts(resolution="all", source="camera")["total"] == 1
 
-    with services.store.connect() as conn:
+    with services.store.transaction() as conn:
         conn.execute(
             "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
             (batch_id, "camera/a.txt"),
@@ -475,7 +475,7 @@ def test_scheduler_batches_each_source_independently(tmp_path: Path) -> None:
     services.runtime.run_once()
 
     assert adapter.calls == 2
-    with services.store.connect() as conn:
+    with services.store.transaction() as conn:
         source_ids = [
             str(row["source_id"])
             for row in conn.execute("SELECT source_id FROM batches ORDER BY source_id")
@@ -684,6 +684,48 @@ def test_jeb_target_preflight_events_and_status_use_source_context(tmp_path: Pat
     }
     assert failed_statuses["camera"]["target_preflight_failed"] is True
     assert failed_statuses["phone"]["target_preflight_failed"] is False
+
+
+def test_jeb_target_preflight_event_scan_is_bounded_and_fair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = services_from_env(env_for(tmp_path, sources=""))
+    failures = [{"source_id": f"source-{index:03d}"} for index in range(101)]
+    emitted: list[str] = []
+
+    def page_failures(
+        *,
+        source_id: str | None = None,
+        after_source_id: str | None = None,
+        state: str = "failed",
+        limit: int = 100,
+    ) -> list[dict[str, str]]:
+        assert state == "failed"
+        rows = failures
+        if source_id is not None:
+            rows = [row for row in rows if row["source_id"] == source_id]
+        if after_source_id is not None:
+            rows = [row for row in rows if row["source_id"] > after_source_id]
+        return rows[:limit]
+
+    monkeypatch.setattr(services.store, "target_preflight_failures", page_failures)
+    monkeypatch.setattr(
+        services.sources,
+        "resolve_inactive_target_preflight_failures",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        services.events,
+        "emit_target_preflight_failure",
+        lambda row: emitted.append(str(row["source_id"])) or True,
+    )
+
+    services.sources.emit_target_preflight_failures()
+    assert emitted == [f"source-{index:03d}" for index in range(100)]
+
+    services.sources.emit_target_preflight_failures()
+    assert emitted[-1] == "source-100"
 
 
 def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None:

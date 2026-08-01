@@ -51,6 +51,8 @@ class JebRuntime:
         self.target_context = target_context
         self._initialize = initialize
         self.sleep = sleep
+        self._attempt_cursor: tuple[str, str] | None = None
+        self._source_cursor: str | None = None
 
     def initialize(self) -> None:
         self._initialize()
@@ -84,12 +86,25 @@ class JebRuntime:
                     reap["scan_error"],
                 )
             self.sources.resolve_inactive_target_preflight_failures()
-            for attempt_id in self.store.unresolved_attempt_ids():
-                self.attempts.process_attempt(attempt_id)
-            unresolved_sources = {str(row["source_id"]) for row in self.store.unresolved_attempts()}
-            for source in self.source_registry.list():
-                if source.enabled and source.id not in unresolved_sources:
-                    self.attempts.discover_source(source)
+            attempts = self.store.unresolved_attempts(after=self._attempt_cursor)
+            if not attempts and self._attempt_cursor is not None:
+                attempts = self.store.unresolved_attempts()
+            for attempt in attempts:
+                self.attempts.process_attempt(str(attempt["id"]))
+            self._attempt_cursor = (
+                (str(attempts[-1]["created_at"]), str(attempts[-1]["id"])) if attempts else None
+            )
+            sources = self.source_registry.enabled_after(
+                after_id=self._source_cursor,
+                limit=100,
+            )
+            if not sources and self._source_cursor is not None:
+                sources = self.source_registry.enabled_after(after_id=None, limit=100)
+            for source in sources:
+                if self.store.source_has_unresolved_attempt(source.id):
+                    continue
+                self.attempts.discover_source(source)
+            self._source_cursor = sources[-1].id if sources else None
             self.sources.emit_target_preflight_failures()
 
     def status_summary(self, *, include_backlog: bool = True) -> dict[str, Any]:
@@ -100,7 +115,7 @@ class JebRuntime:
         )
         active_preflight_failures = [
             self.store._target_preflight_failure_summary(row)
-            for row in self.store.target_preflight_failures(state="failed")
+            for row in self.store.target_preflight_failures(state="failed", limit=10)
         ]
         return {
             "sources": self.sources.source_statuses(include_backlog=include_backlog),
@@ -126,7 +141,7 @@ class JebRuntime:
                 per_page=5,
             ),
             "target_preflight_failures": {
-                "total": len(active_preflight_failures),
+                "total": self.store.target_preflight_failure_count(state="failed"),
                 "failures": active_preflight_failures,
             },
             "incomplete_tus_uploads": incomplete_tus_upload_status(

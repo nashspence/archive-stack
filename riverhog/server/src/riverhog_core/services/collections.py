@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
@@ -107,6 +108,20 @@ class _CollectionUploadStats(TypedDict):
     uploaded_bytes: int
     missing_bytes: int
     upload_state_expires_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _UploadFileSnapshot:
+    collection_id: int
+    path: str
+    target_path: str
+    ingress_bytes: int
+    plaintext_bytes: int
+    sha256: str
+    ingress_secret_envelope: str
+    ingress_state_json: str
+    ingress_upload_id: str
+    lifecycle: UploadLifecycleState
 
 
 class SqlAlchemyCollectionService:
@@ -483,25 +498,32 @@ class SqlAlchemyCollectionService:
         normalized_file = _normalize_upload_files([file])[0]
 
         with session_scope(self._session_factory) as session:
-            upload, file_record = self._register_upload_session_file_record(
+            _, registered_file = self._register_upload_session_file_record(
                 session,
                 normalized_collection_id=normalized_collection_id,
                 normalized_file=normalized_file,
             )
-            target_path = _collection_upload_target_path(file_record)
-            _expire_collection_upload_file(file_record, self._upload_store)
-            updated, tus_url = create_or_resume_upload_state(
-                current=_upload_lifecycle_state(file_record),
-                target_path=target_path,
-                length=file_record.ingress_bytes,
-                upload_store=self._upload_store,
-                ttl=self._upload_file_ttl,
-            )
-            _apply_upload_lifecycle_state(file_record, updated)
+            snapshot = _upload_file_snapshot(registered_file)
 
+        updated, tus_url = self._create_or_resume_file_snapshot(snapshot)
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            current_file = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                    CollectionUploadFileRecord.path == snapshot.path,
+                )
+                .with_for_update()
+            )
+            if upload is None or current_file is None:
+                raise Conflict("collection upload changed while preparing the file upload; retry")
+            _require_upload_snapshot_unchanged(current_file, snapshot)
+            _apply_upload_lifecycle_state(current_file, updated)
             return {
-                **_collection_upload_file_registration_payload(upload, file_record),
-                **_collection_file_upload_payload(self._config, file_record, tus_url=tus_url),
+                **_collection_upload_file_registration_payload(upload, current_file),
+                **_collection_file_upload_payload(self._config, current_file, tus_url=tus_url),
             }
 
     def sync_finished_upload_id(self, upload_id: str) -> dict[str, object] | None:
@@ -517,26 +539,43 @@ class SqlAlchemyCollectionService:
                 return None
             normalized_collection_id = file_record.collection_id
             upload = session.get(CollectionUploadRecord, normalized_collection_id)
-            if upload is None or upload.state in {"canceled", "expired"}:
+            if upload is None or upload.state in {"canceled", "expired", "canceling"}:
                 return None
-            target_path = _collection_upload_target_path(file_record)
-            content_digest = _sha256_hex_chunks(
-                iter_ingress_plaintext(
-                    self._config,
-                    self._upload_store,
-                    target_path=target_path,
-                    collection_id=normalized_collection_id,
-                    path=file_record.path,
-                    plaintext_bytes=file_record.bytes,
-                    secret_envelope=file_record.ingress_secret_envelope,
-                    state_json=file_record.ingress_state_json,
+            snapshot = _upload_file_snapshot(file_record)
+
+        content_digest = self._ingress_plaintext_sha256(snapshot)
+        if content_digest != snapshot.sha256:
+            self._upload_store.delete_target(snapshot.target_path)
+            with session_scope(self._session_factory) as session:
+                file_record = session.scalar(
+                    select(CollectionUploadFileRecord)
+                    .where(CollectionUploadFileRecord.ingress_upload_id == upload_id)
+                    .with_for_update()
                 )
+                if file_record is not None and _upload_snapshot_matches(file_record, snapshot):
+                    _apply_upload_lifecycle_state(
+                        file_record,
+                        UploadLifecycleState(
+                            tus_url=None,
+                            uploaded_bytes=0,
+                            upload_expires_at=None,
+                        ),
+                    )
+            raise HashMismatch("sha256 did not match expected file hash")
+
+        with session_scope(self._session_factory) as session:
+            file_record = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(CollectionUploadFileRecord.ingress_upload_id == upload_id)
+                .with_for_update()
             )
-            if content_digest != file_record.sha256:
-                self._upload_store.delete_target(target_path)
-                file_record.ingress_uploaded_bytes = 0
-                file_record.tus_url = None
-                raise HashMismatch("sha256 did not match expected file hash")
+            if file_record is None:
+                return None
+            _require_upload_snapshot_identity_unchanged(file_record, snapshot)
+            normalized_collection_id = file_record.collection_id
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state in {"canceled", "expired", "canceling"}:
+                return None
             file_record.ingress_uploaded_bytes = file_record.ingress_bytes
             file_record.upload_expires_at = None
             if upload.state != "open" and _collection_upload_is_complete_for_session(
@@ -555,6 +594,37 @@ class SqlAlchemyCollectionService:
                 details=staged_event_details,
             )
         return payload
+
+    def _ingress_plaintext_sha256(self, snapshot: _UploadFileSnapshot) -> str:
+        return _sha256_hex_chunks(
+            iter_ingress_plaintext(
+                self._config,
+                self._upload_store,
+                target_path=snapshot.target_path,
+                collection_id=snapshot.collection_id,
+                path=snapshot.path,
+                plaintext_bytes=snapshot.plaintext_bytes,
+                secret_envelope=snapshot.ingress_secret_envelope,
+                state_json=snapshot.ingress_state_json,
+            )
+        )
+
+    def _create_or_resume_file_snapshot(
+        self,
+        snapshot: _UploadFileSnapshot,
+    ) -> tuple[UploadLifecycleState, str]:
+        current, _ = expire_upload_state(
+            current=snapshot.lifecycle,
+            target_path=snapshot.target_path,
+            upload_store=self._upload_store,
+        )
+        return create_or_resume_upload_state(
+            current=current,
+            target_path=snapshot.target_path,
+            length=snapshot.ingress_bytes,
+            upload_store=self._upload_store,
+            ttl=self._upload_file_ttl,
+        )
 
     def collection_id_for_upload_id(self, upload_id: str) -> int | None:
         with session_scope(self._session_factory) as session:
@@ -628,6 +698,7 @@ class SqlAlchemyCollectionService:
         staged_event_details: dict[str, object] | None = None
         missing_file_bytes = False
         payload: dict[str, object] | None = None
+        snapshots: list[_UploadFileSnapshot]
 
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_collection_id)
@@ -678,12 +749,28 @@ class SqlAlchemyCollectionService:
                 raise Conflict(
                     "collection upload registered file manifest differs from completion request"
                 )
-            upload = _sync_and_expire_collection_upload(
-                session,
-                upload,
-                upload_store=self._upload_store,
-                session_idle_ttl=self._upload_session_idle_ttl,
-                force_offset_sync=True,
+            if upload.state in {"archiving", "failed"}:
+                return _collection_upload_payload(
+                    session=session,
+                    upload=upload,
+                    state=None,
+                    collection=None,
+                )
+            if upload.state != "open":
+                raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+            snapshots = [_upload_file_snapshot(record) for record in upload.files]
+
+        updated_states = _sync_upload_snapshots(
+            snapshots,
+            self._upload_store,
+            force=True,
+        )
+
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_collection_id)
+                .with_for_update()
             )
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_collection_id}")
@@ -696,6 +783,21 @@ class SqlAlchemyCollectionService:
                 )
             if upload.state != "open":
                 raise Conflict(f"collection upload session is not open: {normalized_collection_id}")
+            records = {
+                record.path: record
+                for record in session.scalars(
+                    select(CollectionUploadFileRecord)
+                    .where(CollectionUploadFileRecord.collection_id == normalized_collection_id)
+                    .with_for_update()
+                )
+            }
+            if set(records) != {snapshot.path for snapshot in snapshots}:
+                raise Conflict("collection upload files changed during completion; retry")
+            for snapshot, updated in zip(snapshots, updated_states, strict=True):
+                record = records[snapshot.path]
+                _require_upload_snapshot_unchanged(record, snapshot)
+                _apply_upload_lifecycle_state(record, updated)
+            session.flush()
             if not _collection_upload_is_complete_for_session(session, normalized_collection_id):
                 missing_file_bytes = True
             else:
@@ -734,25 +836,13 @@ class SqlAlchemyCollectionService:
                 upload,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload.state in {"canceled", "expired"}:
-                payload = _collection_upload_payload(
-                    session=session,
-                    upload=upload,
-                    state=str(upload.state),
-                    collection=None,
-                )
-                _forget_collection_upload(upload, self._upload_store)
-                session.delete(upload)
-                return payload
-            if upload.state not in {"open", "uploading", None}:
+            if upload.state not in {"open", "uploading", "canceled", "expired", "canceling", None}:
                 raise Conflict(
                     "collection upload session cannot be canceled after completion handoff"
                 )
-
-            _forget_collection_upload(upload, self._upload_store)
-            upload.files.clear()
+            snapshots = [_upload_file_snapshot(record) for record in upload.files]
             now = utc_timestamp_now()
-            upload.state = "canceled"
+            upload.state = "canceling"
             upload.closed_at = now
             upload.last_activity_at = now
             payload = _collection_upload_payload(
@@ -761,8 +851,20 @@ class SqlAlchemyCollectionService:
                 state="canceled",
                 collection=None,
             )
-            session.delete(upload)
-            return payload
+
+        _forget_upload_snapshots(snapshots, self._upload_store)
+
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_collection_id)
+                .with_for_update()
+            )
+            if upload is not None:
+                if upload.state != "canceling":
+                    raise Conflict("collection upload changed during cancellation; retry")
+                session.delete(upload)
+        return payload
 
     def get_upload(self, collection_id: int) -> dict[str, object]:
         normalized_collection_id = _normalize_collection_id_or_raise(collection_id)
@@ -831,23 +933,35 @@ class SqlAlchemyCollectionService:
                     f"collection upload is not accepting file bytes: {normalized_collection_id}"
                 )
 
-            file_record = _get_upload_file_record(
+            registered_file = _get_upload_file_record(
                 session,
                 normalized_collection_id,
                 normalized_path,
             )
-            target_path = _collection_upload_target_path(file_record)
-            _expire_collection_upload_file(file_record, self._upload_store)
-            updated, tus_url = create_or_resume_upload_state(
-                current=_upload_lifecycle_state(file_record),
-                target_path=target_path,
-                length=file_record.ingress_bytes,
-                upload_store=self._upload_store,
-                ttl=self._upload_file_ttl,
-            )
-            _apply_upload_lifecycle_state(file_record, updated)
+            snapshot = _upload_file_snapshot(registered_file)
 
-            return _collection_file_upload_payload(self._config, file_record, tus_url=tus_url)
+        updated, tus_url = self._create_or_resume_file_snapshot(snapshot)
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state not in {"open", "uploading", None}:
+                raise Conflict(
+                    f"collection upload is not accepting file bytes: {normalized_collection_id}"
+                )
+            current_file = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                    CollectionUploadFileRecord.path == normalized_path,
+                )
+                .with_for_update()
+            )
+            if current_file is None:
+                raise NotFound(f"collection upload file not found: {normalized_path}")
+            _require_upload_snapshot_unchanged(current_file, snapshot)
+            _apply_upload_lifecycle_state(current_file, updated)
+
+            return _collection_file_upload_payload(self._config, current_file, tus_url=tus_url)
 
     def append_upload_chunk(
         self,
@@ -875,47 +989,98 @@ class SqlAlchemyCollectionService:
                     f"collection upload is not accepting file bytes: {normalized_collection_id}"
                 )
 
-            file_record = _get_upload_file_record(
+            registered_file = _get_upload_file_record(
                 session,
                 normalized_collection_id,
                 normalized_path,
             )
-            _expire_collection_upload_file(file_record, self._upload_store)
-            if file_record.tus_url is None:
+            snapshot = _upload_file_snapshot(registered_file)
+            if snapshot.lifecycle.tus_url is None:
                 raise Conflict(f"collection upload file is not resumable: {normalized_path}")
-            if offset != file_record.ingress_uploaded_bytes:
+            if offset != snapshot.lifecycle.uploaded_bytes:
                 raise Conflict(
                     f"collection upload offset for {normalized_path} is "
-                    f"{offset}, expected {file_record.ingress_uploaded_bytes}"
+                    f"{offset}, expected {snapshot.lifecycle.uploaded_bytes}"
                 )
 
-            next_offset, _ = self._upload_store.append_upload_chunk(
-                file_record.tus_url,
-                offset=offset,
-                checksum=checksum,
-                content=content,
-            )
-            file_record.ingress_uploaded_bytes = next_offset
-
-            if next_offset >= file_record.ingress_bytes:
-                file_record.upload_expires_at = None
-                target_path = _collection_upload_target_path(file_record)
-                content_digest = _sha256_hex_chunks(
-                    iter_ingress_plaintext(
-                        self._config,
-                        self._upload_store,
-                        target_path=target_path,
-                        collection_id=normalized_collection_id,
-                        path=normalized_path,
-                        plaintext_bytes=file_record.bytes,
-                        secret_envelope=file_record.ingress_secret_envelope,
-                        state_json=file_record.ingress_state_json,
+        current, expired = expire_upload_state(
+            current=snapshot.lifecycle,
+            target_path=snapshot.target_path,
+            upload_store=self._upload_store,
+        )
+        if expired:
+            with session_scope(self._session_factory) as session:
+                expired_file = session.scalar(
+                    select(CollectionUploadFileRecord)
+                    .where(
+                        CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                        CollectionUploadFileRecord.path == normalized_path,
                     )
+                    .with_for_update()
                 )
-                if content_digest != file_record.sha256:
-                    raise HashMismatch("sha256 did not match expected file hash")
+                if expired_file is not None and _upload_snapshot_matches(expired_file, snapshot):
+                    _apply_upload_lifecycle_state(expired_file, current)
+            raise Conflict(f"collection upload file is not resumable: {normalized_path}")
+        assert current.tus_url is not None
+
+        next_offset, _ = self._upload_store.append_upload_chunk(
+            current.tus_url,
+            offset=offset,
+            checksum=checksum,
+            content=content,
+        )
+        content_digest: str | None = None
+        if next_offset >= snapshot.ingress_bytes:
+            content_digest = self._ingress_plaintext_sha256(snapshot)
+            if content_digest != snapshot.sha256:
+                self._upload_store.cancel_upload(current.tus_url)
+                self._upload_store.delete_target(snapshot.target_path)
+                with session_scope(self._session_factory) as session:
+                    mismatched_file = session.scalar(
+                        select(CollectionUploadFileRecord)
+                        .where(
+                            CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                            CollectionUploadFileRecord.path == normalized_path,
+                        )
+                        .with_for_update()
+                    )
+                    if mismatched_file is not None and _upload_snapshot_matches(
+                        mismatched_file,
+                        snapshot,
+                    ):
+                        _apply_upload_lifecycle_state(
+                            mismatched_file,
+                            UploadLifecycleState(
+                                tus_url=None,
+                                uploaded_bytes=0,
+                                upload_expires_at=None,
+                            ),
+                        )
+                raise HashMismatch("sha256 did not match expected file hash")
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state not in {"open", "uploading", None}:
+                raise Conflict(
+                    f"collection upload is not accepting file bytes: {normalized_collection_id}"
+                )
+            current_file = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                    CollectionUploadFileRecord.path == normalized_path,
+                )
+                .with_for_update()
+            )
+            if current_file is None:
+                raise NotFound(f"collection upload file not found: {normalized_path}")
+            _require_upload_snapshot_unchanged(current_file, snapshot)
+            current_file.ingress_uploaded_bytes = next_offset
+
+            if next_offset >= current_file.ingress_bytes:
+                current_file.upload_expires_at = None
             else:
-                file_record.upload_expires_at = upload_expiry_timestamp(self._upload_file_ttl)
+                current_file.upload_expires_at = upload_expiry_timestamp(self._upload_file_ttl)
 
             if upload.state != "open" and _collection_upload_is_complete_for_session(
                 session, normalized_collection_id
@@ -926,9 +1091,9 @@ class SqlAlchemyCollectionService:
                     staged_event_details = _collection_upload_event_details(session, upload)
 
             response: dict[str, object] = {
-                "offset": file_record.ingress_uploaded_bytes,
-                "length": file_record.ingress_bytes,
-                "expires_at": file_record.upload_expires_at,
+                "offset": current_file.ingress_uploaded_bytes,
+                "length": current_file.ingress_bytes,
+                "expires_at": current_file.upload_expires_at,
             }
         if staged_event_details is not None:
             self._lifecycle_events.emit_collection(
@@ -951,28 +1116,50 @@ class SqlAlchemyCollectionService:
                 upload,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload.state in {"canceled", "expired"}:
+            if upload.state in {"canceled", "expired", "canceling"}:
                 raise Conflict(f"collection upload is {upload.state}: {normalized_collection_id}")
 
-            file_record = _get_upload_file_record(
+            registered_file = _get_upload_file_record(
                 session,
                 normalized_collection_id,
                 normalized_path,
             )
-            updated = sync_upload_state(
-                current=_upload_lifecycle_state(file_record),
-                target_path=_collection_upload_target_path(file_record),
-                length=file_record.ingress_bytes,
-                upload_store=self._upload_store,
+            snapshot = _upload_file_snapshot(registered_file)
+
+        updated = sync_upload_state(
+            current=snapshot.lifecycle,
+            target_path=snapshot.target_path,
+            length=snapshot.ingress_bytes,
+            upload_store=self._upload_store,
+        )
+        updated, _ = expire_upload_state(
+            current=updated,
+            target_path=snapshot.target_path,
+            upload_store=self._upload_store,
+        )
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_collection_id)
+            if upload is None or upload.state in {"canceled", "expired", "canceling"}:
+                raise Conflict(f"collection upload is unavailable: {normalized_collection_id}")
+            current_file = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                    CollectionUploadFileRecord.path == normalized_path,
+                )
+                .with_for_update()
             )
-            _apply_upload_lifecycle_state(file_record, updated)
-            _expire_collection_upload_file(file_record, self._upload_store)
-            if file_record.tus_url is None:
+            if current_file is None:
+                raise NotFound(f"collection upload file not found: {normalized_path}")
+            _require_upload_snapshot_unchanged(current_file, snapshot)
+            _apply_upload_lifecycle_state(current_file, updated)
+            if current_file.tus_url is None:
                 raise NotFound(f"collection upload file is not resumable: {normalized_path}")
             return _collection_file_upload_payload(
                 self._config,
-                file_record,
-                tus_url=file_record.tus_url,
+                current_file,
+                tus_url=current_file.tus_url,
             )
 
     def cancel_file_upload(self, collection_id: int, path: str) -> None:
@@ -988,21 +1175,36 @@ class SqlAlchemyCollectionService:
                 upload,
                 session_idle_ttl=self._upload_session_idle_ttl,
             )
-            if upload.state in {"canceled", "expired"}:
+            if upload.state in {"canceled", "expired", "canceling"}:
                 raise Conflict(f"collection upload is {upload.state}: {normalized_collection_id}")
 
-            file_record = _get_upload_file_record(
+            registered_file = _get_upload_file_record(
                 session,
                 normalized_collection_id,
                 normalized_path,
             )
-            if file_record.tus_url is None:
+            if registered_file.tus_url is None:
                 raise NotFound(f"collection upload file is not resumable: {normalized_path}")
+            snapshot = _upload_file_snapshot(registered_file)
 
-            self._upload_store.cancel_upload(file_record.tus_url)
-            self._upload_store.delete_target(_collection_upload_target_path(file_record))
+        assert snapshot.lifecycle.tus_url is not None
+        self._upload_store.cancel_upload(snapshot.lifecycle.tus_url)
+        self._upload_store.delete_target(snapshot.target_path)
+
+        with session_scope(self._session_factory) as session:
+            current_file = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(
+                    CollectionUploadFileRecord.collection_id == normalized_collection_id,
+                    CollectionUploadFileRecord.path == normalized_path,
+                )
+                .with_for_update()
+            )
+            if current_file is None:
+                return
+            _require_upload_snapshot_unchanged(current_file, snapshot)
             _apply_upload_lifecycle_state(
-                file_record,
+                current_file,
                 UploadLifecycleState(
                     tus_url=None,
                     uploaded_bytes=0,
@@ -1034,7 +1236,16 @@ class SqlAlchemyCollectionService:
 
             due_files = session.scalars(
                 select(CollectionUploadFileRecord)
+                .join(
+                    CollectionUploadRecord,
+                    CollectionUploadRecord.collection_id
+                    == CollectionUploadFileRecord.collection_id,
+                )
                 .where(
+                    or_(
+                        CollectionUploadRecord.state.is_(None),
+                        CollectionUploadRecord.state.notin_(("expired", "canceling")),
+                    ),
                     CollectionUploadFileRecord.upload_expires_at.is_not(None),
                     CollectionUploadFileRecord.upload_expires_at <= now_text,
                 )
@@ -1044,10 +1255,7 @@ class SqlAlchemyCollectionService:
                 )
                 .limit(_UPLOAD_EXPIRY_SWEEP_LIMIT)
             ).all()
-            affected_uploads: set[int] = set()
-            for file_record in due_files:
-                affected_uploads.add(file_record.collection_id)
-                _expire_collection_upload_file(file_record, self._upload_store)
+            due_snapshots = [_upload_file_snapshot(record) for record in due_files]
 
             expired_session_files = session.scalars(
                 select(CollectionUploadFileRecord)
@@ -1056,17 +1264,42 @@ class SqlAlchemyCollectionService:
                     CollectionUploadRecord.collection_id
                     == CollectionUploadFileRecord.collection_id,
                 )
-                .where(CollectionUploadRecord.state == "expired")
+                .where(CollectionUploadRecord.state.in_(("expired", "canceling")))
                 .order_by(
                     CollectionUploadFileRecord.collection_id,
                     CollectionUploadFileRecord.path,
                 )
                 .limit(_UPLOAD_EXPIRY_SWEEP_LIMIT)
             ).all()
-            for file_record in expired_session_files:
-                _forget_collection_upload_file(file_record, self._upload_store)
-                session.delete(file_record)
+            expired_snapshots = [_upload_file_snapshot(record) for record in expired_session_files]
 
+        due_results = _expire_upload_snapshots(due_snapshots, self._upload_store)
+        _forget_upload_snapshots(expired_snapshots, self._upload_store)
+
+        affected_uploads: set[int] = set()
+        with session_scope(self._session_factory) as session:
+            for snapshot, (updated, _) in zip(due_snapshots, due_results, strict=True):
+                due_file = session.get(
+                    CollectionUploadFileRecord,
+                    (snapshot.collection_id, snapshot.path),
+                )
+                if due_file is not None and _upload_snapshot_matches(due_file, snapshot):
+                    _apply_upload_lifecycle_state(due_file, updated)
+                    affected_uploads.add(snapshot.collection_id)
+            for snapshot in expired_snapshots:
+                expired_upload = session.get(CollectionUploadRecord, snapshot.collection_id)
+                expired_file = session.get(
+                    CollectionUploadFileRecord,
+                    (snapshot.collection_id, snapshot.path),
+                )
+                if (
+                    expired_upload is not None
+                    and expired_upload.state in {"expired", "canceling"}
+                    and expired_file is not None
+                    and _upload_snapshot_matches(expired_file, snapshot)
+                ):
+                    session.delete(expired_file)
+                    affected_uploads.add(snapshot.collection_id)
             session.flush()
             for collection_id in affected_uploads:
                 affected_upload = session.get(CollectionUploadRecord, collection_id)
@@ -1455,6 +1688,64 @@ def _upload_lifecycle_state(file_record: CollectionUploadFileRecord) -> UploadLi
     )
 
 
+def _upload_file_snapshot(file_record: CollectionUploadFileRecord) -> _UploadFileSnapshot:
+    return _UploadFileSnapshot(
+        collection_id=file_record.collection_id,
+        path=file_record.path,
+        target_path=_collection_upload_target_path(file_record),
+        ingress_bytes=file_record.ingress_bytes,
+        plaintext_bytes=file_record.bytes,
+        sha256=file_record.sha256,
+        ingress_secret_envelope=file_record.ingress_secret_envelope,
+        ingress_state_json=file_record.ingress_state_json,
+        ingress_upload_id=file_record.ingress_upload_id,
+        lifecycle=_upload_lifecycle_state(file_record),
+    )
+
+
+def _upload_snapshot_matches(
+    file_record: CollectionUploadFileRecord,
+    snapshot: _UploadFileSnapshot,
+) -> bool:
+    return (
+        file_record.collection_id == snapshot.collection_id
+        and file_record.path == snapshot.path
+        and file_record.ingress_bytes == snapshot.ingress_bytes
+        and file_record.bytes == snapshot.plaintext_bytes
+        and file_record.sha256 == snapshot.sha256
+        and file_record.ingress_secret_envelope == snapshot.ingress_secret_envelope
+        and file_record.ingress_state_json == snapshot.ingress_state_json
+        and file_record.ingress_upload_id == snapshot.ingress_upload_id
+        and _upload_lifecycle_state(file_record) == snapshot.lifecycle
+    )
+
+
+def _require_upload_snapshot_identity_unchanged(
+    file_record: CollectionUploadFileRecord,
+    snapshot: _UploadFileSnapshot,
+) -> None:
+    if (
+        file_record.collection_id != snapshot.collection_id
+        or file_record.path != snapshot.path
+        or file_record.ingress_bytes != snapshot.ingress_bytes
+        or file_record.bytes != snapshot.plaintext_bytes
+        or file_record.sha256 != snapshot.sha256
+        or file_record.ingress_secret_envelope != snapshot.ingress_secret_envelope
+        or file_record.ingress_state_json != snapshot.ingress_state_json
+        or file_record.ingress_upload_id != snapshot.ingress_upload_id
+        or file_record.tus_url != snapshot.lifecycle.tus_url
+    ):
+        raise Conflict("collection upload file identity changed during remote operation; retry")
+
+
+def _require_upload_snapshot_unchanged(
+    file_record: CollectionUploadFileRecord,
+    snapshot: _UploadFileSnapshot,
+) -> None:
+    if not _upload_snapshot_matches(file_record, snapshot):
+        raise Conflict("collection upload file changed during remote operation; retry")
+
+
 def _apply_upload_lifecycle_state(
     file_record: CollectionUploadFileRecord, state: UploadLifecycleState
 ) -> None:
@@ -1543,105 +1834,58 @@ def _collection_file_upload_payload(
     }
 
 
-def _sync_collection_upload_files(
-    file_records: Sequence[CollectionUploadFileRecord],
+def _sync_upload_snapshots(
+    snapshots: Sequence[_UploadFileSnapshot],
     upload_store: UploadStore,
     *,
     force: bool = False,
-) -> None:
-    records = list(file_records)
+) -> list[UploadLifecycleState]:
+    records = list(snapshots)
 
-    def sync_file(
-        task: tuple[UploadLifecycleState, str, int],
-    ) -> UploadLifecycleState:
-        current, target_path, length = task
-        return sync_upload_state(
-            current=current,
-            target_path=target_path,
-            length=length,
+    def sync_file(snapshot: _UploadFileSnapshot) -> UploadLifecycleState:
+        updated = sync_upload_state(
+            current=snapshot.lifecycle,
+            target_path=snapshot.target_path,
+            length=snapshot.ingress_bytes,
             upload_store=upload_store,
             force=force,
         )
-
-    tasks = [
-        (
-            _upload_lifecycle_state(file_record),
-            _collection_upload_target_path(file_record),
-            file_record.ingress_bytes,
-        )
-        for file_record in records
-    ]
-    if force and len(tasks) > 1:
-        with ThreadPoolExecutor(
-            max_workers=min(_UPLOAD_SYNC_WORKERS, len(tasks)),
-            thread_name_prefix="riverhog-upload-sync",
-        ) as executor:
-            updated_states = list(executor.map(sync_file, tasks))
-    else:
-        updated_states = list(map(sync_file, tasks))
-
-    for file_record, updated in zip(records, updated_states, strict=True):
-        _apply_upload_lifecycle_state(file_record, updated)
-
-
-def _expire_collection_upload_files(
-    file_records: Sequence[CollectionUploadFileRecord],
-    upload_store: UploadStore,
-) -> bool:
-    expired_any = False
-    for file_record in file_records:
-        updated, expired = expire_upload_state(
-            current=_upload_lifecycle_state(file_record),
-            target_path=_collection_upload_target_path(file_record),
+        updated, _ = expire_upload_state(
+            current=updated,
+            target_path=snapshot.target_path,
             upload_store=upload_store,
         )
-        _apply_upload_lifecycle_state(file_record, updated)
-        expired_any = expired_any or expired
-    return expired_any
+        return updated
+
+    if force and len(records) > 1:
+        with ThreadPoolExecutor(
+            max_workers=min(_UPLOAD_SYNC_WORKERS, len(records)),
+            thread_name_prefix="riverhog-upload-sync",
+        ) as executor:
+            return list(executor.map(sync_file, records))
+    return list(map(sync_file, records))
 
 
-def _expire_collection_upload_file(
-    file_record: CollectionUploadFileRecord,
+def _expire_upload_snapshots(
+    snapshots: Sequence[_UploadFileSnapshot],
     upload_store: UploadStore,
-) -> None:
-    target_path = _collection_upload_target_path(file_record)
-    updated, _ = expire_upload_state(
-        current=_upload_lifecycle_state(file_record),
-        target_path=target_path,
-        upload_store=upload_store,
-    )
-    _apply_upload_lifecycle_state(file_record, updated)
+) -> list[tuple[UploadLifecycleState, bool]]:
+    records = list(snapshots)
 
+    def expire_file(snapshot: _UploadFileSnapshot) -> tuple[UploadLifecycleState, bool]:
+        return expire_upload_state(
+            current=snapshot.lifecycle,
+            target_path=snapshot.target_path,
+            upload_store=upload_store,
+        )
 
-def _sync_and_expire_collection_upload(
-    session: Session,
-    upload: CollectionUploadRecord,
-    *,
-    upload_store: UploadStore,
-    session_idle_ttl: timedelta | None = None,
-    force_offset_sync: bool = False,
-) -> CollectionUploadRecord | None:
-    if upload.state in {"canceled", "expired"}:
-        return upload
-    _sync_collection_upload_files(upload.files, upload_store, force=force_offset_sync)
-    expired_any = _expire_collection_upload_files(upload.files, upload_store)
-    if upload.state == "open":
-        if _collection_upload_session_is_idle_expired(upload, ttl=session_idle_ttl):
-            _forget_collection_upload(upload, upload_store)
-            upload.files.clear()
-            now = utc_timestamp_now()
-            upload.state = "expired"
-            upload.closed_at = now
-            upload.last_activity_at = now
-        return upload
-    if expired_any and _collection_upload_has_no_live_file_state(
-        session,
-        upload.collection_id,
-    ):
-        _forget_collection_upload(upload, upload_store)
-        session.delete(upload)
-        return None
-    return upload
+    if len(records) > 1:
+        with ThreadPoolExecutor(
+            max_workers=min(_UPLOAD_SYNC_WORKERS, len(records)),
+            thread_name_prefix="riverhog-upload-expiry",
+        ) as executor:
+            return list(executor.map(expire_file, records))
+    return list(map(expire_file, records))
 
 
 def _expire_open_collection_upload_if_idle(
@@ -1659,15 +1903,6 @@ def _mark_collection_upload_expired(upload: CollectionUploadRecord) -> None:
     upload.state = "expired"
     upload.closed_at = now
     upload.last_activity_at = now
-
-
-def _forget_collection_upload_file(
-    file_record: CollectionUploadFileRecord,
-    upload_store: UploadStore,
-) -> None:
-    if file_record.tus_url is not None:
-        upload_store.cancel_upload(file_record.tus_url)
-    upload_store.delete_target(_collection_upload_target_path(file_record))
 
 
 def _touch_collection_upload(upload: CollectionUploadRecord) -> None:
@@ -1712,16 +1947,16 @@ def _collection_upload_has_no_live_file_state(
     return not bool(has_live_state)
 
 
-def _forget_collection_upload(
-    upload: CollectionUploadRecord,
+def _forget_upload_snapshots(
+    snapshots: Sequence[_UploadFileSnapshot],
     upload_store: UploadStore,
 ) -> None:
     targets = [
         (
-            file_record.tus_url,
-            _collection_upload_target_path(file_record),
+            snapshot.lifecycle.tus_url,
+            snapshot.target_path,
         )
-        for file_record in upload.files
+        for snapshot in snapshots
     ]
 
     def forget_target(target: tuple[str | None, str]) -> None:

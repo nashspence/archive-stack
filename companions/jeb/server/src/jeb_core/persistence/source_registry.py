@@ -8,7 +8,8 @@ import re
 import secrets
 import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -55,8 +56,13 @@ class SourceRegistry:
         connection.execute("PRAGMA busy_timeout=30000")
         return connection
 
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        with closing(self.connect()) as connection, connection:
+            yield connection
+
     def initialize(self) -> None:
-        with self.connect() as connection:
+        with self.transaction() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
@@ -118,7 +124,7 @@ class SourceRegistry:
             raise SourceRegistryError("credential must be non-empty and single-line")
         now = format_utc_timestamp(utc_now())
         try:
-            with self.connect() as connection:
+            with self.transaction() as connection:
                 connection.execute(
                     """
                     INSERT INTO sources(
@@ -156,9 +162,30 @@ class SourceRegistry:
         return self.get(normalized_id), secret if credential is None else None
 
     def list(self) -> list[SourceConfig]:
-        with self.connect() as connection:
+        with self.transaction() as connection:
             rows = connection.execute("SELECT * FROM sources ORDER BY id").fetchall()
             return [self._source(connection, row) for row in rows]
+
+    def enabled_after(self, *, after_id: str | None, limit: int) -> Sequence[SourceConfig]:
+        if not 1 <= limit <= MAX_LIST_PAGE_SIZE:
+            raise SourceRegistryError(f"limit must be between 1 and {MAX_LIST_PAGE_SIZE}")
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM sources
+                WHERE enabled = 1 AND (? IS NULL OR id > ?)
+                ORDER BY id
+                LIMIT ?
+                """,
+                (after_id, after_id, limit),
+            ).fetchall()
+            return [self._source(connection, row) for row in rows]
+
+    def count(self) -> int:
+        with self.transaction() as connection:
+            row = connection.execute("SELECT COUNT(*) AS total FROM sources").fetchone()
+        return int(row["total"] if row is not None else 0)
 
     def list_page(
         self,
@@ -238,7 +265,7 @@ class SourceRegistry:
             {where}
             ORDER BY {sort_sql} {order_sql}, id ASC
         """
-        with self.connect() as connection:
+        with self.transaction() as connection:
             total_row = connection.execute(
                 f"SELECT COUNT(*) AS total FROM sources {where}",
                 values,
@@ -284,7 +311,7 @@ class SourceRegistry:
 
     def get(self, source_id: str) -> SourceConfig:
         normalized_id = _source_id(source_id)
-        with self.connect() as connection:
+        with self.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM sources WHERE id = ?",
                 (normalized_id,),
@@ -295,7 +322,7 @@ class SourceRegistry:
 
     def set_enabled(self, source_id: str, enabled: bool) -> SourceConfig:
         normalized_id = _source_id(source_id)
-        with self.connect() as connection:
+        with self.transaction() as connection:
             changed = connection.execute(
                 "UPDATE sources SET enabled = ?, updated_at = ? WHERE id = ?",
                 (int(enabled), format_utc_timestamp(utc_now()), normalized_id),
@@ -345,7 +372,7 @@ class SourceRegistry:
         )
         target_config = _target_config(cast(Mapping[str, Any], values["target_config"]))
         now = format_utc_timestamp(utc_now())
-        with self.connect() as connection:
+        with self.transaction() as connection:
             connection.execute(
                 """
                 UPDATE sources
@@ -384,7 +411,7 @@ class SourceRegistry:
         secret = credential or secrets.token_urlsafe(24)
         if not secret or "\n" in secret or "\r" in secret:
             raise SourceRegistryError("credential must be non-empty and single-line")
-        with self.connect() as connection:
+        with self.transaction() as connection:
             connection.execute(
                 """
                 UPDATE sources
@@ -405,7 +432,7 @@ class SourceRegistry:
         source = self.get(source_id)
         if not source.enabled or adapter not in source.adapters:
             raise SourceRegistryError("invalid Jeb ingress credentials")
-        with self.connect() as connection:
+        with self.transaction() as connection:
             row = connection.execute(
                 "SELECT password_hash FROM sources WHERE id = ?",
                 (source.id,),
@@ -418,7 +445,7 @@ class SourceRegistry:
 
     def signing_key(self, source_id: str) -> str:
         source = self.get(source_id)
-        with self.connect() as connection:
+        with self.transaction() as connection:
             row = connection.execute(
                 "SELECT upload_signing_key FROM sources WHERE id = ?",
                 (source.id,),
@@ -427,7 +454,7 @@ class SourceRegistry:
 
     def delete(self, source_id: str) -> None:
         normalized_id = _source_id(source_id)
-        with self.connect() as connection:
+        with self.transaction() as connection:
             connection.execute("PRAGMA foreign_keys = ON")
             changed = connection.execute(
                 "DELETE FROM sources WHERE id = ?",
@@ -438,7 +465,7 @@ class SourceRegistry:
         self.write_ftp_projection()
 
     def write_ftp_projection(self) -> None:
-        with self.connect() as connection:
+        with self.transaction() as connection:
             rows = connection.execute(
                 """
                 SELECT id, password_hash

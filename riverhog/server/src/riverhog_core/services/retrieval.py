@@ -10,7 +10,7 @@ from typing import cast
 from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -112,18 +112,55 @@ class SqlAlchemyRetrievalService:
                 raise InvalidState("collection record does not match its catalog ETag")
             return payload, etag
 
-    def resource_list(
+    def resource_list_page(
         self,
         *,
+        page: int,
+        per_page: int,
         principal: ApplicationPrincipal | None = None,
-    ) -> list[dict[str, object]]:
+    ) -> dict[str, object]:
+        if page < 1:
+            raise BadRequest("resource-list page must be positive")
+        if per_page < 1 or per_page > 10_000:
+            raise BadRequest("resource-list page size must be between 1 and 10000")
+        visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
         with session_scope(self._session_factory) as session:
+            total = int(
+                session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
+                or 0
+            )
             rows = session.execute(
                 select(CollectionRecord.id, CollectionRecord.record_etag)
-                .where(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
+                .where(visible)
                 .order_by(CollectionRecord.id)
+                .offset((page - 1) * per_page)
+                .limit(per_page)
             ).all()
-            return [{"collection_id": row.id, "etag": str(row.record_etag)} for row in rows]
+            return {
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": (total + per_page - 1) // per_page if total else 0,
+                "resources": [
+                    {"collection_id": row.id, "etag": str(row.record_etag)} for row in rows
+                ],
+            }
+
+    def resource_list_pages(
+        self,
+        *,
+        per_page: int,
+        principal: ApplicationPrincipal | None = None,
+    ) -> int:
+        if per_page < 1 or per_page > 10_000:
+            raise BadRequest("resource-list page size must be between 1 and 10000")
+        visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
+        with session_scope(self._session_factory) as session:
+            total = int(
+                session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
+                or 0
+            )
+        return (total + per_page - 1) // per_page if total else 0
 
     def change_list(
         self,
@@ -451,6 +488,7 @@ class SqlAlchemyRetrievalService:
                     select(RetrievalCacheObjectRecord).where(
                         RetrievalCacheObjectRecord.source_store == source_store,
                         RetrievalCacheObjectRecord.collection_id == collection_id,
+                        RetrievalCacheObjectRecord.state == "ready",
                     )
                 )
             }
@@ -593,16 +631,31 @@ class SqlAlchemyRetrievalService:
         self.sweep()
         return len(job_ids)
 
-    def sweep(self) -> int:
-        now_text = format_utc_timestamp(utc_now())
-        removed = 0
+    def requeue_interrupted_cache_cleanup_for_startup(self) -> int:
         with session_scope(self._session_factory) as session:
-            for job in session.scalars(
-                select(RetrievalJobRecord).where(
+            result = session.execute(
+                update(RetrievalCacheObjectRecord)
+                .where(RetrievalCacheObjectRecord.state == "deleting")
+                .values(state="delete_pending")
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
+
+    def sweep(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        now_text = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            expired_jobs = session.scalars(
+                select(RetrievalJobRecord)
+                .where(
                     RetrievalJobRecord.state == "ready",
                     RetrievalJobRecord.expires_at <= now_text,
                 )
-            ):
+                .order_by(RetrievalJobRecord.expires_at, RetrievalJobRecord.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).all()
+            for job in expired_jobs:
                 job.state = "expired"
                 self._lifecycle_events.emit_retrieval(
                     type="retrieval.expired",
@@ -621,31 +674,88 @@ class SqlAlchemyRetrievalService:
                     RetrievalCacheLeaseRecord.expires_at <= now_text
                 )
             )
-            unleased = list(
+            if self._cache is None:
+                return 0
+            candidates = list(
                 session.scalars(
-                    select(RetrievalCacheObjectRecord).where(
-                        ~select(RetrievalCacheLeaseRecord.owner)
-                        .where(
-                            RetrievalCacheLeaseRecord.source_store
-                            == RetrievalCacheObjectRecord.source_store,
-                            RetrievalCacheLeaseRecord.collection_id
-                            == RetrievalCacheObjectRecord.collection_id,
-                            RetrievalCacheLeaseRecord.object_id
-                            == RetrievalCacheObjectRecord.object_id,
+                    select(RetrievalCacheObjectRecord)
+                    .where(
+                        (RetrievalCacheObjectRecord.state == "delete_pending")
+                        | (
+                            (RetrievalCacheObjectRecord.state == "ready")
+                            & ~select(RetrievalCacheLeaseRecord.owner)
+                            .where(
+                                RetrievalCacheLeaseRecord.source_store
+                                == RetrievalCacheObjectRecord.source_store,
+                                RetrievalCacheLeaseRecord.collection_id
+                                == RetrievalCacheObjectRecord.collection_id,
+                                RetrievalCacheLeaseRecord.object_id
+                                == RetrievalCacheObjectRecord.object_id,
+                            )
+                            .exists()
                         )
-                        .exists()
                     )
+                    .order_by(
+                        case(
+                            (RetrievalCacheObjectRecord.state == "delete_pending", 0),
+                            else_=1,
+                        ),
+                        RetrievalCacheObjectRecord.cached_at,
+                        RetrievalCacheObjectRecord.source_store,
+                        RetrievalCacheObjectRecord.collection_id,
+                        RetrievalCacheObjectRecord.object_id,
+                    )
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
                 )
             )
-            for cached in unleased:
-                if self._cache is None:
-                    continue
-                self._cache.delete(
-                    object_path=cached.object_path,
-                    version_id=cached.version_id,
+            cleanup = [
+                (
+                    cached.source_store,
+                    cached.collection_id,
+                    cached.object_id,
+                    cached.object_path,
+                    cached.version_id,
                 )
-                session.delete(cached)
-                removed += 1
+                for cached in candidates
+            ]
+            for cached in candidates:
+                cached.state = "deleting"
+
+        removed = 0
+        for source_store, collection_id, object_id, object_path, version_id in cleanup:
+            try:
+                self._cache.delete(
+                    object_path=object_path,
+                    version_id=version_id,
+                )
+            except Exception:
+                with session_scope(self._session_factory) as session:
+                    cache_record = session.get(
+                        RetrievalCacheObjectRecord,
+                        (source_store, collection_id, object_id),
+                    )
+                    if (
+                        cache_record is not None
+                        and cache_record.state == "deleting"
+                        and cache_record.object_path == object_path
+                        and cache_record.version_id == version_id
+                    ):
+                        cache_record.state = "delete_pending"
+                continue
+            with session_scope(self._session_factory) as session:
+                cache_record = session.get(
+                    RetrievalCacheObjectRecord,
+                    (source_store, collection_id, object_id),
+                )
+                if (
+                    cache_record is not None
+                    and cache_record.state == "deleting"
+                    and cache_record.object_path == object_path
+                    and cache_record.version_id == version_id
+                ):
+                    session.delete(cache_record)
+                    removed += 1
         return removed
 
     def _build_plan(
@@ -740,6 +850,8 @@ class SqlAlchemyRetrievalService:
         if object_record is None:
             raise InvalidState("archive object record is missing")
         cached = session.get(RetrievalCacheObjectRecord, (store, collection_id, object_id))
+        if cached is not None and cached.state != "ready":
+            cached = None
         if cached is not None:
             read_mode = "cache"
         elif object_record.kind not in _DATA_KINDS:
@@ -813,6 +925,8 @@ class SqlAlchemyRetrievalService:
             RetrievalCacheObjectRecord,
             (planned.source_store, collection_id, object_id),
         )
+        if cached is not None and cached.state != "ready":
+            cached = None
         return object_record, cached
 
     def _read_archive_object(
@@ -975,6 +1089,7 @@ class SqlAlchemyRetrievalService:
                                 stored_sha256=receipt.stored_sha256,
                                 cached_at=receipt.cached_at,
                                 verified_at=receipt.verified_at,
+                                state="ready",
                             )
                         )
                         session.flush()
@@ -1054,7 +1169,8 @@ class SqlAlchemyRetrievalService:
             if current.read_mode != "restore_required":
                 continue
             cache_key = (current.source_store, current.collection_id, current.object_id)
-            if session.get(RetrievalCacheObjectRecord, cache_key) is not None:
+            cached = session.get(RetrievalCacheObjectRecord, cache_key)
+            if cached is not None and cached.state == "ready":
                 continue
             object_record = session.get(
                 CollectionArchiveObjectRecord,
@@ -1081,7 +1197,7 @@ class SqlAlchemyRetrievalService:
             RetrievalCacheObjectRecord,
             (source_store, collection_id, object_id),
         )
-        if cached is None:
+        if cached is None or cached.state != "ready":
             raise InvalidState("planned retrieval cache object is missing")
         session.merge(
             RetrievalCacheLeaseRecord(

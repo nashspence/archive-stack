@@ -394,3 +394,35 @@ def test_key_quota_release_and_database_list_projection(tmp_path: Path) -> None:
     unlimited = service.get_key_quota(key_id=str(beta["id"]))
     assert unlimited["monthly_bytes"] is None
     assert unlimited["remaining_bytes"] is None
+
+
+def test_key_quota_list_accounts_expired_streams_without_loading_or_reaping_them(
+    tmp_path: Path,
+) -> None:
+    clock = _Clock(datetime(2026, 7, 18, tzinfo=UTC))
+    config = _config(tmp_path / "catalog.sqlite3")
+    initialize_db(config.database_url)
+    key = _key(config, app="review")
+    key_id = str(key["id"])
+    service = SqlAlchemyDownloadAllowance(config, clock=clock)
+    service.set_key_quota(app="review", key_id=key_id, monthly_bytes=100)
+    _abandoned = service.track(
+        store="deep",
+        expected_bytes=10,
+        content=iter((b"unused",)),
+        attribution=DownloadAttribution(key_id=key_id, job_id="abandoned"),
+    )
+    clock.value += timedelta(hours=2)
+
+    payload = service.list_key_quotas(
+        page=1,
+        per_page=25,
+        q=None,
+        sort="key_id",
+        order="asc",
+    )
+
+    [quota] = payload["quotas"]
+    assert quota["accounted_bytes"] == 10
+    assert quota["reserved_bytes"] == 0
+    assert quota["remaining_bytes"] == 90

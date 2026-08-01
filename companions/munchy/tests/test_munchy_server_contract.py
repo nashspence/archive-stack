@@ -3718,6 +3718,7 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
+    server.riverhog.ensure_riverhog_event_lookup_indexes()
     collection_id = 41
     server.state_store.save_job(
         {
@@ -3782,6 +3783,7 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
+    server.riverhog.ensure_riverhog_event_lookup_indexes()
     collection_id = 41
     for job_id, created_at in (
         ("job-1", "2026-06-05T12:00:00.000000Z"),
@@ -3808,6 +3810,13 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
 
     assert earlier is not None and earlier["job_id"] == "job-1"
     assert later is not None and later["job_id"] == "job-2"
+    with sqlite3.connect(server.runtime_config.STATE_DB_PATH) as conn:
+        indexes = {str(row[1]) for row in conn.execute("PRAGMA index_list(states)")}
+    assert {
+        "riverhog_jobs_adapter_collection",
+        "riverhog_jobs_receipt_collection",
+        "riverhog_jobs_progress_collection",
+    } <= indexes
 
 
 def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
@@ -4618,6 +4627,38 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     assert not data_path.exists()
     assert not shared_root.exists()
     assert not work_dir.exists()
+
+
+def test_input_upload_cleanup_candidates_are_bounded_and_exclude_active_job_inputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.persistence.initialize_persistence()
+    for upload_id in ("active", "orphan-a", "orphan-b"):
+        server.state_store.write_state(
+            "input-upload",
+            upload_id,
+            {
+                "input_upload_id": upload_id,
+                "created_at": "2026-01-01T00:00:00Z",
+                "files": [],
+            },
+        )
+    server.state_store.save_job(
+        {
+            "job_id": "active-job",
+            "state": "queued",
+            "input_upload_id": "active",
+        }
+    )
+
+    candidates = server.state_store.unreferenced_input_upload_states(limit=2)
+
+    assert [candidate["input_upload_id"] for candidate in candidates] == [
+        "orphan-a",
+        "orphan-b",
+    ]
 
 
 def test_cleanup_once_repairs_stale_cancel_requested_job(

@@ -83,7 +83,7 @@ class SqlAlchemyArchiveCopyService:
         with session_scope(self._session_factory) as session:
             jobs = session.scalars(
                 select(ArchiveCopyJobRecord)
-                .where(ArchiveCopyJobRecord.state == "copying")
+                .where(ArchiveCopyJobRecord.state.in_(("checking", "copying")))
                 .order_by(ArchiveCopyJobRecord.requested_at)
                 .limit(limit)
                 .with_for_update()
@@ -209,7 +209,7 @@ class SqlAlchemyArchiveCopyService:
                 return _job_payload(job)
             if job.state not in ARCHIVE_COPY_TRANSFER_STATES:
                 raise InvalidState(f"archive copy cannot be canceled in state {job.state}")
-            copying = job.state == "copying"
+            copying = job.state in {"checking", "copying"}
             job.state = "canceling"
             job.next_attempt_at = None
             job.failure = None
@@ -422,47 +422,85 @@ class SqlAlchemyArchiveCopyService:
                 return
             source_copy = _required_copy(session, collection_id, job.source_store)
             source_identity = archive_copy_identity(source_copy)
-            source_store = self._archive_stores.require(job.source_store)
-            destination = self._archive_stores.require(job.destination_store)
+            source_store_name = job.source_store
+            destination_store_name = job.destination_store
             data_objects = source_identity.data_objects
-            if job.read_requested_at is None:
-                status = source_store.prepare_archive_objects_read(
-                    collection_id=collection_id,
-                    objects=data_objects,
-                    retrieval_tier=self._config.retrieval_tier,
-                    hold_days=_read_hold_days(self._config),
-                    requested_at=current_text,
-                    estimated_ready_at=format_utc_timestamp(
-                        current + self._config.retrieval_estimated_latency
-                    ),
+            read_requested_at = job.read_requested_at
+            ready_at = job.ready_at
+            expires_at = job.expires_at
+            destination_storage_prefix = job.destination_storage_prefix
+            job.state = "checking"
+            job.next_attempt_at = None
+
+        source_store = self._archive_stores.require(source_store_name)
+        destination = self._archive_stores.require(destination_store_name)
+        if read_requested_at is None:
+            status = source_store.prepare_archive_objects_read(
+                collection_id=collection_id,
+                objects=data_objects,
+                retrieval_tier=self._config.retrieval_tier,
+                hold_days=_read_hold_days(self._config),
+                requested_at=current_text,
+                estimated_ready_at=format_utc_timestamp(
+                    current + self._config.retrieval_estimated_latency
+                ),
+            )
+            read_requested_at = current_text
+        else:
+            status = source_store.get_archive_objects_read_status(
+                collection_id=collection_id,
+                objects=data_objects,
+                requested_at=read_requested_at,
+                estimated_ready_at=ready_at,
+                estimated_expires_at=expires_at,
+            )
+
+        canceled = False
+        with session_scope(self._session_factory) as session:
+            job = session.scalar(
+                select(ArchiveCopyJobRecord)
+                .where(
+                    ArchiveCopyJobRecord.collection_id == collection_id,
+                    ArchiveCopyJobRecord.destination_store == destination_store,
                 )
-                job.read_requested_at = current_text
-            else:
-                status = source_store.get_archive_objects_read_status(
-                    collection_id=collection_id,
-                    objects=data_objects,
-                    requested_at=job.read_requested_at,
-                    estimated_ready_at=job.ready_at,
-                    estimated_expires_at=job.expires_at,
-                )
+                .with_for_update()
+            )
+            if job is None:
+                return
+            if job.state not in {"checking", "canceling"}:
+                raise Conflict("archive copy changed while checking source availability")
+            job.read_requested_at = read_requested_at
             job.ready_at = status.ready_at or job.ready_at
             job.expires_at = status.expires_at or job.expires_at
-            if status.state == "expired":
+            if job.state == "canceling":
+                canceled = True
+            elif status.state == "expired":
                 job.state = "requested"
                 job.read_requested_at = None
                 job.ready_at = None
                 job.expires_at = None
                 job.next_attempt_at = current_text
                 return
-            if status.state != "ready":
+            elif status.state != "ready":
                 job.state = "waiting"
                 job.next_attempt_at = format_utc_timestamp(
                     current + self._config.retrieval_sweep_interval
                 )
                 return
-            job.state = "copying"
-            job.next_attempt_at = None
-            destination_storage_prefix = job.destination_storage_prefix
+            else:
+                job.state = "copying"
+                job.next_attempt_at = None
+
+        if canceled:
+            self._cleanup_source_read(
+                collection_id=collection_id,
+                destination_store=destination_store,
+            )
+            self._cleanup_canceled_destination(
+                collection_id=collection_id,
+                destination_store=destination_store,
+            )
+            return
 
         source_store.verify_collection_archive(
             collection_id=collection_id,
@@ -696,18 +734,20 @@ class SqlAlchemyArchiveCopyService:
             )
             if source_copy is None or not archive_copy_is_complete(source_copy):
                 return
-            source_store = self._archive_stores.require(job.source_store)
-            try:
-                source_store.cleanup_archive_objects_read(
-                    collection_id=collection_id,
-                    objects=archive_copy_identity(source_copy).data_objects,
-                )
-            except Exception:
-                _LOG.exception(
-                    "failed to clean up archive-copy source read: collection=%s source=%s",
-                    collection_id,
-                    job.source_store,
-                )
+            source_store_name = job.source_store
+            data_objects = archive_copy_identity(source_copy).data_objects
+        source_store = self._archive_stores.require(source_store_name)
+        try:
+            source_store.cleanup_archive_objects_read(
+                collection_id=collection_id,
+                objects=data_objects,
+            )
+        except Exception:
+            _LOG.exception(
+                "failed to clean up archive-copy source read: collection=%s source=%s",
+                collection_id,
+                source_store_name,
+            )
 
     def _cleanup_canceled_destination(
         self,

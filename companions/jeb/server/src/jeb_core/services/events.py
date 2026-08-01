@@ -90,7 +90,7 @@ class JebEventService:
         ):
             return False
         now_text = event_timestamp()
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute(
                 """
                 UPDATE target_preflight_failures

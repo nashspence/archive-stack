@@ -48,6 +48,7 @@ def record_new_archive_cache_lease(
                 stored_sha256=cached.stored_sha256,
                 cached_at=cached.cached_at,
                 verified_at=cached.verified_at,
+                state="ready",
             )
         )
         session.flush()

@@ -112,7 +112,7 @@ def should_cancel_handoff_on_failure(job: dict[str, Any], exc: Exception) -> boo
 
 def eager_handoff_candidate_jobs() -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for job in scheduling_service.job_states():
+    for job in scheduling_service.active_job_states():
         try:
             adapter = handoff_adapter(job)
         except RuntimeError:

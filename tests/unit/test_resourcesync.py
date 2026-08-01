@@ -8,6 +8,7 @@ from riverhog_api.routers.resourcesync import (
     collection_portable_manifest,
     resourcesync_change_list,
     resourcesync_resource_list,
+    resourcesync_resource_list_page,
 )
 from riverhog_api_client.client import ApiClient
 from starlette.requests import Request
@@ -17,9 +18,21 @@ ETAG = "a" * 64
 
 
 class RetrievalStub:
-    def resource_list(self, *, principal: object):
+    def resource_list_pages(self, *, per_page: int, principal: object) -> int:
         assert principal == "app"
-        return [{"collection_id": COLLECTION_ID, "etag": ETAG}]
+        assert per_page == 10_000
+        return 1
+
+    def resource_list_page(self, *, page: int, per_page: int, principal: object):
+        assert principal == "app"
+        assert page == 1
+        return {
+            "page": page,
+            "per_page": per_page,
+            "total": 1,
+            "pages": 1,
+            "resources": [{"collection_id": COLLECTION_ID, "etag": ETAG}],
+        }
 
     def change_list(self, *, after: int, principal: object):
         assert after == 2
@@ -70,6 +83,12 @@ def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None
     resources = resourcesync_resource_list(
         _request("/resourcesync/resourcelist.xml"), "app", container
     )
+    resource_page = resourcesync_resource_list_page(
+        1,
+        _request("/resourcesync/resourcelist/1.xml"),
+        "app",
+        container,
+    )
     changes = resourcesync_change_list(
         _request("/resourcesync/changelist.xml"),
         "app",
@@ -78,12 +97,15 @@ def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None
     )
 
     resource_root = ElementTree.fromstring(resources.body)
+    resource_page_root = ElementTree.fromstring(resource_page.body)
     change_root = ElementTree.fromstring(changes.body)
-    assert str(COLLECTION_ID) in resources.body.decode()
-    assert f"sha-256:{ETAG}" in resources.body.decode()
+    assert str(COLLECTION_ID) in resource_page.body.decode()
+    assert f"sha-256:{ETAG}" in resource_page.body.decode()
+    assert resource_root.tag.endswith("sitemapindex")
     assert change_root.attrib["data-cursor"] == "3"
     assert change_root.attrib["data-has-more"] == "false"
-    assert len(resource_root) == len(change_root) == 1
+    assert len([item for item in resource_page_root if item.tag.endswith("url")]) == 1
+    assert len(change_root) == 1
 
 
 def test_cli_parses_resourcesync_cursor_and_collection_change() -> None:

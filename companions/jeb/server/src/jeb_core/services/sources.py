@@ -64,6 +64,7 @@ class JebSourceService:
         self.current_time = clock
         self.target_context = target_context
         self.initialize = initialize
+        self._preflight_failure_cursor: str | None = None
 
     def source_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
         failed_preflight_source_ids = self.store.failed_target_preflight_source_ids()
@@ -191,7 +192,7 @@ class JebSourceService:
         source = self.source_registry.get(source_id)
         expires = (expires_at or (utc_now() + SOURCE_REMOVAL_TTL)).replace(microsecond=0)
         landing_files = filesystem_listing(source.path)
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             batch_row = conn.execute(
                 """
                 SELECT COUNT(*) AS count, COALESCE(SUM(total_bytes), 0) AS bytes
@@ -302,7 +303,7 @@ class JebSourceService:
         if not supplied:
             raise SourceRegistryError("source removal challenge is required")
         self.initialize()
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             active = conn.execute(
                 """
                 SELECT * FROM source_removals
@@ -339,7 +340,7 @@ class JebSourceService:
             blockers = [str(item) for item in plan["blockers"]]
             if blockers:
                 raise UnrecoverableJebError("source removal is blocked: " + "; ".join(blockers))
-            with self.store.connect() as conn:
+            with self.store.transaction() as conn:
                 conn.execute(
                     """
                     INSERT INTO source_removals(
@@ -361,7 +362,7 @@ class JebSourceService:
             "files": int(plan["managed_file_count"]),
             "bytes": int(plan["managed_bytes"]),
         }
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute(
                 """
                 UPDATE source_removals
@@ -385,7 +386,7 @@ class JebSourceService:
             for upload in cast(list[dict[str, Any]], plan["incomplete_uploads"]):
                 terminate_tus_upload(self.config.ingress, str(upload["id"]))
             shutil.rmtree(Path(str(plan["landing_root"])), ignore_errors=True)
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             attempt_rows = conn.execute(
                 """
                 SELECT a.id
@@ -408,7 +409,7 @@ class JebSourceService:
                 self.config.service.batch_dir / str(row["id"]),
                 ignore_errors=True,
             )
-        with self.store.connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute(
                 """
                 DELETE FROM attempt_files WHERE attempt_id IN (
@@ -646,32 +647,22 @@ class JebSourceService:
             message=target_preflight_error(source_id=source.id, error=error),
         )
 
-    def active_target_preflight_source_ids(self) -> set[str]:
-        return {source.id for source in self.source_registry.list() if source.enabled}
-
     def resolve_inactive_target_preflight_failures(self) -> int:
-        active_source_ids = sorted(self.active_target_preflight_source_ids())
         now_text = event_timestamp()
-        with self.store.connect() as conn:
-            if active_source_ids:
-                placeholders = ", ".join("?" for _ in active_source_ids)
-                cursor = conn.execute(
-                    f"""
-                    UPDATE target_preflight_failures
-                    SET state = 'resolved', resolved_at = ?, updated_at = ?
-                    WHERE state = 'failed' AND source_id NOT IN ({placeholders})
-                    """,
-                    (now_text, now_text, *active_source_ids),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    UPDATE target_preflight_failures
-                    SET state = 'resolved', resolved_at = ?, updated_at = ?
-                    WHERE state = 'failed'
-                    """,
-                    (now_text, now_text),
-                )
+        with self.store.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE target_preflight_failures
+                SET state = 'resolved', resolved_at = ?, updated_at = ?
+                WHERE state = 'failed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sources
+                      WHERE sources.id = target_preflight_failures.source_id
+                        AND sources.enabled = 1
+                  )
+                """,
+                (now_text, now_text),
+            )
         resolved = cursor.rowcount if cursor.rowcount is not None else 0
         if resolved:
             LOG.info("resolved %s inactive target preflight failure(s)", resolved)
@@ -679,5 +670,18 @@ class JebSourceService:
 
     def emit_target_preflight_failures(self, source_id: str | None = None) -> None:
         self.resolve_inactive_target_preflight_failures()
-        for row in self.store.target_preflight_failures(source_id=source_id, state="failed"):
+        if source_id is not None:
+            rows = self.store.target_preflight_failures(
+                source_id=source_id,
+                state="failed",
+            )
+        else:
+            rows = self.store.target_preflight_failures(
+                after_source_id=self._preflight_failure_cursor,
+                state="failed",
+            )
+            if not rows and self._preflight_failure_cursor is not None:
+                rows = self.store.target_preflight_failures(state="failed")
+            self._preflight_failure_cursor = str(rows[-1]["source_id"]) if rows else None
+        for row in rows:
             self.events.emit_target_preflight_failure(row)

@@ -283,17 +283,27 @@ async def _run_retrieval_reaper(
     sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    first_run = True
+    startup_recovery = True
     while True:
         try:
-            if first_run:
+            if startup_recovery:
                 await asyncio.sleep(0)
             else:
                 await asyncio.sleep(interval_seconds)
             container = container_provider()
             if container is None:
                 continue
-            first_run = False
+            current_startup_recovery = startup_recovery
+            startup_recovery = False
+            if current_startup_recovery:
+                requeued = await asyncio.to_thread(
+                    container.retrieval.requeue_interrupted_cache_cleanup_for_startup
+                )
+                if requeued:
+                    _LOG.info(
+                        "startup requeued interrupted retrieval-cache cleanup: count=%s",
+                        requeued,
+                    )
             await asyncio.to_thread(container.retrieval.process_due, limit=10)
         except asyncio.CancelledError:
             raise

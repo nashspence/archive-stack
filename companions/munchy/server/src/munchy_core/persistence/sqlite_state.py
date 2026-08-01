@@ -188,6 +188,29 @@ def list_states(kind: str) -> list[dict[str, Any]]:
     return [json.loads(str(row["payload"])) for row in rows]
 
 
+def unreferenced_input_upload_states(*, limit: int) -> list[dict[str, Any]]:
+    if limit < 1 or limit > runtime_config.RETENTION_BATCH_SIZE:
+        raise ValueError("input upload query limit must be within the maintenance batch size")
+    with closing(state_db()) as conn:
+        rows = conn.execute(
+            """
+            SELECT states.payload
+            FROM states
+            WHERE states.kind = 'input-upload'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM job_summaries
+                  WHERE job_summaries.input_upload_id = states.id
+                    AND job_summaries.terminal = 0
+              )
+            ORDER BY states.updated_at, states.id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [json.loads(str(row["payload"])) for row in rows]
+
+
 def bool_int(value: Any) -> int:
     return 1 if bool(value) else 0
 
@@ -394,6 +417,128 @@ def load_jobs_by_ids(job_ids: list[str]) -> list[dict[str, Any]]:
         ).fetchall()
     by_id = {str(row["id"]): json.loads(str(row["payload"])) for row in rows}
     return [by_id[job_id] for job_id in job_ids if isinstance(by_id.get(job_id), dict)]
+
+
+def job_ids_by_summary(
+    *,
+    terminal: bool | None = None,
+    cancel_requested: bool | None = None,
+    states: tuple[str, ...] = (),
+    exclude_job_ids: set[str] | None = None,
+    limit: int,
+) -> list[str]:
+    if limit < 1 or limit > runtime_config.RETENTION_BATCH_SIZE:
+        raise ValueError("job query limit must be within the maintenance batch size")
+    clauses: list[str] = []
+    values: list[object] = []
+    if terminal is not None:
+        clauses.append("terminal = ?")
+        values.append(bool_int(terminal))
+    if cancel_requested is not None:
+        clauses.append("cancel_requested = ?")
+        values.append(bool_int(cancel_requested))
+    if states:
+        placeholders = ", ".join("?" for _ in states)
+        clauses.append(f"state IN ({placeholders})")
+        values.extend(states)
+    excluded = sorted(exclude_job_ids or ())
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        clauses.append(f"job_id NOT IN ({placeholders})")
+        values.extend(excluded)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    state_priority = "CASE WHEN state = 'running' THEN 0 ELSE 1 END"
+    with closing(state_db()) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT job_id
+            FROM job_summaries
+            {where}
+            ORDER BY {state_priority},
+                     COALESCE(NULLIF(started_at, ''), created_at, updated_at),
+                     job_id
+            LIMIT ?
+            """,
+            [*values, limit],
+        ).fetchall()
+    return [str(row["job_id"]) for row in rows]
+
+
+def job_count_by_summary(
+    *,
+    terminal: bool | None = None,
+    cancel_requested: bool | None = None,
+    states: tuple[str, ...] = (),
+) -> int:
+    clauses: list[str] = []
+    values: list[object] = []
+    if terminal is not None:
+        clauses.append("terminal = ?")
+        values.append(bool_int(terminal))
+    if cancel_requested is not None:
+        clauses.append("cancel_requested = ?")
+        values.append(bool_int(cancel_requested))
+    if states:
+        placeholders = ", ".join("?" for _ in states)
+        clauses.append(f"state IN ({placeholders})")
+        values.extend(states)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    with closing(state_db()) as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM job_summaries {where}",
+            values,
+        ).fetchone()
+    return int(row["total"] if row is not None else 0)
+
+
+def input_upload_has_active_job(
+    upload_id: str,
+    *,
+    exclude_job_id: str | None = None,
+) -> bool:
+    clauses = ["terminal = 0", "input_upload_id = ?"]
+    values: list[object] = [upload_id]
+    if exclude_job_id is not None:
+        clauses.append("job_id != ?")
+        values.append(exclude_job_id)
+    with closing(state_db()) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM job_summaries WHERE " + " AND ".join(clauses) + " LIMIT 1",
+            values,
+        ).fetchone()
+    return row is not None
+
+
+def runnable_job_position(job_id: str, *, exclude_job_ids: set[str]) -> int | None:
+    clauses = ["terminal = 0", "cancel_requested = 0", "state IN ('queued', 'running')"]
+    values: list[object] = []
+    excluded = sorted(exclude_job_ids)
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        clauses.append(f"job_id NOT IN ({placeholders})")
+        values.extend(excluded)
+    where = " AND ".join(clauses)
+    with closing(state_db()) as conn:
+        row = conn.execute(
+            f"""
+            SELECT position
+            FROM (
+                SELECT
+                    job_id,
+                    row_number() OVER (
+                        ORDER BY
+                            CASE WHEN state = 'running' THEN 0 ELSE 1 END,
+                            COALESCE(NULLIF(started_at, ''), created_at, updated_at),
+                            job_id
+                    ) AS position
+                FROM job_summaries
+                WHERE {where}
+            )
+            WHERE job_id = ?
+            """,
+            [*values, job_id],
+        ).fetchone()
+    return int(row["position"]) if row is not None else None
 
 
 def delete_state(kind: str, item_id: str) -> None:

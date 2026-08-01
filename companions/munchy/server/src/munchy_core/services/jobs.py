@@ -775,7 +775,12 @@ def schedule_pending_jobs(
     if scheduling_service.scheduling_paused():
         return []
     scheduled: list[str] = []
-    for job in scheduling_service.runnable_jobs_in_order():
+    for job in scheduling_service.runnable_jobs_in_order(
+        limit=min(
+            runtime_config.RETENTION_BATCH_SIZE,
+            max(1, scheduling_service.running_job_slots_available()),
+        )
+    ):
         if scheduling_service.running_job_slots_available() <= 0:
             break
         if not scheduling_service.runnable_job(job):
@@ -995,7 +1000,7 @@ def cleanup_once() -> dict[str, Any]:
     )
     stale_canceled_jobs: list[dict[str, Any]] = []
     with execution_runtime.state_lock:
-        for job in scheduling_service.job_states():
+        for job in scheduling_service.active_job_states(cancel_requested=True):
             job_id = str(job.get("job_id") or "")
             if (
                 job_id
@@ -1009,8 +1014,7 @@ def cleanup_once() -> dict[str, Any]:
         repaired_canceled.append(str(job.get("job_id") or ""))
 
     with execution_runtime.state_lock:
-        referenced_uploads = scheduling_service.referenced_input_upload_ids()
-        for upload_state in scheduling_service.input_upload_states():
+        for upload_state in scheduling_service.unreferenced_input_upload_states():
             upload_id = str(upload_state["input_upload_id"])
             with execution_runtime.input_upload_state_lock(upload_id):
                 current = state_store.read_state("input-upload", upload_id)
@@ -1019,7 +1023,7 @@ def cleanup_once() -> dict[str, Any]:
                 upload = upload_service.refresh_input_upload(current)
                 last_activity = upload_service.input_upload_last_activity(upload)
                 if upload.get("state") == "uploaded":
-                    if upload_id in referenced_uploads or last_activity > orphan_upload_cutoff:
+                    if last_activity > orphan_upload_cutoff:
                         continue
                     upload_service.remove_input_upload_data(upload)
                     state_store.delete_state("input-upload", upload_id)
@@ -1032,7 +1036,7 @@ def cleanup_once() -> dict[str, Any]:
                 removed.append(f"input-upload:{upload_id}")
 
         job_cutoff = datetime.now(UTC) - timedelta(hours=runtime_config.LOCAL_CLEANUP_MIN_AGE_HOURS)
-        for job in scheduling_service.job_states():
+        for job in scheduling_service.terminal_job_states():
             job_id = str(job.get("job_id") or "")
             if not job_id or job_id in execution_runtime.active_jobs:
                 continue

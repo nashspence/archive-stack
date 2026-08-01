@@ -456,13 +456,12 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 if split.path == "/health/ready":
                     state.services.runtime.initialize()
-                    sources = state.services.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
                         {
                             "service": "jeb",
-                            "source_count": len(sources),
+                            "source_count": state.services.source_registry.count(),
                             "status": "ok",
                         },
                     )
@@ -479,14 +478,12 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                     return
                 if split.path == "/v1/config/check":
                     state.services.runtime.initialize()
-                    sources = state.services.source_registry.list()
                     _response(
                         self,
                         HTTPStatus.OK,
                         {
                             "status": "ok",
-                            "source_count": len(sources),
-                            "sources": [source.id for source in sources],
+                            "source_count": state.services.source_registry.count(),
                         },
                     )
                     return

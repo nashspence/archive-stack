@@ -74,6 +74,7 @@ class SqlAlchemyLifecycleEventService:
         record = LifecycleEventRecord(
             event_id=event.id,
             owner_app=owner_app,
+            subject=subject,
             event_json=event.model_dump_json(exclude_none=True),
             context_json=context_json,
             context_expires_at=context_expires_at,
@@ -267,19 +268,16 @@ class SqlAlchemyLifecycleEventService:
         expires_at: str,
         session: Session,
     ) -> None:
-        rows = list(
-            session.scalars(
-                select(LifecycleEventRecord).where(
-                    LifecycleEventRecord.owner_app == owner_app,
-                    LifecycleEventRecord.context_json.is_not(None),
-                    LifecycleEventRecord.context_expires_at.is_(None),
-                )
+        session.execute(
+            update(LifecycleEventRecord)
+            .where(
+                LifecycleEventRecord.owner_app == owner_app,
+                LifecycleEventRecord.subject == subject,
+                LifecycleEventRecord.context_json.is_not(None),
+                LifecycleEventRecord.context_expires_at.is_(None),
             )
+            .values(context_expires_at=expires_at)
         )
-        for row in rows:
-            event = CloudEvent.model_validate_json(row.event_json)
-            if event.subject == subject:
-                row.context_expires_at = expires_at
 
 
 def actor_data(*, app: str, key_id: str | None = None) -> dict[str, str]:

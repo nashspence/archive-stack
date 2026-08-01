@@ -46,6 +46,9 @@ class SQLiteLifecycleEventLog:
                 CREATE INDEX IF NOT EXISTS lifecycle_events_context_expiry
                 ON lifecycle_events(context_expires_at)
                 WHERE context_json IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS lifecycle_events_owner_subject_context
+                ON lifecycle_events(owner, json_extract(event_json, '$.subject'))
+                WHERE context_json IS NOT NULL AND context_expires_at IS NULL;
                 """
             )
             connection.commit()
@@ -127,27 +130,20 @@ class SQLiteLifecycleEventLog:
         return int(row["sequence"])
 
     def expire_context(self, *, owner: str, subject: str, expires_at: str) -> int:
-        updated = 0
         with closing(self._connect()) as connection:
-            rows = connection.execute(
+            cursor = connection.execute(
                 """
-                SELECT sequence, event_json
-                FROM lifecycle_events
-                WHERE owner = ? AND context_json IS NOT NULL AND context_expires_at IS NULL
+                UPDATE lifecycle_events
+                SET context_expires_at = ?
+                WHERE owner = ?
+                  AND context_json IS NOT NULL
+                  AND context_expires_at IS NULL
+                  AND json_extract(event_json, '$.subject') = ?
                 """,
-                (owner,),
-            ).fetchall()
-            for row in rows:
-                event = CloudEvent.model_validate_json(str(row["event_json"]))
-                if event.subject != subject:
-                    continue
-                connection.execute(
-                    "UPDATE lifecycle_events SET context_expires_at = ? WHERE sequence = ?",
-                    (expires_at, row["sequence"]),
-                )
-                updated += 1
+                (expires_at, owner, subject),
+            )
             connection.commit()
-        return updated
+        return int(cursor.rowcount)
 
     def page(
         self,

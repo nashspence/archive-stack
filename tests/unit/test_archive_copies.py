@@ -254,6 +254,53 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
     assert destination.archive is None
 
 
+def test_archive_copy_checks_remote_source_outside_its_catalog_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _archive, source, _destination, service = _service(
+        tmp_path / "catalog.sqlite3",
+        source_ready=False,
+    )
+    service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
+    original_prepare = source.prepare_archive_objects_read
+
+    def inspect_claim(**kwargs: object):
+        with session_scope(make_session_factory(config.database_url)) as session:
+            job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
+            assert job is not None and job.state == "checking"
+        return original_prepare(**kwargs)
+
+    monkeypatch.setattr(source, "prepare_archive_objects_read", inspect_claim)
+
+    assert service.process_due(limit=1) == 1
+    assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "waiting"
+
+
+def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _config, _archive, source, destination, service = _service(
+        tmp_path / "catalog.sqlite3",
+        source_ready=False,
+    )
+    service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
+    original_prepare = source.prepare_archive_objects_read
+
+    def cancel_during_check(**kwargs: object):
+        canceling = service.cancel(COLLECTION_ID, destination_store="b2")
+        assert canceling["state"] == "canceling"
+        return original_prepare(**kwargs)
+
+    monkeypatch.setattr(source, "prepare_archive_objects_read", cancel_during_check)
+
+    assert service.process_due(limit=1) == 1
+    assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
+    assert source.cleaned == [("data-000000",)]
+    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+
+
 def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
     tmp_path: Path,
 ) -> None:
@@ -342,7 +389,11 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is None
 
 
-def test_startup_resumes_a_claimed_archive_copy(tmp_path: Path) -> None:
+@pytest.mark.parametrize("interrupted_state", ["checking", "copying"])
+def test_startup_resumes_a_claimed_archive_copy(
+    tmp_path: Path,
+    interrupted_state: str,
+) -> None:
     config, _archive, _source, _destination, service = _service(tmp_path / "catalog.sqlite3")
     service.create_or_resume(
         COLLECTION_ID,
@@ -353,7 +404,7 @@ def test_startup_resumes_a_claimed_archive_copy(tmp_path: Path) -> None:
     with session_scope(factory) as session:
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None
-        job.state = "copying"
+        job.state = interrupted_state
 
     assert service.requeue_interrupted_copies_for_startup() == 1
     with session_scope(factory) as session:
