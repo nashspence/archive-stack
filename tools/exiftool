@@ -1,8 +1,0 @@
-#!/usr/bin/env -S mise tool-stub
-
-version = "13.59"
-bin = "exiftool"
-url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
-checksum = "sha256:87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
-size = 8653399
-strip_components = "1"

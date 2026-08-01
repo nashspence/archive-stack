@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import tomllib
 from pathlib import Path
@@ -19,7 +18,6 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert mise["tools"]["uv"] == "0.11.24"
     assert mise["tools"]["age"] == "1.3.1"
     assert mise["tools"]["minisign"] == "0.12"
-    assert mise["env"]["_"]["path"] == "tools"
     assert mise["settings"]["lockfile"] is True
     assert "dev" in pyproject["dependency-groups"]
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
@@ -42,11 +40,8 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
 
 
 def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:
-    exiftool = REPO_ROOT / "tools/exiftool"
-    stub = tomllib.loads(exiftool.read_text(encoding="utf-8").split("\n", 1)[1])
-
-    assert os.access(exiftool, os.X_OK)
-    assert stub == {
+    mise = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
+    assert mise["tools"]["http:exiftool"] == {
         "version": "13.59",
         "bin": "exiftool",
         "url": "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz",
@@ -57,7 +52,7 @@ def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:
 
     vector_runner = REPO_ROOT / "scripts/test_c2sp_vectors.sh"
     vector_script = vector_runner.read_text(encoding="utf-8")
-    assert os.access(vector_runner, os.X_OK)
+    assert vector_runner.stat().st_mode & 0o111
     assert "1e3d2860d46e94e777e1b17c7a6f2436387e3ecc" in vector_script
     assert "516ce226b3d53c9859fcc973edc8976078dcee5600f72f7c27442857e4a3d16c" in vector_script
 

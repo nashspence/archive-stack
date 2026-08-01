@@ -16,6 +16,21 @@ url = "https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-da
 url_api = "https://api.github.com/repos/FiloSottile/age/releases/assets/333752669"
 provenance = "github-attestations"
 
+[[tools."http:exiftool"]]
+version = "13.59"
+backend = "http:exiftool"
+
+[tools."http:exiftool".options]
+strip_components = "1"
+
+[tools."http:exiftool"."platforms.linux-x64"]
+checksum = "sha256:87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+
+[tools."http:exiftool"."platforms.macos-arm64"]
+checksum = "sha256:87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+
 [[tools.minisign]]
 version = "0.12"
 backend = "aqua:jedisct1/minisign"
