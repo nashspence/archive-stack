@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "munchy-av1-nvenc-target"
+version = "0.1.0"
+description = "Munchy AV1 NVENC execution target."
+requires-python = ">=3.12"
+license = "CAL-1.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "fastapi>=0.111,<1.0",
+  "munchy-api-client>=0.1,<0.2",
+  "munchy-target-support>=0.1,<0.2",
+  "munchy-workflows>=0.1,<0.2",
+  "pydantic>=2.7,<3.0",
+  "time-formats>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+munchy-av1-nvenc = "munchy_av1_nvenc.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/munchy_av1_nvenc"]

@@ -6,10 +6,11 @@ import os
 from pathlib import Path
 
 import httpx
+import jeb_core.collector as collector_module
 import pytest
-from jeb import collector as collector_module
-from jeb.collector import Collector, config_from_env
-from jeb.ingress import (
+from jeb_api.composition import config_from_env, create_collector
+from jeb_core.collector import Collector
+from jeb_core.ingress import (
     JebIngressError,
     incomplete_tus_upload_status,
     normalize_tus_upload_id,
@@ -27,7 +28,7 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
 
 
 def collector_for(env: dict[str, str]) -> Collector:
-    collector = Collector(config_from_env(env))
+    collector = create_collector(config_from_env(env))
     collector.add_source(
         "phone",
         adapters=("tus",),

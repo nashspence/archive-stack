@@ -10,10 +10,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-import jeb.collector as collector_module
+import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
-from jeb.collector import Collector, config_from_env
-from jeb.service_api import JebServiceState, start_jeb_service_server
+from jeb_api.app import JebServiceState, start_jeb_service_server
+from jeb_api.composition import config_from_env, create_collector
+from jeb_core.adapters.munchy import MunchyTargetAdapter
+from jeb_core.collector import Collector
 
 API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
@@ -91,7 +93,7 @@ def collector_for(
     *,
     target_adapters=None,
 ) -> Collector:
-    collector = Collector(config_from_env(env), target_adapters=target_adapters)
+    collector = create_collector(config_from_env(env), target_adapters=target_adapters)
     collector.add_source(
         "phone",
         adapters=("tus",),
@@ -117,7 +119,7 @@ def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(collector_module, "MunchyClient", FakeMunchyClient)
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", FakeMunchyClient)
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -185,7 +187,7 @@ def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> Non
 
 
 def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
-    collector = Collector(config_from_env(jeb_env(tmp_path)))
+    collector = create_collector(config_from_env(jeb_env(tmp_path)))
     collector.init_db()
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(collector=collector))
     try:
@@ -368,7 +370,7 @@ def test_jeb_service_api_archive_now_dry_run_does_not_create_batch(tmp_path: Pat
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
     processed = threading.Event()
 
-    class FailingAdapter:
+    class FailingAdapter(MunchyTargetAdapter):
         def advance(self, collector: Collector, attempt_id: str) -> None:
             processed.set()
             raise AssertionError("dry-run must not process a batch")
@@ -405,7 +407,7 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
     processed = threading.Event()
     processed_attempt_ids: list[str] = []
 
-    class CompleteAdapter:
+    class CompleteAdapter(MunchyTargetAdapter):
         def advance(self, collector: Collector, attempt_id: str) -> None:
             processed_attempt_ids.append(attempt_id)
             collector.set_attempt_state(attempt_id, "target_complete")

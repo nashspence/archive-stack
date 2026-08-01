@@ -6,8 +6,8 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from munchy.job_templates import job_template_digest, normalize_job_template
-from munchy.template_registry import (
+from munchy_core.job_templates import job_template_digest, normalize_job_template
+from munchy_core.template_registry import (
     TemplateRegistryError,
     create_template_registry_snapshot,
     ensure_template_registry_schema,

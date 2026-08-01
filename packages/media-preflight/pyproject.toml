@@ -3,24 +3,18 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "munchy-api-client"
+name = "media-preflight"
 version = "0.1.0"
-description = "Munchy submission, upload, routing, and provenance client."
+description = "Reusable structural and ffprobe-based media validation."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "h2>=4,<5",
-  "httpx>=0.27,<1.0",
-  "lifecycle-events>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
-  "tus-transport>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
-lifecycle-events = { workspace = true }
 time-formats = { workspace = true }
-tus-transport = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/munchy_api_client"]
+packages = ["src/media_preflight"]

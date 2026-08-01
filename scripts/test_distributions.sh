@@ -68,6 +68,31 @@ single_wheel() {
   printf '%s' "${wheels[0]}"
 }
 
+smoke_workspace_distribution() {
+  local name="$1"
+  local pattern="$2"
+  local import_check="$3"
+  local executable="${4:-}"
+  local wheel
+  wheel="$(single_wheel "${pattern}")"
+  run_uv venv --python 3.12 "${SCRATCH}/${name}"
+  mapfile -t wheels < <(
+    workspace_wheel_closure "${SCRATCH}/${name}/bin/python" "${wheel}"
+  )
+  run_uv pip install \
+    --strict \
+    --python "${SCRATCH}/${name}/bin/python" \
+    --find-links "${DIST_DIR}" \
+    "${wheels[@]}"
+  (
+    cd "${SCRATCH}"
+    env -u PYTHONPATH "${SCRATCH}/${name}/bin/python" -I -c "${import_check}"
+    if [[ -n "${executable}" ]]; then
+      env -u PYTHONPATH "${SCRATCH}/${name}/bin/${executable}" --help >/dev/null
+    fi
+  )
+}
+
 client_wheel="$(single_wheel 'riverhog_client-*.whl')"
 recovery_wheel="$(single_wheel 'riverhog_recover-*.whl')"
 server_wheel="$(single_wheel 'riverhog_server-*.whl')"
@@ -125,4 +150,38 @@ run_uv pip install \
     'import importlib.metadata as m; from riverhog_api.app import create_app; app = create_app(); assert app.version == m.version("riverhog-server"); assert any(ep.name == "riverhog-api" for ep in m.entry_points(group="console_scripts"))'
 )
 
-printf 'Riverhog server, client, and recovery distribution smoke tests passed.\n'
+smoke_workspace_distribution \
+  jeb-client \
+  'jeb_client-*.whl' \
+  'import importlib.metadata as m; import jeb_cli.main; m.version("jeb-client")' \
+  jeb
+smoke_workspace_distribution \
+  jeb-server \
+  'jeb_server-*.whl' \
+  'import importlib.metadata as m; import jeb_api.app; import jeb_core.collector; m.version("jeb-server")' \
+  jeb-service
+smoke_workspace_distribution \
+  munchy-client \
+  'munchy_client-*.whl' \
+  'import importlib.metadata as m; import munchy_cli.main; m.version("munchy-client")' \
+  munchy
+smoke_workspace_distribution \
+  munchy-server \
+  'munchy_server-*.whl' \
+  'import importlib.metadata as m; import munchy_api.app; import munchy_core.coordinator; m.version("munchy-server")'
+smoke_workspace_distribution \
+  munchy-av1-nvenc-target \
+  'munchy_av1_nvenc_target-*.whl' \
+  'import importlib.metadata as m; import munchy_av1_nvenc.main; m.version("munchy-av1-nvenc-target")'
+smoke_workspace_distribution \
+  gogurt \
+  'gogurt-*.whl' \
+  'import importlib.metadata as m; import gogurt.cli; m.version("gogurt")' \
+  gogurt
+smoke_workspace_distribution \
+  mango-fish \
+  'mango_fish-*.whl' \
+  'import importlib.metadata as m; import mango_fish.cli; m.version("mango-fish")' \
+  mango-fish
+
+printf 'All application distribution smoke tests passed.\n'

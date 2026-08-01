@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from munchy.application_keys import SQLiteApplicationKeyStore
+from munchy_core.application_keys import SQLiteApplicationKeyStore
 
 
 def _connection(path: Path) -> sqlite3.Connection:

@@ -26,6 +26,8 @@ def test_every_workspace_distribution_is_present_once_in_the_uv_lock() -> None:
 
 
 def test_workspace_packages_resolve_internal_dependencies_through_uv_sources() -> None:
+    workspace_config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    workspace_sources = workspace_config.get("tool", {}).get("uv", {}).get("sources", {})
     workspace_projects = {
         normalize_name(tomllib.loads(path.read_text(encoding="utf-8"))["project"]["name"])
         for path in workspace_pyprojects(REPO_ROOT)
@@ -38,7 +40,10 @@ def test_workspace_packages_resolve_internal_dependencies_through_uv_sources() -
             for dependency in pyproject["project"].get("dependencies", [])
         }
         internal = dependencies & workspace_projects
-        raw_sources = pyproject.get("tool", {}).get("uv", {}).get("sources", {})
+        raw_sources = {
+            **workspace_sources,
+            **pyproject.get("tool", {}).get("uv", {}).get("sources", {}),
+        }
         sources = {normalize_name(name): source for name, source in raw_sources.items()}
         assert internal <= sources.keys()
         assert all(sources[name] == {"workspace": True} for name in internal)

@@ -22,6 +22,7 @@ MYPY_SOURCES = \
 	packages/jeb-cli-support/src \
 	packages/jeb-protocol/src \
 	packages/lifecycle-events/src \
+	packages/media-preflight/src \
 	packages/munchy-api-client/src \
 	packages/munchy-config/src \
 	packages/munchy-target-support/src \

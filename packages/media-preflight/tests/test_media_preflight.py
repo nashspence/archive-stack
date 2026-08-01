@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from munchy_api_client.preflight import (
+from media_preflight import (
     MediaPreflightCache,
     MediaPreflightCacheFile,
     MediaPreflightFile,
@@ -64,7 +64,7 @@ def test_media_preflight_accepts_mp4_with_video_stream_metadata(tmp_path: Path) 
             "",
         )
 
-    with patch("munchy_api_client.preflight.subprocess.run", fake_run):
+    with patch("media_preflight.subprocess.run", fake_run):
         report = run_media_preflight(
             [
                 MediaPreflightFile(
@@ -96,7 +96,7 @@ def test_media_preflight_rejects_video_stream_without_usable_metadata(tmp_path: 
             "",
         )
 
-    with patch("munchy_api_client.preflight.subprocess.run", fake_run):
+    with patch("media_preflight.subprocess.run", fake_run):
         report = run_media_preflight(
             [
                 MediaPreflightFile(
@@ -147,7 +147,7 @@ def test_cached_media_preflight_reports_local_progress(tmp_path: Path) -> None:
             elapsed_seconds=0.1,
         )
 
-    with patch("munchy_api_client.preflight.run_media_preflight", fake_run_media_preflight):
+    with patch("media_preflight.run_media_preflight", fake_run_media_preflight):
         report, _stats = run_cached_media_preflight(
             [file],
             cache=None,

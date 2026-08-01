@@ -2,10 +2,17 @@
 members = [
   "companions/*/client",
   "companions/*/server",
+  "companions/munchy/server/targets/av1-nvenc",
   "packages/*",
   "riverhog/*",
   "utilities/*",
 ]
+
+[tool.uv.sources]
+munchy-api-client = { workspace = true }
+munchy-target-support = { workspace = true }
+munchy-workflows = { workspace = true }
+time-formats = { workspace = true }
 
 [dependency-groups]
 dev = [

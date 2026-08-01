@@ -16,6 +16,7 @@ dependencies = [
   "jeb-cli-support>=0.1,<0.2",
   "jeb-protocol>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
+  "media-preflight>=0.1,<0.2",
   "munchy-api-client>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
   "riverhog-cli-support>=0.1,<0.2",
@@ -24,15 +25,16 @@ dependencies = [
 ]
 
 [project.scripts]
-jeb-service = "jeb.service_cli:main"
+jeb-service = "jeb_api.cli:main"
 
 [tool.uv.sources]
 jeb-cli-support = { workspace = true }
 jeb-protocol = { workspace = true }
 lifecycle-events = { workspace = true }
+media-preflight = { workspace = true }
 munchy-api-client = { workspace = true }
 riverhog-cli-support = { workspace = true }
 time-formats = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jeb"]
+packages = ["src/jeb_api", "src/jeb_core"]

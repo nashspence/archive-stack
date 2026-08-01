@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_PROJECTS = {
     Path("riverhog/server/pyproject.toml"),
     Path("companions/munchy/server/pyproject.toml"),
+    Path("companions/munchy/server/targets/av1-nvenc/pyproject.toml"),
     Path("companions/jeb/server/pyproject.toml"),
 }
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 from gogurt.core import load_gogurt_actions
-from jeb.collector import config_from_env
+from jeb_api.composition import config_from_env
 from mango_fish.relay import load_config as load_mango_fish_config
 from munchy_workflows.job_authoring import (
     build_review_sweep_plan,

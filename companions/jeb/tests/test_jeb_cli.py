@@ -5,10 +5,10 @@ import os
 import time
 from pathlib import Path
 
-import jeb.collector as collector_module
+import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
-from jeb.collector import Collector, config_from_env
-from jeb.service_cli import main as jeb_main
+from jeb_api.cli import main as jeb_main
+from jeb_api.composition import config_from_env, create_collector
 
 
 def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
@@ -22,7 +22,7 @@ def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
 
 def enroll(env: dict[str, str]) -> dict[str, str]:
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
-    collector = Collector(config_from_env(runtime_env))
+    collector = create_collector(config_from_env(runtime_env))
     for source_id in env["TEST_SOURCE_IDS"].split(","):
         collector.add_source(
             source_id,
@@ -49,7 +49,7 @@ def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(collector_module, "MunchyClient", FakeMunchyClient)
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", FakeMunchyClient)
 
 
 def write_stable_file(path: Path, content: bytes = b"notes") -> None:
@@ -75,7 +75,7 @@ def test_jeb_archive_now_starts_batch_without_processing(
     output = capsys.readouterr().out
     assert "jeb archive" in output
     assert "jeb archive: staged" in output
-    collector = Collector(config_from_env(env))
+    collector = create_collector(config_from_env(env))
     collector.init_db()
     [batch_id] = collector.active_attempt_ids()
     assert [row["target_path"] for row in collector.attempt_files(batch_id)] == ["phone/note.txt"]
@@ -97,7 +97,7 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     output = capsys.readouterr().out
     assert "Jeb archive plan: phone" in output
     assert "eligible files: 1" in output
-    collector = Collector(config_from_env(env))
+    collector = create_collector(config_from_env(env))
     collector.init_db()
     assert collector.active_attempt_ids() == []
     assert collector.list_attempts(terminal="all")["total"] == 0

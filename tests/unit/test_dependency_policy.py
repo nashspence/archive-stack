@@ -52,6 +52,7 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
         "companions/*/client",
         "companions/*/server",
+        "companions/munchy/server/targets/av1-nvenc",
         "packages/*",
         "riverhog/*",
         "utilities/*",

@@ -30,8 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-munchy-server = "munchy_server.main:main"
-munchy-av1-nvenc = "munchy_av1_nvenc.main:main"
+munchy-server = "munchy_api.app:main"
 
 [tool.uv.sources]
 application-access = { workspace = true }
@@ -48,7 +47,6 @@ tus-transport = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/munchy",
-  "src/munchy_av1_nvenc",
-  "src/munchy_server",
+  "src/munchy_api",
+  "src/munchy_core",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from munchy.ingest import InputFileSpec, MunchyJobRequest, StorageHint, groups_for_files
+from munchy_core.ingest import InputFileSpec, MunchyJobRequest, StorageHint, groups_for_files
 from munchy_workflows.profiles import EncodeProfile
 from pydantic import ValidationError
 

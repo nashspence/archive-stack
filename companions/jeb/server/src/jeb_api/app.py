@@ -13,17 +13,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
-from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
-
-from jeb.collector import Collector, UnrecoverableJebError, event_timestamp
-from jeb.ingress import (
+from jeb_core.collector import Collector, UnrecoverableJebError, event_timestamp
+from jeb_core.ingress import (
     JebIngressAuthenticationError,
     JebIngressError,
     authenticate_tus_source,
     prepare_tus_upload,
     publish_tus_upload,
 )
-from jeb.sources import SourceRegistryError
+from jeb_core.sources import SourceRegistryError
+from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 
 TerminalFilter = Literal["active", "terminal", "all"]
 LOG = logging.getLogger(__name__)

@@ -13,15 +13,12 @@ from jeb_cli_support.output import (
     format_operation,
     format_status,
 )
+from jeb_core.collector import UnrecoverableJebError
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 from riverhog_cli_support.output import emit, format_list_ids
 
-from jeb.collector import (
-    Collector,
-    UnrecoverableJebError,
-    config_from_env,
-)
-from jeb.service_api import JebServiceState, start_jeb_service_server
+from jeb_api.app import JebServiceState, start_jeb_service_server
+from jeb_api.composition import config_from_env, create_collector
 
 DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
 DEFAULT_HEALTH_PORT = "8081"
@@ -109,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     command = args.command or "run"
 
-    collector = Collector(config_from_env())
+    collector = create_collector(config_from_env())
     if command == "check-config":
         collector.init_db()
         sources = collector.source_registry.list()

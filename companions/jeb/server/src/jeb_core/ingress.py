@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from jeb.sources import SourceRegistry, SourceRegistryError
+from jeb_core.sources import SourceRegistry, SourceRegistryError
 
 TUS_SOURCE_METADATA = "jeb_source"
 TUS_PATH_METADATA = "jeb_path"

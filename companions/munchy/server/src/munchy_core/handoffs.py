@@ -7,7 +7,13 @@ from typing import Any, Protocol
 
 class HandoffAdapter(Protocol):
     name: str
+    enabled: bool
     supports_eager: bool
+    eager_interval_seconds: float
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
 
     def advance(
         self,
@@ -38,3 +44,16 @@ class HandoffAdapter(Protocol):
         current: dict[str, Any],
         incoming: dict[str, Any],
     ) -> dict[str, Any]: ...
+
+    def expected_primary_files_total(
+        self,
+        input_upload: dict[str, Any],
+        groups: dict[str, dict[str, Any]],
+        routing: Mapping[str, Any] | None,
+    ) -> int | None: ...
+
+    def handed_off_paths(self, job: dict[str, Any]) -> set[str]: ...
+
+    def artifact_record(self, job: dict[str, Any], path: str) -> dict[str, Any] | None: ...
+
+    def artifact_complete(self, record: dict[str, Any]) -> bool: ...

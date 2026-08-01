@@ -19,7 +19,9 @@ members = [
     "jeb-server",
     "lifecycle-events",
     "mango-fish",
+    "media-preflight",
     "munchy-api-client",
+    "munchy-av1-nvenc-target",
     "munchy-client",
     "munchy-config",
     "munchy-server",
@@ -743,6 +745,7 @@ dependencies = [
     { name = "jeb-cli-support" },
     { name = "jeb-protocol" },
     { name = "lifecycle-events" },
+    { name = "media-preflight" },
     { name = "munchy-api-client" },
     { name = "pydantic" },
     { name = "riverhog-cli-support" },
@@ -758,6 +761,7 @@ requires-dist = [
     { name = "jeb-cli-support", editable = "packages/jeb-cli-support" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "media-preflight", editable = "packages/media-preflight" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
@@ -1004,6 +1008,17 @@ wheels = [
 ]
 
 [[package]]
+name = "media-preflight"
+version = "0.1.0"
+source = { editable = "packages/media-preflight" }
+dependencies = [
+    { name = "time-formats" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "time-formats", editable = "packages/time-formats" }]
+
+[[package]]
 name = "munchy-api-client"
 version = "0.1.0"
 source = { editable = "packages/munchy-api-client" }
@@ -1022,6 +1037,31 @@ requires-dist = [
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
+]
+
+[[package]]
+name = "munchy-av1-nvenc-target"
+version = "0.1.0"
+source = { editable = "companions/munchy/server/targets/av1-nvenc" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "munchy-api-client" },
+    { name = "munchy-target-support" },
+    { name = "munchy-workflows" },
+    { name = "pydantic" },
+    { name = "time-formats" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "munchy-api-client", specifier = ">=0.1,<0.2" },
+    { name = "munchy-target-support", specifier = ">=0.1,<0.2" },
+    { name = "munchy-workflows", specifier = ">=0.1,<0.2" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "time-formats", specifier = ">=0.1,<0.2" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
 
 [[package]]

@@ -63,20 +63,16 @@ WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
 COPY companions/munchy/server/pyproject.toml companions/munchy/server/pyproject.toml
-COPY companions/munchy/server/src companions/munchy/server/src
-COPY packages/application-access packages/application-access
+COPY companions/munchy/server/targets/av1-nvenc companions/munchy/server/targets/av1-nvenc
 COPY packages/config-validation packages/config-validation
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/munchy-api-client packages/munchy-api-client
 COPY packages/munchy-config packages/munchy-config
 COPY packages/munchy-target-support packages/munchy-target-support
 COPY packages/munchy-workflows packages/munchy-workflows
-COPY packages/riverhog-age packages/riverhog-age
-COPY packages/riverhog-api-client packages/riverhog-api-client
-COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/time-formats packages/time-formats
 COPY packages/tus-transport packages/tus-transport
-RUN uv sync --frozen --package munchy-server --no-dev --no-editable
+RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable
 
 
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04

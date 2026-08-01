@@ -6,17 +6,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import jeb.collector as collector_module
+import jeb_core.adapters.munchy as munchy_adapter_module
+import jeb_core.collector as collector_module
 import pytest
-from jeb.collector import (
+from jeb_api.composition import config_from_env, create_collector
+from jeb_core.adapters.munchy import MunchyTargetAdapter
+from jeb_core.collector import (
     Collector,
     EligibleFile,
-    config_from_env,
-    munchy_submission_request,
     parse_duration,
     parse_size,
 )
-from jeb.sources import SourceRegistryError
+from jeb_core.sources import SourceRegistryError
 
 TEST_TEMPLATE = "camera-archive"
 
@@ -41,7 +42,7 @@ def collector_from_env(
 ) -> Collector:
     source_ids = env.get("TEST_SOURCE_IDS", "").split(",")
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
-    collector = Collector(
+    collector = create_collector(
         config_from_env(runtime_env),
         target_adapters=target_adapters,
     )
@@ -74,7 +75,7 @@ def active_attempt_ids(collector: Collector) -> list[str]:
 
 
 @dataclass
-class CompleteAdapter:
+class CompleteAdapter(MunchyTargetAdapter):
     calls: int = 0
 
     def advance(self, collector: Collector, attempt_id: str) -> None:
@@ -96,7 +97,7 @@ def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(collector_module, "MunchyClient", FakeMunchyClient)
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", FakeMunchyClient)
 
 
 def test_parse_helpers_support_human_units() -> None:
@@ -471,7 +472,7 @@ def test_archive_plan_target_preflight_does_not_record_failure(
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(collector_module, "MunchyClient", RejectingMunchyClient)
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", RejectingMunchyClient)
 
     plan = collector.archive_plan(source_id="camera")
 
@@ -492,10 +493,14 @@ def test_monthly_cadence_uses_first_scheduled_run_after_month_boundary(
     )
     collection = collector.source_registry.get("phone")
 
-    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
+    monkeypatch.setattr(
+        "jeb_core.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC)
+    )
     assert collector.source_period(collection) == datetime(2026, 7, 6, 3, tzinfo=UTC)
 
-    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 2, 12, tzinfo=UTC))
+    monkeypatch.setattr(
+        "jeb_core.collector.current_time", lambda: datetime(2026, 7, 2, 12, tzinfo=UTC)
+    )
     assert collector.source_period(collection) == datetime(2026, 6, 1, 3, tzinfo=UTC)
 
 
@@ -509,10 +514,14 @@ def test_seasonal_cadence_uses_first_scheduled_run_after_custom_season_boundary(
     )
     collection = collector.source_registry.get("phone")
 
-    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC))
+    monkeypatch.setattr(
+        "jeb_core.collector.current_time", lambda: datetime(2026, 7, 8, 12, tzinfo=UTC)
+    )
     assert collector.source_period(collection) == datetime(2026, 6, 1, 3, tzinfo=UTC)
 
-    monkeypatch.setattr("jeb.collector.current_time", lambda: datetime(2026, 6, 1, 2, tzinfo=UTC))
+    monkeypatch.setattr(
+        "jeb_core.collector.current_time", lambda: datetime(2026, 6, 1, 2, tzinfo=UTC)
+    )
     assert collector.source_period(collection) == datetime(2026, 3, 2, 3, tzinfo=UTC)
 
 
@@ -526,14 +535,14 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     )
     write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
     monkeypatch.setattr(
-        "jeb.collector.current_time",
+        "jeb_core.collector.current_time",
         lambda: datetime(2026, 7, 19, 16, 1, 2, 345678, tzinfo=UTC),
     )
 
     batch_id = collector.archive_now(source_id="camera", process=False)
     assert batch_id is not None
     assert batch_id.startswith("20260719T160102Z__camera__")
-    request = munchy_submission_request(
+    request = MunchyTargetAdapter().submission_request(
         collector,
         batch_id,
         collector.config.targets["munchy"],
@@ -641,8 +650,9 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
         },
     )
 
-    assert collector.translate_munchy_event(upstream)
-    assert collector.translate_munchy_event(upstream)
+    adapter = MunchyTargetAdapter()
+    assert adapter.translate_event(collector, upstream)
+    assert adapter.translate_event(collector, upstream)
 
     page = collector.event_log.page(after=None, limit=100)
     assert len(page.events) == 1
