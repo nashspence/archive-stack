@@ -4,13 +4,12 @@ Read [README.md](README.md) for the product entrypoint.
 
 ## Boundaries
 
-The [architecture](docs/architecture.md) is the authority for component roles, boundaries,
-and core terms. Enforce those boundaries in code: server, client, companion, target,
-utility, and recovery implementations may share focused packages but never import one
-another's implementation modules. Runtime integration crosses published HTTP and
-CloudEvents contracts. `riverhog/recovery` must remain independent of the server, client,
-and database. Hardware-specific Munchy targets remain server-owned even when separately
-deployed. Keep public code generic; real identity and deployment topology belong downstream.
+Server, client, companion, target, utility, and recovery implementations may share focused
+packages but never import one another's implementation modules. Runtime integration crosses
+published HTTP and CloudEvents contracts. `riverhog/recovery` must remain independent of the
+server, client, and database. Hardware-specific Munchy targets remain server-owned even when
+separately deployed. Keep public code generic; real identity and deployment topology belong
+downstream.
 
 ## Safety
 

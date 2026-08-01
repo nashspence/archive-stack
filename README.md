@@ -18,17 +18,6 @@ data, and tested recovery. Loss of the passphrase or all valid archive copies ma
 prevent recovery. This warning supplements, but does not replace, the warranty and liability
 limitations in the applicable software license.
 
-Read the [operator responsibilities](docs/operator-responsibilities.md) and test
-[recovery without Riverhog](docs/recovery-without-riverhog.md) before relying on a
-Riverhog-managed archive.
-
-## Storage authority
-
-Configured archive stores are the durable storage authority. Their encrypted collection
-objects are the durable copies Riverhog relies on. Protect account recovery, credentials,
-billing, bucket access, and tested retrieval for every store. Delete a collection only
-through Riverhog's guarded exact-id operation after accepting the loss.
-
 ## Start here
 
 Use `make help` for development and validation commands. Use each installed command's

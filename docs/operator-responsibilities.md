@@ -1,7 +1,7 @@
 # Operator responsibilities
 
-Riverhog's configured archive stores are its durable storage authority. Readiness therefore
-includes human and provider controls that application tests cannot establish.
+Application tests cannot establish provider-account access, payment continuity, credential
+recovery, or independent recoverability. These checks remain operator work.
 
 ## Maintain access
 

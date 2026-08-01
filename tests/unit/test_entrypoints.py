@@ -64,9 +64,15 @@ def test_all_markdown_is_reachable_and_links_resolve() -> None:
     assert markdown == reachable
 
 
-def test_both_entrypoints_route_to_each_durable_context_document() -> None:
+def test_both_entrypoints_route_once_to_each_durable_context_document() -> None:
     for entrypoint in ENTRYPOINTS:
-        assert DURABLE_CONTEXT <= _local_links(entrypoint)
+        links = [
+            (entrypoint.parent / target.split("#", 1)[0]).resolve()
+            for target in MARKDOWN_LINK_RE.findall(entrypoint.read_text(encoding="utf-8"))
+            if "://" not in target and not target.startswith("#")
+        ]
+        for document in DURABLE_CONTEXT:
+            assert links.count(document) == 1
 
 
 def test_recovery_documents_restored_glacier_download_gate() -> None:
