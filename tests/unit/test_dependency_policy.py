@@ -48,10 +48,11 @@ def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:
     assert os.access(exiftool, os.X_OK)
     assert stub == {
         "version": "13.59",
-        "bin": "exiftool-13.59/exiftool",
+        "bin": "exiftool",
         "url": "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz",
         "checksum": "sha256:87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac",
         "size": 8653399,
+        "strip_components": "1",
     }
 
     vector_runner = REPO_ROOT / "scripts/test_c2sp_vectors.sh"

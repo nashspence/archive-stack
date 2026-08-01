@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from click import unstyle
 from riverhog_cli.main import app
 from typer.testing import CliRunner
 
@@ -24,7 +25,7 @@ def test_collection_upload_help_exposes_archive_store_selection() -> None:
     )
 
     assert result.exit_code == 0
-    assert "--archive-store" in result.stdout
+    assert "--archive-store" in unstyle(result.stdout)
 
 
 def test_riverhog_local_help_names_materialization_operations() -> None:

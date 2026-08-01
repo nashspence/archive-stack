@@ -25,8 +25,9 @@ def test_required_native_test_tool_is_available(
 
     completed = subprocess.run(
         [executable, *arguments],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     assert expected_version in completed.stdout + completed.stderr
