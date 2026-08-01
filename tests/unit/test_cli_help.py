@@ -19,7 +19,7 @@ def test_riverhog_help_names_current_archive_boundaries() -> None:
 def test_collection_upload_help_exposes_archive_store_selection() -> None:
     result = runner.invoke(
         app,
-        ["collection", "upload", "--help"],
+        ["collection", "upload", "start", "--help"],
         terminal_width=160,
         color=False,
     )

@@ -46,6 +46,19 @@ class CollectionService(Protocol):
         per_page: int,
         all_items: bool,
     ) -> JsonObject: ...
+    def list_upload_sessions(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        tag: str | None,
+        state: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
     def create_or_resume_registered_file_upload(
         self,
         collection_id: int,
@@ -87,6 +100,7 @@ class CollectionService(Protocol):
         page: int,
         per_page: int,
         q: str | None,
+        tag: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
@@ -107,6 +121,8 @@ class TagService(Protocol):
         *,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def plan_deletion(self, tag: str) -> JsonObject: ...
+    def delete(self, tag: str, *, challenge: str) -> JsonObject: ...
     def list(
         self,
         *,
@@ -128,6 +144,22 @@ class TagService(Protocol):
         self,
         collection_id: int,
         tags: Sequence[str],
+        *,
+        principal: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> JsonObject: ...
+    def add_collection_tag(
+        self,
+        collection_id: int,
+        tag: str,
+        *,
+        principal: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> JsonObject: ...
+    def remove_collection_tag(
+        self,
+        collection_id: int,
+        tag: str,
         *,
         principal: ApplicationPrincipal,
         event_context: dict[str, object] | None = None,
@@ -264,16 +296,34 @@ class AppKeyService(Protocol):
         access: Sequence[ApplicationAccess | tuple[str, str]],
         grantor: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def list_access(
+    def add_access(
         self,
         *,
         app: str,
         key_id: str,
+        access: ApplicationAccess | tuple[str, str],
+        grantor: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def remove_access(
+        self,
+        *,
+        app: str,
+        key_id: str,
+        access: ApplicationAccess | tuple[str, str],
+    ) -> JsonObject: ...
+    def list_access(
+        self,
+        *,
         page: int,
         per_page: int,
         q: str | None,
         sort: str,
         order: str,
+        app: str | None = None,
+        key_id: str | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
         all_items: bool = False,
     ) -> JsonObject: ...
     def list_apps(

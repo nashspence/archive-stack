@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
@@ -50,9 +48,14 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.services.operation_plans import (
+    PLAN_TTL,
+    challenge_expiry,
+    challenge_has_shape,
+    plan_challenge,
+)
 
-_PLAN_TTL = timedelta(minutes=15)
-_CHALLENGE_RE = re.compile(r"^delete-(\d+)-([0-9a-f]{64})$")
+_CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _EXECUTION_KEY = "_execution"
 
@@ -77,9 +80,11 @@ class SqlAlchemyCollectionDeletionService:
             active = session.get(CollectionDeletionRecord, normalized_id)
             if active is not None:
                 return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))
-            expires = (utc_now() + _PLAN_TTL).replace(microsecond=0)
+            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)
             plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)
-            plan["challenge"] = None if plan["blockers"] else _plan_challenge(plan, expires)
+            plan["challenge"] = (
+                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)
+            )
             return plan
 
     def delete(
@@ -108,7 +113,7 @@ class SqlAlchemyCollectionDeletionService:
                     raise Conflict("collection deletion challenge does not match active deletion")
                 plan = cast(dict[str, object], json.loads(active.plan_json))
             elif collection is None:
-                if _CHALLENGE_RE.fullmatch(supplied_challenge) is None:
+                if not challenge_has_shape(supplied_challenge, prefix=_CHALLENGE_PREFIX):
                     raise NotFound(f"collection not found: {normalized_id}")
                 return _deletion_result(
                     {
@@ -120,11 +125,18 @@ class SqlAlchemyCollectionDeletionService:
                     status="already_absent",
                 )
             else:
-                expires = _challenge_expiry(supplied_challenge)
+                expires = challenge_expiry(
+                    supplied_challenge,
+                    prefix=_CHALLENGE_PREFIX,
+                    operation="collection deletion",
+                )
                 if utc_now() > expires:
                     raise Conflict("collection deletion plan has expired; request a new plan")
                 plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)
-                if not secrets.compare_digest(_plan_challenge(plan, expires), supplied_challenge):
+                if not secrets.compare_digest(
+                    plan_challenge(_CHALLENGE_PREFIX, plan, expires),
+                    supplied_challenge,
+                ):
                     raise Conflict("collection deletion plan changed; request a new plan")
                 blockers = cast(list[str], plan["blockers"])
                 if blockers:
@@ -449,18 +461,6 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
         f"collection metadata publication is active: {store}" for store in metadata_publications
     )
     return blockers
-
-
-def _plan_challenge(plan: dict[str, object], expires_at: datetime) -> str:
-    payload = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"delete-{int(expires_at.timestamp())}-{hashlib.sha256(payload).hexdigest()}"
-
-
-def _challenge_expiry(challenge: str) -> datetime:
-    match = _CHALLENGE_RE.fullmatch(challenge)
-    if match is None:
-        raise BadRequest("invalid collection deletion challenge")
-    return datetime.fromtimestamp(int(match.group(1)), tz=UTC)
 
 
 def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, object]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -18,12 +17,17 @@ from riverhog_protocol.paths import (
     normalize_relpath,
     normalize_tag,
 )
-from sqlalchemy import String, and_, case, cast, exists, func, or_, select
+from sqlalchemy import String, and_, asc, case, cast, desc, exists, false, func, or_, select, true
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
-from riverhog_core.app_permissions import CATALOG_READ, COLLECTIONS_CREATE, ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    ALL_RESOURCES,
+    CATALOG_READ,
+    COLLECTIONS_CREATE,
+    ApplicationPrincipal,
+)
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -33,11 +37,14 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    CollectionUploadTagRecord,
     TagRecord,
 )
 from riverhog_core.collection_access import (
     collection_access_filter,
+    permission_resources,
     require_collection_create_access,
+    tag_ids,
 )
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
@@ -193,7 +200,6 @@ class SqlAlchemyCollectionService:
             now = utc_timestamp_now()
             upload = CollectionUploadRecord(
                 idempotency_key=normalized_idempotency_key,
-                tags_json=_tags_json(normalized_tags),
                 ingest_source=ingest_source,
                 initiated_by_app=initiator_app,
                 initiated_by_key_id=initiator_key_id,
@@ -204,6 +210,11 @@ class SqlAlchemyCollectionService:
                 last_activity_at=now,
             )
             session.add(upload)
+            session.flush()
+            session.add_all(
+                CollectionUploadTagRecord(collection_id=upload.collection_id, tag_id=tag)
+                for tag in normalized_tags
+            )
             session.flush()
             return _collection_upload_payload(
                 session=session,
@@ -286,6 +297,149 @@ class SqlAlchemyCollectionService:
                 "pages": 1 if all_items else max(1, (total + per_page - 1) // per_page),
                 "files": [_collection_upload_file_payload(row) for row in rows],
             }
+
+    def list_upload_sessions(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        tag: str | None,
+        state: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        if page < 1:
+            raise BadRequest("page must be at least 1")
+        if per_page < 1 or per_page > 100:
+            raise BadRequest("per_page must be between 1 and 100")
+        sort_fields = {"id", "created_at", "state", "bytes", "files"}
+        if sort not in sort_fields:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(sort_fields))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        query = q.strip() if q is not None else None
+        normalized_tag = _normalize_tag_or_raise(tag) if tag is not None else None
+        normalized_state = state.strip().casefold() if state is not None else None
+        if normalized_state == "":
+            normalized_state = None
+        with session_scope(self._session_factory) as session:
+            filters: list[ColumnElement[bool]] = [
+                CollectionUploadRecord.initiated_by_app == principal.app,
+                _upload_access_filter(principal),
+            ]
+            if query:
+                pattern = _like_pattern(query.casefold())
+                filters.append(
+                    or_(
+                        cast(CollectionUploadRecord.collection_id, String).like(
+                            pattern, escape="\\"
+                        ),
+                        func.lower(func.coalesce(CollectionUploadRecord.ingest_source, "")).like(
+                            pattern, escape="\\"
+                        ),
+                        exists(
+                            select(1).where(
+                                CollectionUploadTagRecord.collection_id
+                                == CollectionUploadRecord.collection_id,
+                                func.lower(CollectionUploadTagRecord.tag_id).like(
+                                    pattern, escape="\\"
+                                ),
+                            )
+                        ),
+                    )
+                )
+            if normalized_tag is not None:
+                filters.append(
+                    exists(
+                        select(1).where(
+                            CollectionUploadTagRecord.collection_id
+                            == CollectionUploadRecord.collection_id,
+                            CollectionUploadTagRecord.tag_id == normalized_tag,
+                        )
+                    )
+                )
+            if normalized_state is not None:
+                filters.append(
+                    func.coalesce(CollectionUploadRecord.state, "uploading") == normalized_state
+                )
+            stats = (
+                select(
+                    CollectionUploadFileRecord.collection_id.label("collection_id"),
+                    func.count(CollectionUploadFileRecord.path).label("files"),
+                    func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes"),
+                    func.coalesce(
+                        func.sum(CollectionUploadFileRecord.ingress_uploaded_bytes), 0
+                    ).label("uploaded_bytes"),
+                )
+                .group_by(CollectionUploadFileRecord.collection_id)
+                .subquery()
+            )
+            base = (
+                select(
+                    CollectionUploadRecord.collection_id.label("collection_id"),
+                    CollectionUploadRecord.opened_at.label("created_at"),
+                    CollectionUploadRecord.state.label("raw_state"),
+                    CollectionUploadRecord.ingest_source.label("ingest_source"),
+                    CollectionUploadRecord.archive_store.label("archive_store"),
+                    func.coalesce(stats.c.files, 0).label("files"),
+                    func.coalesce(stats.c.bytes, 0).label("bytes"),
+                    func.coalesce(stats.c.uploaded_bytes, 0).label("uploaded_bytes"),
+                )
+                .outerjoin(
+                    stats,
+                    stats.c.collection_id == CollectionUploadRecord.collection_id,
+                )
+                .where(*filters)
+            )
+            total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
+            direction = desc if order == "desc" else asc
+            sort_column = {
+                "id": base.selected_columns.collection_id,
+                "created_at": base.selected_columns.created_at,
+                "state": base.selected_columns.raw_state,
+                "bytes": base.selected_columns.bytes,
+                "files": base.selected_columns.files,
+            }[sort]
+            statement = base.order_by(
+                direction(sort_column),
+                asc(base.selected_columns.collection_id),
+            )
+            if not all_items:
+                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            rows = session.execute(statement).mappings().all()
+            collection_ids = [int(row["collection_id"]) for row in rows]
+            tags_by_collection = _upload_tags_by_collection(session, collection_ids)
+        return {
+            "page": 1 if all_items else page,
+            "per_page": total if all_items else per_page,
+            "total": total,
+            "pages": (1 if total else 0)
+            if all_items
+            else (total + per_page - 1) // per_page
+            if total
+            else 0,
+            "sort": sort,
+            "order": order,
+            "query": query,
+            "filters": {"tag": normalized_tag, "state": normalized_state},
+            "uploads": [
+                {
+                    "collection_id": int(row["collection_id"]),
+                    "created_at": row["created_at"],
+                    "tags": tags_by_collection.get(int(row["collection_id"]), []),
+                    "ingest_source": row["ingest_source"],
+                    "archive_store": row["archive_store"],
+                    "state": str(row["raw_state"] or "uploading"),
+                    "files": int(row["files"]),
+                    "bytes": int(row["bytes"]),
+                    "uploaded_bytes": int(row["uploaded_bytes"]),
+                }
+                for row in rows
+            ],
+        }
 
     def require_upload_access(
         self,
@@ -955,6 +1109,7 @@ class SqlAlchemyCollectionService:
         page: int,
         per_page: int,
         q: str | None,
+        tag: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
@@ -969,6 +1124,7 @@ class SqlAlchemyCollectionService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
         needle = q.casefold() if q else None
+        normalized_tag = _normalize_tag_or_raise(tag) if tag is not None else None
         with session_scope(self._session_factory) as session:
             filters: list[ColumnElement[bool]] = []
             filters.append(collection_access_filter(CollectionRecord.id, principal, CATALOG_READ))
@@ -988,6 +1144,15 @@ class SqlAlchemyCollectionService:
                                 ),
                             )
                         ),
+                    )
+                )
+            if normalized_tag is not None:
+                filters.append(
+                    exists(
+                        select(1).where(
+                            CollectionTagRecord.collection_id == CollectionRecord.id,
+                            CollectionTagRecord.tag_id == normalized_tag,
+                        )
                     )
                 )
             total = int(
@@ -1019,6 +1184,7 @@ class SqlAlchemyCollectionService:
                 sort=sort,
                 order=order,
                 query=q,
+                tag=normalized_tag,
                 collections=[
                     _collection_summary_from_row(row, aggregates=aggregates) for row in rows
                 ],
@@ -1123,15 +1289,48 @@ def _normalize_idempotency_key(value: str) -> str:
     return normalized
 
 
-def _tags_json(tags: Sequence[str]) -> str:
-    return json.dumps(list(tags), separators=(",", ":"))
-
-
 def _upload_tags(upload: CollectionUploadRecord) -> tuple[str, ...]:
-    decoded = json.loads(upload.tags_json)
-    if not isinstance(decoded, list) or not all(isinstance(tag, str) for tag in decoded):
-        raise RuntimeError("collection upload tags are invalid")
-    return tuple(decoded)
+    return tuple(sorted(current.tag_id for current in upload.tags))
+
+
+def _upload_access_filter(principal: ApplicationPrincipal) -> ColumnElement[bool]:
+    resources = permission_resources(principal, COLLECTIONS_CREATE)
+    if ALL_RESOURCES in resources:
+        return true()
+    allowed_tags = tag_ids(resources)
+    if not allowed_tags:
+        return false()
+    return and_(
+        exists(
+            select(1).where(
+                CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
+                CollectionUploadTagRecord.tag_id.in_(allowed_tags),
+            )
+        ),
+        ~exists(
+            select(1).where(
+                CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
+                CollectionUploadTagRecord.tag_id.notin_(allowed_tags),
+            )
+        ),
+    )
+
+
+def _upload_tags_by_collection(
+    session: Session,
+    collection_ids: Sequence[int],
+) -> dict[int, list[str]]:
+    result: dict[int, list[str]] = {collection_id: [] for collection_id in collection_ids}
+    if not collection_ids:
+        return result
+    rows = session.execute(
+        select(CollectionUploadTagRecord.collection_id, CollectionUploadTagRecord.tag_id)
+        .where(CollectionUploadTagRecord.collection_id.in_(collection_ids))
+        .order_by(CollectionUploadTagRecord.collection_id, CollectionUploadTagRecord.tag_id)
+    ).tuples()
+    for collection_id, tag in rows:
+        result[int(collection_id)].append(str(tag))
+    return result
 
 
 def _normalize_relpath_or_raise(raw: str) -> str:
@@ -1229,7 +1428,9 @@ def _ensure_event_context_matches(
 def _require_tags(session: Session, tags: Sequence[str]) -> None:
     if not tags:
         return
-    existing = set(session.scalars(select(TagRecord.id).where(TagRecord.id.in_(tags))).all())
+    existing = set(
+        session.scalars(select(TagRecord.id).where(TagRecord.id.in_(tags)).with_for_update()).all()
+    )
     missing = sorted(set(tags) - existing)
     if missing:
         raise NotFound(f"tag not found: {missing[0]}")

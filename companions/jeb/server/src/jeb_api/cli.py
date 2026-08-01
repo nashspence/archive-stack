@@ -8,6 +8,7 @@ import sys
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
     format_archive_plan,
+    format_attempt,
     format_attempts,
     format_config_check,
     format_operation,
@@ -99,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     attempt_list.add_argument("--source", help="Filter by source id.")
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
+    attempt_show = attempt_sub.add_parser("show", help="show one processing attempt")
+    attempt_show.add_argument("attempt")
+    attempt_show.add_argument("--json", action="store_true", help="Emit JSON.")
     sub.add_parser(
         "check-config",
         help="validate env configuration and initialize state",
@@ -182,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "attempt":
         services.runtime.initialize()
+        if args.attempt_command == "show":
+            payload = services.store.get_attempt(args.attempt)
+            emit(payload if args.json else format_attempt(payload), json_mode=args.json)
+            return 0
         payload = services.store.list_attempts(
             page=args.page,
             per_page=args.per_page,

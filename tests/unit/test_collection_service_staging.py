@@ -280,6 +280,103 @@ def test_collection_list_aggregates_and_sorts_in_the_database(tmp_path: Path) ->
     )
     assert [str(item.id) for item in by_creation.collections] == ["1", "2"]
 
+    exact_tag = _service(path).list(
+        page=1,
+        per_page=25,
+        q=None,
+        tag="alpha",
+        sort="id",
+        order="asc",
+    )
+    assert exact_tag.tag == "alpha"
+    assert [str(item.id) for item in exact_tag.collections] == ["1"]
+
+
+def test_upload_session_list_is_database_filtered_and_application_scoped(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed_tag(path, "docs")
+    _seed_tag(path, "photos")
+    service = _service(path)
+    wildcard = ApplicationPrincipal(
+        app="uploader",
+        key_id="creator",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE)}),
+    )
+    photos = service.create_or_resume_upload_session(
+        idempotency_key="photos",
+        tags=["photos"],
+        ingest_source="camera/photos",
+        initiator=wildcard,
+    )
+    service.create_or_resume_upload_session(
+        idempotency_key="docs",
+        tags=["docs"],
+        ingest_source="scanner/docs",
+        initiator=wildcard,
+    )
+    service.create_or_resume_upload_session(
+        idempotency_key="untagged",
+        tags=[],
+        ingest_source="untagged",
+        initiator=wildcard,
+    )
+    service.create_or_resume_upload_session(
+        idempotency_key="other",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(
+            app="other",
+            key_id="other",
+            access=frozenset({ApplicationAccess(COLLECTIONS_CREATE)}),
+        ),
+    )
+    photos_only = ApplicationPrincipal(
+        app="uploader",
+        key_id="creator",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")}),
+    )
+
+    page = service.list_upload_sessions(
+        page=1,
+        per_page=25,
+        q="camera",
+        tag="photos",
+        state="open",
+        sort="id",
+        order="asc",
+        all_items=True,
+        principal=photos_only,
+    )
+
+    assert page["filters"] == {"tag": "photos", "state": "open"}
+    assert page["total"] == 1
+    assert page["uploads"] == [
+        {
+            "collection_id": photos["collection_id"],
+            "created_at": page["uploads"][0]["created_at"],
+            "tags": ["photos"],
+            "ingest_source": "camera/photos",
+            "archive_store": "archive",
+            "state": "open",
+            "files": 0,
+            "bytes": 0,
+            "uploaded_bytes": 0,
+        }
+    ]
+
+    scoped_page = service.list_upload_sessions(
+        page=1,
+        per_page=25,
+        q=None,
+        tag=None,
+        state=None,
+        sort="id",
+        order="asc",
+        all_items=True,
+        principal=photos_only,
+    )
+    assert [row["collection_id"] for row in scoped_page["uploads"]] == [photos["collection_id"]]
+
 
 def test_collection_list_and_get_apply_exact_database_grants(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"

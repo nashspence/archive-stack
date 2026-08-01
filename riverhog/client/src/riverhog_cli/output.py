@@ -180,6 +180,23 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_collection_uploads(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "uploads")]
+    for upload in _items(payload, "uploads"):
+        tags = upload.get("tags")
+        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
+        lines.append(
+            f"- {upload.get('collection_id', 'unknown')}  "
+            f"state={upload.get('state', 'unknown')}  "
+            f"created={upload.get('created_at', 'unknown')}  "
+            f"files={upload.get('files', 0)}  "
+            f"bytes={_bytes(upload.get('bytes'))}  "
+            f"uploaded={_bytes(upload.get('uploaded_bytes'))}  "
+            f"tags={tag_text or 'none'}"
+        )
+    return "\n".join(lines)
+
+
 def _quota_limit(value: object) -> str:
     if value is None:
         return "unlimited"
@@ -191,13 +208,12 @@ def _quota_limit(value: object) -> str:
 
 
 def format_app_access(payload: Mapping[str, object]) -> str:
-    lines = [
-        f"app: {payload.get('app', 'unknown')}",
-        f"key: {payload.get('key_id', 'unknown')}",
-        _page_line(payload, "access"),
-    ]
+    lines = [_page_line(payload, "access")]
     lines.extend(
-        f"- {grant.get('permission', 'unknown')}  resource={grant.get('resource', 'unknown')}"
+        f"- {grant.get('app', 'unknown')}/{grant.get('key_id', 'unknown')}  "
+        f"status={grant.get('key_status', 'unknown')}  "
+        f"permission={grant.get('permission', 'unknown')}  "
+        f"resource={grant.get('resource', 'unknown')}"
         for grant in _items(payload, "access")
     )
     return "\n".join(lines)
@@ -214,7 +230,7 @@ def format_app_access_set(payload: Mapping[str, object]) -> str:
     ]
     return "\n".join(
         [
-            "application access replaced",
+            "application access updated",
             f"app: {payload.get('app', 'unknown')}",
             f"key: {payload.get('key_id', 'unknown')}",
             "access: " + ", ".join(values),
@@ -242,6 +258,53 @@ def format_tags(payload: Mapping[str, object]) -> str:
             f"created={tag.get('created_at', 'unknown')}"
         )
     return "\n".join(lines)
+
+
+def format_tag_deletion_plan(payload: Mapping[str, object]) -> str:
+    lines = [
+        str(payload.get("warning", "Deleting this tag removes its catalog definition.")),
+        "",
+        f"tag deletion plan: {payload.get('tag', 'unknown')}",
+        f"status: {payload.get('status', 'unknown')}",
+    ]
+    dependencies = payload.get("dependencies")
+    if isinstance(dependencies, Mapping):
+        for label, key in (
+            ("collections", "collections"),
+            ("upload sessions", "upload_sessions"),
+            ("active app-key access", "app_key_access"),
+            ("pending metadata publications", "metadata_publications"),
+        ):
+            summary = dependencies.get(key)
+            if not isinstance(summary, Mapping):
+                continue
+            samples = summary.get("sample")
+            sample_text = (
+                ", ".join(str(item) for item in samples)
+                if isinstance(samples, Sequence) and not isinstance(samples, (str, bytes))
+                else ""
+            )
+            suffix = f" (sample: {sample_text})" if sample_text else ""
+            if summary.get("truncated"):
+                suffix += " (sample truncated)"
+            lines.append(f"{label}: {summary.get('count', 0)}{suffix}")
+    blockers = payload.get("blockers")
+    if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
+        lines.extend(f"blocked: {blocker}" for blocker in blockers)
+    if payload.get("expires_at"):
+        lines.append(f"plan expires: {payload['expires_at']}")
+    if payload.get("challenge"):
+        lines.append(f"confirmation challenge: {payload['challenge']}")
+    return "\n".join(lines)
+
+
+def format_tag_deletion_result(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"tag deletion: {payload.get('status', 'unknown')}",
+            f"tag: {payload.get('tag', 'unknown')}",
+        ]
+    )
 
 
 def format_collection_tags(payload: Mapping[str, object]) -> str:

@@ -12,13 +12,14 @@ from application_access import (
 from application_access import (
     normalize_app_name as normalize_application_name,
 )
-from riverhog_protocol.errors import BadRequest, Forbidden, NotFound
+from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import (
+    CATALOG_READ,
     QUOTAS_MANAGE,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -39,7 +40,7 @@ from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventServ
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
-_ACCESS_SORT_FIELDS = {"permission", "resource", "created_at"}
+_ACCESS_SORT_FIELDS = {"app", "key_id", "permission", "resource", "created_at"}
 
 
 def normalize_app_name(value: str) -> str:
@@ -54,7 +55,7 @@ def _like_pattern(value: str) -> str:
     return f"%{escaped}%"
 
 
-def _active_expression(now: str) -> ColumnElement[bool]:
+def active_key_filter(now: str) -> ColumnElement[bool]:
     return and_(
         AppKeyRecord.revoked_at.is_(None),
         or_(AppKeyRecord.expires_at.is_(None), AppKeyRecord.expires_at > now),
@@ -288,16 +289,83 @@ class SqlAlchemyAppKeyService:
             "access": [_access_payload(current) for current in normalized_access],
         }
 
-    def list_access(
+    def add_access(
         self,
         *,
         app: str,
         key_id: str,
+        access: ApplicationAccess | tuple[str, str],
+        grantor: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        normalized_app = normalize_app_name(app)
+        normalized_key_id = key_id.strip().casefold()
+        added = normalize_access((access,))[0]
+        if not grantor.can_grant((added,)):
+            raise Forbidden("an application key cannot grant access it does not hold")
+        now = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            _require_key(session, app=normalized_app, key_id=normalized_key_id)
+            current = tuple(_record_access(session, normalized_key_id))
+            if added in current:
+                raise Conflict(
+                    f"application access already exists: {added.permission}={added.resource}"
+                )
+            updated = normalize_access((*current, added))
+            _require_access_targets(session, (added,))
+            session.add(
+                AppKeyAccessGrantRecord(
+                    key_id=normalized_key_id,
+                    permission=added.permission,
+                    resource=added.resource,
+                    created_at=now,
+                )
+            )
+        return _access_set_payload(normalized_app, normalized_key_id, updated)
+
+    def remove_access(
+        self,
+        *,
+        app: str,
+        key_id: str,
+        access: ApplicationAccess | tuple[str, str],
+    ) -> dict[str, object]:
+        normalized_app = normalize_app_name(app)
+        normalized_key_id = key_id.strip().casefold()
+        removed = normalize_access((access,))[0]
+        with session_scope(self._session_factory) as session:
+            _require_key(session, app=normalized_app, key_id=normalized_key_id)
+            current = tuple(_record_access(session, normalized_key_id))
+            if removed not in current:
+                raise NotFound(
+                    f"application access not found: {removed.permission}={removed.resource}"
+                )
+            remaining = tuple(item for item in current if item != removed)
+            if not remaining:
+                raise BadRequest(
+                    "cannot remove the final application access binding; revoke the key instead"
+                )
+            session.execute(
+                delete(AppKeyAccessGrantRecord).where(
+                    AppKeyAccessGrantRecord.key_id == normalized_key_id,
+                    AppKeyAccessGrantRecord.permission == removed.permission,
+                    AppKeyAccessGrantRecord.resource == removed.resource,
+                )
+            )
+        return _access_set_payload(normalized_app, normalized_key_id, remaining)
+
+    def list_access(
+        self,
+        *,
         page: int,
         per_page: int,
         q: str | None,
         sort: str,
         order: str,
+        app: str | None = None,
+        key_id: str | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, object]:
         _validate_list(
@@ -307,13 +375,38 @@ class SqlAlchemyAppKeyService:
             order=order,
             fields=_ACCESS_SORT_FIELDS,
         )
-        normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_app = normalize_app_name(app) if app is not None else None
+        normalized_key_id = key_id.strip().casefold() if key_id is not None else None
+        if normalized_key_id == "":
+            raise BadRequest("key_id must not be empty")
+        normalized_permission = None
+        if permission is not None:
+            normalized_permission = normalize_access((ApplicationAccess(permission, "*"),))[
+                0
+            ].permission
+        normalized_resource = None
+        if resource is not None:
+            normalized_resource = normalize_access((ApplicationAccess(CATALOG_READ, resource),))[
+                0
+            ].resource
         query = q.strip() if q is not None else None
-        filters: list[ColumnElement[bool]] = [AppKeyAccessGrantRecord.key_id == normalized_key_id]
+        now = format_utc_timestamp(utc_now())
+        filters: list[ColumnElement[bool]] = []
+        if normalized_app is not None:
+            filters.append(AppKeyRecord.app == normalized_app)
+        if normalized_key_id is not None:
+            filters.append(AppKeyRecord.id == normalized_key_id)
+        if normalized_permission is not None:
+            filters.append(AppKeyAccessGrantRecord.permission == normalized_permission)
+        if normalized_resource is not None:
+            filters.append(AppKeyAccessGrantRecord.resource == normalized_resource)
+        if active is not None:
+            filters.append(active_key_filter(now) if active else ~active_key_filter(now))
         if query:
             filters.append(
                 or_(
+                    func.lower(AppKeyRecord.app).like(_like_pattern(query.casefold()), escape="\\"),
+                    func.lower(AppKeyRecord.id).like(_like_pattern(query.casefold()), escape="\\"),
                     func.lower(AppKeyAccessGrantRecord.permission).like(
                         _like_pattern(query.casefold()), escape="\\"
                     ),
@@ -323,26 +416,44 @@ class SqlAlchemyAppKeyService:
                 )
             )
         direction = desc if order == "desc" else asc
+        sort_column = {
+            "app": AppKeyRecord.app,
+            "key_id": AppKeyRecord.id,
+            "permission": AppKeyAccessGrantRecord.permission,
+            "resource": AppKeyAccessGrantRecord.resource,
+            "created_at": AppKeyAccessGrantRecord.created_at,
+        }[sort]
         statement = (
-            select(AppKeyAccessGrantRecord)
+            select(AppKeyRecord, AppKeyAccessGrantRecord)
+            .join(
+                AppKeyAccessGrantRecord,
+                AppKeyAccessGrantRecord.key_id == AppKeyRecord.id,
+            )
             .where(*filters)
             .order_by(
-                direction(getattr(AppKeyAccessGrantRecord, sort)),
+                direction(sort_column),
+                asc(AppKeyRecord.app),
+                asc(AppKeyRecord.id),
                 asc(AppKeyAccessGrantRecord.permission),
                 asc(AppKeyAccessGrantRecord.resource),
             )
         )
         with session_scope(self._session_factory) as session:
-            _require_key(session, app=normalized_app, key_id=normalized_key_id)
             total = int(
                 session.scalar(
-                    select(func.count()).select_from(AppKeyAccessGrantRecord).where(*filters)
+                    select(func.count())
+                    .select_from(AppKeyRecord)
+                    .join(
+                        AppKeyAccessGrantRecord,
+                        AppKeyAccessGrantRecord.key_id == AppKeyRecord.id,
+                    )
+                    .where(*filters)
                 )
                 or 0
             )
             if not all_items:
                 statement = statement.offset((page - 1) * per_page).limit(per_page)
-            records = session.scalars(statement).all()
+            records = session.execute(statement).all()
         return {
             **_page_metadata(
                 page=page,
@@ -353,16 +464,23 @@ class SqlAlchemyAppKeyService:
             "sort": sort,
             "order": order,
             "query": query,
-            "app": normalized_app,
-            "key_id": normalized_key_id,
+            "filters": {
+                "app": normalized_app,
+                "key_id": normalized_key_id,
+                "permission": normalized_permission,
+                "resource": normalized_resource,
+                "active": active,
+            },
             "access": [
                 {
-                    "id": f"{record.permission}={record.resource}",
-                    "permission": record.permission,
-                    "resource": record.resource,
-                    "created_at": record.created_at,
+                    "app": key.app,
+                    "key_id": key.id,
+                    "key_status": _status(key, now=now),
+                    "permission": grant.permission,
+                    "resource": grant.resource,
+                    "created_at": grant.created_at,
                 }
-                for record in records
+                for key, grant in records
             ],
         }
 
@@ -385,7 +503,7 @@ class SqlAlchemyAppKeyService:
             fields=_APP_SORT_FIELDS,
         )
         now = format_utc_timestamp(utc_now())
-        active_count = func.sum(case((_active_expression(now), 1), else_=0))
+        active_count = func.sum(case((active_key_filter(now), 1), else_=0))
         query = q.strip() if q is not None else None
         summary = select(
             AppKeyRecord.app.label("name"),
@@ -457,7 +575,7 @@ class SqlAlchemyAppKeyService:
                 )
             )
         if active is not None:
-            filters.append(_active_expression(now) if active else ~_active_expression(now))
+            filters.append(active_key_filter(now) if active else ~active_key_filter(now))
         direction = desc if order == "desc" else asc
         sort_column = getattr(AppKeyRecord, sort)
         statement = (
@@ -559,13 +677,26 @@ def _access_payload(access: ApplicationAccess) -> dict[str, str]:
     return {"permission": access.permission, "resource": access.resource}
 
 
+def _access_set_payload(
+    app: str,
+    key_id: str,
+    access: Sequence[ApplicationAccess],
+) -> dict[str, object]:
+    return {
+        "app": app,
+        "key_id": key_id,
+        "access": [_access_payload(current) for current in access],
+    }
+
+
 def _require_access_targets(session: Session, access: Sequence[ApplicationAccess]) -> None:
     for current in access:
         if current.resource == "*":
             continue
         if current.resource.startswith("tag:"):
             tag = current.resource.removeprefix("tag:")
-            if session.get(TagRecord, tag) is None:
+            record = session.scalar(select(TagRecord).where(TagRecord.id == tag).with_for_update())
+            if record is None:
                 raise NotFound(f"tag not found: {tag}")
             continue
         collection_id = int(current.resource.removeprefix("collection:"))

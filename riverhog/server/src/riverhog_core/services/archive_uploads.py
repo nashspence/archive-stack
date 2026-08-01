@@ -796,7 +796,7 @@ class SqlAlchemyArchiveUploadService:
             upload.archive_phase_updated_at = format_utc_timestamp(utc_now())
             session.flush()
             file_entries = [(row.path, row.bytes, row.sha256) for row in upload_files]
-            tags = tuple(json.loads(upload.tags_json))
+            tags = tuple(sorted(current.tag_id for current in upload.tags))
             content_etag = collection_content_etag(file_entries)
             now = format_utc_timestamp(utc_now())
             _manifest, record_etag = collection_record_manifest(

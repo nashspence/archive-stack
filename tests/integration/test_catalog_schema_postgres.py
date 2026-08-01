@@ -159,4 +159,15 @@ def test_postgres_upload_idempotency_is_independent_per_application(
     idempotency_index = indexes["ux_collection_uploads_application_idempotency_key"]
     assert idempotency_index["column_names"] == ["initiated_by_app", "idempotency_key"]
     assert idempotency_index["unique"] is True
+    upload_tag_indexes = {
+        str(index["name"]): index for index in inspect(engine).get_indexes("collection_upload_tags")
+    }
+    assert upload_tag_indexes["ix_collection_upload_tags_tag"]["column_names"] == [
+        "tag_id",
+        "collection_id",
+    ]
+    assert {
+        tuple(str(column) for column in constraint["constrained_columns"])
+        for constraint in inspect(engine).get_foreign_keys("collection_upload_tags")
+    } == {("collection_id",), ("tag_id",)}
     engine.dispose()

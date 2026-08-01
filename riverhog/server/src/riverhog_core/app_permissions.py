@@ -13,6 +13,7 @@ RETRIEVAL_MANAGE = "retrieval:manage"
 COLLECTIONS_CREATE = "collections:create"
 COLLECTION_TAGS_MANAGE = "collection-tags:manage"
 TAGS_CREATE = "tags:create"
+TAGS_DELETE = "tags:delete"
 COLLECTIONS_DELETE = "collections:delete"
 ARCHIVES_READ = "archives:read"
 ARCHIVES_MANAGE = "archives:manage"
@@ -31,6 +32,7 @@ APPLICATION_PERMISSIONS = frozenset(
         COLLECTIONS_CREATE,
         COLLECTION_TAGS_MANAGE,
         TAGS_CREATE,
+        TAGS_DELETE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
@@ -199,6 +201,7 @@ __all__ = [
     "QUOTAS_MANAGE",
     "RETRIEVAL_MANAGE",
     "TAGS_CREATE",
+    "TAGS_DELETE",
     "TAG_PREFIX",
     "access_covers",
     "collection_resource",

@@ -697,7 +697,6 @@ class CollectionUploadRecord(Base):
         primary_key=True,
     )
     idempotency_key: Mapped[str] = mapped_column(String)
-    tags_json: Mapped[str] = mapped_column(Text)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -722,6 +721,11 @@ class CollectionUploadRecord(Base):
         back_populates="upload",
         cascade="all, delete-orphan",
     )
+    tags: Mapped[list[CollectionUploadTagRecord]] = relationship(
+        back_populates="upload",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     archive_objects: Mapped[list[CollectionArchiveObjectUploadRecord]] = relationship(
         back_populates="upload",
         cascade="all, delete-orphan",
@@ -735,6 +739,25 @@ class CollectionUploadRecord(Base):
         ),
         {"sqlite_autoincrement": True},
     )
+
+
+class CollectionUploadTagRecord(Base):
+    __tablename__ = "collection_upload_tags"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_uploads.collection_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
+        Index("ix_collection_upload_tags_tag", "tag_id", "collection_id"),
+    )
+
+    upload: Mapped[CollectionUploadRecord] = relationship(back_populates="tags")
 
 
 class CollectionUploadFileRecord(Base):

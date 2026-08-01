@@ -14,6 +14,7 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
         def list_collections(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs["all_items"] is True
             assert kwargs["q"] == "camera"
+            assert kwargs["tag"] == "photos"
             return {
                 "page": 1,
                 "per_page": 2,
@@ -29,7 +30,63 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
 
     result = runner.invoke(
         app,
-        ["collection", "list", "--query", "camera", "--all", "--ids"],
+        [
+            "collection",
+            "list",
+            "--query",
+            "camera",
+            "--tag",
+            "photos",
+            "--all",
+            "--ids",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "41\n42\n"
+
+
+def test_collection_upload_list_all_ids_forwards_database_filters(monkeypatch) -> None:
+    class FakeClient:
+        def list_collection_upload_sessions(self, **kwargs: Any) -> dict[str, object]:
+            assert kwargs == {
+                "page": 1,
+                "per_page": 25,
+                "q": "camera",
+                "tag": "photos",
+                "state": "uploading",
+                "sort": "created_at",
+                "order": "desc",
+                "all_items": True,
+            }
+            return {
+                "page": 1,
+                "per_page": 2,
+                "total": 2,
+                "pages": 1,
+                "uploads": [
+                    {"collection_id": 41},
+                    {"collection_id": 42},
+                ],
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "collection",
+            "upload",
+            "list",
+            "--query",
+            "camera",
+            "--tag",
+            "photos",
+            "--state",
+            "uploading",
+            "--all",
+            "--ids",
+        ],
     )
 
     assert result.exit_code == 0

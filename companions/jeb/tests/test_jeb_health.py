@@ -185,6 +185,35 @@ def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> Non
         server.server_close()
 
 
+def test_jeb_management_api_gets_one_attempt_by_list_identity(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+    services = services_for(env)
+    services.runtime.initialize()
+    attempt_id = services.attempts.archive_now(source_id="phone", process=False)
+    assert attempt_id is not None
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
+    try:
+        host, port = server.server_address[:2]
+        attempt = read_json(f"http://{host}:{port}/v1/attempts/{attempt_id}")
+        assert attempt["attempt_id"] == attempt_id
+        assert attempt["source_id"] == "phone"
+        assert attempt["file_count"] == 1
+
+        status, missing = request_json(
+            "GET",
+            f"http://{host}:{port}/v1/attempts/missing",
+        )
+        assert status == 404
+        assert missing["error"] == {
+            "code": "not_found",
+            "message": "Jeb attempt not found: missing",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
     services = create_services(config_from_env(jeb_env(tmp_path)))
     services.runtime.initialize()

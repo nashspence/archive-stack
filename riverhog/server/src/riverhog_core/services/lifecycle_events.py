@@ -198,7 +198,7 @@ class SqlAlchemyLifecycleEventService:
             )
         elif upload is not None:
             data["collection_created_at"] = upload.opened_at
-            data["collection_tags"] = sorted(json.loads(upload.tags_json))
+            data["collection_tags"] = sorted(current.tag_id for current in upload.tags)
         data.update(details or {})
         return self.emit(
             owner_app=owner_app,

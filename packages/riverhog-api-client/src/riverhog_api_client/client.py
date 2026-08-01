@@ -439,6 +439,34 @@ class ApiClient(_HttpApiClient):
             },
         )
 
+    def list_collection_upload_sessions(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        tag: str | None = None,
+        state: str | None = None,
+        sort: str = "created_at",
+        order: str = "desc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if tag:
+            params["tag"] = tag
+        if state:
+            params["state"] = state
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/collection-upload-sessions", params=params)
+
     def complete_collection_upload_session(
         self,
         collection_id: int,
@@ -541,6 +569,7 @@ class ApiClient(_HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
+        tag: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
@@ -555,6 +584,8 @@ class ApiClient(_HttpApiClient):
             params["order"] = order
         if q:
             params["q"] = q
+        if tag:
+            params["tag"] = tag
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/collections", params=params)
@@ -671,14 +702,17 @@ class ApiClient(_HttpApiClient):
 
     def list_app_key_access(
         self,
-        app: str,
-        key_id: str,
         *,
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
         sort: str = "permission",
         order: str = "asc",
+        app: str | None = None,
+        key_id: str | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -689,13 +723,19 @@ class ApiClient(_HttpApiClient):
         }
         if q:
             params["q"] = q
+        if app:
+            params["app"] = app
+        if key_id:
+            params["key"] = key_id
+        if permission:
+            params["permission"] = permission
+        if resource:
+            params["resource"] = resource
+        if active is not None:
+            params["active"] = str(active).lower()
         if all_items:
             params["all"] = True
-        return self._json(
-            "GET",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
-            params=params,
-        )
+        return self._json("GET", "/v1/app-key-access", params=params)
 
     def replace_app_key_access(
         self,
@@ -708,6 +748,34 @@ class ApiClient(_HttpApiClient):
             "PUT",
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
             json={"access": [dict(current) for current in access]},
+        )
+
+    def add_app_key_access(
+        self,
+        app: str,
+        key_id: str,
+        *,
+        permission: str,
+        resource: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            json={"permission": permission, "resource": resource},
+        )
+
+    def remove_app_key_access(
+        self,
+        app: str,
+        key_id: str,
+        *,
+        permission: str,
+        resource: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            json={"permission": permission, "resource": resource},
         )
 
     def create_tag(self, tag: str) -> dict[str, Any]:
@@ -738,6 +806,19 @@ class ApiClient(_HttpApiClient):
             params["all"] = True
         return self._json("GET", "/v1/tags", params=params)
 
+    def plan_tag_deletion(self, tag: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/tags/{quote(tag, safe='')}/deletion-plan",
+        )
+
+    def delete_tag(self, tag: str, *, challenge: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/tags/{quote(tag, safe='')}/delete",
+            json={"challenge": challenge},
+        )
+
     def get_collection_tags(self, collection_id: int) -> dict[str, Any]:
         return self._json("GET", f"/v1/collections/{collection_id}/tags")
 
@@ -752,6 +833,34 @@ class ApiClient(_HttpApiClient):
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json("PUT", f"/v1/collections/{collection_id}/tags", json=payload)
+
+    def add_collection_tag(
+        self,
+        collection_id: int,
+        tag: str,
+        *,
+        event_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {} if event_context is None else {"event_context": dict(event_context)}
+        return self._json(
+            "POST",
+            f"/v1/collections/{collection_id}/tags/{quote(tag, safe='')}",
+            json=payload,
+        )
+
+    def remove_collection_tag(
+        self,
+        collection_id: int,
+        tag: str,
+        *,
+        event_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {} if event_context is None else {"event_context": dict(event_context)}
+        return self._json(
+            "DELETE",
+            f"/v1/collections/{collection_id}/tags/{quote(tag, safe='')}",
+            json=payload,
+        )
 
     def get_download_quota(self) -> dict[str, Any]:
         return self._json("GET", "/v1/download-quota")

@@ -49,6 +49,7 @@ class ListCollectionsResponse(RiverhogModel):
     sort: str
     order: Literal["asc", "desc"]
     query: str | None
+    tag: str | None
     collections: list[CollectionSummaryOut]
 
 
@@ -112,6 +113,35 @@ class ListCollectionUploadSessionFilesResponse(RiverhogModel):
     total: int
     pages: int
     files: list[CollectionUploadFileOut]
+
+
+class CollectionUploadListItemOut(RiverhogModel):
+    collection_id: int
+    created_at: str | None
+    tags: list[str]
+    ingest_source: str | None
+    archive_store: str
+    state: Literal["open", "uploading", "archiving", "failed", "canceled", "expired"]
+    files: int
+    bytes: int
+    uploaded_bytes: int
+
+
+class CollectionUploadListFiltersOut(RiverhogModel):
+    tag: str | None
+    state: str | None
+
+
+class ListCollectionUploadSessionsResponse(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: str
+    order: Literal["asc", "desc"]
+    query: str | None
+    filters: CollectionUploadListFiltersOut
+    uploads: list[CollectionUploadListItemOut]
 
 
 class CollectionUploadSessionOut(RiverhogModel):

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import cast
 
 from riverhog_protocol.errors import (
@@ -42,9 +40,14 @@ from riverhog_core.services.archive_records import (
     archive_copy_owned_identity,
 )
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
+from riverhog_core.services.operation_plans import (
+    PLAN_TTL,
+    challenge_expiry,
+    challenge_has_shape,
+    plan_challenge,
+)
 
-_PLAN_TTL = timedelta(minutes=15)
-_CHALLENGE_RE = re.compile(r"^retire-copy-(\d+)-([0-9a-f]{64})$")
+_CHALLENGE_PREFIX = "retire-copy"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _ACTIVE_COPY_STATES = {"requested", "waiting", "copying"}
 _RETIREMENT_WARNING = (
@@ -75,7 +78,7 @@ class SqlAlchemyArchiveCopyRetirementService:
             )
             if active is not None:
                 return cast(dict[str, object], json.loads(active.plan_json))
-            expires = (utc_now() + _PLAN_TTL).replace(microsecond=0)
+            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)
             plan = _build_plan(
                 session,
                 config=self._config,
@@ -83,7 +86,9 @@ class SqlAlchemyArchiveCopyRetirementService:
                 store=normalized_store,
                 expires_at=expires,
             )
-            plan["challenge"] = None if plan["blockers"] else _plan_challenge(plan, expires)
+            plan["challenge"] = (
+                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)
+            )
             return plan
 
     def retire(
@@ -122,12 +127,16 @@ class SqlAlchemyArchiveCopyRetirementService:
                     )
                 plan = cast(dict[str, object], json.loads(active.plan_json))
             elif target is None:
-                if _CHALLENGE_RE.fullmatch(supplied_challenge) is None:
+                if not challenge_has_shape(supplied_challenge, prefix=_CHALLENGE_PREFIX):
                     raise NotFound(f"archive copy not found: {normalized_id} in {normalized_store}")
                 plan = _absent_plan(normalized_id, normalized_store)
                 already_absent = True
             else:
-                expires = _challenge_expiry(supplied_challenge)
+                expires = challenge_expiry(
+                    supplied_challenge,
+                    prefix=_CHALLENGE_PREFIX,
+                    operation="archive copy retirement",
+                )
                 if utc_now() > expires:
                     raise Conflict("archive copy retirement plan has expired; request a new plan")
                 plan = _build_plan(
@@ -137,7 +146,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                     store=normalized_store,
                     expires_at=expires,
                 )
-                expected_challenge = _plan_challenge(plan, expires)
+                expected_challenge = plan_challenge(_CHALLENGE_PREFIX, plan, expires)
                 if not secrets.compare_digest(expected_challenge, supplied_challenge):
                     raise Conflict("archive copy retirement plan changed; request a new plan")
                 blockers = cast(list[str], plan["blockers"])
@@ -479,18 +488,6 @@ def _build_plan(
             "timing can affect realized savings."
         ),
     }
-
-
-def _plan_challenge(plan: dict[str, object], expires_at: datetime) -> str:
-    payload = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"retire-copy-{int(expires_at.timestamp())}-{hashlib.sha256(payload).hexdigest()}"
-
-
-def _challenge_expiry(challenge: str) -> datetime:
-    match = _CHALLENGE_RE.fullmatch(challenge)
-    if match is None:
-        raise BadRequest("invalid archive copy retirement challenge")
-    return datetime.fromtimestamp(int(match.group(1)), tz=UTC)
 
 
 def _absent_plan(collection_id: int, store: str) -> dict[str, object]:

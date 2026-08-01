@@ -34,6 +34,19 @@ class FakeJebApi:
             "attempts": [],
         }
 
+    def get_attempt(self, attempt_id: str) -> dict[str, Any]:
+        self.calls.append(("attempt-show", {"attempt": attempt_id}))
+        return {
+            "attempt_id": attempt_id,
+            "source_id": "camera",
+            "target_name": "munchy",
+            "state": "failed",
+            "file_count": 2,
+            "staged_file_count": 1,
+            "total_bytes": 42,
+            "last_error": "target unavailable",
+        }
+
     def check_config(self) -> dict[str, Any]:
         self.calls.append(("check-config", {}))
         return {"status": "ok", "source_count": 2, "sources": ["a", "b"]}
@@ -150,6 +163,20 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
         )
     ]
     assert "Jeb attempts: 0 (page 1/0)" in capsys.readouterr().out
+
+
+def test_jeb_remote_cli_shows_one_actionable_attempt(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    assert jeb_cli.main(["attempt", "show", "attempt-1"]) == 0
+
+    assert fake.calls == [("attempt-show", {"attempt": "attempt-1"})]
+    output = capsys.readouterr().out
+    assert "Jeb attempt attempt-1" in output
+    assert "source: camera" in output
+    assert "error: target unavailable" in output
 
 
 def test_jeb_remote_cli_lists_ids_and_forwards_list_filters(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

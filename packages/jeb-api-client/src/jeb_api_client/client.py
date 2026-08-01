@@ -151,6 +151,9 @@ class JebApiClient:
             params["all"] = True
         return self._json("GET", "/v1/attempts", params=params)
 
+    def get_attempt(self, attempt_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/attempts/{quote(attempt_id, safe='')}")
+
     def check_config(self) -> dict[str, Any]:
         return self._json("GET", "/v1/config/check")
 

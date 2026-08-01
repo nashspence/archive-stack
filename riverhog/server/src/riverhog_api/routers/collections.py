@@ -20,6 +20,7 @@ from riverhog_api.schemas.collections import (
     DeleteCollectionRequest,
     ListCollectionsResponse,
     ListCollectionUploadSessionFilesResponse,
+    ListCollectionUploadSessionsResponse,
     RegisterCollectionUploadSessionFilesRequest,
 )
 from riverhog_api.tus import (
@@ -40,17 +41,50 @@ def list_collections(
     sort: str = Query("id"),
     order: str = Query("asc"),
     all_items: bool = Query(False, alias="all"),
+    tag: str | None = Query(None),
 ) -> ListCollectionsResponse:
     summary = container.collections.list(
         page=page,
         per_page=per_page,
         q=q,
+        tag=tag,
         sort=sort,
         order=order,
         all_items=all_items,
         principal=principal,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
+
+
+@router.get(
+    "/collection-upload-sessions",
+    response_model=ListCollectionUploadSessionsResponse,
+)
+def list_collection_upload_sessions(
+    container: ContainerDep,
+    principal: CollectionCreator,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    q: str | None = Query(None),
+    tag: str | None = Query(None),
+    state: str | None = Query(None),
+    sort: str = Query("created_at"),
+    order: str = Query("desc"),
+    all_items: bool = Query(False, alias="all"),
+) -> ListCollectionUploadSessionsResponse:
+    return ListCollectionUploadSessionsResponse.model_validate(
+        container.collections.list_upload_sessions(
+            page=page,
+            per_page=per_page,
+            q=q,
+            tag=tag,
+            state=state,
+            sort=sort,
+            order=order,
+            all_items=all_items,
+            principal=principal,
+        )
+    )
 
 
 @router.post("/collection-upload-sessions", response_model=CollectionUploadSessionOut)

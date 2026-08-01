@@ -36,8 +36,18 @@ class AppAccessOut(AppAccessIn):
 
 
 class AppAccessListItemOut(AppAccessOut):
-    id: str
+    app: str
+    key_id: str
+    key_status: Literal["active", "expired", "revoked"]
     created_at: str
+
+
+class AppAccessListFiltersOut(RiverhogModel):
+    app: str | None
+    key_id: str | None
+    permission: str | None
+    resource: str | None
+    active: bool | None
 
 
 class AppKeyOut(RiverhogModel):
@@ -78,6 +88,10 @@ class ReplaceAppAccessRequest(RiverhogModel):
     access: list[AppAccessIn] = Field(min_length=1)
 
 
+class MutateAppAccessRequest(AppAccessIn):
+    pass
+
+
 class AppAccessListOut(RiverhogModel):
     page: int
     per_page: int
@@ -86,8 +100,7 @@ class AppAccessListOut(RiverhogModel):
     sort: str
     order: Literal["asc", "desc"]
     query: str | None
-    app: str
-    key_id: str
+    filters: AppAccessListFiltersOut
     access: list[AppAccessListItemOut]
 
 

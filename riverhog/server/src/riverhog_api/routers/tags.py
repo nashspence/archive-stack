@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator
+from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.tags import (
     CollectionTagsOut,
     CreateTagRequest,
+    DeleteTagRequest,
+    MutateCollectionTagRequest,
     ReplaceCollectionTagsRequest,
+    TagDeletionPlanOut,
+    TagDeletionResultOut,
     TagListOut,
     TagOut,
 )
@@ -57,6 +61,27 @@ def get_tag(
     return TagOut.model_validate(container.tags.get(tag, principal=principal))
 
 
+@router.post("/tags/{tag}/deletion-plan", response_model=TagDeletionPlanOut)
+def plan_tag_deletion(
+    tag: str,
+    container: ContainerDep,
+    _principal: TagDeleter,
+) -> TagDeletionPlanOut:
+    return TagDeletionPlanOut.model_validate(container.tags.plan_deletion(tag))
+
+
+@router.post("/tags/{tag}/delete", response_model=TagDeletionResultOut)
+def delete_tag(
+    tag: str,
+    request: DeleteTagRequest,
+    container: ContainerDep,
+    _principal: TagDeleter,
+) -> TagDeletionResultOut:
+    return TagDeletionResultOut.model_validate(
+        container.tags.delete(tag, challenge=request.challenge)
+    )
+
+
 @router.get("/collections/{collection_id}/tags", response_model=CollectionTagsOut)
 def get_collection_tags(
     collection_id: int,
@@ -79,6 +104,42 @@ def replace_collection_tags(
         container.tags.replace_collection(
             collection_id,
             request.tags,
+            principal=principal,
+            event_context=request.event_context,
+        )
+    )
+
+
+@router.post("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
+def add_collection_tag(
+    collection_id: int,
+    tag: str,
+    request: MutateCollectionTagRequest,
+    container: ContainerDep,
+    principal: CollectionTagManager,
+) -> CollectionTagsOut:
+    return CollectionTagsOut.model_validate(
+        container.tags.add_collection_tag(
+            collection_id,
+            tag,
+            principal=principal,
+            event_context=request.event_context,
+        )
+    )
+
+
+@router.delete("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
+def remove_collection_tag(
+    collection_id: int,
+    tag: str,
+    request: MutateCollectionTagRequest,
+    container: ContainerDep,
+    principal: CollectionTagManager,
+) -> CollectionTagsOut:
+    return CollectionTagsOut.model_validate(
+        container.tags.remove_collection_tag(
+            collection_id,
+            tag,
             principal=principal,
             event_context=request.event_context,
         )

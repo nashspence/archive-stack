@@ -191,7 +191,8 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
 
             access = (
                 await client.get(
-                    f"/v1/apps/reader/keys/{delegated_key['id']}/access?all=true",
+                    "/v1/app-key-access",
+                    params={"app": "reader", "key": delegated_key["id"], "all": "true"},
                     headers=manager_headers,
                 )
             ).json()

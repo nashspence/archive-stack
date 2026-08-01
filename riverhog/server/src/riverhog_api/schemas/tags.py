@@ -38,3 +38,39 @@ class CollectionTagsOut(RiverhogModel):
     metadata_revision: int
     record_etag: str
     tags: list[str]
+
+
+class TagDependencySummaryOut(RiverhogModel):
+    count: int
+    sample: list[str]
+    truncated: bool
+
+
+class TagDependenciesOut(RiverhogModel):
+    collections: TagDependencySummaryOut
+    upload_sessions: TagDependencySummaryOut
+    app_key_access: TagDependencySummaryOut
+    metadata_publications: TagDependencySummaryOut
+
+
+class TagDeletionPlanOut(RiverhogModel):
+    status: Literal["ready", "blocked"]
+    tag: str
+    warning: str
+    expires_at: str
+    challenge: str | None
+    dependencies: TagDependenciesOut
+    blockers: list[str]
+
+
+class DeleteTagRequest(RiverhogModel):
+    challenge: str
+
+
+class TagDeletionResultOut(RiverhogModel):
+    status: Literal["deleted", "already_absent"]
+    tag: str
+
+
+class MutateCollectionTagRequest(RiverhogModel):
+    event_context: dict[str, Any] | None = None

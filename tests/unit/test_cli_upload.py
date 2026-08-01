@@ -86,6 +86,7 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
         [
             "collection",
             "upload",
+            "start",
             str(root),
             "--tag",
             "my-trip",

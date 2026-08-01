@@ -90,6 +90,7 @@ class CollectionListPage:
     sort: str
     order: str
     query: str | None
+    tag: str | None
     collections: list[CollectionSummary]
 
 

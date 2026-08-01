@@ -246,7 +246,10 @@ def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path)
         all_items=True,
     )
     assert listed["total"] == 1
-    assert listed["access"][0]["id"] == "retrieval:manage=tag:photos"
+    assert listed["access"][0]["app"] == "review"
+    assert listed["access"][0]["key_id"] == created["id"]
+    assert listed["access"][0]["permission"] == "retrieval:manage"
+    assert listed["access"][0]["resource"] == "tag:photos"
 
 
 def test_access_targets_must_exist(tmp_path: Path) -> None:

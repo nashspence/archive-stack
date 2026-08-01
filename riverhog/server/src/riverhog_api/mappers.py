@@ -109,5 +109,6 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "sort": summary.sort,
         "order": summary.order,
         "query": summary.query,
+        "tag": summary.tag,
         "collections": [map_collection(collection) for collection in summary.collections],
     }

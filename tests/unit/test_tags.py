@@ -24,6 +24,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
+from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_protocol.errors import Conflict
@@ -180,6 +181,105 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         assert publication is not None
         assert publication.state == "published"
         assert publication.desired_revision == publication.published_revision == 3
+
+
+def test_collection_tag_add_and_remove_are_atomic_single_assignment_operations(
+    tmp_path: Path,
+) -> None:
+    config, _archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        {"document.txt": b"tag mutation\n"},
+    )
+    tags = SqlAlchemyTagService(config)
+    tags.create("reviewed", creator=BOOTSTRAP)
+    manager = ApplicationPrincipal(
+        app="operator",
+        key_id=None,
+        access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
+    )
+
+    added = tags.add_collection_tag(COLLECTION_ID, "reviewed", principal=manager)
+    assert added["tags"] == ["docs", "reviewed"]
+    removed = tags.remove_collection_tag(COLLECTION_ID, "docs", principal=manager)
+    assert removed["tags"] == ["reviewed"]
+    with pytest.raises(Conflict, match="already has tag"):
+        tags.add_collection_tag(COLLECTION_ID, "reviewed", principal=manager)
+
+
+def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    config = RuntimeConfig(database_url=sqlite_url(path))
+    initialize_db(config.database_url)
+    tags = SqlAlchemyTagService(config)
+    keys = SqlAlchemyAppKeyService(config)
+    tags.create("photos", creator=BOOTSTRAP)
+    active = keys.create(
+        app="reader",
+        access=(ApplicationAccess(CATALOG_READ, "tag:photos"),),
+        grantor=BOOTSTRAP,
+    )
+    upload_service = SqlAlchemyCollectionService(config, object())  # type: ignore[arg-type]
+    upload = upload_service.create_or_resume_upload_session(
+        idempotency_key="photos-upload",
+        tags=["photos"],
+        initiator=ApplicationPrincipal(
+            app="uploader",
+            key_id=None,
+            access=frozenset({ApplicationAccess(COLLECTIONS_CREATE)}),
+        ),
+    )
+
+    plan = tags.plan_deletion("photos")
+
+    assert plan["status"] == "blocked"
+    assert plan["challenge"] is None
+    dependencies = plan["dependencies"]
+    assert dependencies["collections"]["count"] == 0
+    assert dependencies["upload_sessions"] == {
+        "count": 1,
+        "sample": [str(upload["collection_id"])],
+        "truncated": False,
+    }
+    assert dependencies["app_key_access"]["count"] == 1
+    assert "clients, companions, and automation" in plan["warning"]
+
+    upload_service.cancel_upload_session(int(upload["collection_id"]))
+    keys.revoke(app="reader", key_id=str(active["id"]))
+    ready = tags.plan_deletion("photos")
+    assert ready["status"] == "ready"
+    assert isinstance(ready["challenge"], str)
+    assert tags.delete("photos", challenge=str(ready["challenge"])) == {
+        "status": "deleted",
+        "tag": "photos",
+    }
+
+
+def test_tag_deletion_waits_for_removed_tag_metadata_publication(tmp_path: Path) -> None:
+    config, _archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        {"document.txt": b"metadata publication\n"},
+    )
+    tags = SqlAlchemyTagService(config)
+    manager = ApplicationPrincipal(
+        app="operator",
+        key_id=None,
+        access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
+    )
+
+    tags.remove_collection_tag(COLLECTION_ID, "docs", principal=manager)
+    blocked = tags.plan_deletion("docs")
+    assert blocked["dependencies"]["metadata_publications"]["count"] == 1
+    assert blocked["challenge"] is None
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        publication = session.get(CollectionMetadataPublicationRecord, (COLLECTION_ID, "deep"))
+        assert publication is not None
+        publication.state = "published"
+        publication.published_revision = publication.desired_revision
+        publication.published_at = "2099-01-01T00:00:00.000000Z"
+    ready = tags.plan_deletion("docs")
+    assert ready["status"] == "ready"
+    assert tags.delete("docs", challenge=str(ready["challenge"]))["status"] == "deleted"
 
 
 def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:

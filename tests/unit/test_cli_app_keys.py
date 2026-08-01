@@ -120,29 +120,31 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     class FakeClient:
         def list_app_key_access(
             self,
-            app_name: str,
-            key_id: str,
             **kwargs: Any,
         ) -> dict[str, object]:
-            assert (app_name, key_id) == ("local", "key-one")
             assert kwargs == {
                 "page": 1,
                 "per_page": 25,
                 "q": "photos",
                 "sort": "permission",
                 "order": "asc",
+                "app": "local",
+                "key_id": "key-one",
+                "permission": None,
+                "resource": "tag:photos",
+                "active": True,
                 "all_items": True,
             }
             return {
-                "app": "local",
-                "key_id": "key-one",
                 "page": 1,
                 "per_page": 1,
                 "total": 1,
                 "pages": 1,
                 "access": [
                     {
-                        "id": "catalog:read=tag:photos",
+                        "app": "local",
+                        "key_id": "key-one",
+                        "key_status": "active",
                         "permission": "catalog:read",
                         "resource": "tag:photos",
                     }
@@ -177,12 +179,16 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "key",
             "access",
             "list",
+            "--app",
             "local",
+            "--key",
             "key-one",
+            "--resource",
+            "tag:photos",
+            "--active",
             "--query",
             "photos",
             "--all",
-            "--ids",
         ],
     )
     quotas = runner.invoke(
@@ -207,9 +213,18 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     )
 
     assert access.exit_code == 0
-    assert access.stdout == "catalog:read=tag:photos\n"
+    assert "local/key-one" in access.stdout
+    assert "permission=catalog:read" in access.stdout
+    assert "resource=tag:photos" in access.stdout
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
+
+
+def test_quota_ids_require_an_application_for_actionable_identity() -> None:
+    result = runner.invoke(app, ["app", "key", "quota", "list", "--ids"])
+
+    assert result.exit_code == 2
+    assert "--ids requires --app" in result.output
 
 
 def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monkeypatch) -> None:

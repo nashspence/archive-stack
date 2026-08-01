@@ -317,6 +317,14 @@ def _source_path(path: str, *, action: str | None = None) -> str | None:
     return source_id if source_id and "/" not in source_id else None
 
 
+def _attempt_path(path: str) -> str | None:
+    prefix = "/v1/attempts/"
+    if not path.startswith(prefix):
+        return None
+    attempt_id = path.removeprefix(prefix)
+    return attempt_id if attempt_id and "/" not in attempt_id else None
+
+
 def _sequence(payload: Mapping[str, Any], key: str) -> list[str]:
     value = payload.get(key)
     if not isinstance(value, list):
@@ -450,6 +458,21 @@ def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
                             all_items=_bool(params, "all", False),
                         ),
                     )
+                    return
+                attempt_id = _attempt_path(split.path)
+                if attempt_id is not None:
+                    state.services.runtime.initialize()
+                    try:
+                        payload = state.services.store.get_attempt(attempt_id)
+                    except KeyError:
+                        _error(
+                            self,
+                            HTTPStatus.NOT_FOUND,
+                            code="not_found",
+                            message=f"Jeb attempt not found: {attempt_id}",
+                        )
+                    else:
+                        _response(self, HTTPStatus.OK, payload)
                     return
                 _response(self, HTTPStatus.NOT_FOUND, {"service": "jeb", "status": "not_found"})
             except ValueError as exc:

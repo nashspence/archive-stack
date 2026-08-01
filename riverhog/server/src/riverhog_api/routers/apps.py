@@ -14,6 +14,7 @@ from riverhog_api.schemas.apps import (
     AppKeyOut,
     AppListOut,
     CreateAppKeyRequest,
+    MutateAppAccessRequest,
     ReplaceAppAccessRequest,
 )
 
@@ -78,13 +79,8 @@ def rotate_app_key(
     )
 
 
-@router.get(
-    "/apps/{app}/keys/{key_id}/access",
-    response_model=AppAccessListOut,
-)
+@router.get("/app-key-access", response_model=AppAccessListOut)
 def list_app_key_access(
-    app: str,
-    key_id: str,
     container: ContainerDep,
     _principal: KeyManager,
     page: int = Query(1, ge=1),
@@ -92,17 +88,25 @@ def list_app_key_access(
     sort: str = Query("permission"),
     order: str = Query("asc"),
     q: str | None = Query(None),
+    app: str | None = Query(None),
+    key_id: str | None = Query(None, alias="key"),
+    permission: str | None = Query(None),
+    resource: str | None = Query(None),
+    active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
 ) -> AppAccessListOut:
     return AppAccessListOut.model_validate(
         container.app_keys.list_access(
-            app=app,
-            key_id=key_id,
             page=page,
             per_page=per_page,
             q=q,
             sort=sort,
             order=order,
+            app=app,
+            key_id=key_id,
+            permission=permission,
+            resource=resource,
+            active=active,
             all_items=all_items,
         )
     )
@@ -125,6 +129,47 @@ def replace_app_key_access(
             key_id=key_id,
             access=[(current.permission, current.resource) for current in request.access],
             grantor=principal,
+        )
+    )
+
+
+@router.post(
+    "/apps/{app}/keys/{key_id}/access",
+    response_model=AppAccessSetOut,
+)
+def add_app_key_access(
+    app: str,
+    key_id: str,
+    request: MutateAppAccessRequest,
+    container: ContainerDep,
+    principal: KeyManager,
+) -> AppAccessSetOut:
+    return AppAccessSetOut.model_validate(
+        container.app_keys.add_access(
+            app=app,
+            key_id=key_id,
+            access=(request.permission, request.resource),
+            grantor=principal,
+        )
+    )
+
+
+@router.delete(
+    "/apps/{app}/keys/{key_id}/access",
+    response_model=AppAccessSetOut,
+)
+def remove_app_key_access(
+    app: str,
+    key_id: str,
+    request: MutateAppAccessRequest,
+    container: ContainerDep,
+    _principal: KeyManager,
+) -> AppAccessSetOut:
+    return AppAccessSetOut.model_validate(
+        container.app_keys.remove_access(
+            app=app,
+            key_id=key_id,
+            access=(request.permission, request.resource),
         )
     )
 

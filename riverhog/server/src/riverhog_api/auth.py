@@ -19,6 +19,7 @@ from riverhog_core.app_permissions import (
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
     TAGS_CREATE,
+    TAGS_DELETE,
     ApplicationAccess,
     ApplicationPrincipal,
 )
@@ -108,6 +109,10 @@ TagCreator = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(TAGS_CREATE))),
 ]
+TagDeleter = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(TAGS_DELETE))),
+]
 CollectionDeleter = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTIONS_DELETE))),
@@ -147,6 +152,7 @@ __all__ = [
     "QuotaManager",
     "RetrievalManager",
     "TagCreator",
+    "TagDeleter",
     "authenticate_authorization_header",
     "authenticate_token",
     "require_application",

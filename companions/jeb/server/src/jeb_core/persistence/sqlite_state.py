@@ -431,6 +431,59 @@ class SQLiteJebStore:
             "attempts": attempts,
         }
 
+    def get_attempt(self, attempt_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    a.id,
+                    a.batch_id,
+                    a.attempt_number,
+                    a.state,
+                    b.source_id,
+                    b.target_name,
+                    b.run_id,
+                    b.cleanup,
+                    b.manifest_digest,
+                    a.target_submission_id,
+                    a.created_at,
+                    a.updated_at,
+                    a.last_error,
+                    a.emitted_error_at,
+                    b.file_count,
+                    b.total_bytes,
+                    COALESCE(
+                        SUM(CASE WHEN af.staged_at IS NOT NULL THEN 1 ELSE 0 END),
+                        0
+                    ) AS staged_file_count
+                FROM batch_attempts AS a
+                JOIN batches AS b ON b.id = a.batch_id
+                LEFT JOIN attempt_files AS af ON af.attempt_id = a.id
+                WHERE a.id = ?
+                GROUP BY
+                    a.id,
+                    a.batch_id,
+                    a.attempt_number,
+                    a.state,
+                    b.source_id,
+                    b.target_name,
+                    b.run_id,
+                    b.cleanup,
+                    b.manifest_digest,
+                    a.target_submission_id,
+                    a.created_at,
+                    a.updated_at,
+                    a.last_error,
+                    a.emitted_error_at,
+                    b.file_count,
+                    b.total_bytes
+                """,
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(attempt_id)
+        return self._attempt_summary(row)
+
     def _staged_file_counts_by_attempt(
         self,
         conn: sqlite3.Connection,

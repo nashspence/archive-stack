@@ -21,6 +21,7 @@ from riverhog_core.catalog_models import (
     CollectionProofMaturationRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    CollectionUploadTagRecord,
     IngressCleanupRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
@@ -159,10 +160,10 @@ def _stage(
             CollectionUploadRecord(
                 collection_id=collection_id,
                 idempotency_key=f"fixture-{collection_id}",
-                tags_json='["docs"]',
                 initiated_by_app="fixture",
                 archive_store="deep",
                 state="archiving",
+                tags=[CollectionUploadTagRecord(tag_id="docs")],
             )
         )
         session.add(file_record)

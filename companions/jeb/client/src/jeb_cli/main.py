@@ -12,6 +12,7 @@ from jeb_api_client import JebApiClient, JebApiError
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
     format_archive_plan,
+    format_attempt,
     format_attempts,
     format_config_check,
     format_operation,
@@ -61,6 +62,12 @@ def cmd_attempt_list(args: argparse.Namespace) -> int:
         emit(format_list_ids(payload, "attempts", id_key="attempt_id"), json_mode=False)
         return 0
     emit(payload if args.json else format_attempts(payload), json_mode=args.json)
+    return 0
+
+
+def cmd_attempt_show(args: argparse.Namespace) -> int:
+    payload = client().get_attempt(args.attempt)
+    emit(payload if args.json else format_attempt(payload), json_mode=args.json)
     return 0
 
 
@@ -304,6 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_list.add_argument("--target", help="Filter by target name.")
     add_list_output_arguments(attempt_list, noun="attempt")
     attempt_list.set_defaults(func=cmd_attempt_list)
+    attempt_show = attempt_sub.add_parser("show", help="show one processing attempt")
+    attempt_show.add_argument("attempt")
+    attempt_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    attempt_show.set_defaults(func=cmd_attempt_show)
 
     check_config = sub.add_parser("check-config", help="validate deployed Jeb configuration")
     check_config.add_argument("--json", action="store_true", help="Emit JSON.")

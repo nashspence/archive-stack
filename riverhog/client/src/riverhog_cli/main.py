@@ -56,12 +56,15 @@ from riverhog_cli.output import (
     format_collection_tags,
     format_collection_upload,
     format_collection_upload_plan,
+    format_collection_uploads,
     format_collections,
     format_download_quota,
     format_download_quotas,
     format_file_selectors,
     format_find,
     format_tag,
+    format_tag_deletion_plan,
+    format_tag_deletion_result,
     format_tags,
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
@@ -69,6 +72,7 @@ from riverhog_cli.upload_progress import make_collection_upload_progress
 app = typer.Typer(help="Riverhog archive platform CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 collection_tag_app = typer.Typer(help="Collection tag assignments.")
+collection_upload_app = typer.Typer(help="Collection upload sessions.")
 archive_app = typer.Typer(help="Archive-store operations.")
 archive_store_app = typer.Typer(help="Configured archive stores.")
 archive_copy_app = typer.Typer(help="Archive-copy jobs.")
@@ -82,6 +86,7 @@ app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 collection_app.add_typer(collection_tag_app, name="tag")
+collection_app.add_typer(collection_upload_app, name="upload")
 app.add_typer(archive_app, name="archive")
 archive_app.add_typer(archive_store_app, name="store")
 archive_app.add_typer(archive_copy_app, name="copy")
@@ -161,7 +166,7 @@ def _root(
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
-_APP_KEY_ACCESS_SORT_FIELDS = {"permission", "resource", "created_at"}
+_APP_KEY_ACCESS_SORT_FIELDS = {"app", "key_id", "permission", "resource", "created_at"}
 _TAG_SORT_FIELDS = {"id", "created_at", "collections"}
 _APP_KEY_QUOTA_SORT_FIELDS = {
     "app",
@@ -309,6 +314,55 @@ def tag_list_cmd(
     emit(payload if json_mode else format_tags(payload), json_mode=json_mode)
 
 
+@tag_app.command("delete")
+def tag_delete_cmd(
+    tag: Annotated[str, typer.Argument(help="Exact tag id")],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "--plan",
+            help="Show blockers and a short-lived confirmation challenge",
+        ),
+    ] = False,
+    confirm: Annotated[
+        str | None,
+        typer.Option("--confirm", help="Challenge returned by a prior plan"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Delete an unused tag after an explicit, non-cascading preflight."""
+
+    if dry_run and confirm is not None:
+        raise typer.BadParameter("--dry-run and --confirm cannot be used together")
+    api = client()
+    if dry_run:
+        payload = api.plan_tag_deletion(tag)
+        emit(payload if json_mode else format_tag_deletion_plan(payload), json_mode=json_mode)
+        return
+    if confirm is not None:
+        payload = api.delete_tag(tag, challenge=confirm)
+        emit(payload if json_mode else format_tag_deletion_result(payload), json_mode=json_mode)
+        return
+    if json_mode:
+        raise typer.BadParameter("--json requires --dry-run or --confirm")
+
+    plan = api.plan_tag_deletion(tag)
+    emit(format_tag_deletion_plan(plan), json_mode=False)
+    blockers = plan.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        raise typer.Exit(1)
+    challenge = plan.get("challenge")
+    if not isinstance(challenge, str) or not challenge:
+        raise typer.BadParameter("server did not return a tag deletion challenge")
+    typed_tag = typer.prompt("Type the complete tag id to delete")
+    if typed_tag != tag:
+        typer.echo("Tag id did not match; nothing was deleted.", err=True)
+        raise typer.Exit(1)
+    payload = api.delete_tag(tag, challenge=challenge)
+    emit(format_tag_deletion_result(payload), json_mode=False)
+
+
 @collection_tag_app.command("list")
 def collection_tag_list_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
@@ -338,6 +392,30 @@ def collection_tag_replace_cmd(
     """Replace all tags assigned to one collection."""
 
     payload = client().replace_collection_tags(collection_id, tags or [])
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
+
+
+@collection_tag_app.command("add")
+def collection_tag_add_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tag: Annotated[str, typer.Argument(help="Tag id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Assign one existing tag to a collection."""
+
+    payload = client().add_collection_tag(collection_id, tag)
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
+
+
+@collection_tag_app.command("remove")
+def collection_tag_remove_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tag: Annotated[str, typer.Argument(help="Tag id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Remove one tag from a collection."""
+
+    payload = client().remove_collection_tag(collection_id, tag)
     emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
 
 
@@ -444,8 +522,6 @@ def app_key_rotate_cmd(
 
 @app_key_access_app.command("list")
 def app_key_access_list_cmd(
-    app_name: Annotated[str, typer.Argument(help="Application name")],
-    key_id: Annotated[str, typer.Argument(help="Key id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "permission",
@@ -454,28 +530,45 @@ def app_key_access_list_cmd(
         str | None,
         typer.Option("--query", "-q", help="Substring match over permissions and resources"),
     ] = None,
+    app_name: Annotated[
+        str | None,
+        typer.Option("--app", help="Restrict results to one application"),
+    ] = None,
+    key_id: Annotated[
+        str | None,
+        typer.Option("--key", help="Restrict results to one key"),
+    ] = None,
+    permission: Annotated[
+        str | None,
+        typer.Option("--permission", help="Restrict results to one exact permission"),
+    ] = None,
+    resource: Annotated[
+        str | None,
+        typer.Option("--resource", help="Restrict results to one exact resource"),
+    ] = None,
+    active: Annotated[
+        bool | None,
+        typer.Option("--active/--inactive", help="Filter by key usability"),
+    ] = None,
     all_items: Annotated[bool, typer.Option("--all", help="Return every matching grant")] = False,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one access binding per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List a key's exact permission and resource bindings."""
+    """List exact application-key permission and resource bindings."""
 
-    if ids and json_mode:
-        raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_ACCESS_SORT_FIELDS)
     payload = client().list_app_key_access(
-        app_name,
-        key_id,
         page=page,
         per_page=per_page,
         q=query,
         sort=sort,
         order=normalized_order,
+        app=app_name,
+        key_id=key_id,
+        permission=permission,
+        resource=resource,
+        active=active,
         all_items=all_items,
     )
-    if ids:
-        emit(format_list_ids(payload, "access"), json_mode=False)
-        return
     emit(payload if json_mode else format_app_access(payload), json_mode=json_mode)
 
 
@@ -498,6 +591,44 @@ def app_key_access_set_cmd(
         app_name,
         key_id,
         access=[_access(current) for current in allow],
+    )
+    emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
+
+
+@app_key_access_app.command("add")
+def app_key_access_add_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    allow: Annotated[str, typer.Argument(help="PERMISSION or PERMISSION=RESOURCE")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Add one exact permission and resource binding."""
+
+    access = _access(allow)
+    payload = client().add_app_key_access(
+        app_name,
+        key_id,
+        permission=access["permission"],
+        resource=access["resource"],
+    )
+    emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
+
+
+@app_key_access_app.command("remove")
+def app_key_access_remove_cmd(
+    app_name: Annotated[str, typer.Argument(help="Application name")],
+    key_id: Annotated[str, typer.Argument(help="Key id")],
+    allow: Annotated[str, typer.Argument(help="PERMISSION or PERMISSION=RESOURCE")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Remove one exact permission and resource binding."""
+
+    access = _access(allow)
+    payload = client().remove_app_key_access(
+        app_name,
+        key_id,
+        permission=access["permission"],
+        resource=access["resource"],
     )
     emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
 
@@ -558,6 +689,8 @@ def app_key_quota_list_cmd(
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
+    if ids and app_name is None:
+        raise typer.BadParameter("--ids requires --app so each key id is actionable")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_QUOTA_SORT_FIELDS)
     payload = client().list_download_quotas(
         page=page,
@@ -1626,6 +1759,7 @@ def _sorted_collection_page(
     page: int,
     per_page: int,
     query: str | None,
+    tag: str | None,
     sort: str,
     order: str,
     all_items: bool = False,
@@ -1643,6 +1777,7 @@ def _sorted_collection_page(
         page=page,
         per_page=per_page,
         q=query,
+        tag=tag,
         sort=sort,
         order=normalized_order,
         all_items=all_items,
@@ -1658,6 +1793,10 @@ def collection_list_cmd(
     query: Annotated[
         str | None,
         typer.Option("--query", "-q", help="Substring match over collection ids"),
+    ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option("--tag", help="Restrict results to one exact tag"),
     ] = None,
     all_items: Annotated[
         bool,
@@ -1678,6 +1817,7 @@ def collection_list_cmd(
         page=page,
         per_page=per_page,
         query=query,
+        tag=tag,
         sort=sort,
         order=order,
         all_items=all_items,
@@ -1688,7 +1828,7 @@ def collection_list_cmd(
     emit(payload if json_mode else format_collections(payload), json_mode=json_mode)
 
 
-@collection_app.command("upload")
+@collection_upload_app.command("start")
 def upload_cmd(
     root: Annotated[Path, typer.Argument(help="Local collection root directory")],
     tags: Annotated[
@@ -1773,7 +1913,73 @@ def upload_cmd(
         raise typer.Exit(1)
 
 
-@collection_app.command("cancel")
+_COLLECTION_UPLOAD_SORT_FIELDS = {"id", "created_at", "state", "bytes", "files"}
+
+
+@collection_upload_app.command("list")
+def upload_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Search session ids, tags, or ingest sources"),
+    ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option("--tag", help="Restrict results to one exact tag"),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option("--state", help="Restrict results to one exact session state"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching upload session"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one collection/upload id per line"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List collection upload sessions visible to the current application."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_COLLECTION_UPLOAD_SORT_FIELDS)
+    payload = client().list_collection_upload_sessions(
+        page=page,
+        per_page=per_page,
+        q=query,
+        tag=tag,
+        state=state,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if ids:
+        emit(
+            format_list_ids(payload, "uploads", id_key="collection_id"),
+            json_mode=False,
+        )
+        return
+    emit(payload if json_mode else format_collection_uploads(payload), json_mode=json_mode)
+
+
+@collection_upload_app.command("show")
+def upload_show_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection upload session id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one collection upload session."""
+
+    payload = client().get_collection_upload_session(collection_id)
+    emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
+
+
+@collection_upload_app.command("cancel")
 def upload_cancel_cmd(
     collection_id: Annotated[int, typer.Argument(help="Open collection upload session id")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
@@ -1784,7 +1990,7 @@ def upload_cancel_cmd(
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
 
 
-@collection_app.command("watch")
+@collection_upload_app.command("watch")
 def upload_watch_cmd(
     collection_id: Annotated[
         int,

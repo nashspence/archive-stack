@@ -25,6 +25,24 @@ def format_attempts(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_attempt(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"Jeb attempt {payload.get('attempt_id', 'unknown')}",
+        f"source: {payload.get('source_id', 'unknown')}",
+        f"target: {payload.get('target_name', 'unknown')}",
+        f"state: {payload.get('state', 'unknown')}",
+        f"files: {payload.get('staged_file_count', 0)}/{payload.get('file_count', 0)}",
+        f"bytes: {_bytes(payload.get('total_bytes'))}",
+        f"created: {payload.get('created_at', 'unknown')}",
+        f"updated: {payload.get('updated_at', 'unknown')}",
+    ]
+    if payload.get("target_submission_id"):
+        lines.append(f"target submission: {payload['target_submission_id']}")
+    if payload.get("last_error"):
+        lines.append(f"error: {payload['last_error']}")
+    return "\n".join(lines)
+
+
 def format_sources(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "Jeb sources")]
     for source in _items(payload, "sources"):
@@ -97,6 +115,7 @@ def format_operation(payload: Mapping[str, object], *, title: str) -> str:
 
 __all__ = [
     "format_archive_plan",
+    "format_attempt",
     "format_attempts",
     "format_config_check",
     "format_operation",
