@@ -493,11 +493,14 @@ def _download_job(
                 collection_id=collection_id,
                 object_id=object_id,
             )
+            object_path.parent.mkdir(parents=True, exist_ok=True)
             api.download_retrieval_object(
                 str(job["id"]),
                 collection_id=collection_id,
                 object_id=object_id,
                 output=object_path,
+                expected_bytes=int(current["plaintext_bytes"]),
+                expected_sha256=str(current["sha256"]),
             )
             if not _matches(
                 object_path,

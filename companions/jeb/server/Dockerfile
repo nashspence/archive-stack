@@ -12,6 +12,7 @@ COPY companions/jeb/server/src companions/jeb/server/src
 COPY packages/riverhog-cli-support packages/riverhog-cli-support
 COPY packages/jeb-cli-support packages/jeb-cli-support
 COPY packages/jeb-protocol packages/jeb-protocol
+COPY packages/file-download packages/file-download
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/media-preflight packages/media-preflight
 COPY packages/munchy-api-client packages/munchy-api-client

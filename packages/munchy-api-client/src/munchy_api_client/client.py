@@ -19,6 +19,7 @@ from threading import Event, Lock
 from typing import Any
 
 import httpx
+from file_download import DownloadProgress, verified_download
 from lifecycle_events import EventPage
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusHttpError, TusTransport
 
@@ -2097,6 +2098,107 @@ class MunchyAdminClient(MunchyClient):
             "POST",
             f"/v1/admin/apps/{urllib.parse.quote(app)}/keys/{urllib.parse.quote(key_id)}/revoke",
         )
+
+    def list_job_diagnostics(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "created_at",
+        order: str = "desc",
+        query: str | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "page": str(page),
+            "per_page": str(per_page),
+            "sort": sort,
+            "order": order,
+        }
+        if query:
+            params["q"] = query
+        if all_items:
+            params["all"] = "true"
+        payload = self.json(
+            "GET",
+            "/v1/admin/job-diagnostics?" + urllib.parse.urlencode(params),
+        )
+        diagnostics = payload.get("diagnostics")
+        if not isinstance(diagnostics, list):
+            raise RuntimeError(f"server returned invalid job-diagnostic page: {payload}")
+        payload["diagnostics"] = [item for item in diagnostics if isinstance(item, dict)]
+        return payload
+
+    def get_job_diagnostic(self, job_id: str) -> dict[str, Any]:
+        return self.json(
+            "GET",
+            f"/v1/admin/jobs/{urllib.parse.quote(job_id, safe='')}/diagnostic",
+        )
+
+    def download_job_diagnostic(
+        self,
+        job_id: str,
+        *,
+        output: Path,
+        overwrite: bool = False,
+        progress: DownloadProgress | None = None,
+    ) -> dict[str, Any]:
+        diagnostic = self.get_job_diagnostic(job_id)
+        expected_bytes = int(diagnostic["bytes"])
+        expected_sha256 = str(diagnostic["sha256"])
+        encoded_job_id = urllib.parse.quote(job_id, safe="")
+        url = f"{self.base_url}/v1/admin/jobs/{encoded_job_id}/diagnostic/content"
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        with self._http.stream("GET", url, headers=headers, timeout=3600.0) as response:
+            if response.status_code >= 400:
+                body = response.read()
+                raise MunchyHttpError("GET", url, response.status_code, body)
+            try:
+                returned_bytes = int(response.headers.get("Content-Length", ""))
+            except ValueError as exc:
+                raise RuntimeError(
+                    "diagnostic download returned an invalid Content-Length"
+                ) from exc
+            if returned_bytes != expected_bytes:
+                raise RuntimeError(
+                    "diagnostic Content-Length does not match its metadata: "
+                    f"{returned_bytes} != {expected_bytes}"
+                )
+            returned_etag = response.headers.get("ETag", "").strip().strip('"').casefold()
+            if returned_etag != expected_sha256.casefold():
+                raise RuntimeError("diagnostic ETag does not match its metadata SHA-256")
+            receipt = verified_download(
+                response.iter_bytes(chunk_size=8 * 1024 * 1024),
+                output=output,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+                overwrite=overwrite,
+                progress=progress,
+            )
+        return {
+            "job_id": job_id,
+            "output": str(receipt.output),
+            "bytes": receipt.bytes,
+            "sha256": receipt.sha256,
+        }
+
+    def remove_job_diagnostic(self, job_id: str) -> dict[str, Any]:
+        return self.json(
+            "DELETE",
+            f"/v1/admin/jobs/{urllib.parse.quote(job_id, safe='')}/diagnostic",
+        )
+
+    def remove_terminal_job(self, job_id: str) -> dict[str, Any]:
+        return self.json(
+            "DELETE",
+            f"/v1/admin/jobs/{urllib.parse.quote(job_id, safe='')}",
+        )
+
+    def retention_plan(self) -> dict[str, Any]:
+        return self.json("GET", "/v1/admin/maintenance/retention")
+
+    def apply_retention(self) -> dict[str, Any]:
+        return self.json("POST", "/v1/admin/maintenance/retention")
 
     def list_job_templates(
         self,

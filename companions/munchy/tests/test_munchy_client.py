@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 from pathlib import Path
 from threading import Event
@@ -11,6 +12,7 @@ import pytest
 from munchy_api_client.client import (
     CLEANUP_REQUEST_TIMEOUT_SECONDS,
     JobTerminalDuringUpload,
+    MunchyAdminClient,
     MunchyClient,
     MunchyHttpError,
     RichProgressRenderer,
@@ -29,6 +31,49 @@ from munchy_api_client.client import (
     keep_system_awake,
     progress_percent,
 )
+
+
+def test_admin_client_streams_and_verifies_job_diagnostic(tmp_path: Path) -> None:
+    content = b"diagnostic archive"
+    sha256 = hashlib.sha256(content).hexdigest()
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/diagnostic/content"):
+            return httpx.Response(
+                200,
+                content=content,
+                headers={"Content-Length": str(len(content)), "ETag": f'"{sha256}"'},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-1",
+                "created_at": "2026-08-01T00:00:00.000000Z",
+                "reason": "job_failed",
+                "bytes": len(content),
+                "sha256": sha256,
+            },
+        )
+
+    output = tmp_path / "case.tar.gz"
+    with MunchyAdminClient("http://munchy.test", token="admin-token") as client:
+        client._http = httpx.Client(transport=httpx.MockTransport(handle))
+        receipt = client.download_job_diagnostic("job-1", output=output)
+
+    assert output.read_bytes() == content
+    assert receipt == {
+        "job_id": "job-1",
+        "output": str(output),
+        "bytes": len(content),
+        "sha256": sha256,
+    }
+    assert [request.url.path for request in seen] == [
+        "/v1/admin/jobs/job-1/diagnostic",
+        "/v1/admin/jobs/job-1/diagnostic/content",
+    ]
+    assert all(request.headers["Authorization"] == "Bearer admin-token" for request in seen)
 
 
 def test_server_client_injects_bearer_token() -> None:

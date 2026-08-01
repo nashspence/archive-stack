@@ -372,6 +372,234 @@ def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-d
     }
 
 
+def test_munchy_job_diagnostic_list_matches_list_conventions(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://munchy.test"
+
+        def list_job_diagnostics(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs == {
+                "page": 2,
+                "per_page": 3,
+                "sort": "bytes",
+                "order": "asc",
+                "query": "encoding",
+                "all_items": True,
+            }
+            return {
+                "page": 2,
+                "pages": 2,
+                "per_page": 3,
+                "total": 4,
+                "sort": "bytes",
+                "order": "asc",
+                "query": "encoding",
+                "diagnostics": [
+                    {
+                        "job_id": "job-1",
+                        "created_at": "2026-08-01T00:00:00.000000Z",
+                        "reason": "encoding_failed",
+                        "bytes": 1024,
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "list",
+            "--server-url",
+            "http://munchy.test",
+            "--page",
+            "2",
+            "--per-page",
+            "3",
+            "--sort",
+            "bytes",
+            "--order",
+            "asc",
+            "--query",
+            "encoding",
+            "--all",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "job diagnostics page 2/2" in result.stdout
+    assert "job-1" in result.stdout
+    assert "encoding_failed" in result.stdout
+
+
+def test_munchy_job_diagnostic_list_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def list_job_diagnostics(self, **_kwargs: object) -> dict[str, object]:
+            return {"diagnostics": [{"job_id": "job-1"}, {"job_id": "job-2"}]}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "list",
+            "--server-url",
+            "http://munchy.test",
+            "--all",
+            "--ids",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "job-1\njob-2\n"
+
+
+def test_munchy_job_diagnostic_download_requires_explicit_output_and_forwards_overwrite(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def download_job_diagnostic(self, job_id: str, **kwargs: object) -> dict[str, object]:
+            assert job_id == "job-1"
+            assert kwargs == {"output": tmp_path / "case.tar.gz", "overwrite": True}
+            return {
+                "job_id": job_id,
+                "output": str(kwargs["output"]),
+                "bytes": 1024,
+                "sha256": "a" * 64,
+            }
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    missing = runner.invoke(
+        app,
+        ["job", "diagnostic", "download", "job-1", "--server-url", "http://munchy.test"],
+    )
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "download",
+            "job-1",
+            "--output",
+            str(tmp_path / "case.tar.gz"),
+            "--overwrite",
+            "--server-url",
+            "http://munchy.test",
+            "--json",
+        ],
+    )
+
+    assert missing.exit_code == 2
+    assert "--output" in missing.output
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["output"] == str(tmp_path / "case.tar.gz")
+
+
+def test_munchy_removes_diagnostics_and_terminal_jobs_by_explicit_ids(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def remove_job_diagnostic(self, job_id: str) -> dict[str, object]:
+            calls.append(("diagnostic", job_id))
+            return {"job_id": job_id, "removed": True}
+
+        def remove_terminal_job(self, job_id: str) -> dict[str, object]:
+            calls.append(("job", job_id))
+            return {"job_id": job_id, "removed": True}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    diagnostics = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "remove",
+            "job-1",
+            "job-2",
+            "--server-url",
+            "http://munchy.test",
+        ],
+    )
+    jobs = runner.invoke(
+        app,
+        ["job", "remove", "job-3", "job-4", "--server-url", "http://munchy.test"],
+    )
+
+    assert diagnostics.exit_code == 0
+    assert jobs.exit_code == 0
+    assert calls == [
+        ("diagnostic", "job-1"),
+        ("diagnostic", "job-2"),
+        ("job", "job-3"),
+        ("job", "job-4"),
+    ]
+
+
+def test_munchy_retention_is_a_plan_until_apply_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def retention_plan(self) -> dict[str, object]:
+            calls.append("plan")
+            return {
+                "policy": {
+                    "terminal_job_retention_seconds": 90 * 86400,
+                    "job_diagnostic_retention_seconds": 30 * 86400,
+                },
+                "terminal_jobs": {"eligible": 2, "sample_job_ids": ["job-1"]},
+                "job_diagnostics": {"eligible": 1, "sample_job_ids": ["job-2"]},
+            }
+
+        def apply_retention(self) -> dict[str, object]:
+            calls.append("apply")
+            return {
+                "policy": {},
+                "removed": {"terminal_jobs": 2, "job_diagnostics": 1},
+                "errors": [],
+                "remaining": {
+                    "terminal_jobs": {"eligible": 0},
+                    "job_diagnostics": {"eligible": 0},
+                },
+            }
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeClient)
+
+    plan = runner.invoke(
+        app,
+        ["maintenance", "retention", "--server-url", "http://munchy.test"],
+    )
+    apply = runner.invoke(
+        app,
+        ["maintenance", "retention", "--server-url", "http://munchy.test", "--apply"],
+    )
+
+    assert plan.exit_code == 0
+    assert "terminal jobs eligible: 2" in plan.stdout
+    assert apply.exit_code == 0
+    assert "terminal jobs removed: 2" in apply.stdout
+    assert calls == ["plan", "apply"]
+
+
 def test_munchy_job_list_reports_server_errors_without_traceback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:

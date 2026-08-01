@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "file-download"
+version = "0.1.0"
+description = "Atomic verified streamed file downloads."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/file_download"]

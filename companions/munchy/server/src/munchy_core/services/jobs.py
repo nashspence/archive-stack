@@ -26,10 +26,12 @@ import munchy_core.runtime.config as runtime_config
 import munchy_core.runtime.execution as execution_runtime
 import munchy_core.services.admission as admission_service
 import munchy_core.services.cleanup as cleanup_service
+import munchy_core.services.diagnostics as diagnostic_service
 import munchy_core.services.events as event_service
 import munchy_core.services.handoffs as handoff_service
 import munchy_core.services.media as media_service
 import munchy_core.services.processing as processing_service
+import munchy_core.services.retention as retention_service
 import munchy_core.services.routing as routing_service
 import munchy_core.services.scheduling as scheduling_service
 import munchy_core.services.templates as template_service
@@ -711,7 +713,7 @@ def run_job(job_id: str) -> None:
         job["state"] = "failed"
         job["error"] = str(exc)
         job["finished_at"] = utc_timestamp_now()
-        upload_service.write_job_debug_bundle(
+        diagnostic_service.create_job_diagnostic(
             job,
             reason="encoding_failed"
             if isinstance(exc, domain_errors.EncodingFailed)
@@ -1038,7 +1040,10 @@ def cleanup_once() -> dict[str, Any]:
             removed_for_job: list[str] = []
             if cleanup_due:
                 if job.get("state") == "failed":
-                    upload_service.write_job_debug_bundle(job, reason="maintenance_failed_cleanup")
+                    diagnostic_service.create_job_diagnostic(
+                        job,
+                        reason="maintenance_failed_cleanup",
+                    )
                 if job.get("state") in {"failed", "canceled"}:
                     handoff_service.cancel_handoff(job, reason="terminal_cleanup")
                 removed_for_job = cleanup_service.cleanup_terminal_job(job)
@@ -1054,8 +1059,15 @@ def cleanup_once() -> dict[str, Any]:
             if removed_for_job or compacted_for_job:
                 state_store.save_job(job)
 
+    retention = retention_service.apply_retention()
     vacuumed = False
-    if removed or compacted or repaired_canceled:
+    if (
+        removed
+        or compacted
+        or repaired_canceled
+        or retention["removed"]["terminal_jobs"]
+        or retention["removed"]["job_diagnostics"]
+    ):
         with execution_runtime.state_lock:
             if not execution_runtime.active_jobs:
                 state_store.vacuum_state_store()
@@ -1064,6 +1076,7 @@ def cleanup_once() -> dict[str, Any]:
         "removed": removed,
         "compacted": compacted,
         "repaired_canceled": repaired_canceled,
+        "retention": retention,
         "vacuumed": vacuumed,
     }
 
@@ -1072,12 +1085,26 @@ def cleanup_loop() -> None:
     while not execution_runtime.cleanup_stop.wait(runtime_config.CLEANUP_INTERVAL_SECONDS):
         try:
             result = cleanup_once()
-            if result["removed"] or result["compacted"] or result["repaired_canceled"]:
+            retained = result["retention"]["removed"]
+            retention_errors = result["retention"]["errors"]
+            if (
+                result["removed"]
+                or result["compacted"]
+                or result["repaired_canceled"]
+                or retained["terminal_jobs"]
+                or retained["job_diagnostics"]
+                or retention_errors
+            ):
                 log.info(
-                    "maintenance cleanup removed=%s compacted=%s repaired_canceled=%s vacuumed=%s",
+                    "maintenance cleanup removed=%s compacted=%s repaired_canceled=%s "
+                    "expired_jobs_removed=%s expired_diagnostics_removed=%s "
+                    "retention_errors=%s vacuumed=%s",
                     ", ".join(result["removed"]) or "-",
                     len(result["compacted"]),
                     ", ".join(result["repaired_canceled"]) or "-",
+                    retained["terminal_jobs"],
+                    retained["job_diagnostics"],
+                    len(retention_errors),
                     result["vacuumed"],
                 )
         except Exception:

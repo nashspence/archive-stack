@@ -202,12 +202,16 @@ class FakeApi:
         collection_id: int,
         object_id: str,
         output: Path,
+        expected_bytes: int,
+        expected_sha256: str,
     ) -> int:
         assert (job_id, collection_id, object_id) == (
             "job-1",
             COLLECTION_ID,
             "data-000000",
         )
+        assert expected_bytes == len(PACK_BYTES)
+        assert expected_sha256 == JOB_OBJECTS[0]["sha256"]
         self.downloaded_objects.append(object_id)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(PACK_BYTES)

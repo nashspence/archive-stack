@@ -1089,9 +1089,6 @@ def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> 
         "local_work_removed_count",
         "local_work_removed_sample",
         "terminal_state_compacted_at",
-        "debug_bundle_dir",
-        "debug_bundle_created_at",
-        "debug_bundle_reason",
         "error",
     ]
     return {key: response[key] for key in keys if key in response}

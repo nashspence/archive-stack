@@ -18,6 +18,7 @@ MYPY_SOURCES = \
 	packages/application-access/src \
 	packages/riverhog-cli-support/src \
 	packages/config-validation/src \
+	packages/file-download/src \
 	packages/jeb-api-client/src \
 	packages/jeb-cli-support/src \
 	packages/jeb-protocol/src \

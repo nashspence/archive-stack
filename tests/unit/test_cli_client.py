@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +167,9 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
     calls: list[tuple[str, Path]] = []
     output = tmp_path / "object"
 
-    def download(path: str, destination: Path, **_kwargs: object) -> int:
+    def download(path: str, destination: Path, **kwargs: object) -> int:
         calls.append((path, destination))
+        assert kwargs == {"expected_bytes": 42, "expected_sha256": "a" * 64, "progress": None}
         return 42
 
     monkeypatch.setattr(client, "_download", download)
@@ -177,6 +179,8 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
         collection_id=42,
         object_id="data-000000",
         output=output,
+        expected_bytes=42,
+        expected_sha256="a" * 64,
     )
 
     assert result == 42
@@ -186,6 +190,42 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
             output,
         )
     ]
+
+
+def test_retrieval_object_download_streams_and_verifies_planned_metadata(
+    tmp_path: Path,
+) -> None:
+    content = b"retrieved archive object"
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/retrieval-jobs/job-id/objects/data-000000/content"
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"Content-Length": str(len(content)), "ETag": f'"{sha256}"'},
+        )
+
+    output = tmp_path / "object"
+    client = ApiClient(base_url="http://riverhog.test")
+    client._download_client = httpx.Client(
+        base_url=client.base_url,
+        transport=httpx.MockTransport(handle),
+    )
+    try:
+        result = client.download_retrieval_object(
+            "job-id",
+            collection_id=42,
+            object_id="data-000000",
+            output=output,
+            expected_bytes=len(content),
+            expected_sha256=sha256,
+        )
+    finally:
+        client.close()
+
+    assert result == len(content)
+    assert output.read_bytes() == content
 
 
 def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) -> None:

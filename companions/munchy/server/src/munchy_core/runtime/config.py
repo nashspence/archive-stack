@@ -26,7 +26,7 @@ STATE_DIR = Path(os.getenv("MUNCHY_STATE_DIR", "/state")).resolve()
 STATE_DB_PATH = Path(os.getenv("MUNCHY_STATE_DB", str(STATE_DIR / "munchy.sqlite3"))).resolve()
 
 
-DEBUG_DIR = Path(os.getenv("MUNCHY_DEBUG_DIR", str(STATE_DIR / "debug"))).resolve()
+DIAGNOSTIC_DIR = Path(os.getenv("MUNCHY_DIAGNOSTIC_DIR", str(STATE_DIR / "diagnostics"))).resolve()
 
 
 WORK_DIR = Path(os.getenv("MUNCHY_WORK_DIR", "/work")).resolve()
@@ -145,6 +145,19 @@ ORPHAN_INPUT_UPLOAD_TTL_HOURS = float(
 
 
 CLEANUP_INTERVAL_SECONDS = int(os.getenv("MUNCHY_CLEANUP_INTERVAL_SECONDS", "3600"))
+
+
+TERMINAL_JOB_RETENTION = parse_duration(os.getenv("MUNCHY_TERMINAL_JOB_RETENTION", "90d"))
+if TERMINAL_JOB_RETENTION.total_seconds() <= 0:
+    raise ValueError("MUNCHY_TERMINAL_JOB_RETENTION must be positive")
+
+
+JOB_DIAGNOSTIC_RETENTION = parse_duration(os.getenv("MUNCHY_JOB_DIAGNOSTIC_RETENTION", "30d"))
+if JOB_DIAGNOSTIC_RETENTION.total_seconds() <= 0:
+    raise ValueError("MUNCHY_JOB_DIAGNOSTIC_RETENTION must be positive")
+
+
+RETENTION_BATCH_SIZE = 500
 
 
 EAGER_ARCHIVE_BATCH_FILES = max(1, int(os.getenv("MUNCHY_EAGER_ARCHIVE_BATCH_FILES", "32")))

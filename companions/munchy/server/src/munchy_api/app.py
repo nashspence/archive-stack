@@ -20,16 +20,18 @@ import munchy_core.runtime.config as runtime_config
 import munchy_core.runtime.execution as execution_runtime
 import munchy_core.services.admission as admission_service
 import munchy_core.services.cleanup as cleanup_service
+import munchy_core.services.diagnostics as diagnostic_service
 import munchy_core.services.events as event_service
 import munchy_core.services.handoffs as handoff_service
 import munchy_core.services.jobs as job_service
 import munchy_core.services.processing as processing_service
+import munchy_core.services.retention as retention_service
 import munchy_core.services.scheduling as scheduling_service
 import munchy_core.services.templates as template_service
 import munchy_core.services.uploads as upload_service
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from lifecycle_events import cloud_event, normalize_event_context
 from munchy_core.domain.errors import ServiceError
 from munchy_core.persistence.application_keys import (
@@ -772,18 +774,76 @@ def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
     )
 
 
+@app.get("/v1/admin/job-diagnostics")
+def list_job_diagnostics(
+    page: int = 1,
+    per_page: int = 25,
+    sort: str = "created_at",
+    order: str = "desc",
+    q: str | None = None,
+    query: str | None = None,
+    all_items: bool = Query(False, alias="all"),
+) -> dict[str, Any]:
+    return diagnostic_service.list_job_diagnostics_page(
+        page=page,
+        per_page=per_page,
+        sort=sort,
+        order=order,
+        query=q if q is not None else query,
+        all_items=all_items is True,
+    )
+
+
+@app.get("/v1/admin/jobs/{job_id}/diagnostic")
+def get_job_diagnostic(job_id: str) -> dict[str, Any]:
+    return diagnostic_service.get_job_diagnostic(job_id)
+
+
+@app.get("/v1/admin/jobs/{job_id}/diagnostic/content", response_class=StreamingResponse)
+def download_job_diagnostic(job_id: str) -> StreamingResponse:
+    chunks, diagnostic = diagnostic_service.job_diagnostic_content(job_id)
+    return StreamingResponse(
+        chunks,
+        media_type="application/gzip",
+        headers={
+            "Content-Length": str(diagnostic["bytes"]),
+            "ETag": f'"{diagnostic["sha256"]}"',
+        },
+    )
+
+
+@app.delete("/v1/admin/jobs/{job_id}/diagnostic")
+def remove_job_diagnostic(job_id: str) -> dict[str, Any]:
+    diagnostic = diagnostic_service.remove_job_diagnostic(job_id)
+    assert diagnostic is not None
+    return {**diagnostic, "removed": True}
+
+
+@app.delete("/v1/admin/jobs/{job_id}")
+def remove_terminal_job(job_id: str) -> dict[str, Any]:
+    return diagnostic_service.remove_terminal_job(job_id)
+
+
+@app.get("/v1/admin/maintenance/retention")
+def show_retention() -> dict[str, Any]:
+    return retention_service.retention_plan()
+
+
+@app.post("/v1/admin/maintenance/retention")
+def apply_retention() -> dict[str, Any]:
+    return retention_service.apply_retention()
+
+
 @app.post("/v1/jobs/{job_id}/resume", status_code=202)
 def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     with execution_runtime.state_lock:
         job = state_store.load_job(job_id)
         if job.get("state") == "succeeded":
             return job
+        diagnostic_service.remove_job_diagnostic(job_id, missing_ok=True)
         preserve_handoff = handoff_service.handoff_adapter(job).can_resume(job)
         if preserve_handoff:
             for key in (
-                "debug_bundle_created_at",
-                "debug_bundle_dir",
-                "debug_bundle_reason",
                 "terminal_progress",
                 "terminal_state_compacted_at",
             ):
@@ -814,7 +874,10 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
         if job.get("state") in domain_models.TERMINAL_JOB_STATES:
             if cleanup:
                 if job.get("state") == "failed":
-                    upload_service.write_job_debug_bundle(job, reason="terminal_failed_cleanup")
+                    diagnostic_service.create_job_diagnostic(
+                        job,
+                        reason="terminal_failed_cleanup",
+                    )
                 handoff_service.cancel_handoff(job, reason="terminal_cleanup")
                 cleanup_service.cleanup_terminal_job(job)
                 cleanup_service.compact_terminal_job_state(job)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import errno
-import gzip
 import hashlib
 import json
 import os
@@ -65,49 +64,6 @@ def safe_local_id(value: str) -> str:
     digest = hashlib.sha256(value.encode()).hexdigest()[:12]
     prefix = (cleaned or "upload")[:96].strip(".-_") or "upload"
     return f"{prefix}-{digest}"
-
-
-def write_job_debug_bundle(
-    job: dict[str, Any],
-    *,
-    reason: str,
-    error: Any | None = None,
-) -> bool:
-    if job.get("debug_bundle_dir"):
-        return False
-    job_id = str(job.get("job_id") or "unknown-job")
-    created_at = utc_timestamp_now()
-    bundle_dir = (
-        runtime_config.DEBUG_DIR / "jobs" / safe_local_id(job_id) / created_at.replace(":", "")
-    )
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    error_text = str(error or job.get("error") or "")
-    metadata = {
-        "job_id": job_id,
-        "state": job.get("state"),
-        "phase": job.get("phase"),
-        "reason": reason,
-        "error": error_text,
-        "created_at": created_at,
-    }
-    (bundle_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    if error_text:
-        (bundle_dir / "error.txt").write_text(error_text + "\n", encoding="utf-8")
-    with gzip.open(bundle_dir / "job-state-full.json.gz", "wt", encoding="utf-8") as handle:
-        json.dump(job, handle, sort_keys=True)
-    for key in ("gpu_statuses", "gpu_payloads", "gpu_result", "gpu_results", "eager_archive"):
-        value = job.get(key)
-        if value is None:
-            continue
-        with gzip.open(bundle_dir / f"{key}.json.gz", "wt", encoding="utf-8") as handle:
-            json.dump(value, handle, sort_keys=True)
-    job["debug_bundle_dir"] = str(bundle_dir)
-    job["debug_bundle_created_at"] = created_at
-    job["debug_bundle_reason"] = reason
-    return True
 
 
 def shared_input_upload_root(upload_id: str) -> Path:

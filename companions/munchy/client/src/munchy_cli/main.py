@@ -81,12 +81,16 @@ app_key_app = typer.Typer(help="Application key management.")
 profile_app = typer.Typer(help="Encode profile operations.")
 template_app = typer.Typer(help="Server-owned job-template administration.")
 job_app = typer.Typer(help="Munchy job operations.")
+job_diagnostic_app = typer.Typer(help="Failed-job diagnostic bundles.")
+maintenance_app = typer.Typer(help="Server maintenance inspection and actions.")
 routing_app = typer.Typer(help="Routing authoring tools.")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(application_app, name="app")
 app.add_typer(profile_app, name="profile")
 app.add_typer(template_app, name="template")
 app.add_typer(job_app, name="job")
+job_app.add_typer(job_diagnostic_app, name="diagnostic")
+app.add_typer(maintenance_app, name="maintenance")
 app.add_typer(routing_app, name="routing")
 _CLIENTS: list[Any] = []
 
@@ -320,6 +324,91 @@ def format_jobs(payload: Mapping[str, Any]) -> Any:
         table.add_row("none", "", "", "", "")
     header = RichText(_job_page_header(payload), style="bold")
     return RichGroup(header, table)
+
+
+def _diagnostic_page_header(payload: Mapping[str, Any]) -> str:
+    header = (
+        f"job diagnostics page {payload.get('page', 1)}/{payload.get('pages', 0)}  "
+        f"per_page={payload.get('per_page', 25)}  "
+        f"total={payload.get('total', 0)}  "
+        f"sort={payload.get('sort', 'created_at')}  "
+        f"order={payload.get('order', 'desc')}"
+    )
+    if payload.get("query"):
+        header += f"  query={payload.get('query')}"
+    return header
+
+
+def format_job_diagnostics(payload: Mapping[str, Any]) -> Any:
+    diagnostics = [
+        item for item in _sequence(payload.get("diagnostics")) if isinstance(item, Mapping)
+    ]
+    if not _rich_enabled():
+        lines = [_diagnostic_page_header(payload)]
+        lines.extend(
+            f"- {item.get('job_id')} created={item.get('created_at')} "
+            f"reason={item.get('reason')} bytes={item.get('bytes')} "
+            f"sha256={item.get('sha256')}"
+            for item in diagnostics
+        )
+        if not diagnostics:
+            lines.append("- none")
+        return "\n".join(lines)
+    table = _quiet_table("Job", "Created", "Reason", "Bytes", "SHA-256")
+    for item in diagnostics:
+        table.add_row(
+            _entity_text(item.get("job_id", "")),
+            str(item.get("created_at", "")),
+            str(item.get("reason", "")),
+            format_bytes(int(item.get("bytes") or 0)),
+            str(item.get("sha256", ""))[:12],
+        )
+    if not table.rows:
+        table.add_row("none", "", "", "", "")
+    return RichGroup(RichText(_diagnostic_page_header(payload), style="bold"), table)
+
+
+def format_download_receipt(payload: Mapping[str, Any]) -> str:
+    return (
+        f"downloaded job diagnostic {payload.get('job_id')} to {payload.get('output')} "
+        f"({format_bytes(int(payload.get('bytes') or 0))}, sha256={payload.get('sha256')})"
+    )
+
+
+def format_retention(payload: Mapping[str, Any]) -> str:
+    policy = _mapping(payload.get("policy"), label="policy")
+    if "remaining" in payload:
+        removed = _mapping(payload.get("removed"), label="removed")
+        remaining = _mapping(payload.get("remaining"), label="remaining")
+        terminal = _mapping(remaining.get("terminal_jobs"), label="terminal_jobs")
+        diagnostics = _mapping(remaining.get("job_diagnostics"), label="job_diagnostics")
+        return "\n".join(
+            [
+                "retention applied",
+                f"terminal jobs removed: {removed.get('terminal_jobs', 0)}",
+                f"job diagnostics removed: {removed.get('job_diagnostics', 0)}",
+                f"terminal jobs still eligible: {terminal.get('eligible', 0)}",
+                f"job diagnostics still eligible: {diagnostics.get('eligible', 0)}",
+                f"errors: {len(_sequence(payload.get('errors')))}",
+            ]
+        )
+    terminal = _mapping(payload.get("terminal_jobs"), label="terminal_jobs")
+    diagnostics = _mapping(payload.get("job_diagnostics"), label="job_diagnostics")
+    terminal_sample = ", ".join(str(value) for value in _sequence(terminal.get("sample_job_ids")))
+    diagnostic_sample = ", ".join(
+        str(value) for value in _sequence(diagnostics.get("sample_job_ids"))
+    )
+    return "\n".join(
+        [
+            "retention plan",
+            f"terminal job retention: {policy.get('terminal_job_retention_seconds')} seconds",
+            f"terminal jobs eligible: {terminal.get('eligible', 0)}",
+            f"terminal job sample: {terminal_sample or '-'}",
+            f"job diagnostic retention: {policy.get('job_diagnostic_retention_seconds')} seconds",
+            f"job diagnostics eligible: {diagnostics.get('eligible', 0)}",
+            f"job diagnostic sample: {diagnostic_sample or '-'}",
+        ]
+    )
 
 
 def _template_page_header(payload: Mapping[str, Any]) -> str:
@@ -1307,6 +1396,149 @@ def list_jobs(
         emit(format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
         return
     emit(payload if json_mode else format_jobs(payload), json_mode=json_mode)
+
+
+@job_diagnostic_app.command("list")
+def list_job_diagnostics(
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Search job id or diagnostic reason"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching diagnostic"),
+    ] = False,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one job id per line"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List failed-job diagnostic bundles."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    try:
+        payload = _admin_client(server_url).list_job_diagnostics(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order,
+            query=query,
+            all_items=all_items,
+        )
+    except Exception as exc:
+        _exit_server_error(exc)
+    if ids:
+        emit(format_list_ids(payload, "diagnostics", id_key="job_id"), json_mode=False)
+        return
+    emit(payload if json_mode else format_job_diagnostics(payload), json_mode=json_mode)
+
+
+@job_diagnostic_app.command("download")
+def download_job_diagnostic(
+    job_id: Annotated[str, typer.Argument(help="Failed Munchy job id")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Exact local destination path"),
+    ],
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite", help="Replace an existing destination after verification"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON receipt")] = False,
+) -> None:
+    """Download one failed-job diagnostic bundle to an explicit path."""
+
+    try:
+        payload = _admin_client(server_url).download_job_diagnostic(
+            job_id,
+            output=output,
+            overwrite=overwrite,
+        )
+    except Exception as exc:
+        _exit_server_error(exc)
+    emit(payload if json_mode else format_download_receipt(payload), json_mode=json_mode)
+
+
+@job_diagnostic_app.command("remove")
+def remove_job_diagnostics(
+    job_ids: Annotated[list[str], typer.Argument(help="One or more failed Munchy job ids")],
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Remove diagnostic bundles while retaining their terminal jobs."""
+
+    client = _admin_client(server_url)
+    removed: list[dict[str, Any]] = []
+    try:
+        for job_id in job_ids:
+            removed.append(client.remove_job_diagnostic(job_id))
+    except Exception as exc:
+        _exit_server_error(exc)
+    payload = {"removed": removed}
+    human = "\n".join(f"removed job diagnostic: {item['job_id']}" for item in removed)
+    emit(payload if json_mode else human, json_mode=json_mode)
+
+
+@job_app.command("remove")
+def remove_terminal_jobs(
+    job_ids: Annotated[list[str], typer.Argument(help="One or more terminal Munchy job ids")],
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Remove cleaned terminal job records and their diagnostic bundles."""
+
+    client = _admin_client(server_url)
+    removed: list[dict[str, Any]] = []
+    try:
+        for job_id in job_ids:
+            removed.append(client.remove_terminal_job(job_id))
+    except Exception as exc:
+        _exit_server_error(exc)
+    payload = {"removed": removed}
+    human = "\n".join(f"removed terminal job: {item['job_id']}" for item in removed)
+    emit(payload if json_mode else human, json_mode=json_mode)
+
+
+@maintenance_app.command("retention")
+def retention(
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Apply one bounded retention batch"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Inspect or apply terminal-job and diagnostic retention."""
+
+    try:
+        client = _admin_client(server_url)
+        payload = client.apply_retention() if apply else client.retention_plan()
+    except Exception as exc:
+        _exit_server_error(exc)
+    emit(payload if json_mode else format_retention(payload), json_mode=json_mode)
 
 
 @job_app.command("show")

@@ -112,6 +112,22 @@ def init_state_store() -> None:
             "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
             "USING fts5(job_id UNINDEXED, search_text)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_diagnostics (
+                job_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                path TEXT NOT NULL,
+                bytes INTEGER NOT NULL CHECK(bytes >= 0),
+                sha256 TEXT NOT NULL CHECK(length(sha256) = 64)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS job_diagnostics_created "
+            "ON job_diagnostics(created_at, job_id)"
+        )
         conn.commit()
 
 
@@ -284,8 +300,78 @@ def upsert_job_summary(conn: sqlite3.Connection, job: dict[str, Any]) -> None:
 
 
 def delete_job_summary(conn: sqlite3.Connection, job_id: str) -> None:
+    conn.execute("DELETE FROM job_diagnostics WHERE job_id = ?", (job_id,))
     conn.execute("DELETE FROM job_summaries WHERE job_id = ?", (job_id,))
     conn.execute("DELETE FROM job_summaries_fts WHERE job_id = ?", (job_id,))
+
+
+def save_job_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
+    diagnostic = {
+        "job_id": str(payload["job_id"]),
+        "created_at": str(payload["created_at"]),
+        "reason": str(payload["reason"]),
+        "path": str(payload["path"]),
+        "bytes": int(payload["bytes"]),
+        "sha256": str(payload["sha256"]),
+    }
+    with closing(state_db()) as conn:
+        conn.execute(
+            """
+            INSERT INTO job_diagnostics(job_id, created_at, reason, path, bytes, sha256)
+            VALUES(:job_id, :created_at, :reason, :path, :bytes, :sha256)
+            ON CONFLICT(job_id) DO UPDATE SET
+                created_at = excluded.created_at,
+                reason = excluded.reason,
+                path = excluded.path,
+                bytes = excluded.bytes,
+                sha256 = excluded.sha256
+            """,
+            diagnostic,
+        )
+        conn.commit()
+    return diagnostic
+
+
+def read_job_diagnostic(job_id: str) -> dict[str, Any] | None:
+    with closing(state_db()) as conn:
+        row = conn.execute(
+            "SELECT job_id, created_at, reason, path, bytes, sha256 "
+            "FROM job_diagnostics WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def delete_job_diagnostic(job_id: str) -> None:
+    with closing(state_db()) as conn:
+        conn.execute("DELETE FROM job_diagnostics WHERE job_id = ?", (job_id,))
+        conn.commit()
+
+
+def delete_jobs(job_ids: list[str]) -> None:
+    if not job_ids:
+        return
+    if len(job_ids) > runtime_config.RETENTION_BATCH_SIZE:
+        raise ValueError("job deletion batch exceeds the retention batch size")
+    placeholders = ", ".join("?" for _ in job_ids)
+    with closing(state_db()) as conn:
+        conn.execute(
+            f"DELETE FROM job_diagnostics WHERE job_id IN ({placeholders})",
+            job_ids,
+        )
+        conn.execute(
+            f"DELETE FROM states WHERE kind = 'job' AND id IN ({placeholders})",
+            job_ids,
+        )
+        conn.execute(
+            f"DELETE FROM job_summaries WHERE job_id IN ({placeholders})",
+            job_ids,
+        )
+        conn.execute(
+            f"DELETE FROM job_summaries_fts WHERE job_id IN ({placeholders})",
+            job_ids,
+        )
+        conn.commit()
 
 
 def job_search_match_query(value: str | None) -> str | None:
@@ -570,9 +656,6 @@ def save_job(job: dict[str, Any]) -> dict[str, Any]:
                 "handoff_cancel_error",
                 "handoff_metrics",
                 "terminal_state_compacted_at",
-                "debug_bundle_dir",
-                "debug_bundle_created_at",
-                "debug_bundle_reason",
             ):
                 if key in current and key not in payload:
                     payload[key] = current[key]

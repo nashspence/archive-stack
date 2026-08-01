@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import errno
-import gzip
 import hashlib
 import importlib
 import json
@@ -10,6 +9,7 @@ import logging
 import os
 import sqlite3
 import sys
+import tarfile
 import threading
 from pathlib import Path
 from types import ModuleType
@@ -49,11 +49,13 @@ SERVER_MODULES = {
     "execution_runtime": "munchy_core.runtime.execution",
     "admission_service": "munchy_core.services.admission",
     "cleanup_service": "munchy_core.services.cleanup",
+    "diagnostic_service": "munchy_core.services.diagnostics",
     "event_service": "munchy_core.services.events",
     "handoff_service": "munchy_core.services.handoffs",
     "job_service": "munchy_core.services.jobs",
     "media_service": "munchy_core.services.media",
     "processing_service": "munchy_core.services.processing",
+    "retention_service": "munchy_core.services.retention",
     "routing_service": "munchy_core.services.routing",
     "scheduling_service": "munchy_core.services.scheduling",
     "template_service": "munchy_core.services.templates",
@@ -4160,9 +4162,14 @@ def test_resume_job_clears_failed_runtime_state(
             "routing_result": {"files": 1},
             "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
             "handoff_adapter_state": {"collection_id": "collection-1", "files": {}},
-            "debug_bundle_dir": "/debug/old",
         }
     )
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("job-1"),
+        reason="job_failed",
+    )
+    assert diagnostic is not None
+    diagnostic_path = Path(server.state_store.read_job_diagnostic("job-1")["path"])
 
     resumed = server.resume_job("job-1", server.BackgroundTasks())
     stored = server.state_store.load_job("job-1")
@@ -4175,7 +4182,8 @@ def test_resume_job_clears_failed_runtime_state(
     assert "eager_archive" not in stored
     assert "handoff_adapter_state" not in stored
     assert "routing_result" not in stored
-    assert "debug_bundle_dir" not in stored
+    assert server.state_store.read_job_diagnostic("job-1") is None
+    assert not diagnostic_path.exists()
     assert stored["groups"] == {"camera": {"output_mode": "video", "tasks": ["archive_video"]}}
 
 
@@ -4227,9 +4235,14 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             "finished_at": "2026-01-01T00:00:00Z",
             "eager_archive": {"files": {"camera/a.mp4": {"state": "encoded"}}},
             "handoff_adapter_state": riverhog_session,
-            "debug_bundle_dir": "/debug/old",
         }
     )
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("job-1"),
+        reason="job_failed",
+    )
+    assert diagnostic is not None
+    diagnostic_path = Path(server.state_store.read_job_diagnostic("job-1")["path"])
 
     resumed = server.resume_job("job-1", server.BackgroundTasks())
     stored = server.state_store.load_job("job-1")
@@ -4238,7 +4251,8 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     assert stored["phase"] == "queued"
     assert "error" not in stored
     assert "finished_at" not in stored
-    assert "debug_bundle_dir" not in stored
+    assert server.state_store.read_job_diagnostic("job-1") is None
+    assert not diagnostic_path.exists()
     assert stored["eager_archive"]["files"] == {"camera/a.mp4": {"state": "encoded"}}
     assert stored["handoff_adapter_state"]["files"] == riverhog_session["files"]
     assert stored["handoff_resume_preserved_at"]
@@ -4938,7 +4952,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
         assert key not in job
 
 
-def test_failed_job_debug_bundle_preserves_pre_compaction_state(
+def test_failed_job_diagnostic_preserves_pre_compaction_state(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -4956,24 +4970,191 @@ def test_failed_job_debug_bundle_preserves_pre_compaction_state(
         "gpu_results": {"camera": {"state": "failed"}},
     }
 
-    changed = server.upload_service.write_job_debug_bundle(
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
         job,
         reason="encoding_failed",
         error=server.domain_errors.EncodingFailed("gpu job failed: bad encode"),
     )
     server.cleanup_service.compact_terminal_job_state(job)
 
-    bundle = Path(job["debug_bundle_dir"])
-    assert changed is True
-    assert bundle.is_dir()
-    assert (bundle / "metadata.json").is_file()
-    assert (bundle / "error.txt").read_text(encoding="utf-8") == ("gpu job failed: bad encode\n")
-    with gzip.open(bundle / "job-state-full.json.gz", "rt", encoding="utf-8") as handle:
-        full_state = json.load(handle)
+    assert diagnostic is not None
+    stored = server.state_store.read_job_diagnostic("job-1")
+    assert stored is not None
+    bundle = Path(stored["path"])
+    assert bundle.is_file()
+    assert stored["bytes"] == bundle.stat().st_size
+    assert stored["sha256"] == hashlib.sha256(bundle.read_bytes()).hexdigest()
+    with tarfile.open(bundle, mode="r:gz") as archive:
+        error_file = archive.extractfile("error.txt")
+        state_file = archive.extractfile("job-state.json")
+        assert error_file is not None
+        assert state_file is not None
+        assert error_file.read().decode("utf-8") == "gpu job failed: bad encode\n"
+        full_state = json.loads(state_file.read())
     assert full_state["eager_archive"]["files"]["camera/a.mp4"]["state"] == "failed"
     assert full_state["gpu_payloads"]["camera"]["input_dir"] == "/data/input"
     assert "eager_archive" not in job
-    assert job["debug_bundle_reason"] == "encoding_failed"
+    assert diagnostic["reason"] == "encoding_failed"
+
+
+def test_retention_uses_database_side_ttls_and_preserves_unsafe_jobs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    for job_id, state, cleanup_completed in (
+        ("expired-clean", "succeeded", True),
+        ("expired-unclean", "failed", False),
+        ("active-job", "running", False),
+        ("diagnostic-job", "failed", True),
+    ):
+        job = {
+            "job_id": job_id,
+            "state": state,
+            "phase": state,
+            "created_at": "2025-01-01T00:00:00.000000Z",
+            "finished_at": "2025-01-01T01:00:00.000000Z" if state != "running" else "",
+        }
+        if cleanup_completed:
+            job["cleanup_completed_at"] = "2025-01-01T02:00:00.000000Z"
+        server.state_store.save_job(job)
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("diagnostic-job"),
+        reason="job_failed",
+    )
+    assert diagnostic is not None
+    diagnostic_record = server.state_store.read_job_diagnostic("diagnostic-job")
+    assert diagnostic_record is not None
+    diagnostic_path = Path(diagnostic_record["path"])
+    with server.state_store.state_db() as conn:
+        conn.execute(
+            "UPDATE job_summaries SET updated_at = ? WHERE job_id IN (?, ?, ?)",
+            (
+                "2025-01-01T02:00:00.000000Z",
+                "expired-clean",
+                "expired-unclean",
+                "active-job",
+            ),
+        )
+        conn.execute(
+            "UPDATE job_diagnostics SET created_at = ? WHERE job_id = ?",
+            ("2025-01-01T02:00:00.000000Z", "diagnostic-job"),
+        )
+        conn.commit()
+    monkeypatch.setattr(
+        server.scheduling_service,
+        "job_states",
+        lambda: (_ for _ in ()).throw(AssertionError("retention must query SQLite directly")),
+    )
+
+    plan = server.retention_service.retention_plan()
+    result = server.retention_service.apply_retention()
+
+    assert plan["terminal_jobs"]["eligible"] == 1
+    assert plan["terminal_jobs"]["sample_job_ids"] == ["expired-clean"]
+    assert plan["job_diagnostics"]["eligible"] == 1
+    assert plan["job_diagnostics"]["sample_job_ids"] == ["diagnostic-job"]
+    assert result["removed"]["terminal_job_ids"] == ["expired-clean"]
+    assert result["removed"]["job_diagnostic_ids"] == ["diagnostic-job"]
+    assert server.state_store.read_state("job", "expired-clean") is None
+    assert server.state_store.read_state("job", "expired-unclean") is not None
+    assert server.state_store.read_state("job", "active-job") is not None
+    assert server.state_store.read_state("job", "diagnostic-job") is not None
+    assert server.state_store.read_job_diagnostic("diagnostic-job") is None
+    assert not diagnostic_path.exists()
+
+
+def test_manual_terminal_job_removal_requires_cleanup_and_removes_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "failed",
+            "error": "bad encode",
+            "finished_at": "2026-08-01T00:00:00.000000Z",
+        }
+    )
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("job-1"),
+        reason="encoding_failed",
+    )
+    assert diagnostic is not None
+    stored_diagnostic = server.state_store.read_job_diagnostic("job-1")
+    assert stored_diagnostic is not None
+    diagnostic_path = Path(stored_diagnostic["path"])
+
+    with pytest.raises(server.ServiceError, match="local cleanup has not completed"):
+        server.diagnostic_service.remove_terminal_job("job-1")
+
+    job = server.state_store.load_job("job-1")
+    job["cleanup_completed_at"] = utc_timestamp_now()
+    server.state_store.save_job(job)
+    receipt = server.diagnostic_service.remove_terminal_job("job-1")
+
+    assert receipt == {
+        "job_id": "job-1",
+        "state": "failed",
+        "diagnostic_removed": True,
+        "removed": True,
+    }
+    assert server.state_store.read_state("job", "job-1") is None
+    assert server.state_store.read_job_diagnostic("job-1") is None
+    assert not diagnostic_path.exists()
+
+
+def test_admin_can_list_download_and_remove_job_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("MUNCHY_APPLICATION_AUTH_REQUIRED", "1")
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "failed",
+            "error": "bad encode",
+        }
+    )
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("job-1"),
+        reason="encoding_failed",
+    )
+    assert diagnostic is not None
+    stored = server.state_store.read_job_diagnostic("job-1")
+    assert stored is not None
+    expected = Path(stored["path"]).read_bytes()
+    client = TestClient(server.app)
+
+    assert client.get("/v1/admin/job-diagnostics").status_code == 401
+    headers = {"Authorization": "Bearer admin-token"}
+    listed = client.get("/v1/admin/job-diagnostics?q=encoding", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["diagnostics"] == [diagnostic]
+    metadata = client.get("/v1/admin/jobs/job-1/diagnostic", headers=headers)
+    assert metadata.status_code == 200
+    assert metadata.json() == diagnostic
+    content = client.get("/v1/admin/jobs/job-1/diagnostic/content", headers=headers)
+    assert content.status_code == 200
+    assert content.headers["content-type"] == "application/gzip"
+    assert content.headers["etag"] == f'"{diagnostic["sha256"]}"'
+    assert content.content == expected
+    removed = client.delete("/v1/admin/jobs/job-1/diagnostic", headers=headers)
+    assert removed.status_code == 200
+    assert removed.json() == {**diagnostic, "removed": True}
+    assert server.state_store.read_job_diagnostic("job-1") is None
 
 
 def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(

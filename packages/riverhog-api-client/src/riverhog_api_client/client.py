@@ -8,6 +8,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
+from file_download import verified_download
 from lifecycle_events import EventPage
 from riverhog_protocol.errors import (
     BadRequest,
@@ -177,16 +178,13 @@ class _HttpApiClient:
     def _download(
         self,
         path: str,
-        output: Path | None = None,
+        output: Path,
         *,
+        expected_bytes: int,
+        expected_sha256: str,
         progress: DownloadProgress | None = None,
-    ) -> bytes | int:
+    ) -> int:
         client = self._persistent_download_client()
-        if output is None:
-            response = client.get(path)
-            self._raise_for_error(response)
-            return response.content
-
         with client.stream("GET", path) as response:
             if not response.is_success:
                 response.read()
@@ -194,31 +192,36 @@ class _HttpApiClient:
 
             content_length = response.headers.get("Content-Length")
             try:
-                total_bytes = int(content_length) if content_length is not None else None
-            except ValueError:
-                total_bytes = None
-            tmp_output = output.with_name(f".{output.name}.part")
-            output.parent.mkdir(parents=True, exist_ok=True)
-
-            downloaded = 0
+                returned_bytes = int(content_length) if content_length is not None else -1
+            except ValueError as exc:
+                raise InvalidState("download returned an invalid Content-Length") from exc
+            if returned_bytes != expected_bytes:
+                raise InvalidState(
+                    "download Content-Length does not match planned metadata: "
+                    f"{returned_bytes} != {expected_bytes}"
+                )
+            returned_etag = response.headers.get("ETag", "").strip().strip('"').casefold()
+            if returned_etag != expected_sha256.casefold():
+                raise InvalidState("download ETag does not match planned SHA-256")
             try:
-                with tmp_output.open("wb") as handle:
-                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                        if not chunk:
-                            continue
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        if progress is not None:
-                            progress(downloaded, total_bytes)
+                receipt = verified_download(
+                    response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES),
+                    output=output,
+                    expected_bytes=expected_bytes,
+                    expected_sha256=expected_sha256,
+                    progress=(
+                        (lambda current, total: progress(current, total))
+                        if progress is not None
+                        else None
+                    ),
+                )
             except httpx.TransportError as exc:
-                tmp_output.unlink(missing_ok=True)
                 self.close()
                 raise ServiceUnavailable(
                     "download stream was interrupted before completion; "
                     "the partial file was discarded"
                 ) from exc
-            tmp_output.replace(output)
-            return downloaded
+            return receipt.bytes
 
 
 class ApiClient(_HttpApiClient):
@@ -361,12 +364,16 @@ class ApiClient(_HttpApiClient):
         collection_id: int,
         path: str,
         output: Path,
+        expected_bytes: int,
+        expected_sha256: str,
         progress: DownloadProgress | None = None,
     ) -> int:
         result = self._download(
             f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
             f"collection_id={str(collection_id)}&path={quote(path, safe='')}",
             output,
+            expected_bytes=expected_bytes,
+            expected_sha256=expected_sha256,
             progress=progress,
         )
         return int(result)
@@ -378,6 +385,8 @@ class ApiClient(_HttpApiClient):
         collection_id: int,
         object_id: str,
         output: Path,
+        expected_bytes: int,
+        expected_sha256: str,
         progress: DownloadProgress | None = None,
     ) -> int:
         result = self._download(
@@ -385,6 +394,8 @@ class ApiClient(_HttpApiClient):
             f"{quote(object_id, safe='')}/content?"
             f"collection_id={str(collection_id)}",
             output,
+            expected_bytes=expected_bytes,
+            expected_sha256=expected_sha256,
             progress=progress,
         )
         return int(result)

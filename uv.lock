@@ -11,6 +11,7 @@ resolution-markers = [
 members = [
     "application-access",
     "config-validation",
+    "file-download",
     "gogurt",
     "jeb-api-client",
     "jeb-cli-support",
@@ -454,6 +455,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/5b/58/ff455d9fe47c60aba
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/ff/8496d9847a5fedae775eb49460722d3efaa80487854273e9647ae876218c/fastapi-0.138.0-py3-none-any.whl", hash = "sha256:b6f54fd1bd72c80b0f899f172c61a600f6f7af9b43d4d772a018f35624048cb0", size = 126779, upload-time = "2026-06-20T01:18:03.483Z" },
 ]
+
+[[package]]
+name = "file-download"
+version = "0.1.0"
+source = { editable = "packages/file-download" }
 
 [[package]]
 name = "gitdb"
@@ -1023,6 +1029,7 @@ name = "munchy-api-client"
 version = "0.1.0"
 source = { editable = "packages/munchy-api-client" }
 dependencies = [
+    { name = "file-download" },
     { name = "h2" },
     { name = "httpx" },
     { name = "lifecycle-events" },
@@ -1032,6 +1039,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "file-download", editable = "packages/file-download" },
     { name = "h2", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
@@ -1691,6 +1699,7 @@ name = "riverhog-api-client"
 version = "0.1.0"
 source = { editable = "packages/riverhog-api-client" }
 dependencies = [
+    { name = "file-download" },
     { name = "h2" },
     { name = "httpx" },
     { name = "lifecycle-events" },
@@ -1701,6 +1710,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "file-download", editable = "packages/file-download" },
     { name = "h2", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },

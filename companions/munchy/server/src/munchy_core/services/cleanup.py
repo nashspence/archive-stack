@@ -148,9 +148,6 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
 RESUMABLE_RUNTIME_JOB_KEYS = (
     *state_store.TERMINAL_CLEANUP_JOB_KEYS,
-    "debug_bundle_created_at",
-    "debug_bundle_dir",
-    "debug_bundle_reason",
     "eager_archive",
     "gpu_payloads",
     "gpu_result",
