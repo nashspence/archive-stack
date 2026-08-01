@@ -73,6 +73,47 @@ class FakeJebApi:
             on_update(payload)
         return payload
 
+    def cancel_attempt(self, attempt_id: str) -> dict[str, Any]:
+        self.calls.append(("attempt-cancel", {"attempt": attempt_id}))
+        payload = self.get_attempt(attempt_id)
+        payload["state"] = "canceled"
+        return payload
+
+    def list_operations(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("operation-list", kwargs))
+        return {
+            "page": 1,
+            "pages": 1,
+            "per_page": 1,
+            "total": 1,
+            "sort": kwargs["sort"],
+            "order": kwargs["order"],
+            "query": kwargs["query"],
+            "filters": {},
+            "operations": [
+                {
+                    "id": "op-once",
+                    "operation": "once",
+                    "state": "succeeded",
+                    "started_at": "2026-08-01T00:00:00Z",
+                }
+            ],
+        }
+
+    def get_operation(self, operation_id: str) -> dict[str, Any]:
+        self.calls.append(("operation-show", {"operation": operation_id}))
+        return {
+            "id": operation_id,
+            "operation": "once",
+            "state": "succeeded",
+            "started_at": "2026-08-01T00:00:00Z",
+            "completed_at": "2026-08-01T00:00:01Z",
+        }
+
+    def wait_for_operation(self, operation_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("operation-watch", {"operation": operation_id, **kwargs}))
+        return self.get_operation(operation_id)
+
     def check_config(self) -> dict[str, Any]:
         self.calls.append(("check-config", {}))
         return {"status": "ok", "source_count": 2, "sources": ["a", "b"]}
@@ -252,6 +293,20 @@ def test_jeb_remote_cli_watch_emits_final_json_and_success_exit(capsys, monkeypa
     payload = json.loads(capsys.readouterr().out)
     assert payload["attempt_id"] == "attempt-1"
     assert payload["state"] == "cleanup_done"
+
+
+def test_jeb_remote_cli_cancels_attempt_and_inspects_operations(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["attempt", "cancel", "attempt-1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "canceled"
+    assert jeb_cli.main(["operation", "list", "--all", "--ids"]) == 0
+    assert capsys.readouterr().out == "op-once\n"
+    assert jeb_cli.main(["operation", "show", "op-once"]) == 0
+    assert "Jeb operation op-once" in capsys.readouterr().out
+    assert jeb_cli.main(["operation", "watch", "op-once", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "succeeded"
 
 
 def test_jeb_remote_cli_lists_ids_and_forwards_list_filters(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

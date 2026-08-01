@@ -467,6 +467,45 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
         assert operation["attempt_id"] == payload["attempt_id"]
         assert processed.wait(timeout=5)
         assert processed_attempt_ids == [payload["attempt_id"]]
+        operation_id = str(operation["id"])
+        deadline = time.monotonic() + 5
+        while True:
+            shown = read_json(f"http://{host}:{port}/v1/operations/{operation_id}")
+            if shown["state"] != "running":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert shown["state"] == "succeeded"
+        page = read_json(f"http://{host}:{port}/v1/operations?all=true")
+        assert page["total"] == 1
+        assert page["operations"] == [shown]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_jeb_service_api_cancels_an_unresolved_attempt(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
+    services = services_for(env)
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
+    try:
+        host, port = server.server_address[:2]
+        status, started = post_json(
+            f"http://{host}:{port}/v1/archive-now",
+            {"source": "phone", "process": False},
+        )
+        assert status == 202
+        attempt_id = str(started["attempt_id"])
+
+        status, canceled = request_json(
+            "DELETE",
+            f"http://{host}:{port}/v1/attempts/{attempt_id}",
+        )
+
+        assert status == 200
+        assert canceled["state"] == "canceled"
+        assert read_json(f"http://{host}:{port}/v1/attempts?resolution=resolved")["total"] == 1
     finally:
         server.shutdown()
         server.server_close()

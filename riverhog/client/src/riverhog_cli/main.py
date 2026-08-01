@@ -36,6 +36,7 @@ from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceU
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
     PathNormalizationError,
+    normalize_collection_id,
     normalize_tag,
 )
 from time_formats import parse_duration, utc_timestamp_now
@@ -43,11 +44,13 @@ from time_formats import parse_duration, utc_timestamp_now
 from riverhog_cli.local import local_app
 from riverhog_cli.output import (
     format_app_access,
+    format_app_access_selectors,
     format_app_access_set,
     format_archive_copy_job,
     format_archive_copy_jobs,
     format_archive_copy_retirement_plan,
     format_archive_copy_retirement_result,
+    format_archive_copy_selectors,
     format_archive_store,
     format_archive_stores,
     format_collection_deletion_plan,
@@ -219,6 +222,31 @@ def _access(value: str) -> dict[str, str]:
     if separator and not resource:
         raise typer.BadParameter("access resource must not be empty", param_hint="--allow")
     return {"permission": permission, "resource": resource if separator else "*"}
+
+
+def _access_selector(value: str) -> tuple[str, str, dict[str, str]]:
+    app_name, separator, remainder = value.partition("::")
+    key_id, second_separator, allow = remainder.partition("::")
+    if not separator or not second_separator or not app_name or not key_id or not allow:
+        raise typer.BadParameter(
+            "access selector must be APP::KEY_ID::PERMISSION or APP::KEY_ID::PERMISSION=RESOURCE",
+            param_hint="SELECTOR",
+        )
+    return app_name, key_id, _access(allow)
+
+
+def _archive_copy_selector(value: str) -> tuple[int, str]:
+    collection_id, separator, destination_store = value.partition("::")
+    if not separator or not collection_id or not destination_store:
+        raise typer.BadParameter(
+            "archive-copy selector must be COLLECTION_ID::DESTINATION_STORE",
+            param_hint="SELECTOR",
+        )
+    try:
+        normalized_collection_id = normalize_collection_id(collection_id)
+    except PathNormalizationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="SELECTOR") from exc
+    return normalized_collection_id, destination_store
 
 
 @application_app.command("list")
@@ -551,10 +579,16 @@ def app_key_access_list_cmd(
         typer.Option("--active/--inactive", help="Filter by key usability"),
     ] = None,
     all_items: Annotated[bool, typer.Option("--all", help="Return every matching grant")] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option("--selectors", help="Emit one actionable access selector per line"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List exact application-key permission and resource bindings."""
 
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_ACCESS_SORT_FIELDS)
     payload = client().list_app_key_access(
         page=page,
@@ -569,6 +603,9 @@ def app_key_access_list_cmd(
         active=active,
         all_items=all_items,
     )
+    if selectors:
+        emit(format_app_access_selectors(payload), json_mode=False)
+        return
     emit(payload if json_mode else format_app_access(payload), json_mode=json_mode)
 
 
@@ -616,14 +653,15 @@ def app_key_access_add_cmd(
 
 @app_key_access_app.command("remove")
 def app_key_access_remove_cmd(
-    app_name: Annotated[str, typer.Argument(help="Application name")],
-    key_id: Annotated[str, typer.Argument(help="Key id")],
-    allow: Annotated[str, typer.Argument(help="PERMISSION or PERMISSION=RESOURCE")],
+    selector: Annotated[
+        str,
+        typer.Argument(help="APP::KEY_ID::PERMISSION or APP::KEY_ID::PERMISSION=RESOURCE"),
+    ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Remove one exact permission and resource binding."""
 
-    access = _access(allow)
+    app_name, key_id, access = _access_selector(selector)
     payload = client().remove_app_key_access(
         app_name,
         key_id,
@@ -2236,39 +2274,107 @@ def archive_copy_list_cmd(
         str | None,
         typer.Option("--query", "-q", help="Substring match over archive-copy jobs"),
     ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option("--state", help="Exact archive-copy state"),
+    ] = None,
     all_items: Annotated[
         bool,
         typer.Option("--all", help="Return every matching archive-copy job"),
+    ] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option(
+            "--selectors",
+            help="Emit one COLLECTION_ID::DESTINATION_STORE selector per line",
+        ),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List current and terminal archive-copy jobs."""
 
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_ARCHIVE_COPY_SORT_FIELDS)
     payload = client().list_archive_copy_jobs(
         page=page,
         per_page=per_page,
         q=query,
+        state=state,
         sort=sort,
         order=normalized_order,
         all_items=all_items,
     )
+    if selectors:
+        emit(format_archive_copy_selectors(payload), json_mode=False)
+        return
     emit(payload if json_mode else format_archive_copy_jobs(payload), json_mode=json_mode)
 
 
 @archive_copy_app.command("show")
 def archive_copy_show_cmd(
-    collection_id: Annotated[int, typer.Argument(help="Exact collection id")],
-    destination_store: Annotated[str, typer.Argument(help="Destination archive store")],
+    selector: Annotated[
+        str,
+        typer.Argument(help="COLLECTION_ID::DESTINATION_STORE"),
+    ],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Show one archive-copy job."""
 
+    collection_id, destination_store = _archive_copy_selector(selector)
     payload = client().get_archive_copy_job(
         collection_id,
         destination_store=destination_store,
     )
     emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
+
+
+@archive_copy_app.command("cancel")
+def archive_copy_cancel_cmd(
+    selector: Annotated[
+        str,
+        typer.Argument(help="COLLECTION_ID::DESTINATION_STORE"),
+    ],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Cancel one active archive-copy job."""
+
+    collection_id, destination_store = _archive_copy_selector(selector)
+    payload = client().cancel_archive_copy_job(
+        collection_id,
+        destination_store=destination_store,
+    )
+    emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
+
+
+@archive_copy_app.command("watch")
+def archive_copy_watch_cmd(
+    selector: Annotated[
+        str,
+        typer.Argument(help="COLLECTION_ID::DESTINATION_STORE"),
+    ],
+    interval: Annotated[
+        float,
+        typer.Option("--interval", min=0.1, help="Polling interval in seconds"),
+    ] = 1.0,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Wait for one archive-copy job to finish."""
+
+    collection_id, destination_store = _archive_copy_selector(selector)
+    api = client()
+    while True:
+        payload = api.get_archive_copy_job(
+            collection_id,
+            destination_store=destination_store,
+        )
+        state = str(payload.get("state", ""))
+        if state in {"completed", "failed", "canceled"}:
+            emit(payload if json_mode else format_archive_copy_job(payload), json_mode=json_mode)
+            if state != "completed":
+                raise typer.Exit(1)
+            return
+        time.sleep(interval)
 
 
 @archive_app.command("retire")

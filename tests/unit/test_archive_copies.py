@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -39,7 +40,12 @@ INITIATOR = ApplicationPrincipal(
 )
 
 
-def _service(path: Path, *, source_ready: bool = True):
+def _service(
+    path: Path,
+    *,
+    source_ready: bool = True,
+    destination: MemoryArchiveStore | None = None,
+):
     config, archive = seed_archive_copy(path, FILES)
     b2_config = replace(
         config.archive_store("deep"),
@@ -52,7 +58,7 @@ def _service(path: Path, *, source_ready: bool = True):
         archive_stores={"deep": config.archive_store("deep"), "b2": b2_config},
     )
     source = MemoryArchiveStore(archive, ready=source_ready)
-    destination = MemoryArchiveStore(backend="b2")
+    destination = destination or MemoryArchiveStore(backend="b2")
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -246,6 +252,94 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
         assert job is not None and job.state == "waiting"
     assert source.prepared == [("data-000000",)]
     assert destination.archive is None
+
+
+def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
+    tmp_path: Path,
+) -> None:
+    config, _archive, source, destination, service = _service(
+        tmp_path / "catalog.sqlite3", source_ready=False
+    )
+    service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
+    service.process_due(limit=1)
+
+    canceled = service.cancel(COLLECTION_ID, destination_store="b2")
+
+    assert canceled["state"] == "canceled"
+    assert canceled["completed_at"] is not None
+    assert source.cleaned == [("data-000000",)]
+    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+    filtered = service.list(
+        page=1,
+        per_page=25,
+        q=None,
+        state="canceled",
+        sort="requested_at",
+        order="desc",
+        all_items=False,
+    )
+    assert filtered["filters"] == {"state": "canceled"}
+    assert filtered["copies"] == [canceled]
+    events = (
+        SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app="operator",
+            after=None,
+            limit=100,
+        )
+        .events
+    )
+    assert [event.type.rsplit(".", 1)[-1] for event in events] == [
+        "requested",
+        "canceled",
+    ]
+
+    restarted = service.create_or_resume(
+        COLLECTION_ID,
+        destination_store="b2",
+        initiator=INITIATOR,
+    )
+    assert restarted["state"] == "requested"
+
+
+def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDestination(MemoryArchiveStore):
+        def upload_collection_archive(self, **kwargs):
+            started.set()
+            assert release.wait(timeout=5)
+            tracker = kwargs["multipart_tracker"]
+            assert tracker is not None
+            tracker.require_active(collection_id=kwargs["collection_id"])
+            return super().upload_collection_archive(**kwargs)
+
+    destination = BlockingDestination(backend="b2")
+    config, _archive, _source, _destination, service = _service(
+        tmp_path / "catalog.sqlite3",
+        destination=destination,
+    )
+    service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
+    worker = threading.Thread(target=service.process_due, daemon=True)
+    worker.start()
+    assert started.wait(timeout=5)
+
+    canceling = service.cancel(COLLECTION_ID, destination_store="b2")
+    assert canceling["state"] == "canceling"
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    canceled = service.get(COLLECTION_ID, destination_store="b2")
+    assert canceled["state"] == "canceled"
+    assert canceled["completed_at"] is not None
+    assert destination.archive is None
+    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+    with session_scope(make_session_factory(config.database_url)) as session:
+        assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is None
 
 
 def test_startup_resumes_a_claimed_archive_copy(tmp_path: Path) -> None:

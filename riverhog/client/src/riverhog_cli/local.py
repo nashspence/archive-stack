@@ -14,11 +14,11 @@ from typing import Annotated, Any
 import typer
 from riverhog_api_client.client import ApiClient
 from riverhog_cli_support.output import emit, format_list_ids
-from riverhog_protocol.errors import InvalidState
+from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
 from time_formats import parse_utc_timestamp
 
-from riverhog_cli.output import format_local_collections
+from riverhog_cli.output import format_local_collection, format_local_collections
 
 local_app = typer.Typer(
     no_args_is_help=True,
@@ -34,6 +34,7 @@ LOCAL_LIST_SORT_FIELDS = {
     "status": "status",
 }
 PROJECTION_NAME_BYTES_MAX = 240
+LOCAL_AUDIT_SAMPLE_LIMIT = 100
 
 
 def _target() -> Path:
@@ -85,6 +86,35 @@ def _connect(target: Path) -> sqlite3.Connection:
         """
     )
     return db
+
+
+def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, object]:
+    row = db.execute(
+        """
+        SELECT c.collection_id, c.created_at, c.tags_json,
+               CASE c.remote_deleted
+                   WHEN 1 THEN 'remote-deleted'
+                   ELSE 'desired'
+               END AS status,
+               COUNT(f.path) AS files,
+               COALESCE(SUM(f.bytes), 0) AS bytes
+        FROM desired_collections AS c
+        LEFT JOIN desired_files AS f USING (collection_id)
+        WHERE c.collection_id = ?
+        GROUP BY c.collection_id, c.created_at, c.tags_json, c.remote_deleted
+        """,
+        (collection_id,),
+    ).fetchone()
+    if row is None:
+        raise NotFound(f"local collection not found: {collection_id}")
+    return {
+        "collection_id": int(row["collection_id"]),
+        "created_at": str(row["created_at"]),
+        "tags": json.loads(str(row["tags_json"])),
+        "status": str(row["status"]),
+        "files": int(row["files"]),
+        "bytes": int(row["bytes"]),
+    }
 
 
 def _store_manifest(
@@ -560,15 +590,22 @@ def _download_job(
     return len(expected)
 
 
-def _cancel_active_retrievals(db: sqlite3.Connection, api: ApiClient) -> None:
+def _cancel_active_retrievals(db: sqlite3.Connection, api: ApiClient) -> list[str]:
+    canceled: list[str] = []
     for row in db.execute("SELECT id FROM retrieval_jobs ORDER BY updated_at"):
         job = api.get_retrieval_job(str(row["id"]))
         if job["state"] in {"requested", "ready", "failed"}:
             api.cancel_retrieval_job(str(row["id"]))
+            canceled.append(str(row["id"]))
     db.execute("DELETE FROM retrieval_jobs")
+    return canceled
 
 
-def _sync(*, wait: bool, repair: bool) -> None:
+def _sync_notice(message: str, *, json_mode: bool) -> None:
+    typer.echo(message, err=json_mode)
+
+
+def _sync(*, wait: bool, repair: bool, json_mode: bool) -> dict[str, object]:
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
@@ -585,19 +622,24 @@ def _sync(*, wait: bool, repair: bool) -> None:
                 count = _download_job(db, target, api, job)
                 _reconcile_projection(db, target)
                 db.commit()
-                typer.echo(f"materialized {count} file(s)")
-                return
+                return {
+                    "status": "materialized",
+                    "retrieval_id": str(job["id"]),
+                    "materialized_files": count,
+                }
             elif not wait:
                 db.commit()
-                typer.echo(f"retrieval {job['id']} is {job['state']}; rerun sync later")
-                return
+                return {
+                    "status": str(job["state"]),
+                    "retrieval": job,
+                    "materialized_files": 0,
+                }
 
         if active is None:
             missing = _missing_files(db, target, repair=repair)
             if not missing:
                 db.commit()
-                typer.echo("materialization is current")
-                return
+                return {"status": "current", "materialized_files": 0}
             plan = api.plan_retrieval(missing)
             job = api.create_retrieval_job(missing, plan_etag=str(plan["etag"]))
             db.execute(
@@ -609,40 +651,76 @@ def _sync(*, wait: bool, repair: bool) -> None:
             job = api.get_retrieval_job(str(active["id"]))
 
         while job["state"] == "requested" and wait:
-            typer.echo(f"retrieval {job['id']} is waiting for archive availability")
+            _sync_notice(
+                f"retrieval {job['id']} is waiting for archive availability",
+                json_mode=json_mode,
+            )
             time.sleep(10)
             job = api.get_retrieval_job(str(job["id"]))
         if job["state"] != "ready":
-            typer.echo(f"retrieval {job['id']} is {job['state']}; rerun sync later")
-            return
+            return {
+                "status": str(job["state"]),
+                "retrieval": job,
+                "materialized_files": 0,
+            }
         count = _download_job(db, target, api, job)
         _reconcile_projection(db, target)
         db.commit()
-        typer.echo(f"materialized {count} file(s)")
+        return {
+            "status": "materialized",
+            "retrieval_id": str(job["id"]),
+            "materialized_files": count,
+        }
+
+
+def _format_sync_result(payload: dict[str, object]) -> str:
+    status = str(payload.get("status") or "unknown")
+    if status == "materialized":
+        return f"materialized {payload.get('materialized_files', 0)} file(s)"
+    if status == "current":
+        return "materialization is current"
+    retrieval = payload.get("retrieval")
+    retrieval_id = retrieval.get("id") if isinstance(retrieval, dict) else "unknown"
+    return f"retrieval {retrieval_id} is {status}; rerun sync later"
 
 
 @local_app.command("add")
-def add_collection(collection_id: Annotated[int, typer.Argument(help="Collection ID")]) -> None:
+def add_collection(
+    collection_id: Annotated[int, typer.Argument(help="Collection ID")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_collection(db, api, normalized)
+        collection = _local_collection(db, normalized)
         db.commit()
-    typer.echo(f"desired collection added: {normalized}")
+    payload = {"status": "added", "collection": collection}
+    emit(payload if json_mode else f"desired collection added: {normalized}", json_mode=json_mode)
 
 
 @local_app.command("remove")
 def remove_collection(
     collection_id: Annotated[int, typer.Argument(help="Collection ID")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     target = _target()
     normalized = normalize_collection_id(collection_id)
     with closing(_connect(target)) as db, ApiClient() as api:
-        _cancel_active_retrievals(db, api)
+        canceled = _cancel_active_retrievals(db, api)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         _reconcile_projection(db, target)
         db.commit()
-    typer.echo(f"desired collection removed; local files retained: {normalized}")
+    payload = {
+        "status": "removed",
+        "collection_id": normalized,
+        "local_files": "retained",
+        "retrievals_canceled": canceled,
+    }
+    emit(
+        payload if json_mode else f"desired collection removed; local files retained: {normalized}",
+        json_mode=json_mode,
+    )
 
 
 @local_app.command("list")
@@ -755,24 +833,50 @@ def list_collections(
     emit(payload if json_mode else format_local_collections(payload), json_mode=json_mode)
 
 
+@local_app.command("show")
+def show_collection(
+    collection_id: Annotated[int, typer.Argument(help="Collection ID")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    target = _target()
+    normalized = normalize_collection_id(collection_id)
+    with closing(_connect(target)) as db:
+        payload = _local_collection(db, normalized)
+    emit(payload if json_mode else format_local_collection(payload), json_mode=json_mode)
+
+
 @local_app.command("sync")
 def sync(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    _sync(wait=wait, repair=False)
+    payload = _sync(wait=wait, repair=False, json_mode=json_mode)
+    emit(payload if json_mode else _format_sync_result(payload), json_mode=json_mode)
 
 
 @local_app.command("repair")
 def repair(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    _sync(wait=wait, repair=True)
+    payload = _sync(wait=wait, repair=True, json_mode=json_mode)
+    emit(payload if json_mode else _format_sync_result(payload), json_mode=json_mode)
 
 
 @local_app.command("audit")
-def audit() -> None:
+def audit(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
     target = _target()
     problems = 0
+    samples: list[str] = []
+
+    def record(message: str) -> None:
+        nonlocal problems
+        problems += 1
+        if len(samples) < LOCAL_AUDIT_SAMPLE_LIMIT:
+            samples.append(message)
+
     with closing(_connect(target)) as db:
         for row in db.execute(
             "SELECT collection_id, path, bytes, sha256 "
@@ -780,39 +884,51 @@ def audit() -> None:
         ):
             output = _output_path(target, row["collection_id"], row["path"])
             if not output.exists():
-                typer.echo(f"missing: {row['collection_id']}/{row['path']}")
-                problems += 1
+                record(f"missing: {row['collection_id']}/{row['path']}")
             elif not _matches(output, byte_count=row["bytes"], sha256=row["sha256"]):
-                typer.echo(f"mismatch: {row['collection_id']}/{row['path']}")
-                problems += 1
+                record(f"mismatch: {row['collection_id']}/{row['path']}")
         expected_links = _expected_projection_links(db, target)
         actual_links = _actual_projection_links(target, create_roots=False)
         for link in sorted(set(expected_links) | set(actual_links)):
             relative = link.relative_to(target)
             if link not in actual_links:
-                typer.echo(f"projection missing: {relative}")
-                problems += 1
+                record(f"projection missing: {relative}")
             elif link not in expected_links:
-                typer.echo(f"projection stale: {relative}")
-                problems += 1
+                record(f"projection stale: {relative}")
             elif actual_links[link] != expected_links[link]:
-                typer.echo(f"projection mismatch: {relative}")
-                problems += 1
+                record(f"projection mismatch: {relative}")
+    payload = {
+        "status": "ok" if not problems else "issues",
+        "problems": problems,
+        "samples": samples,
+        "samples_truncated": problems > len(samples),
+    }
     if problems:
+        if json_mode:
+            emit(payload, json_mode=True)
+        else:
+            typer.echo("\n".join(samples))
+            if problems > len(samples):
+                typer.echo(f"... {problems - len(samples)} more problem(s)")
         raise typer.Exit(1)
-    typer.echo("materialization matches all desired files")
+    emit(
+        payload if json_mode else "materialization matches all desired files",
+        json_mode=json_mode,
+    )
 
 
 @local_app.command("evict")
 def evict(
     collection_id: Annotated[int, typer.Argument(help="Collection ID")],
     confirm: Annotated[bool, typer.Option(help="Confirm local file removal")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     if not confirm:
         raise typer.BadParameter("--confirm is required")
     target = _target()
     normalized = normalize_collection_id(collection_id)
-    with closing(_connect(target)) as db:
+    with closing(_connect(target)) as db, ApiClient() as api:
+        canceled = _cancel_active_retrievals(db, api)
         rows = list(
             db.execute(
                 "SELECT path FROM desired_files WHERE collection_id = ? ORDER BY path",
@@ -827,4 +943,9 @@ def evict(
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
         _reconcile_projection(db, target)
         db.commit()
-    typer.echo(f"evicted local collection: {normalized}")
+    payload = {
+        "status": "evicted",
+        "collection_id": normalized,
+        "retrievals_canceled": canceled,
+    }
+    emit(payload if json_mode else f"evicted local collection: {normalized}", json_mode=json_mode)

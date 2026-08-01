@@ -14,7 +14,17 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
         if request.url.path == "/v1/sources":
             return httpx.Response(200, json={"sources": []})
         if request.url.path == "/v1/attempts/attempt-1":
-            return httpx.Response(200, json={"attempt_id": "attempt-1"})
+            return httpx.Response(
+                200,
+                json={
+                    "attempt_id": "attempt-1",
+                    "state": "canceled" if request.method == "DELETE" else "batching",
+                },
+            )
+        if request.url.path == "/v1/operations":
+            return httpx.Response(200, json={"operations": []})
+        if request.url.path == "/v1/operations/op-1":
+            return httpx.Response(200, json={"id": "op-1", "state": "succeeded"})
         return httpx.Response(404, json={"error": {"message": "not found"}})
 
     client = JebApiClient(base_url="https://jeb.example.test", token="jeb-token")
@@ -27,7 +37,10 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
     try:
         assert client.status() == {"status": "ok"}
         assert client.list_sources() == {"sources": []}
-        assert client.get_attempt("attempt-1") == {"attempt_id": "attempt-1"}
+        assert client.get_attempt("attempt-1")["state"] == "batching"
+        assert client.cancel_attempt("attempt-1")["state"] == "canceled"
+        assert client.list_operations() == {"operations": []}
+        assert client.get_operation("op-1")["state"] == "succeeded"
         assert client._client is transport_client
     finally:
         client.close()
@@ -36,6 +49,9 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
         "/v1/status",
         "/v1/sources",
         "/v1/attempts/attempt-1",
+        "/v1/attempts/attempt-1",
+        "/v1/operations",
+        "/v1/operations/op-1",
     ]
     assert all(request.headers["Authorization"] == "Bearer jeb-token" for request in requests)
 

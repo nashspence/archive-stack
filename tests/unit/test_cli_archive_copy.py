@@ -82,6 +82,7 @@ def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None
                 "sort": "requested_at",
                 "order": "desc",
                 "query": None,
+                "filters": {},
                 "copies": [job],
             }
 
@@ -99,8 +100,8 @@ def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None
 
     human_list = runner.invoke(app, ["archive", "copy", "list"])
     listed = runner.invoke(app, ["archive", "copy", "list", "--json"])
-    human_show = runner.invoke(app, ["archive", "copy", "show", "1", "deep"])
-    shown = runner.invoke(app, ["archive", "copy", "show", "1", "deep", "--json"])
+    human_show = runner.invoke(app, ["archive", "copy", "show", "1::deep"])
+    shown = runner.invoke(app, ["archive", "copy", "show", "1::deep", "--json"])
 
     assert human_list.exit_code == 0
     assert "b2 -> deep" in human_list.stdout
@@ -111,3 +112,67 @@ def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None
     assert shown.exit_code == 0
     assert json.loads(shown.stdout) == job
     assert calls == ["list", "list", "show", "show"]
+
+
+def test_archive_copy_list_selectors_cancel_and_watch_are_actionable(monkeypatch) -> None:
+    states = iter(("copying", "completed"))
+    calls: list[object] = []
+
+    def job(state: str) -> dict[str, object]:
+        return {
+            "collection_id": 7,
+            "source_store": "b2",
+            "destination_store": "deep",
+            "state": state,
+            "requested_at": "2026-07-15T00:00:00Z",
+            "completed_at": None,
+            "failure": None,
+        }
+
+    class FakeClient:
+        def list_archive_copy_jobs(self, **kwargs: object) -> dict[str, object]:
+            calls.append(("list", kwargs))
+            return {
+                "page": 1,
+                "per_page": 1,
+                "total": 1,
+                "pages": 1,
+                "sort": "requested_at",
+                "order": "desc",
+                "query": None,
+                "filters": {"state": "waiting"},
+                "copies": [job("waiting")],
+            }
+
+        def cancel_archive_copy_job(
+            self, collection_id: int, *, destination_store: str
+        ) -> dict[str, object]:
+            calls.append(("cancel", collection_id, destination_store))
+            return job("canceled")
+
+        def get_archive_copy_job(
+            self, collection_id: int, *, destination_store: str
+        ) -> dict[str, object]:
+            calls.append(("watch", collection_id, destination_store))
+            return job(next(states))
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    monkeypatch.setattr(riverhog_cli.main.time, "sleep", lambda _seconds: None)
+
+    listed = runner.invoke(
+        app,
+        ["archive", "copy", "list", "--state", "waiting", "--selectors"],
+    )
+    canceled = runner.invoke(app, ["archive", "copy", "cancel", "7::deep", "--json"])
+    watched = runner.invoke(
+        app,
+        ["archive", "copy", "watch", "7::deep", "--interval", "0.1", "--json"],
+    )
+
+    assert listed.exit_code == 0
+    assert listed.stdout == "7::deep\n"
+    assert canceled.exit_code == 0
+    assert json.loads(canceled.stdout)["state"] == "canceled"
+    assert watched.exit_code == 0
+    assert json.loads(watched.stdout)["state"] == "completed"
+    assert calls[0][1]["state"] == "waiting"

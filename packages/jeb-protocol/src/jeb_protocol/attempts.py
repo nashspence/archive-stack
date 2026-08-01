@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-ATTEMPT_RESOLVED_STATES = frozenset({"target_succeeded", "cleanup_done", "superseded"})
+ATTEMPT_RESOLVED_STATES = frozenset({"target_succeeded", "cleanup_done", "superseded", "canceled"})
 ATTEMPT_SUCCESS_STATES = frozenset({"target_succeeded", "cleanup_done"})
-ATTEMPT_WATCH_FAILURE_STATES = frozenset({"failed", "cleanup_failed", "superseded"})
+ATTEMPT_WATCH_FAILURE_STATES = frozenset({"failed", "cleanup_failed", "superseded", "canceled"})
 ATTEMPT_WATCH_STOP_STATES = ATTEMPT_SUCCESS_STATES | ATTEMPT_WATCH_FAILURE_STATES
 
 

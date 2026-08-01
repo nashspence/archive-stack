@@ -65,6 +65,25 @@ def format_local_collections(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_local_collection(payload: Mapping[str, object]) -> str:
+    tags = payload.get("tags")
+    tag_text = (
+        ",".join(str(tag) for tag in tags)
+        if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes))
+        else ""
+    )
+    return "\n".join(
+        [
+            f"local collection {payload.get('collection_id', 'unknown')}",
+            f"status: {payload.get('status', 'unknown')}",
+            f"created: {payload.get('created_at', 'unknown')}",
+            f"tags: {tag_text or 'none'}",
+            f"files: {payload.get('files', 0)}",
+            f"bytes: {_bytes(payload.get('bytes'))}",
+        ]
+    )
+
+
 def format_collection_summary(
     payload: Mapping[str, object],
 ) -> str:
@@ -217,6 +236,17 @@ def format_app_access(payload: Mapping[str, object]) -> str:
         for grant in _items(payload, "access")
     )
     return "\n".join(lines)
+
+
+def format_app_access_selectors(payload: Mapping[str, object]) -> str:
+    selectors: list[str] = []
+    for grant in _items(payload, "access"):
+        permission = str(grant.get("permission", ""))
+        resource = str(grant.get("resource", ""))
+        allow = permission if resource == "*" else f"{permission}={resource}"
+        if grant.get("app") and grant.get("key_id") and permission and resource:
+            selectors.append(f"{grant['app']}::{grant['key_id']}::{allow}")
+    return "\n".join(selectors)
 
 
 def format_app_access_set(payload: Mapping[str, object]) -> str:
@@ -437,6 +467,15 @@ def format_archive_copy_jobs(payload: Mapping[str, object]) -> str:
             f"requested={copy.get('requested_at', 'unknown')}"
         )
     return "\n".join(lines)
+
+
+def format_archive_copy_selectors(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        f"{item['collection_id']}::{item['destination_store']}"
+        for item in _items(payload, "copies")
+        if item.get("collection_id") not in {None, ""}
+        and item.get("destination_store") not in {None, ""}
+    )
 
 
 def format_file_selectors(

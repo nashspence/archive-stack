@@ -104,6 +104,9 @@ def main(argv: list[str] | None = None) -> int:
     attempt_show = attempt_sub.add_parser("show", help="show one processing attempt")
     attempt_show.add_argument("attempt")
     attempt_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    attempt_cancel = attempt_sub.add_parser("cancel", help="cancel one unresolved attempt")
+    attempt_cancel.add_argument("attempt")
+    attempt_cancel.add_argument("--json", action="store_true", help="Emit JSON.")
     sub.add_parser(
         "check-config",
         help="validate env configuration and initialize state",
@@ -189,6 +192,14 @@ def main(argv: list[str] | None = None) -> int:
         services.runtime.initialize()
         if args.attempt_command == "show":
             payload = services.store.get_attempt(args.attempt)
+            emit(payload if args.json else format_attempt(payload), json_mode=args.json)
+            return 0
+        if args.attempt_command == "cancel":
+            try:
+                payload = services.attempts.cancel_attempt(args.attempt)
+            except (KeyError, UnrecoverableJebError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
             emit(payload if args.json else format_attempt(payload), json_mode=args.json)
             return 0
         payload = services.store.list_attempts(

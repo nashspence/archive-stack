@@ -56,7 +56,11 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
-from riverhog_core.stores.s3_support import create_archive_s3_client, delete_exact_object
+from riverhog_core.stores.s3_support import (
+    create_archive_s3_client,
+    delete_exact_object,
+    delete_object_versions_with_prefix,
+)
 
 COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
 COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
@@ -378,6 +382,42 @@ class S3ArchiveStore:
             request["KeyMarker"] = next_key_marker
             request["UploadIdMarker"] = next_upload_id_marker
 
+    def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None:
+        archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
+        normalized_prefix = archive_storage_prefix.strip("/")
+        if not normalized_prefix.startswith(archive_root):
+            raise ValueError("archive upload prefix is outside the owned archive root")
+        object_prefix = f"{normalized_prefix}/"
+        request: dict[str, Any] = {"Bucket": self._bucket, "Prefix": object_prefix}
+        while True:
+            response = cast(dict[str, Any], self._client.list_multipart_uploads(**request))
+            for upload in response.get("Uploads") or ():
+                if not isinstance(upload, dict):
+                    continue
+                key = str(upload.get("Key", ""))
+                upload_id = str(upload.get("UploadId", ""))
+                if key.startswith(object_prefix) and upload_id:
+                    self._client.abort_multipart_upload(
+                        Bucket=self._bucket,
+                        Key=key,
+                        UploadId=upload_id,
+                    )
+            if not response.get("IsTruncated"):
+                break
+            next_key_marker = str(response.get("NextKeyMarker", ""))
+            next_upload_id_marker = str(response.get("NextUploadIdMarker", ""))
+            if not next_key_marker or not next_upload_id_marker:
+                raise RuntimeError(
+                    "multipart upload listing returned incomplete pagination markers"
+                )
+            request["KeyMarker"] = next_key_marker
+            request["UploadIdMarker"] = next_upload_id_marker
+        delete_object_versions_with_prefix(
+            self._client,
+            bucket=self._bucket,
+            prefix=object_prefix,
+        )
+
     def _collection_object_key(
         self,
         *,
@@ -473,7 +513,12 @@ class S3ArchiveStore:
         storage_prefix = archive_storage_prefix or self.new_collection_archive_storage_prefix()
         receipts: list[ArchiveObjectUploadReceipt] = []
 
+        def require_active() -> None:
+            if multipart_tracker is not None:
+                multipart_tracker.require_active(collection_id=collection_id)
+
         def upload_data_object(current: CollectionArchiveDataObject) -> ArchiveObjectUploadReceipt:
+            require_active()
             return self._put_archive_object(
                 collection_id=collection_id,
                 object_id=current.object_id,
@@ -509,6 +554,7 @@ class S3ArchiveStore:
             concurrent_batch.clear()
 
         for current in archive.data_objects:
+            require_active()
             if current.plaintext_bytes <= one_part_limit:
                 concurrent_batch.append(current)
                 continue
@@ -519,6 +565,7 @@ class S3ArchiveStore:
             ("manifest", "manifest", archive.manifest_bytes, archive.manifest_sha256),
             ("proof", "proof", archive.proof_bytes, archive.proof_sha256),
         ):
+            require_active()
             receipts.append(
                 self._put_archive_object(
                     collection_id=collection_id,
@@ -535,6 +582,7 @@ class S3ArchiveStore:
                     multipart_tracker=None,
                 )
             )
+        require_active()
         return CollectionArchiveUploadReceipt(objects=tuple(receipts))
 
     def verify_collection_archive(
@@ -1005,6 +1053,8 @@ class S3ArchiveStore:
         data_object: CollectionArchiveDataObject | None,
         multipart_tracker: ArchiveMultipartUploadTracker | None,
     ) -> ArchiveObjectUploadReceipt:
+        if multipart_tracker is not None:
+            multipart_tracker.require_active(collection_id=collection_id)
         storage_class = _collection_object_storage_class(
             archive_storage_class=self._store.storage_class,
             kind=kind,
@@ -1172,6 +1222,8 @@ class S3ArchiveStore:
                 ContentLength=content_length,
                 **extra_args,
             )
+        if multipart_tracker is not None:
+            multipart_tracker.require_active(collection_id=collection_id)
         head = cast(
             dict[str, Any],
             self._client.head_object(Bucket=self._bucket, Key=object_key),
@@ -1324,6 +1376,8 @@ class S3ArchiveStore:
 
         def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
             nonlocal uploaded_bytes
+            if multipart_tracker is not None:
+                multipart_tracker.require_active(collection_id=collection_id)
             completed_parts_by_number[part.part_number] = part
             uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
             uploaded_parts = len(completed_parts_by_number)
@@ -1439,6 +1493,8 @@ class S3ArchiveStore:
                     "collection archive multipart upload is missing parts before completion"
                 )
             _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
+            if multipart_tracker is not None:
+                multipart_tracker.require_active(collection_id=collection_id)
             self._client.complete_multipart_upload(
                 Bucket=self._bucket,
                 Key=object_key,
@@ -1637,6 +1693,8 @@ class S3ArchiveStore:
 
         def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
             nonlocal uploaded_bytes
+            if multipart_tracker is not None:
+                multipart_tracker.require_active(collection_id=collection_id)
             completed_parts_by_number[part.part_number] = part
             uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
             uploaded_parts = len(completed_parts_by_number)
@@ -1746,6 +1804,8 @@ class S3ArchiveStore:
                     "before completion"
                 )
             _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
+            if multipart_tracker is not None:
+                multipart_tracker.require_active(collection_id=collection_id)
             self._client.complete_multipart_upload(
                 Bucket=self._bucket,
                 Key=object_key,

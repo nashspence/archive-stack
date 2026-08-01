@@ -172,6 +172,22 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "quotas": [{"id": "key-one"}],
             }
 
+        def remove_app_key_access(
+            self,
+            app_name: str,
+            key_id: str,
+            *,
+            permission: str,
+            resource: str,
+        ) -> dict[str, object]:
+            assert (app_name, key_id, permission, resource) == (
+                "local",
+                "key-one",
+                "catalog:read",
+                "tag:photos",
+            )
+            return {"app": app_name, "key_id": key_id, "access": []}
+
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
     access = runner.invoke(
@@ -220,6 +236,42 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     assert "resource=tag:photos" in access.stdout
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
+
+    selectors = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "access",
+            "list",
+            "--app",
+            "local",
+            "--key",
+            "key-one",
+            "--resource",
+            "tag:photos",
+            "--active",
+            "--query",
+            "photos",
+            "--all",
+            "--selectors",
+        ],
+    )
+    removed = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "access",
+            "remove",
+            "local::key-one::catalog:read=tag:photos",
+            "--json",
+        ],
+    )
+    assert selectors.exit_code == 0
+    assert selectors.stdout == "local::key-one::catalog:read=tag:photos\n"
+    assert removed.exit_code == 0
+    assert json.loads(removed.stdout)["access"] == []
 
 
 def test_quota_ids_require_an_application_for_actionable_identity() -> None:

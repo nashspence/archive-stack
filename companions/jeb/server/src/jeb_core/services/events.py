@@ -110,6 +110,22 @@ class JebEventService:
         attempt = self.store.load_attempt(attempt_id)
         self.emit_attempt_issue(attempt, message=message, component="cleanup")
 
+    def emit_attempt_canceled(self, attempt_id: str) -> None:
+        attempt = self.store.load_attempt(attempt_id)
+        event = cloud_event(
+            source=self.config.events.source,
+            type="io.riverhog.jeb.attempt.canceled",
+            subject=attempt_id,
+            data={
+                "attempt_id": attempt_id,
+                "source_id": str(attempt["source_id"]),
+                "state": "canceled",
+                "target": str(attempt["target_name"]),
+                "run_id": str(attempt["run_id"]),
+            },
+        )
+        self.event_log.append(event, owner="jeb")
+
     def emit_attempt_issue(
         self,
         attempt: Mapping[str, Any] | sqlite3.Row,

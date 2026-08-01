@@ -409,6 +409,13 @@ class ArchiveCopyService(Protocol):
         destination_store: str,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
+    def cancel(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
     def list(
         self,
         *,
@@ -418,6 +425,7 @@ class ArchiveCopyService(Protocol):
         sort: str,
         order: str,
         all_items: bool,
+        state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def process_due(self, *, limit: int = 1) -> int: ...

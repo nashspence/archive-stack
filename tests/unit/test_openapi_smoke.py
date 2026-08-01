@@ -47,6 +47,7 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/collections/{collection_id}/tags",
     }.issubset(paths)
     assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]
+    assert "delete" in paths["/v1/archive/copies/{collection_id}/{destination_store}"]
 
 
 def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:

@@ -35,6 +35,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_BLOCKING_STATES
 from riverhog_core.services.archive_records import (
     archive_copy_aggregates,
     archive_copy_is_complete,
@@ -409,7 +410,7 @@ def _active_blockers(session: Session, collection_id: int) -> list[str]:
             select(ArchiveCopyJobRecord.source_store, ArchiveCopyJobRecord.destination_store)
             .where(
                 ArchiveCopyJobRecord.collection_id == collection_id,
-                ArchiveCopyJobRecord.state.in_({"requested", "waiting", "copying"}),
+                ArchiveCopyJobRecord.state.in_(ARCHIVE_COPY_BLOCKING_STATES),
             )
             .order_by(ArchiveCopyJobRecord.destination_store)
         )

@@ -16,6 +16,7 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
 ArchiveUploadRecordLoader = Callable[[Session, int, str], Any | None]
 ArchiveUploadProgressCallback = Callable[[Session, int], None]
+ArchiveUploadActiveCallback = Callable[[Session, int], None]
 
 
 class SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
@@ -25,10 +26,18 @@ class SqlAlchemyArchiveMultipartUploadTracker(ArchiveMultipartUploadTracker):
         *,
         load_record: ArchiveUploadRecordLoader,
         record_progress: ArchiveUploadProgressCallback | None = None,
+        require_active: ArchiveUploadActiveCallback | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._load_record = load_record
         self._record_progress = record_progress
+        self._require_active = require_active
+
+    def require_active(self, *, collection_id: int) -> None:
+        if self._require_active is None:
+            return
+        with session_scope(self._session_factory) as session:
+            self._require_active(session, collection_id)
 
     def load_multipart_upload(
         self,

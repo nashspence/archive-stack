@@ -233,12 +233,22 @@ class _FakeS3Client:
         self.objects.pop(Key, None)
 
     def get_paginator(self, name: str):
-        assert name == "list_object_versions"
+        assert name in {"list_objects_v2", "list_object_versions"}
         client = self
 
         class Paginator:
             def paginate(self, *, Bucket: str, Prefix: str):
                 _ = Bucket
+                if name == "list_objects_v2":
+                    return [
+                        {
+                            "Contents": [
+                                {"Key": key}
+                                for key in sorted(client.objects)
+                                if key.startswith(Prefix)
+                            ]
+                        }
+                    ]
                 return [
                     {
                         "Versions": [
@@ -308,6 +318,9 @@ class _Tracker(ArchiveMultipartUploadTracker):
         self.states: dict[str, ArchiveMultipartUploadState] = {}
         self.parts: dict[str, list[ArchiveMultipartUploadedPart]] = {}
         self.cache_receipts: dict[str, RetrievalCacheReceipt] = {}
+
+    def require_active(self, *, collection_id: int) -> None:
+        _ = collection_id
 
     def load_multipart_upload(self, **kwargs: object) -> ArchiveMultipartUploadState | None:
         object_id = str(kwargs["object_id"])
@@ -1262,6 +1275,34 @@ def test_deep_object_without_a_current_restore_is_expired(
     )
 
     assert status.state == "expired"
+
+
+def test_discard_collection_archive_upload_is_exact_and_verified_owned(
+    monkeypatch, tmp_path: Path
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    owned_prefix = "archive/archives/canceled-copy"
+    owned_key = f"{owned_prefix}/objects/data-000000.age"
+    neighbor_key = "archive/archives/neighbor/objects/data-000000.age"
+    client.objects[owned_key] = {"Body": b"partial", "ContentLength": 7}
+    client.objects[neighbor_key] = {"Body": b"keep", "ContentLength": 4}
+    client.versions[owned_key] = {"historic"}
+    client.uploads["partial-upload"] = {
+        "Key": f"{owned_prefix}/objects/data-000001.age",
+        "Parts": {},
+        "Args": {},
+        "Initiated": datetime(2026, 7, 1, tzinfo=UTC),
+    }
+
+    store.discard_collection_archive_upload(archive_storage_prefix=owned_prefix)
+
+    assert owned_key not in client.objects
+    assert not client.versions[owned_key]
+    assert neighbor_key in client.objects
+    assert "partial-upload" not in client.uploads
+    with pytest.raises(ValueError, match="owned archive root"):
+        store.discard_collection_archive_upload(archive_storage_prefix="unrelated")
 
 
 def test_verification_and_deletion_cover_the_complete_object_set(

@@ -456,8 +456,8 @@ class ApiClient(_HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        tag: str | None = None,
         state: str | None = None,
+        tag: str | None = None,
         sort: str = "created_at",
         order: str = "desc",
         all_items: bool = False,
@@ -470,10 +470,10 @@ class ApiClient(_HttpApiClient):
         }
         if q:
             params["q"] = q
-        if tag:
-            params["tag"] = tag
         if state:
             params["state"] = state
+        if tag:
+            params["tag"] = tag
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/collection-upload-sessions", params=params)
@@ -941,6 +941,7 @@ class ApiClient(_HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
+        state: str | None = None,
         sort: str = "requested_at",
         order: str = "desc",
         all_items: bool = False,
@@ -953,6 +954,8 @@ class ApiClient(_HttpApiClient):
         }
         if q:
             params["q"] = q
+        if state:
+            params["state"] = state
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/archive/copies", params=params)
@@ -965,6 +968,17 @@ class ApiClient(_HttpApiClient):
     ) -> dict[str, Any]:
         return self._json(
             "GET",
+            f"/v1/archive/copies/{collection_id}/{quote(destination_store, safe='')}",
+        )
+
+    def cancel_archive_copy_job(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
             f"/v1/archive/copies/{collection_id}/{quote(destination_store, safe='')}",
         )
 

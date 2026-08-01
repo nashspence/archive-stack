@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
+from jeb_protocol import ATTEMPT_RESOLVED_STATES, ATTEMPT_SUCCESS_STATES
 from media_preflight import (
     MediaPreflightFile,
     MediaPreflightReport,
@@ -85,19 +86,19 @@ class JebAttemptService:
                 raise UnrecoverableJebError(f"source {source_id!r} is not enrolled") from exc
             if not source.enabled:
                 raise UnrecoverableJebError(f"source {source_id!r} is disabled")
-            failed_attempt = self.store.latest_failed_attempt_for_source(source.id)
+            retryable_attempt = self.store.latest_retryable_attempt_for_source(source.id)
             attempt_id: str | None
-            if failed_attempt is not None:
-                if self.failed_attempt_target_paths_match_current_config(
-                    failed_attempt,
+            if retryable_attempt is not None:
+                if self.retryable_attempt_target_paths_match_current_config(
+                    retryable_attempt,
                     source,
                 ):
-                    attempt_id = self.create_retry_attempt(str(failed_attempt["id"]))
+                    attempt_id = self.create_retry_attempt(str(retryable_attempt["id"]))
                 else:
                     LOG.info(
                         "failed attempt %s target paths no longer match current source "
                         "config; rediscovering source %s",
-                        failed_attempt["id"],
+                        retryable_attempt["id"],
                         source.id,
                     )
                     attempt_id = self.discover_source(
@@ -106,7 +107,7 @@ class JebAttemptService:
                         allow_preflight_retry=True,
                     )
                     if attempt_id is not None:
-                        self.store.supersede_attempt(str(failed_attempt["id"]))
+                        self.store.supersede_attempt(str(retryable_attempt["id"]))
             else:
                 attempt_id = self.discover_source(
                     source,
@@ -141,20 +142,23 @@ class JebAttemptService:
                 "dry_run": True,
             }
 
-            failed_attempt = self.store.latest_failed_attempt_for_source(source.id)
-            if failed_attempt is not None and self.failed_attempt_target_paths_match_current_config(
-                failed_attempt,
-                source,
+            retryable_attempt = self.store.latest_retryable_attempt_for_source(source.id)
+            if (
+                retryable_attempt is not None
+                and self.retryable_attempt_target_paths_match_current_config(
+                    retryable_attempt,
+                    source,
+                )
             ):
-                batch_id = str(failed_attempt["batch_id"])
+                batch_id = str(retryable_attempt["batch_id"])
                 rows = self.store.attempt_files(batch_id)
                 return {
                     **base_payload,
                     "status": "would_retry_process" if process else "would_retry_stage",
-                    "mode": "retry_failed_attempt",
-                    "failed_attempt_id": str(failed_attempt["id"]),
+                    "mode": "retry_attempt",
+                    "retryable_attempt_id": str(retryable_attempt["id"]),
                     "batch_id": batch_id,
-                    "attempt_id": str(failed_attempt["id"]),
+                    "attempt_id": str(retryable_attempt["id"]),
                     "file_count": len(rows),
                     "total_bytes": sum(int(row["bytes"] or 0) for row in rows),
                     "target_preflight": {
@@ -283,15 +287,15 @@ class JebAttemptService:
             digest=base_digest,
         )
 
-    def failed_attempt_target_paths_match_current_config(
+    def retryable_attempt_target_paths_match_current_config(
         self,
-        failed_attempt: sqlite3.Row,
+        retryable_attempt: sqlite3.Row,
         source: SourceConfig,
     ) -> bool:
         with self.store.connect() as conn:
             rows = conn.execute(
                 "SELECT input_path, target_path FROM files WHERE batch_id = ?",
-                (failed_attempt["batch_id"],),
+                (retryable_attempt["batch_id"],),
             ).fetchall()
         current_target_paths: list[str] = []
         for row in rows:
@@ -318,9 +322,9 @@ class JebAttemptService:
             return None
         return normalize_posix(PurePosixPath(source.id, *rel.parts))
 
-    def create_retry_attempt(self, failed_attempt_id: str) -> str:
-        failed_attempt = self.store.load_attempt(failed_attempt_id)
-        batch_id = str(failed_attempt["batch_id"])
+    def create_retry_attempt(self, retryable_attempt_id: str) -> str:
+        retryable_attempt = self.store.load_attempt(retryable_attempt_id)
+        batch_id = str(retryable_attempt["batch_id"])
         with self.store.connect() as conn:
             row = conn.execute(
                 "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number "
@@ -336,9 +340,9 @@ class JebAttemptService:
                 raise UnrecoverableJebError(f"retry attempt already exists: {attempt_id}")
             suffix = "" if attempt_number == 1 else f"-r{attempt_number}"
             target_submission_id = (
-                f"jeb-{failed_attempt['source_id']}-"
-                f"{str(failed_attempt['run_id']).lower()}-"
-                f"{failed_attempt['manifest_digest']}{suffix}"
+                f"jeb-{retryable_attempt['source_id']}-"
+                f"{str(retryable_attempt['run_id']).lower()}-"
+                f"{retryable_attempt['manifest_digest']}{suffix}"
             )
             created_at = event_timestamp()
             conn.execute(
@@ -383,18 +387,18 @@ class JebAttemptService:
                 SET state = 'superseded', updated_at = ?
                 WHERE id = ?
                 """,
-                (created_at, failed_attempt_id),
+                (created_at, retryable_attempt_id),
             )
             conn.execute(
                 "UPDATE batches SET updated_at = ? WHERE id = ?",
                 (created_at, batch_id),
             )
-        shutil.rmtree(self.config.service.batch_dir / failed_attempt_id, ignore_errors=True)
+        shutil.rmtree(self.config.service.batch_dir / retryable_attempt_id, ignore_errors=True)
         LOG.info(
-            "created retry attempt %s for batch %s after failed attempt %s",
+            "created retry attempt %s for batch %s after attempt %s",
             attempt_id,
             batch_id,
-            failed_attempt_id,
+            retryable_attempt_id,
         )
         return attempt_id
 
@@ -529,11 +533,31 @@ class JebAttemptService:
                 return
             self._process_attempt_locked(attempt_id)
 
+    def cancel_attempt(self, attempt_id: str) -> dict[str, Any]:
+        attempt = self.store.load_attempt(attempt_id)
+        state = str(attempt["state"])
+        if state == "canceled":
+            return self.store.get_attempt(attempt_id)
+        if state in ATTEMPT_RESOLVED_STATES or state in ATTEMPT_SUCCESS_STATES:
+            raise UnrecoverableJebError(f"attempt cannot be canceled in state {state}")
+        adapter = self.target_adapters[str(attempt["target_name"])]
+        adapter.cancel(self.target_context(), attempt_id)
+        current_state = str(self.store.load_attempt(attempt_id)["state"])
+        if current_state in ATTEMPT_SUCCESS_STATES:
+            raise UnrecoverableJebError(
+                f"attempt completed before cancellation in state {current_state}"
+            )
+        self.store.set_attempt_state(attempt_id, "canceled")
+        self.events.emit_attempt_canceled(attempt_id)
+        return self.store.get_attempt(attempt_id)
+
     def _process_attempt_locked(self, attempt_id: str) -> None:
         adapter: TargetAdapter | None = None
         try:
             attempt = self.store.load_attempt(attempt_id)
             state = str(attempt["state"])
+            if state == "canceled":
+                return
             if state == "failed":
                 self.events.emit_failed_attempt(attempt_id)
                 return
@@ -548,6 +572,8 @@ class JebAttemptService:
                 self.ensure_media_preflight(attempt_id)
             adapter = self.target_adapters[str(attempt["target_name"])]
             adapter.advance(self.target_context(), attempt_id)
+            if str(self.store.load_attempt(attempt_id)["state"]) == "canceled":
+                return
             self.finish_attempt_success(attempt_id)
         except PreflightJebError as exc:
             LOG.exception("attempt %s failed media preflight", attempt_id)
@@ -886,6 +912,8 @@ class JebAttemptService:
     def finish_attempt_success(self, attempt_id: str) -> None:
         attempt = self.store.load_attempt(attempt_id)
         state = str(attempt["state"])
+        if state == "canceled":
+            return
         if state == "target_succeeded":
             return
         if state != "target_complete":
@@ -911,5 +939,7 @@ class JebAttemptService:
         self.store.set_attempt_state(attempt_id, "cleanup_done")
 
     def mark_unrecoverable(self, attempt_id: str, message: str, *, component: str) -> None:
+        if str(self.store.load_attempt(attempt_id)["state"]) == "canceled":
+            return
         self.store.set_attempt_state(attempt_id, "failed", message)
         self.events.emit_failed_attempt(attempt_id, component=component)

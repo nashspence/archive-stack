@@ -18,6 +18,8 @@ from jeb_cli_support.output import (
     format_attempts,
     format_config_check,
     format_operation,
+    format_operation_detail,
+    format_operations,
     format_source,
     format_source_removal,
     format_source_result,
@@ -90,6 +92,12 @@ def cmd_attempt_watch(args: argparse.Namespace) -> int:
     return 0 if attempt_succeeded(payload) else 1
 
 
+def cmd_attempt_cancel(args: argparse.Namespace) -> int:
+    payload = client().cancel_attempt(args.attempt)
+    emit(payload if args.json else format_attempt(payload), json_mode=args.json)
+    return 0
+
+
 def cmd_check_config(args: argparse.Namespace) -> int:
     payload = client().check_config()
     emit(payload if args.json else format_config_check(payload), json_mode=args.json)
@@ -103,6 +111,35 @@ def cmd_once(args: argparse.Namespace) -> int:
         return 0
     emit(format_operation(payload, title="jeb scheduler pass"), json_mode=False)
     return 0
+
+
+def cmd_operation_list(args: argparse.Namespace) -> int:
+    payload = client().list_operations(
+        page=args.page,
+        per_page=args.per_page,
+        sort=args.sort,
+        order=args.order,
+        state=args.state,
+        query=args.query,
+        all_items=args.all,
+    )
+    if args.ids:
+        emit(format_list_ids(payload, "operations"), json_mode=False)
+        return 0
+    emit(payload if args.json else format_operations(payload), json_mode=args.json)
+    return 0
+
+
+def cmd_operation_show(args: argparse.Namespace) -> int:
+    payload = client().get_operation(args.operation)
+    emit(payload if args.json else format_operation_detail(payload), json_mode=args.json)
+    return 0
+
+
+def cmd_operation_watch(args: argparse.Namespace) -> int:
+    payload = client().wait_for_operation(args.operation, interval=args.interval)
+    emit(payload if args.json else format_operation_detail(payload), json_mode=args.json)
+    return 0 if payload.get("state") == "succeeded" else 1
 
 
 def cmd_archive_now(args: argparse.Namespace) -> int:
@@ -292,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
             "commands:\n"
             "  status        show read-only service status\n"
             "  attempt       inspect processing attempts\n"
+            "  operation     inspect service operations\n"
             "  check-config  validate deployed Jeb configuration\n"
             "  once          request one scheduler pass\n"
             "  archive-now   archive one source immediately\n"
@@ -340,6 +378,33 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_watch.add_argument("--interval", type=float, default=10.0, help="Polling seconds.")
     attempt_watch.add_argument("--json", action="store_true", help="Emit final JSON.")
     attempt_watch.set_defaults(func=cmd_attempt_watch)
+    attempt_cancel = attempt_sub.add_parser("cancel", help="cancel one unresolved attempt")
+    attempt_cancel.add_argument("attempt")
+    attempt_cancel.add_argument("--json", action="store_true", help="Emit JSON.")
+    attempt_cancel.set_defaults(func=cmd_attempt_cancel)
+
+    operation = sub.add_parser("operation", help="inspect service operations")
+    operation_sub = operation.add_subparsers(dest="operation_command", required=True)
+    operation_list = operation_sub.add_parser("list", help="list service operations")
+    add_list_query_arguments(
+        operation_list,
+        sort_fields={"id", "operation", "state", "started_at", "completed_at"},
+        default_sort="started_at",
+        default_order="desc",
+        query_help="Search operation fields.",
+    )
+    operation_list.add_argument("--state", help="Filter by operation state.")
+    add_list_output_arguments(operation_list, noun="operation")
+    operation_list.set_defaults(func=cmd_operation_list)
+    operation_show = operation_sub.add_parser("show", help="show one service operation")
+    operation_show.add_argument("operation")
+    operation_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    operation_show.set_defaults(func=cmd_operation_show)
+    operation_watch = operation_sub.add_parser("watch", help="watch one service operation")
+    operation_watch.add_argument("operation")
+    operation_watch.add_argument("--interval", type=float, default=1.0)
+    operation_watch.add_argument("--json", action="store_true", help="Emit final JSON.")
+    operation_watch.set_defaults(func=cmd_operation_watch)
 
     check_config = sub.add_parser("check-config", help="validate deployed Jeb configuration")
     check_config.add_argument("--json", action="store_true", help="Emit JSON.")

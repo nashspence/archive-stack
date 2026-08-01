@@ -615,8 +615,9 @@ class SQLiteJebStore:
                 UPDATE batch_attempts
                 SET state = ?, updated_at = ?, last_error = ?
                 WHERE id = ?
+                  AND (state != 'canceled' OR ? = 'canceled')
                 """,
-                (state, event_timestamp(), error, attempt_id),
+                (state, event_timestamp(), error, attempt_id, state),
             )
 
     def set_attempt_fields(self, attempt_id: str, **fields: object) -> None:
@@ -639,7 +640,8 @@ class SQLiteJebStore:
         values.append(attempt_id)
         with self.connect() as conn:
             conn.execute(
-                f"UPDATE batch_attempts SET {', '.join(assignments)} WHERE id = ?",
+                f"UPDATE batch_attempts SET {', '.join(assignments)} "
+                "WHERE id = ? AND state != 'canceled'",
                 values,
             )
 
@@ -790,7 +792,7 @@ class SQLiteJebStore:
                 values,
             ).fetchall()
 
-    def latest_failed_attempt_for_source(self, source_id: str) -> sqlite3.Row | None:
+    def latest_retryable_attempt_for_source(self, source_id: str) -> sqlite3.Row | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -798,7 +800,7 @@ class SQLiteJebStore:
                 FROM batch_attempts a
                 JOIN batches b ON b.id = a.batch_id
                 WHERE b.source_id = ?
-                  AND a.state = 'failed'
+                  AND a.state IN ('failed', 'canceled')
                 ORDER BY a.created_at DESC, a.id DESC
                 LIMIT 1
                 """,

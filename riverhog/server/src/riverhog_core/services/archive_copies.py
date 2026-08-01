@@ -33,6 +33,10 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.archive_copy_states import (
+    ARCHIVE_COPY_STATES,
+    ARCHIVE_COPY_TRANSFER_STATES,
+)
 from riverhog_core.services.archive_records import (
     apply_archive_receipt,
     archive_copy_identity,
@@ -49,7 +53,6 @@ from riverhog_core.services.lifecycle_events import (
 )
 
 _LOG = logging.getLogger(__name__)
-_ACTIVE_STATES = {"requested", "waiting", "copying"}
 _SORT_FIELDS = {
     "collection_id",
     "source_store",
@@ -88,7 +91,22 @@ class SqlAlchemyArchiveCopyService:
             for job in jobs:
                 job.state = "requested"
                 job.next_attempt_at = current_text
-            return len(jobs)
+            pending_cancellations = session.execute(
+                select(
+                    ArchiveCopyJobRecord.collection_id,
+                    ArchiveCopyJobRecord.destination_store,
+                )
+                .where(
+                    ArchiveCopyJobRecord.state == "canceling",
+                )
+                .limit(limit)
+            ).all()
+        for collection_id, destination_store in pending_cancellations:
+            self._cleanup_canceled_destination(
+                collection_id=collection_id,
+                destination_store=str(destination_store),
+            )
+        return len(jobs) + len(pending_cancellations)
 
     def create_or_resume(
         self,
@@ -142,7 +160,9 @@ class SqlAlchemyArchiveCopyService:
                 )
                 session.add(job)
                 self._emit(job, type="archive_copy.requested", session=session)
-            elif job.state not in _ACTIVE_STATES:
+            elif job.state not in ARCHIVE_COPY_TRANSFER_STATES:
+                if job.state == "canceling":
+                    raise Conflict("archive copy cancellation cleanup is still in progress")
                 job.source_store = source_copy.store
                 job.initiated_by_app = initiator.app
                 job.initiated_by_key_id = initiator.key_id
@@ -154,6 +174,60 @@ class SqlAlchemyArchiveCopyService:
                 job.failure = None
                 self._emit(job, type="archive_copy.requested", session=session)
             return _job_payload(job)
+
+    def cancel(
+        self,
+        collection_id: int,
+        *,
+        destination_store: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        normalized_collection_id = _normalize_collection_id(collection_id)
+        destination = self._configured_store(destination_store)
+        copying = False
+        with session_scope(self._session_factory) as session:
+            job = session.scalar(
+                select(ArchiveCopyJobRecord)
+                .where(
+                    ArchiveCopyJobRecord.collection_id == normalized_collection_id,
+                    ArchiveCopyJobRecord.destination_store == destination,
+                    collection_access_filter(
+                        ArchiveCopyJobRecord.collection_id,
+                        principal,
+                        ARCHIVES_MANAGE,
+                    ),
+                )
+                .with_for_update()
+            )
+            if job is None:
+                raise NotFound(
+                    f"archive copy job not found: {normalized_collection_id} to {destination}"
+                )
+            if job.state == "canceled":
+                return _job_payload(job)
+            if job.state == "canceling":
+                return _job_payload(job)
+            if job.state not in ARCHIVE_COPY_TRANSFER_STATES:
+                raise InvalidState(f"archive copy cannot be canceled in state {job.state}")
+            copying = job.state == "copying"
+            job.state = "canceling"
+            job.next_attempt_at = None
+            job.failure = None
+            job.completed_at = None
+        if not copying:
+            self._cleanup_source_read(
+                collection_id=normalized_collection_id,
+                destination_store=destination,
+            )
+            self._cleanup_canceled_destination(
+                collection_id=normalized_collection_id,
+                destination_store=destination,
+            )
+        return self.get(
+            normalized_collection_id,
+            destination_store=destination,
+            principal=principal,
+        )
 
     def get(
         self,
@@ -191,6 +265,7 @@ class SqlAlchemyArchiveCopyService:
         sort: str,
         order: str,
         all_items: bool,
+        state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         if page < 1:
@@ -202,6 +277,9 @@ class SqlAlchemyArchiveCopyService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
         query = q.strip().casefold() if q and q.strip() else None
+        normalized_state = state.strip().casefold() if state and state.strip() else None
+        if normalized_state is not None and normalized_state not in ARCHIVE_COPY_STATES:
+            raise BadRequest(f"state must be one of {', '.join(sorted(ARCHIVE_COPY_STATES))}")
         filters = [
             collection_access_filter(
                 ArchiveCopyJobRecord.collection_id,
@@ -209,6 +287,8 @@ class SqlAlchemyArchiveCopyService:
                 ARCHIVES_MANAGE,
             )
         ]
+        if normalized_state is not None:
+            filters.append(ArchiveCopyJobRecord.state == normalized_state)
         if query is not None:
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             pattern = f"%{escaped}%"
@@ -271,6 +351,7 @@ class SqlAlchemyArchiveCopyService:
             "sort": sort,
             "order": order,
             "query": query,
+            "filters": ({"state": normalized_state} if normalized_state is not None else {}),
             "copies": jobs,
         }
 
@@ -316,6 +397,10 @@ class SqlAlchemyArchiveCopyService:
                     exc=exc,
                 )
                 self._cleanup_source_read(
+                    collection_id=collection_id,
+                    destination_store=str(destination_store),
+                )
+                self._cleanup_canceled_destination(
                     collection_id=collection_id,
                     destination_store=str(destination_store),
                 )
@@ -426,9 +511,18 @@ class SqlAlchemyArchiveCopyService:
             archive=_receipt_identity(receipt),
         )
         with session_scope(self._session_factory) as session:
-            job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+            job = session.scalar(
+                select(ArchiveCopyJobRecord)
+                .where(
+                    ArchiveCopyJobRecord.collection_id == collection_id,
+                    ArchiveCopyJobRecord.destination_store == destination_store,
+                )
+                .with_for_update()
+            )
             if job is None:
                 raise Conflict("archive copy job disappeared during transfer")
+            if job.state != "copying":
+                raise Conflict("archive copy was canceled during transfer")
             copy = session.get(
                 CollectionArchiveCopyRecord,
                 (collection_id, destination_store),
@@ -558,9 +652,15 @@ class SqlAlchemyArchiveCopyService:
                 (collection_id, destination_store, object_id),
             )
 
+        def require_active(session: Session, collection_id: int) -> None:
+            job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+            if job is None or job.state != "copying":
+                raise Conflict("archive copy was canceled during transfer")
+
         return SqlAlchemyArchiveMultipartUploadTracker(
             self._session_factory,
             load_record=load_record,
+            require_active=require_active,
         )
 
     def _record_failure(
@@ -572,7 +672,7 @@ class SqlAlchemyArchiveCopyService:
     ) -> None:
         with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
-            if job is None:
+            if job is None or job.state in {"canceling", "canceled"}:
                 return
             job.state = "failed"
             job.next_attempt_at = None
@@ -608,6 +708,42 @@ class SqlAlchemyArchiveCopyService:
                     collection_id,
                     job.source_store,
                 )
+
+    def _cleanup_canceled_destination(
+        self,
+        *,
+        collection_id: int,
+        destination_store: str,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+            if job is None or job.state != "canceling":
+                return
+            destination_storage_prefix = job.destination_storage_prefix
+        try:
+            self._archive_stores.require(destination_store).discard_collection_archive_upload(
+                archive_storage_prefix=destination_storage_prefix,
+            )
+        except Exception:
+            _LOG.exception(
+                "failed to discard canceled archive copy: collection=%s destination=%s",
+                collection_id,
+                destination_store,
+            )
+            return
+        with session_scope(self._session_factory) as session:
+            job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+            if job is None or job.state != "canceling":
+                return
+            session.execute(
+                delete(ArchiveCopyObjectUploadRecord).where(
+                    ArchiveCopyObjectUploadRecord.collection_id == collection_id,
+                    ArchiveCopyObjectUploadRecord.destination_store == destination_store,
+                )
+            )
+            job.state = "canceled"
+            job.completed_at = format_utc_timestamp(utc_now())
+            self._emit(job, type="archive_copy.canceled", terminal=True, session=session)
 
     def _configured_store(self, value: str) -> str:
         try:

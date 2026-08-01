@@ -232,6 +232,7 @@ class MemoryArchiveStore:
         self.cleaned: list[tuple[str, ...]] = []
         self.verified: list[tuple[str, ...]] = []
         self.deleted: list[tuple[str, ...]] = []
+        self.discarded_uploads: list[str] = []
         self.published_metadata: list[tuple[int, str, bytes]] = []
         self.replaced_proofs: list[bytes] = []
         self.attestation_artifacts: dict[str, bytes] = {}
@@ -242,6 +243,9 @@ class MemoryArchiveStore:
 
     def abort_incomplete_multipart_uploads(self, **_: object) -> int:
         return 0
+
+    def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None:
+        self.discarded_uploads.append(archive_storage_prefix)
 
     def new_collection_archive_storage_prefix(self) -> str:
         return f"archives/{self.backend}/new-copy"

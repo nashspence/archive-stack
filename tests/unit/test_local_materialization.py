@@ -87,9 +87,11 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
     assert imports == {
         ("riverhog_api_client.client", "ApiClient"),
         ("riverhog_protocol.errors", "InvalidState"),
+        ("riverhog_protocol.errors", "NotFound"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
+        ("riverhog_cli.output", "format_local_collection"),
         ("riverhog_cli.output", "format_local_collections"),
         ("riverhog_cli_support.output", "emit"),
         ("riverhog_cli_support.output", "format_list_ids"),
@@ -294,6 +296,61 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
         runner.invoke(local_materialization.local_app, ["list"]).stdout
         == "local collections: 0 (page 1/0)\n"
     )
+
+
+def test_local_evict_cancels_active_retrieval_before_removing_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    api.job_state = "requested"
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+
+    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
+    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
+    evicted = runner.invoke(local_materialization.local_app, ["evict", "1", "--confirm", "--json"])
+
+    assert evicted.exit_code == 0
+    assert json.loads(evicted.stdout) == {
+        "collection_id": 1,
+        "retrievals_canceled": ["job-1"],
+        "status": "evicted",
+    }
+    assert api.canceled == ["job-1"]
+    assert runner.invoke(local_materialization.local_app, ["list", "--json"]).exit_code == 0
+
+
+def test_local_show_and_actions_have_human_and_json_projections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+
+    added = runner.invoke(local_materialization.local_app, ["add", "1", "--json"])
+    shown = runner.invoke(local_materialization.local_app, ["show", "1", "--json"])
+    human = runner.invoke(local_materialization.local_app, ["show", "1"])
+    audit = runner.invoke(local_materialization.local_app, ["audit", "--json"])
+    removed = runner.invoke(local_materialization.local_app, ["remove", "1", "--json"])
+
+    assert added.exit_code == shown.exit_code == human.exit_code == 0
+    assert audit.exit_code == 1
+    assert json.loads(added.stdout)["collection"]["collection_id"] == 1
+    assert json.loads(shown.stdout) == json.loads(added.stdout)["collection"]
+    assert "local collection 1" in human.stdout
+    assert json.loads(audit.stdout) == {
+        "problems": 2,
+        "samples": ["missing: 1/notes/one.txt", "missing: 1/notes/two.txt"],
+        "samples_truncated": False,
+        "status": "issues",
+    }
+    assert json.loads(removed.stdout)["status"] == "removed"
 
 
 def test_local_evict_removes_retained_nested_collection_tree(

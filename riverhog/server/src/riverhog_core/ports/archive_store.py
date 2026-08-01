@@ -105,6 +105,8 @@ class ArchiveMultipartUploadState:
 
 
 class ArchiveMultipartUploadTracker(Protocol):
+    def require_active(self, *, collection_id: int) -> None: ...
+
     def load_multipart_upload(
         self,
         *,
@@ -177,6 +179,8 @@ class ArchiveStore(Protocol):
         *,
         initiated_before: datetime,
     ) -> int: ...
+
+    def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None: ...
 
     def upload_collection_archive(
         self,

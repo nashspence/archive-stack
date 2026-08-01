@@ -169,6 +169,10 @@ def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> Non
         _delete_object_versions(cache_client, bucket=cache.bucket, prefixes=prefixes)
 
 
+def delete_object_versions_with_prefix(client: Any, *, bucket: str, prefix: str) -> None:
+    _delete_object_versions(client, bucket=bucket, prefixes=[prefix])
+
+
 def _delete_object_versions(client: Any, *, bucket: str, prefixes: list[str]) -> None:
     for prefix in prefixes:
         current = client.get_paginator("list_objects_v2")

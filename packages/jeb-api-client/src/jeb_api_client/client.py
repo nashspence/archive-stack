@@ -156,6 +156,9 @@ class JebApiClient:
     def get_attempt(self, attempt_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/attempts/{quote(attempt_id, safe='')}")
 
+    def cancel_attempt(self, attempt_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/v1/attempts/{quote(attempt_id, safe='')}")
+
     def wait_for_attempt(
         self,
         attempt_id: str,
@@ -187,6 +190,52 @@ class JebApiClient:
 
     def run_once(self) -> dict[str, Any]:
         return self._json("POST", "/v1/once")
+
+    def list_operations(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        sort: str = "started_at",
+        order: str = "desc",
+        state: str | None = None,
+        query: str | None = None,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, QueryValue] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if state is not None:
+            params["state"] = state
+        if query is not None:
+            params["q"] = query
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/operations", params=params)
+
+    def get_operation(self, operation_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/operations/{quote(operation_id, safe='')}")
+
+    def wait_for_operation(
+        self,
+        operation_id: str,
+        *,
+        interval: float = 1.0,
+    ) -> dict[str, Any]:
+        if interval <= 0:
+            raise ValueError("interval must be positive")
+        while True:
+            try:
+                operation = self.get_operation(operation_id)
+            except httpx.TransportError:
+                time.sleep(interval)
+                continue
+            if operation.get("state") in {"succeeded", "failed"}:
+                return operation
+            time.sleep(interval)
 
     def archive_now(
         self,

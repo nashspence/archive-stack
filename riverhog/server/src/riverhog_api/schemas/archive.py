@@ -40,7 +40,9 @@ class ArchiveCopyJobOut(RiverhogModel):
     destination_store: str
     initiated_by_app: str | None
     initiated_by_key_id: str | None
-    state: Literal["requested", "waiting", "copying", "completed", "failed"]
+    state: Literal[
+        "requested", "waiting", "copying", "canceling", "completed", "failed", "canceled"
+    ]
     requested_at: str | None
     ready_at: str | None
     expires_at: str | None
@@ -56,6 +58,7 @@ class ArchiveCopyJobListOut(RiverhogModel):
     sort: str
     order: Literal["asc", "desc"]
     query: str | None
+    filters: dict[str, str]
     copies: list[ArchiveCopyJobOut]
 
 

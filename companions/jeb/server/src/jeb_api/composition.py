@@ -63,6 +63,8 @@ class JebServices:
         return self.store.attempt_files(attempt_id)
 
     def set_attempt_state(self, attempt_id: str, state: str) -> None:
+        if str(self.store.load_attempt(attempt_id)["state"]) == "canceled":
+            return
         self.store.set_attempt_state(attempt_id, state)
 
     def record_target_preflight_failure(

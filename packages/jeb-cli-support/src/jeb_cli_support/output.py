@@ -200,7 +200,42 @@ def format_config_check(payload: Mapping[str, object]) -> str:
 
 
 def format_operation(payload: Mapping[str, object], *, title: str) -> str:
-    return f"{title}: {payload.get('status', payload.get('state', 'complete'))}"
+    nested = payload.get("operation")
+    operation = nested if isinstance(nested, Mapping) else payload
+    text = f"{title}: {payload.get('status', operation.get('state', 'complete'))}"
+    if operation.get("id"):
+        text += f"  operation={operation['id']}"
+    return text
+
+
+def format_operations(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "Jeb operations")]
+    for operation in _items(payload, "operations"):
+        lines.append(
+            f"- {operation.get('id', 'unknown')}  "
+            f"operation={operation.get('operation', 'unknown')}  "
+            f"state={operation.get('state', 'unknown')}  "
+            f"started={operation.get('started_at', 'unknown')}"
+        )
+    return "\n".join(lines)
+
+
+def format_operation_detail(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"Jeb operation {payload.get('id', 'unknown')}",
+        f"operation: {payload.get('operation', 'unknown')}",
+        f"state: {payload.get('state', 'unknown')}",
+        f"started: {payload.get('started_at', 'unknown')}",
+    ]
+    if payload.get("source"):
+        lines.append(f"source: {payload['source']}")
+    if payload.get("attempt_id"):
+        lines.append(f"attempt: {payload['attempt_id']}")
+    if payload.get("completed_at"):
+        lines.append(f"completed: {payload['completed_at']}")
+    if payload.get("failure"):
+        lines.append(f"failure: {payload['failure']}")
+    return "\n".join(lines)
 
 
 __all__ = [
@@ -211,6 +246,8 @@ __all__ = [
     "format_attempts",
     "format_config_check",
     "format_operation",
+    "format_operation_detail",
+    "format_operations",
     "format_source",
     "format_source_removal",
     "format_source_result",

@@ -57,6 +57,9 @@ class _MemoryMultipartTracker(ArchiveMultipartUploadTracker):
         self.parts: list[ArchiveMultipartUploadedPart] = []
         self.cleared: list[str] = []
 
+    def require_active(self, *, collection_id: int) -> None:
+        _ = collection_id
+
     def load_multipart_upload(
         self,
         *,

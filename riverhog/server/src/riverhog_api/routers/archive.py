@@ -45,6 +45,7 @@ def list_archive_copies(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
+    state: str | None = Query(None),
     sort: str = Query("requested_at"),
     order: str = Query("desc"),
     all_items: bool = Query(False, alias="all"),
@@ -54,9 +55,30 @@ def list_archive_copies(
             page=page,
             per_page=per_page,
             q=q,
+            state=state,
             sort=sort,
             order=order,
             all_items=all_items,
+            principal=principal,
+        )
+    )
+
+
+@router.delete(
+    "/archive/copies/{collection_id}/{destination_store}",
+    response_model=ArchiveCopyJobOut,
+)
+def cancel_archive_copy(
+    collection_id: int,
+    destination_store: str,
+    container: ContainerDep,
+    principal: ArchiveManager,
+) -> ArchiveCopyJobOut:
+    container.collection_access.require(principal, ARCHIVES_MANAGE, collection_id)
+    return ArchiveCopyJobOut.model_validate(
+        container.archive_copies.cancel(
+            collection_id,
+            destination_store=destination_store,
             principal=principal,
         )
     )

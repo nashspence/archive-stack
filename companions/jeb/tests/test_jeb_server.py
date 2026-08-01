@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -277,7 +278,6 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
                 (batch_id, "camera/a.txt"),
             )
             raise RuntimeError("rollback")
-
     page = services.store.list_attempts(resolution="all", sort="bytes")
     assert page["attempts"][0]["file_count"] == 2
     assert page["attempts"][0]["total_bytes"] == 8
@@ -315,6 +315,60 @@ def test_jeb_batch_file_summaries_are_trigger_maintained_transactionally(
     assert page["attempts"][0]["file_count"] == 0
     assert page["attempts"][0]["total_bytes"] == 0
     assert services.store.list_attempts(resolution="all", source="camera")["total"] == 1
+
+
+def test_operator_can_cancel_and_explicitly_retry_an_unresolved_attempt(tmp_path: Path) -> None:
+    env = env_for(tmp_path, sources="camera")
+    write_stable_file(tmp_path / "landing" / "camera" / "a.txt")
+    services = services_from_env(env)
+    attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+
+    canceled = services.attempts.cancel_attempt(attempt_id)
+
+    assert canceled["state"] == "canceled"
+    assert attempt_id not in unresolved_attempt_ids(services)
+    event = services.event_log.page(after=None, limit=100).events[-1]
+    assert event.type == "io.riverhog.jeb.attempt.canceled"
+    assert event.subject == attempt_id
+    retried_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert retried_id == f"{attempt_id}-r2"
+    assert services.store.get_attempt(attempt_id)["state"] == "superseded"
+    assert services.store.get_attempt(retried_id)["state"] == "batching"
+
+
+def test_cancel_wins_a_race_with_target_completion(tmp_path: Path) -> None:
+    env = env_for(tmp_path, sources="camera")
+    write_stable_file(tmp_path / "landing" / "camera" / "a.txt")
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingAdapter(MunchyTargetAdapter):
+        def advance(self, services: JebServices, attempt_id: str) -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            services.store.set_attempt_state(attempt_id, "target_complete")
+
+        def cancel(self, services: JebServices, attempt_id: str) -> None:
+            _ = services, attempt_id
+
+    services = services_from_env(
+        env,
+        target_adapters={"munchy": BlockingAdapter()},
+    )
+    attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+    worker = threading.Thread(target=services.attempts.process_attempt, args=(attempt_id,))
+    worker.start()
+    assert started.wait(timeout=5)
+
+    canceled = services.attempts.cancel_attempt(attempt_id)
+    release.set()
+    worker.join(timeout=5)
+
+    assert canceled["state"] == "canceled"
+    assert not worker.is_alive()
+    assert services.store.get_attempt(attempt_id)["state"] == "canceled"
 
 
 def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
