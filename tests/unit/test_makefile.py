@@ -18,7 +18,6 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
 COMPOSE_FILE = REPO_ROOT / "riverhog/server/compose.yaml"
-COMPOSE_ENV_EXAMPLE = REPO_ROOT / ".env.compose.example"
 
 
 def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
@@ -96,6 +95,7 @@ def _run_make(
     env.pop("FILES", None)
     env.pop("MAKEFLAGS", None)
     env.pop("MFLAGS", None)
+    env.pop("COMPOSE_ENV_FILE", None)
     env.pop("SPEC_TESTS", None)
     env.pop("POSTGRES_TESTS", None)
     env.pop("TESTS", None)
@@ -180,14 +180,6 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         "BYTES",
     }
 
-    example_names = {
-        line.split("=", 1)[0]
-        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
-    }
-    compose_owned_names = {"COMPOSE_PROJECT_NAME"}
-    assert all(name in compose_text or name in compose_owned_names for name in example_names)
-
 
 def test_compose_services_publish_every_static_runtime_setting() -> None:
     runtime_trees = (
@@ -215,16 +207,6 @@ def test_compose_services_publish_every_static_runtime_setting() -> None:
     assert runtime_names
     for service in ("app", "test"):
         assert runtime_names <= set(compose["services"][service]["environment"])
-
-
-def test_compose_override_example_contains_no_default_assignments() -> None:
-    assignments = [
-        line
-        for line in COMPOSE_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    assert assignments == []
 
 
 def test_compose_host_interpolation_is_complete_without_an_env_file() -> None:
@@ -348,7 +330,10 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             == "${RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX-}"
         )
         assert compose["services"][service]["env_file"] == [
-            "${RIVERHOG_COMPOSE_ENV_FILE:-../../.env.compose.example}"
+            {
+                "path": "${RIVERHOG_COMPOSE_ENV_FILE:-../../.env.compose}",
+                "required": False,
+            }
         ]
 
     compose_helper = (REPO_ROOT / "scripts" / "_compose_env.sh").read_text(encoding="utf-8")
@@ -490,6 +475,45 @@ def test_build_targets_are_atomic(tmp_path: Path) -> None:
     assert " build --sbom=true test" in docker_log
 
 
+def test_compose_helpers_need_no_environment_file(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "build-riverhog")
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    docker_log = "\n".join(_read_log_lines(docker_log_path))
+    assert "--env-file" not in docker_log
+
+
+def test_compose_helpers_honor_an_explicit_environment_file(tmp_path: Path) -> None:
+    env_file = tmp_path / "overrides.env"
+    env_file.write_text("TEST_COMPOSE_PROJECT_NAME=riverhog-explicit\n")
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "build-riverhog",
+        extra_env={"COMPOSE_ENV_FILE": str(env_file)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    docker_log = "\n".join(_read_log_lines(docker_log_path))
+    assert f"--env-file {env_file}" in docker_log
+    assert "riverhog-explicit|" in docker_log
+
+
+def test_compose_helpers_reject_a_missing_explicit_environment_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.env"
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "build-riverhog",
+        extra_env={"COMPOSE_ENV_FILE": str(missing)},
+    )
+
+    assert completed.returncode == 2
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == []
+    assert f"Compose environment file does not exist: {missing}" in completed.stderr
+
+
 def test_dist_builds_a_clean_complete_artifact_set(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(tmp_path, "dist")
 
@@ -586,7 +610,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
     assert "COPY riverhog riverhog" in test_dockerfile
     assert "COPY utilities utilities" in test_dockerfile
     assert "COPY tests tests" in test_dockerfile
-    assert "docs/" in dockerignore
+    assert "/docs/" in dockerignore
 
 
 def test_dockerfile_copy_sources_are_git_owned() -> None:

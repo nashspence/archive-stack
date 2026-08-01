@@ -9,6 +9,35 @@ from tests.workspace import workspace_pyprojects
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_ignore_files_are_concise_and_cover_local_state() -> None:
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+
+    assert len(gitignore) == len(set(gitignore))
+    assert len(dockerignore) == len(set(dockerignore))
+    assert {
+        ".env",
+        ".env.*",
+        "/.riverhog/",
+        "/build/",
+        "/dist/",
+        "mise.local.lock",
+        "mise.local.toml",
+    } <= set(gitignore)
+    assert {
+        "/.git",
+        "/.riverhog/",
+        "/.venv/",
+        "/build/",
+        "/dist/",
+        "/docs/",
+        "**/.env",
+        "**/.env.*",
+        "**/__pycache__/",
+        "**/*.pyc",
+    } <= set(dockerignore)
+
+
 def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     mise = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))

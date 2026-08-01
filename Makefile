@@ -95,7 +95,7 @@ help:
 		'  ARCHIVE_STORE=archive  Optional store for make archive-download-smoke.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
-		'  COMPOSE_ENV_FILE=/abs/path/to/.env.compose' \
+		'  COMPOSE_ENV_FILE=/abs/path/to/overrides.env' \
 		'  TEST_COMPOSE_PROJECT_NAME=riverhog-shared'
 
 license:

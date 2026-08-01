@@ -25,8 +25,7 @@ Use `make help` for development and validation commands. Use each installed comm
 document at `/openapi.json`.
 
 The [Riverhog Compose stack](riverhog/server/compose.yaml) runs from safe development
-defaults. The intentionally empty [Compose override example](.env.compose.example) is the
-starting point for local overrides.
+defaults.
 
 ## Repository map
 

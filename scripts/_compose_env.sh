@@ -2,23 +2,23 @@
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/riverhog/server/compose.yaml"
-DEFAULT_ENV_FILE="${ROOT_DIR}/.env.compose.example"
 LOCAL_ENV_FILE="${ROOT_DIR}/.env.compose"
 APP_IMAGE_NAME="riverhog-app:dev"
 TEST_IMAGE_NAME="riverhog-test:dev"
 
-if [[ -f "${LOCAL_ENV_FILE}" ]]; then
-  COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${LOCAL_ENV_FILE}}"
-else
-  COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${DEFAULT_ENV_FILE}}"
+if [[ -n "${COMPOSE_ENV_FILE:-}" && ! -f "${COMPOSE_ENV_FILE}" ]]; then
+  printf 'Compose environment file does not exist: %s\n' "${COMPOSE_ENV_FILE}" >&2
+  exit 2
 fi
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${LOCAL_ENV_FILE}}"
 export RIVERHOG_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"
 
 compose() {
-  docker compose \
-    --file "${COMPOSE_FILE}" \
-    --env-file "${COMPOSE_ENV_FILE}" \
-    "$@"
+  local env_args=()
+  if [[ -f "${COMPOSE_ENV_FILE}" ]]; then
+    env_args=(--env-file "${COMPOSE_ENV_FILE}")
+  fi
+  docker compose --file "${COMPOSE_FILE}" "${env_args[@]}" "$@"
 }
 
 compose_env_value() {
@@ -29,7 +29,9 @@ compose_env_value() {
     return
   fi
   local line=""
-  line="$(grep -E "^${name}=" "${COMPOSE_ENV_FILE}" | tail -n 1 || true)"
+  if [[ -f "${COMPOSE_ENV_FILE}" ]]; then
+    line="$(grep -E "^${name}=" "${COMPOSE_ENV_FILE}" | tail -n 1 || true)"
+  fi
   if [[ -n "${line}" ]]; then
     printf '%s' "${line#*=}"
     return
