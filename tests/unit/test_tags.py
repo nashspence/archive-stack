@@ -215,7 +215,7 @@ def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:
         assert publication.next_attempt_at is not None
 
 
-def test_collection_tag_mutation_waits_for_destructive_custody_operations(
+def test_collection_tag_mutation_waits_for_destructive_archive_operations(
     tmp_path: Path,
 ) -> None:
     config, _archive = seed_archive_copy(

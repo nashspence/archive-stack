@@ -1356,7 +1356,7 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
         "kind": "none",
         "reason": "sidecar_evidence",
     }
-    assert evidence["custody"] == {
+    assert evidence["source_artifact"] == {
         "kind": "source_artifact_sidecar",
         "primary_source": "phone/IMG_0001.MOV",
         "source_artifacts_path": "video/iphone/video/IMG_0001.webm.source-artifacts.tar.zst",
@@ -3295,7 +3295,7 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
     ]
 
 
-def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_custody(
+def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_artifacts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]

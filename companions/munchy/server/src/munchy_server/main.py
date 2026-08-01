@@ -4859,14 +4859,14 @@ def routing_manifest_file_entry(
                 "kind": "none",
                 "reason": "sidecar_evidence",
             }
-            custody = routing_manifest_sidecar_custody_entry(
+            source_artifact = routing_manifest_sidecar_source_artifact_entry(
                 file_state,
                 upload=upload,
                 groups=groups,
                 archive_dir=archive_dir,
             )
-            if custody:
-                entry["custody"] = custody
+            if source_artifact:
+                entry["source_artifact"] = source_artifact
             return entry
         entry["output"] = routing_manifest_output_entry(
             archive_output_path_for_routed_file(
@@ -4880,7 +4880,7 @@ def routing_manifest_file_entry(
     return entry
 
 
-def routing_manifest_sidecar_custody_entry(
+def routing_manifest_sidecar_source_artifact_entry(
     evidence_state: Mapping[str, Any],
     *,
     upload: dict[str, Any],

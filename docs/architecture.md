@@ -5,7 +5,7 @@ in one or more named archive stores. PostgreSQL records immutable logical identi
 placement, archive copies, external catalog events, retrieval work, and cache leases. Object
 stores hold encrypted bytes.
 
-## Ingress and custody
+## Ingress and archiving
 
 A collection is the deletion unit. PostgreSQL assigns its immutable positive-integer id when
 an idempotent upload session is opened. Existing tags may be assigned at creation and changed
@@ -126,8 +126,8 @@ presentation.
 
 ## Component boundaries
 
-- The Riverhog custody platform server owns custody, search, portable catalog publication,
-  retrieval preparation, and verified logical-file delivery.
+- The Riverhog archive platform server owns archive construction, search, portable catalog
+  publication, retrieval preparation, and verified logical-file delivery.
 - The official `riverhog` client is a separate API consumer. It contains no platform
   server implementation and carries no privileged in-process access.
 - The `riverhog local` client owns one local materialization, including its directory,

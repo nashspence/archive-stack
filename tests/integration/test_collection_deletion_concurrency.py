@@ -361,7 +361,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
         assert session.scalar(select(RetrievalJobRecord)) is None
 
 
-def test_metadata_publication_and_deletion_cannot_cross_collection_custody(
+def test_metadata_publication_and_deletion_cannot_cross_collection_archive_operations(
     database_url: str,
 ) -> None:
     _seed(database_url)

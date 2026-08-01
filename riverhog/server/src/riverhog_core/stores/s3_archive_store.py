@@ -31,7 +31,6 @@ from riverhog_core.archive_attestations import (
     ATTESTATION_FILENAMES,
     ATTESTATION_OBJECT_KINDS,
 )
-from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING, archive_agents_guidance
 from riverhog_core.archive_object_paths import archive_store_object_path
 from riverhog_core.archive_objects import (
     PACK_PAYLOAD_LIMIT,
@@ -40,6 +39,7 @@ from riverhog_core.archive_objects import (
     CollectionArchiveDataObject,
     max_age_plaintext_object_bytes,
 )
+from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING, archive_agents_guidance
 from riverhog_core.ports.archive_store import (
     ArchiveArtifactRead,
     ArchiveMultipartUploadedPart,
@@ -2186,7 +2186,7 @@ def _combine_archive_read_statuses(
 def _bucket_recovery_readme() -> str:
     return f"""# Encrypted Riverhog Archive Recovery
 
-{ARCHIVE_CUSTODY_WARNING}
+{ARCHIVE_DATA_LOSS_WARNING}
 
 Listing and reading these objects are safe inspection operations. Deletion,
 movement, overwriting, lifecycle expiration, storage-class changes, and object-

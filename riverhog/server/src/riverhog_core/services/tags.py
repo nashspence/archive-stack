@@ -32,7 +32,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.collection_access import require_collection_access, tag_access_filter
 from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.collection_custody import require_collection_mutation_allowed
+from riverhog_core.services.collection_mutations import require_collection_mutation_allowed
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,

@@ -92,14 +92,26 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
 
 def test_entrypoint_documents_route_to_one_operational_disclaimer_and_recovery() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (REPO_ROOT / "docs/archive-operations.md").read_text(encoding="utf-8")
+    durable_documents = [
+        " ".join(path.read_text(encoding="utf-8").split())
+        for path in (
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "docs/architecture.md",
+            REPO_ROOT / "docs/operator-responsibilities.md",
+            REPO_ROOT / "docs/recovery-without-riverhog.md",
+        )
+    ]
     recovery = (REPO_ROOT / "docs/recovery-without-riverhog.md").read_text(encoding="utf-8")
-    normalized_operations = " ".join(operations.split())
+    normalized_readme = " ".join(readme.split())
     normalized_recovery = " ".join(recovery.split())
 
-    assert "one autonomous custody owner per deployment" in readme
-    assert "multi-tenant custody service" in readme
-    assert "does not guarantee preservation" in normalized_operations
-    assert "confidentiality, or recoverability" in normalized_operations
+    assert "one operator per deployment" in normalized_readme
+    assert "multi-tenant storage service" in normalized_readme
+    assert "does not guarantee preservation" in normalized_readme
+    assert "confidentiality, or recoverability" in normalized_readme
+    assert (
+        sum(document.count("does not guarantee preservation") for document in durable_documents)
+        == 1
+    )
     assert "riverhog-recover ./archives/ARCHIVE_ID ./recovered-collection" in recovery
     assert "does not import Riverhog server code or read a Riverhog database" in normalized_recovery

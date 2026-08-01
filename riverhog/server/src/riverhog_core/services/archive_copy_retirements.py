@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
-from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
+from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -48,7 +48,7 @@ _CHALLENGE_RE = re.compile(r"^retire-copy-(\d+)-([0-9a-f]{64})$")
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _ACTIVE_COPY_STATES = {"requested", "waiting", "copying"}
 _RETIREMENT_WARNING = (
-    f"{ARCHIVE_CUSTODY_WARNING}\n\n"
+    f"{ARCHIVE_DATA_LOSS_WARNING}\n\n"
     "This operation permanently removes one collection archive copy. Riverhog will "
     "proceed only after a different complete copy passes remote verification. Confirm "
     "the exact collection and archive store."

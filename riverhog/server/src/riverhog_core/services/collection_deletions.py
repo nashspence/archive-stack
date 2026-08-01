@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ApplicationPrincipal
-from riverhog_core.archive_custody import ARCHIVE_CUSTODY_WARNING
+from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_events import record_catalog_event
@@ -341,7 +341,7 @@ def _build_plan(
     return {
         "status": "blocked" if blockers else "ready",
         "collection_id": collection_id,
-        "warning": ARCHIVE_CUSTODY_WARNING,
+        "warning": ARCHIVE_DATA_LOSS_WARNING,
         "expires_at": format_utc_timestamp(expires_at),
         "file_count": int(file_count),
         "bytes": int(file_bytes),

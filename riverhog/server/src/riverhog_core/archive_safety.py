@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-ARCHIVE_CUSTODY_WARNING = (
+ARCHIVE_DATA_LOSS_WARNING = (
     "DANGER: These encrypted Riverhog archive objects are the sole durable copies "
     "Riverhog relies on for accepted collections. Deleting, moving, overwriting, "
     "or expiring them can permanently destroy the only recoverable copy. Do not "
@@ -12,7 +12,7 @@ ARCHIVE_CUSTODY_WARNING = (
 def archive_agents_guidance() -> str:
     return f"""# Riverhog Archive Agent Instructions
 
-{ARCHIVE_CUSTODY_WARNING}
+{ARCHIVE_DATA_LOSS_WARNING}
 
 Treat this archive root as read-only unless the operator explicitly authorizes
 an exact mutation and confirms the resulting loss. Opaque names are intentional

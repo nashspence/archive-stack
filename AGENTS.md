@@ -18,7 +18,7 @@ deployed. Keep public code generic; real identity and deployment topology belong
 - Keep ingress and retrieval-cache objects encrypted whenever they leave a client or
   Riverhog process.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
-- Treat catalog and object-store mutations as one custody operation.
+- Treat catalog and object-store mutations as one archive mutation.
 - Never expose secrets or private deployment identity in public code, fixtures, logs,
   examples, or generated contracts.
 
@@ -33,12 +33,13 @@ Durable documentation has distinct roles:
 
 - [README](README.md) is the human entrypoint and repository map;
 - [architecture](docs/architecture.md) owns the stable mental model, boundaries, and terms;
-- [archive operations](docs/archive-operations.md) owns human custody judgment;
+- [operator responsibilities](docs/operator-responsibilities.md) owns human archive-safety
+  judgment;
 - [recovery without Riverhog](docs/recovery-without-riverhog.md) owns the portable recovery
   procedure.
 
-Licensing, security reporting, and contribution policy remain in their conventional
-top-level files. Do not add release reference or duplicate executable contracts to `main`.
+Licensing and security reporting remain in their conventional top-level files. Do not add
+release reference or duplicate executable contracts to `main`.
 
 ## Work
 

@@ -7,7 +7,7 @@ REPO = Path(__file__).resolve().parents[2]
 ENTRYPOINTS = {REPO / "README.md", REPO / "AGENTS.md"}
 DURABLE_CONTEXT = {
     REPO / "docs/architecture.md",
-    REPO / "docs/archive-operations.md",
+    REPO / "docs/operator-responsibilities.md",
     REPO / "docs/recovery-without-riverhog.md",
 }
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")

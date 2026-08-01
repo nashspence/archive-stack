@@ -42,7 +42,7 @@ from riverhog_core.services.archive_records import (
 from riverhog_core.services.archive_upload_tracking import (
     SqlAlchemyArchiveMultipartUploadTracker,
 )
-from riverhog_core.services.collection_custody import require_collection_custody_idle
+from riverhog_core.services.collection_mutations import require_collection_archive_idle
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
@@ -108,7 +108,7 @@ class SqlAlchemyArchiveCopyService:
         current_text = format_utc_timestamp(utc_now())
         normalized_context_json = event_context_json(event_context)
         with session_scope(self._session_factory) as session:
-            require_collection_custody_idle(session, normalized_collection_id)
+            require_collection_archive_idle(session, normalized_collection_id)
             collection = session.get(CollectionRecord, normalized_collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_collection_id}")

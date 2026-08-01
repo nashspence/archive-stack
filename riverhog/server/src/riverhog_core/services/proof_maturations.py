@@ -25,7 +25,7 @@ from riverhog_core.proofs import (
     ProofVerifier,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.collection_custody import require_collection_custody_idle
+from riverhog_core.services.collection_mutations import require_collection_archive_idle
 
 _LOG = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ class SqlAlchemyProofMaturationService:
             )
             if record is None:
                 return None
-            require_collection_custody_idle(session, record.collection_id)
+            require_collection_archive_idle(session, record.collection_id)
             record.state = "upgrading"
             record.attempt_count += 1
             record.last_attempt_at = now

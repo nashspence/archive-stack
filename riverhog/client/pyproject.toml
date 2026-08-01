@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-client"
 version = "0.1.0"
-description = "Command-line client for the Riverhog custody platform."
+description = "Command-line client for the Riverhog archive platform."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-server"
 version = "0.1.0"
-description = "Encrypted remote collection custody, catalog, and retrieval."
+description = "Encrypted archive management, catalog, and retrieval."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

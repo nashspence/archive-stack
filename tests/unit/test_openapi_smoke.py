@@ -6,7 +6,7 @@ from riverhog_core.domain.models import CollectionSummary
 from riverhog_core.domain.types import CollectionId
 
 
-def test_openapi_describes_custody_catalog_and_retrieval_boundaries() -> None:
+def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
     paths = create_app().openapi()["paths"]
 
     assert {

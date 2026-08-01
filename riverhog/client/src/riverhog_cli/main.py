@@ -66,7 +66,7 @@ from riverhog_cli.output import (
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
 
-app = typer.Typer(help="Riverhog custody platform CLI.")
+app = typer.Typer(help="Riverhog archive platform CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 collection_tag_app = typer.Typer(help="Collection tag assignments.")
 archive_app = typer.Typer(help="Archive-store operations.")

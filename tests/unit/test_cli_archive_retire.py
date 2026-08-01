@@ -39,7 +39,7 @@ def _plan() -> dict[str, object]:
     }
 
 
-def test_archive_retire_plan_emits_custody_warning_and_challenge(monkeypatch) -> None:
+def test_archive_retire_plan_emits_data_loss_warning_and_challenge(monkeypatch) -> None:
     class FakeClient:
         def plan_archive_copy_retirement(
             self, collection_id: int, *, store: str
