@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import sys
@@ -55,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
             "  check-config  validate env configuration and initialize state"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("jeb-server"),
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run continuously and process eligible batches")

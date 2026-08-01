@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -107,8 +108,26 @@ def _close_clients() -> None:
             close()
 
 
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    typer.echo(importlib.metadata.version("munchy-client"))
+    raise typer.Exit()
+
+
 @app.callback()
-def munchy_app(ctx: typer.Context) -> None:
+def munchy_app(
+    ctx: typer.Context,
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the installed Munchy client version",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
     """Keep the CLI in group mode so `munchy job ...` stays canonical."""
 
     ctx.call_on_close(_close_clients)

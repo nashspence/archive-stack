@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -336,6 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  source        manage enrolled sources"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("jeb-client"),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

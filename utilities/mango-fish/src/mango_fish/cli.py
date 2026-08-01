@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import logging
 from pathlib import Path
@@ -12,6 +13,11 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog="mango-fish",
         description="Relay durable CloudEvents logs to webhooks.",
+    )
+    result.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("mango-fish"),
     )
     result.add_argument("--config", type=Path, required=True)
     result.add_argument("--check", action="store_true")

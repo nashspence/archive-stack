@@ -16,7 +16,7 @@ def test_api_entrypoint_listens_on_the_container_network(monkeypatch: Any) -> No
 
     monkeypatch.setattr(api_app.uvicorn, "run", fake_run)
 
-    api_app.main()
+    api_app.main([])
 
     assert invocation == {
         "application": "riverhog_api.app:create_app",

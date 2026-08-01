@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
+import importlib.metadata
 import logging
 import os
 import secrets
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
@@ -89,7 +91,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             execution_runtime.cleanup_thread.join(timeout=5)
 
 
-app = FastAPI(title="munchy-server", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="munchy-server",
+    version=importlib.metadata.version("munchy-server"),
+    lifespan=lifespan,
+)
 
 
 @app.exception_handler(ServiceError)
@@ -907,7 +913,21 @@ def cleanup() -> dict[str, Any]:
     return job_service.cleanup_once()
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="munchy-server",
+        description="Run the Munchy workflow server.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("munchy-server"),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    _parser().parse_args(argv)
     uvicorn.run(
         "munchy_api.app:app",
         host=os.getenv("MUNCHY_HOST", "127.0.0.1"),

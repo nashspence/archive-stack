@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -18,6 +19,28 @@ from gogurt.core import (
 )
 
 app = typer.Typer(help="Gogurt route and trigger utility.")
+
+
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    typer.echo(importlib.metadata.version("gogurt"))
+    raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Show the installed Gogurt version",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """Route and trigger utility commands."""
 
 
 def emit(payload: object, *, json_mode: bool) -> None:

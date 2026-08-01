@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.metadata
 import sys
 from pathlib import Path
 
@@ -12,6 +13,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="riverhog-recover",
         description="Recover one complete Riverhog archive copy without Riverhog.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("riverhog-recover"),
     )
     parser.add_argument("archive", type=Path, help="downloaded opaque archive directory")
     parser.add_argument("output", type=Path, help="new directory for recovered files")

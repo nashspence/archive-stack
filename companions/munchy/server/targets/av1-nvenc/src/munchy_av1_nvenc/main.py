@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import bisect
 import hashlib
+import importlib.metadata
 import json
 import logging
 import logging.config
@@ -15,7 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -250,7 +252,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="munchy-av1-nvenc", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="munchy-av1-nvenc",
+    version=importlib.metadata.version("munchy-av1-nvenc-target"),
+    lifespan=lifespan,
+)
 
 
 def run_command(
@@ -2018,7 +2024,21 @@ def get_job(job_id: str) -> dict[str, Any]:
     return load_status(job_id)
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="munchy-av1-nvenc",
+        description="Run the Munchy NVIDIA AV1 execution target.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("munchy-av1-nvenc-target"),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    _parser().parse_args(argv)
     uvicorn.run(
         "munchy_av1_nvenc.main:app",
         host=os.getenv("MUNCHY_HOST", "0.0.0.0"),

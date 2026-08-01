@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import importlib.metadata
@@ -7,7 +8,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import timedelta
 
 import uvicorn
@@ -523,7 +524,21 @@ def create_app(
     return app
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="riverhog-api",
+        description="Run the Riverhog archive management API.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=importlib.metadata.version("riverhog-server"),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    _parser().parse_args(argv)
     uvicorn.run(
         "riverhog_api.app:create_app",
         factory=True,
