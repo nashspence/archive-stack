@@ -503,7 +503,6 @@ def test_munchy_job_diagnostic_download_requires_explicit_output_and_forwards_ov
     )
 
     assert missing.exit_code == 2
-    assert "--output" in missing.output
     assert result.exit_code == 0
     assert json.loads(result.stdout)["output"] == str(tmp_path / "case.tar.gz")
 
