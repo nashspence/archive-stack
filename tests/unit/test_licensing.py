@@ -50,10 +50,18 @@ def test_every_workspace_distribution_declares_and_contains_its_component_licens
         expected_license = "CAL-1.0" if relative in SERVER_PROJECTS else "Apache-2.0"
         expected_text = cal if expected_license == "CAL-1.0" else apache
         config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        assert config["build-system"]["requires"] == ["hatchling>=1.27.0"]
         assert config["project"]["license"] == expected_license
         assert config["project"]["license-files"] == ["LICENSE"]
         assert (pyproject.parent / "LICENSE").read_bytes() == expected_text
+
+
+def test_every_workspace_distribution_uses_the_canonical_build_system() -> None:
+    for pyproject in workspace_pyprojects(REPO_ROOT):
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        assert config["build-system"] == {
+            "requires": ["hatchling>=1.31.0"],
+            "build-backend": "hatchling.build",
+        }
 
 
 def test_reference_recovery_is_independent_and_advertised() -> None:
