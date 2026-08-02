@@ -24,28 +24,27 @@ class SQLiteJebStore:
     def __init__(self, config: domain_models.JebConfig) -> None:
         self.config = config
 
-    def initialize(self) -> None:
+    def create_current_schema(self, conn: sqlite3.Connection) -> None:
         self.config.service.batch_dir.mkdir(parents=True, exist_ok=True)
-        with self.transaction() as conn:
-            self.create_batch_schema(conn)
-            self.ensure_target_preflight_schema(conn)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS source_removals (
-                    challenge TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    completed_at TEXT
-                )
-                """
+        self.create_batch_schema(conn)
+        self.ensure_target_preflight_schema(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_removals (
+                challenge TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jeb_source_removals_source "
-                "ON source_removals(source_id, started_at)"
-            )
-            self.create_service_operation_schema(conn)
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_source_removals_source "
+            "ON source_removals(source_id, started_at)"
+        )
+        self.create_service_operation_schema(conn)
 
     def create_service_operation_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -264,10 +263,11 @@ class SQLiteJebStore:
         }
 
     def connect(self) -> sqlite3.Connection:
-        self.config.service.state_db.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.config.service.state_db, timeout=30)
+        database_uri = f"{self.config.service.state_db.as_uri()}?mode=rw"
+        conn = sqlite3.connect(database_uri, uri=True, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 

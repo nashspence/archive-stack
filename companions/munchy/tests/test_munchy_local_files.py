@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from munchy_api_client.local_files import (
+    FILE_HASH_CACHE_SCHEMA_VERSION,
     FileHashCache,
     LocalFileCandidate,
     hash_local_file_candidates,
@@ -36,6 +37,11 @@ def test_hash_local_file_candidates_reuses_cached_hash(tmp_path: Path) -> None:
     assert second.hash_cache.hits == 1
     assert second.hash_cache.misses == 0
     assert second.hash_cache.writes == 0
+    with FileHashCache(cache_path) as cache:
+        assert cache.conn is not None
+        assert cache.conn.execute("PRAGMA user_version").fetchone()[0] == (
+            FILE_HASH_CACHE_SCHEMA_VERSION
+        )
 
 
 def test_hash_local_file_candidates_captures_filesystem_metadata(tmp_path: Path) -> None:

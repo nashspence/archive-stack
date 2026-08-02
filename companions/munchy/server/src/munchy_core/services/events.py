@@ -113,7 +113,6 @@ def emit_job_event(
         data=data,
     )
     event_log = lifecycle_store.lifecycle_event_log()
-    event_log.initialize()
     if terminal and job_id:
         event_log.expire_context(owner=owner, subject=job_id, expires_at=expiry or now_text)
     cursor = event_log.append(

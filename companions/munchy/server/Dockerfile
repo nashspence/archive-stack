@@ -21,6 +21,7 @@ COPY packages/munchy-workflows packages/munchy-workflows
 COPY packages/riverhog-age packages/riverhog-age
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
+COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
 COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-server --no-dev --no-editable

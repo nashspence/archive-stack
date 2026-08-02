@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import logging
 import os
 import secrets
+import sys
 import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -58,6 +60,7 @@ from munchy_core.persistence.template_registry import (
 )
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from state_schema import StateSchemaError
 from time_formats import utc_timestamp_now
 
 from munchy_api.composition import configure_adapters
@@ -80,7 +83,7 @@ def _operation_id(route: APIRoute) -> str:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     upload_service.ensure_dirs()
-    persistence.initialize_persistence()
+    persistence.validate_persistence()
     if runtime_config.RESUME_ON_START:
         job_service.schedule_pending_jobs()
     if runtime_config.CLEANUP_INTERVAL_SECONDS > 0:
@@ -851,11 +854,42 @@ def _parser() -> argparse.ArgumentParser:
         action="version",
         version=importlib.metadata.version("munchy-server"),
     )
+    subparsers = parser.add_subparsers(dest="command")
+    state = subparsers.add_parser("state", help="inspect or upgrade Munchy state")
+    state_subparsers = state.add_subparsers(dest="state_command", required=True)
+    for command_name, help_text in (
+        ("status", "show the current and required state revisions"),
+        ("upgrade", "explicitly upgrade state to the current revision"),
+        ("verify", "verify the current revision and exact state schema"),
+    ):
+        command_parser = state_subparsers.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--json", action="store_true", help="Emit JSON.")
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    _parser().parse_args(argv)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.command == "state":
+        schema = persistence.state_schema()
+        try:
+            if args.state_command == "status":
+                status = schema.status()
+            elif args.state_command == "upgrade":
+                status = schema.upgrade()
+            else:
+                status = schema.validate()
+        except StateSchemaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        payload = status.as_dict()
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(
+                f"munchy state: {payload['condition']} "
+                f"({payload['current_revision'] or 'none'} -> {payload['head_revision']})"
+            )
+        return 0
     uvicorn.run(
         "munchy_api.app:app",
         host=os.getenv("MUNCHY_HOST", "127.0.0.1"),
@@ -863,3 +897,4 @@ def main(argv: Sequence[str] | None = None) -> None:
         log_level=os.getenv("MUNCHY_UVICORN_LOG_LEVEL", "info"),
         log_config=uvicorn_log_config_without_health_access_logs(),
     )
+    return 0

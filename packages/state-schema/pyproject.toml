@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "state-schema"
+version = "0.1.0"
+description = "Forward-only relational state schema and migration contracts."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "alembic>=1.18.5,<2.0",
+  "sqlalchemy>=2.0,<3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/state_schema"]

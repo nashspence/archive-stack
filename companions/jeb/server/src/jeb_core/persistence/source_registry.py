@@ -31,6 +31,25 @@ SOURCE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 INGRESS_ADAPTERS = frozenset({"ftp", "tus"})
 DEFAULT_INCLUDE_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"})
 PASSWORD_HASHER = PasswordHasher()
+SOURCE_COLUMNS = (
+    "id",
+    "enabled",
+    "adapters_json",
+    "password_hash",
+    "upload_signing_key",
+    "stable_seconds",
+    "include_extensions_json",
+    "target",
+    "target_config_json",
+    "threshold_bytes",
+    "cleanup",
+    "cadence",
+    "weekday",
+    "hour",
+    "minute",
+    "created_at",
+    "updated_at",
+)
 
 
 class SourceRegistry:
@@ -50,8 +69,8 @@ class SourceRegistry:
         self.ftp_gid = ftp_gid
 
     def connect(self) -> sqlite3.Connection:
-        self.database.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database, timeout=30)
+        database_uri = f"{self.database.as_uri()}?mode=rw"
+        connection = sqlite3.connect(database_uri, uri=True, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout=30000")
@@ -64,30 +83,36 @@ class SourceRegistry:
 
     def initialize(self) -> None:
         with self.transaction() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sources (
-                    id TEXT PRIMARY KEY,
-                    enabled INTEGER NOT NULL,
-                    adapters_json TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    upload_signing_key TEXT NOT NULL,
-                    stable_seconds INTEGER NOT NULL,
-                    include_extensions_json TEXT NOT NULL,
-                    target TEXT NOT NULL,
-                    target_config_json TEXT NOT NULL,
-                    threshold_bytes INTEGER NOT NULL,
-                    cleanup TEXT NOT NULL,
-                    cadence TEXT NOT NULL,
-                    weekday INTEGER NOT NULL,
-                    hour INTEGER NOT NULL,
-                    minute INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                """
-            )
+            columns = tuple(str(row[1]) for row in connection.execute("PRAGMA table_info(sources)"))
+        if columns != SOURCE_COLUMNS:
+            raise SourceRegistryError("Jeb source registry does not match the current schema")
         self.write_ftp_projection()
+
+    @staticmethod
+    def create_current_schema(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE sources (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                adapters_json TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                upload_signing_key TEXT NOT NULL,
+                stable_seconds INTEGER NOT NULL,
+                include_extensions_json TEXT NOT NULL,
+                target TEXT NOT NULL,
+                target_config_json TEXT NOT NULL,
+                threshold_bytes INTEGER NOT NULL,
+                cleanup TEXT NOT NULL,
+                cadence TEXT NOT NULL,
+                weekday INTEGER NOT NULL,
+                hour INTEGER NOT NULL,
+                minute INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
     def add(
         self,

@@ -9,6 +9,7 @@ import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
 from jeb_api.cli import main as jeb_main
 from jeb_api.composition import config_from_env, create_services
+from jeb_core.persistence.schema import upgrade_state
 
 
 def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
@@ -23,6 +24,7 @@ def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
 def enroll(env: dict[str, str]) -> dict[str, str]:
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
     services = create_services(config_from_env(runtime_env))
+    upgrade_state(services.config)
     for source_id in env["TEST_SOURCE_IDS"].split(","):
         services.sources.add_source(
             source_id,
@@ -76,6 +78,7 @@ def test_jeb_archive_now_starts_batch_without_processing(
     assert "jeb archive" in output
     assert "jeb archive: staged" in output
     services = create_services(config_from_env(env))
+    upgrade_state(services.config)
     services.runtime.initialize()
     [batch_id] = services.store.unresolved_attempt_ids()
     assert [row["target_path"] for row in services.store.attempt_files(batch_id)] == [
@@ -100,6 +103,7 @@ def test_jeb_archive_now_dry_run_reports_plan_without_batch(
     assert "Jeb archive plan: phone" in output
     assert "eligible files: 1" in output
     services = create_services(config_from_env(env))
+    upgrade_state(services.config)
     services.runtime.initialize()
     assert services.store.unresolved_attempt_ids() == []
     assert services.store.list_attempts(resolution="all")["total"] == 0
@@ -155,6 +159,7 @@ def test_jeb_archive_now_reports_unknown_source_concisely(
 def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None:
     env = jeb_env(tmp_path)
     runtime_env = {key: value for key, value in env.items() if not key.startswith("TEST_")}
+    upgrade_state(config_from_env(runtime_env))
     for key, value in runtime_env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
@@ -163,6 +168,27 @@ def test_jeb_check_config_reads_env(tmp_path: Path, capsys, monkeypatch) -> None
 
     output = capsys.readouterr().out
     assert "Jeb config: ok" in output
+
+
+def test_jeb_state_commands_report_and_verify_the_current_revision(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    for key, value in jeb_env(tmp_path).items():
+        if not key.startswith("TEST_"):
+            monkeypatch.setenv(key, value)
+
+    assert jeb_main(["state", "status", "--json"]) == 0
+    empty = json.loads(capsys.readouterr().out)
+    assert jeb_main(["state", "upgrade", "--json"]) == 0
+    upgraded = json.loads(capsys.readouterr().out)
+    assert jeb_main(["state", "verify", "--json"]) == 0
+    verified = json.loads(capsys.readouterr().out)
+
+    assert empty["condition"] == "empty"
+    assert upgraded["current_revision"] == "v1_0001"
+    assert verified["condition"] == "current"
 
 
 def test_jeb_attempts_json_pages_sorts_and_filters(

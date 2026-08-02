@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from munchy_core.persistence.application_keys import SQLiteApplicationKeyStore
+from munchy_core.persistence.schema import upgrade_state
 
 
 def _connection(path: Path) -> sqlite3.Connection:
@@ -14,8 +15,8 @@ def _connection(path: Path) -> sqlite3.Connection:
 
 def test_munchy_application_keys_authenticate_and_aggregate_in_sql(tmp_path: Path) -> None:
     database = tmp_path / "munchy.sqlite3"
+    upgrade_state(database)
     store = SQLiteApplicationKeyStore(lambda: _connection(database))
-    store.initialize()
 
     desktop = store.create(
         app="desktop-client",

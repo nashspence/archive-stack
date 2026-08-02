@@ -14,6 +14,7 @@ dependencies = [
   "lifecycle-events>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
   "PyYAML>=6.0,<7.0",
+  "state-schema>=0.1,<0.2",
 ]
 
 [project.scripts]
@@ -21,6 +22,7 @@ mango-fish = "mango_fish.cli:main"
 
 [tool.uv.sources]
 lifecycle-events = { workspace = true }
+state-schema = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mango_fish"]

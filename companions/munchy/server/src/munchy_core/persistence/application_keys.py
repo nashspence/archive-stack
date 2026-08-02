@@ -77,26 +77,6 @@ class SQLiteApplicationKeyStore:
     def __init__(self, connect: Callable[[], sqlite3.Connection]) -> None:
         self._connect = connect
 
-    def initialize(self) -> None:
-        with closing(self._connect()) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS application_keys (
-                    id TEXT PRIMARY KEY,
-                    app TEXT NOT NULL,
-                    token_sha256 TEXT NOT NULL UNIQUE,
-                    permissions_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT,
-                    revoked_at TEXT,
-                    last_used_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS application_keys_app_id
-                ON application_keys(app, id);
-                """
-            )
-            connection.commit()
-
     def authenticate(self, token: str) -> MunchyPrincipal | None:
         if not token:
             return None

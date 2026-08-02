@@ -16,6 +16,7 @@ import pytest
 from jeb_api.app import JebServiceState, create_app, start_jeb_service_server
 from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
+from jeb_core.persistence.schema import upgrade_state
 
 API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
@@ -94,6 +95,7 @@ def services_for(
     target_adapters=None,
 ) -> JebServices:
     services = create_services(config_from_env(env), target_adapters=target_adapters)
+    upgrade_state(services.config)
     services.sources.add_source(
         "phone",
         adapters=("tus",),
@@ -226,6 +228,7 @@ def test_jeb_management_api_gets_one_attempt_by_list_identity(tmp_path: Path) ->
 
 def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
     services = create_services(config_from_env(jeb_env(tmp_path)))
+    upgrade_state(services.config)
     services.runtime.initialize()
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
@@ -502,6 +505,7 @@ def test_jeb_service_api_archive_now_processes_in_background(tmp_path: Path) -> 
 def test_jeb_service_operations_survive_service_recreation(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     services = create_services(config_from_env(env))
+    upgrade_state(services.config)
     operation = services.operations.start(operation="once", run=lambda: None)
     operation_id = str(operation["id"])
     deadline = time.monotonic() + 5
@@ -510,6 +514,7 @@ def test_jeb_service_operations_survive_service_recreation(tmp_path: Path) -> No
         time.sleep(0.01)
 
     restarted = create_services(config_from_env(env))
+    upgrade_state(restarted.config)
 
     shown = restarted.operations.get(operation_id)
     page = restarted.operations.list_page(
@@ -530,6 +535,7 @@ def test_jeb_service_operations_survive_service_recreation(tmp_path: Path) -> No
 def test_jeb_service_startup_marks_an_interrupted_operation_failed(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     services = create_services(config_from_env(env))
+    upgrade_state(services.config)
     services.runtime.initialize()
     services.store.create_service_operation(
         operation_id="interrupted-operation",
@@ -540,6 +546,7 @@ def test_jeb_service_startup_marks_an_interrupted_operation_failed(tmp_path: Pat
     )
 
     restarted = create_services(config_from_env(env))
+    upgrade_state(restarted.config)
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=restarted))
     try:
         shown = restarted.operations.get("interrupted-operation")

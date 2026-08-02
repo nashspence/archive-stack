@@ -14,6 +14,8 @@ import yaml
 from lifecycle_events.models import CLOUDEVENTS_JSON_CONTENT_TYPE, EventPage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from mango_fish.schema import validate_state
+
 LOG = logging.getLogger(__name__)
 
 
@@ -70,21 +72,11 @@ class CursorState:
         self.path = path
         self._lock = threading.Lock()
 
-    def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS source_cursors (
-                    source TEXT PRIMARY KEY,
-                    cursor TEXT NOT NULL
-                )
-                """
-            )
-            connection.commit()
+    def validate(self) -> None:
+        validate_state(self.path)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(f"{self.path.as_uri()}?mode=rw", uri=True, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout=30000")
         return connection
@@ -112,7 +104,7 @@ class MangoFish:
     def __init__(self, config: MangoFishConfig) -> None:
         self.config = config
         self.state = CursorState(config.state_path)
-        self.state.initialize()
+        self.state.validate()
 
     def relay_source_once(
         self,

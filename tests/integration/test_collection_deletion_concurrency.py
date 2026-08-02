@@ -11,6 +11,7 @@ import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
+    STATE_VERSION_TABLE,
     Base,
     create_catalog_engine,
     initialize_db,
@@ -44,7 +45,7 @@ from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadServic
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import Conflict
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 
@@ -129,6 +130,8 @@ def database_url() -> Iterator[str]:
         pytest.skip("RIVERHOG_TEST_POSTGRES_URL is required")
     engine = create_catalog_engine(value)
     Base.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text(f'DROP TABLE IF EXISTS "{STATE_VERSION_TABLE}"'))
     engine.dispose()
     initialize_db(value)
     try:
@@ -136,6 +139,8 @@ def database_url() -> Iterator[str]:
     finally:
         engine = create_catalog_engine(value)
         Base.metadata.drop_all(engine)
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{STATE_VERSION_TABLE}"'))
         engine.dispose()
 
 

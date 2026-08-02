@@ -17,6 +17,7 @@ MP4_LIKE_EXTENSIONS = {".3g2", ".3gp", ".m4v", ".mov", ".mp4"}
 FFPROBE_TIMEOUT_ENV = "MUNCHY_PREFLIGHT_FFPROBE_TIMEOUT"
 DEFAULT_FFPROBE_TIMEOUT_SECONDS = 30.0
 PREFLIGHT_CACHE_VERSION = 2
+PREFLIGHT_CACHE_SCHEMA_VERSION = 1
 SQLITE_CACHE_TIMEOUT_SECONDS = 60.0
 SQLITE_CACHE_BUSY_TIMEOUT_MS = int(SQLITE_CACHE_TIMEOUT_SECONDS * 1000)
 
@@ -100,6 +101,9 @@ class MediaPreflightCache:
         self.conn.execute(f"PRAGMA busy_timeout={SQLITE_CACHE_BUSY_TIMEOUT_MS}")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        schema_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if schema_version != PREFLIGHT_CACHE_SCHEMA_VERSION:
+            self.conn.execute("DROP TABLE IF EXISTS media_preflight")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS media_preflight (
@@ -112,6 +116,7 @@ class MediaPreflightCache:
             )
             """
         )
+        self.conn.execute(f"PRAGMA user_version={PREFLIGHT_CACHE_SCHEMA_VERSION}")
         self.conn.commit()
         return self
 

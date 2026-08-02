@@ -17,6 +17,7 @@ COPY packages/file-download packages/file-download
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/media-preflight packages/media-preflight
 COPY packages/munchy-api-client packages/munchy-api-client
+COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
 COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package jeb-server --no-dev --no-editable

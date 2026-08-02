@@ -25,6 +25,7 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
+  "state-schema>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
   "tus-transport>=0.1,<0.2",
   "uvicorn[standard]>=0.30,<1.0",
@@ -44,6 +45,7 @@ munchy-target-support = { workspace = true }
 munchy-workflows = { workspace = true }
 riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
+state-schema = { workspace = true }
 time-formats = { workspace = true }
 tus-transport = { workspace = true }
 

@@ -20,9 +20,6 @@ from munchy_core.domain.errors import ServiceError
 from munchy_core.persistence.application_keys import (
     SQLiteApplicationKeyStore,
 )
-from munchy_core.persistence.template_registry import (
-    ensure_template_registry_schema,
-)
 
 
 def safe_parse_timestamp(value: Any) -> datetime | None:
@@ -35,8 +32,8 @@ def safe_parse_timestamp(value: Any) -> datetime | None:
 
 
 def state_db() -> sqlite3.Connection:
-    runtime_config.STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(runtime_config.STATE_DB_PATH, timeout=30)
+    database_uri = f"{runtime_config.STATE_DB_PATH.as_uri()}?mode=rw"
+    conn = sqlite3.connect(database_uri, uri=True, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
@@ -45,90 +42,6 @@ def state_db() -> sqlite3.Connection:
 
 def application_keys() -> SQLiteApplicationKeyStore:
     return SQLiteApplicationKeyStore(state_db)
-
-
-def init_state_store() -> None:
-    application_keys().initialize()
-    with closing(state_db()) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS states (
-                kind TEXT NOT NULL,
-                id TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (kind, id)
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS states_kind_updated_at ON states(kind, updated_at)"
-        )
-        ensure_template_registry_schema(conn)
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS job_summaries (
-                job_id TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL,
-                input_upload_id TEXT NOT NULL,
-                template_id TEXT NOT NULL,
-                run_id TEXT NOT NULL,
-                workflow_mode TEXT NOT NULL,
-                handoff_destination TEXT NOT NULL,
-                output_mode TEXT NOT NULL,
-                profile TEXT NOT NULL,
-                terminal INTEGER NOT NULL,
-                cancel_requested INTEGER NOT NULL,
-                storage_wait INTEGER NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_terminal_updated "
-            "ON job_summaries(terminal, updated_at, job_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_state_updated "
-            "ON job_summaries(state, updated_at, job_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_workflow_updated "
-            "ON job_summaries(workflow_mode, updated_at, job_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_handoff_destination_updated "
-            "ON job_summaries(handoff_destination, updated_at, job_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_summaries_run_updated "
-            "ON job_summaries(run_id, updated_at, job_id)"
-        )
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS job_summaries_fts "
-            "USING fts5(job_id UNINDEXED, search_text)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS job_diagnostics (
-                job_id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                path TEXT NOT NULL,
-                bytes INTEGER NOT NULL CHECK(bytes >= 0),
-                sha256 TEXT NOT NULL CHECK(length(sha256) = 64)
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS job_diagnostics_created "
-            "ON job_diagnostics(created_at, job_id)"
-        )
-        conn.commit()
 
 
 def write_state(kind: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:

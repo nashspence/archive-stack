@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import contextlib
 import importlib.metadata
+import json
 import logging
+import sys
 import threading
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import timedelta
@@ -20,9 +22,11 @@ from http_api_contracts import (
     error_payload,
     status_for_error_code,
 )
+from riverhog_core.catalog_db import catalog_state_schema
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_protocol.errors import RiverhogError, ServiceUnavailable
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from state_schema import StateSchemaError
 from time_formats import utc_now
 
 from riverhog_api.deps import ServiceContainer, default_container, get_container
@@ -579,11 +583,42 @@ def _parser() -> argparse.ArgumentParser:
         action="version",
         version=importlib.metadata.version("riverhog-server"),
     )
+    subparsers = parser.add_subparsers(dest="command")
+    state = subparsers.add_parser("state", help="inspect or upgrade the catalog schema")
+    state_subparsers = state.add_subparsers(dest="state_command", required=True)
+    for command_name, help_text in (
+        ("status", "show the current and required catalog revisions"),
+        ("upgrade", "explicitly upgrade the catalog to the current revision"),
+        ("verify", "verify the current revision and exact catalog schema"),
+    ):
+        command_parser = state_subparsers.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--json", action="store_true", help="Emit JSON.")
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    _parser().parse_args(argv)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.command == "state":
+        schema = catalog_state_schema(load_runtime_config().database_url)
+        try:
+            if args.state_command == "status":
+                status = schema.status()
+            elif args.state_command == "upgrade":
+                status = schema.upgrade()
+            else:
+                status = schema.validate()
+        except StateSchemaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        payload = status.as_dict()
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(
+                f"riverhog catalog state: {payload['condition']} "
+                f"({payload['current_revision'] or 'none'} -> {payload['head_revision']})"
+            )
+        return 0
     uvicorn.run(
         "riverhog_api.app:create_app",
         factory=True,
@@ -591,7 +626,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         port=8000,
         reload=False,
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

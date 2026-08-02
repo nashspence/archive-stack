@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from riverhog_core.catalog_db import Base, create_catalog_engine, initialize_db
-from sqlalchemy import inspect, text
+from riverhog_core.catalog_db import (
+    STATE_VERSION_TABLE,
+    Base,
+    create_catalog_engine,
+    initialize_db,
+    validate_db,
+)
+from sqlalchemy import inspect
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -12,11 +18,13 @@ from tests.unit.db_helpers import sqlite_url
 def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
 
-    initialize_db(database_url)
-    initialize_db(database_url)
+    upgraded = initialize_db(database_url)
+    validated = validate_db(database_url)
 
     inspector = inspect(create_catalog_engine(database_url))
-    assert set(inspector.get_table_names()) == set(Base.metadata.tables)
+    assert upgraded.condition == validated.condition == "current"
+    assert upgraded.current_revision == validated.current_revision == "v1_0001"
+    assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",
         "month_started_at",
@@ -129,88 +137,28 @@ def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> No
         create_catalog_engine(str(tmp_path / "catalog.sqlite3"))
 
 
-def test_initialize_db_requires_exact_current_schema(tmp_path: Path) -> None:
+def test_validate_db_preserves_the_current_catalog_schema(tmp_path: Path) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     initialize_db(database_url)
     engine = create_catalog_engine(database_url)
-    with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE collection_files ADD COLUMN unexpected TEXT"))
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"unexpected column collection_files\.unexpected",
-    ):
-        initialize_db(database_url)
-
-
-def test_existing_catalog_is_validated_without_mutation(tmp_path: Path) -> None:
-    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    initialize_db(database_url)
-    engine = create_catalog_engine(database_url)
-    with engine.begin() as connection:
-        connection.execute(text("DROP INDEX ix_retrieval_jobs_due"))
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"missing index retrieval_jobs\.ix_retrieval_jobs_due",
-    ):
-        initialize_db(database_url)
-
-    assert "ix_retrieval_jobs_due" not in {
-        index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")
+    inspector = inspect(engine)
+    before = {
+        table: (
+            tuple(column["name"] for column in inspector.get_columns(table)),
+            tuple(index["name"] for index in inspector.get_indexes(table)),
+        )
+        for table in inspector.get_table_names()
     }
 
+    status = validate_db(database_url)
 
-def test_existing_catalog_requires_current_column_contract(tmp_path: Path) -> None:
-    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    engine = create_catalog_engine(database_url)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE collections ("
-                "id TEXT PRIMARY KEY, "
-                "creation_idempotency_key VARCHAR NOT NULL UNIQUE, "
-                "content_etag VARCHAR(64), "
-                "record_etag VARCHAR(64) NOT NULL, "
-                "metadata_revision BIGINT NOT NULL, "
-                "metadata_updated_at VARCHAR NOT NULL, "
-                "ingest_source VARCHAR, "
-                "created_by_app VARCHAR NOT NULL, "
-                "created_by_key_id VARCHAR, "
-                "created_at VARCHAR NOT NULL"
-                ")"
-            )
+    inspector = inspect(engine)
+    after = {
+        table: (
+            tuple(column["name"] for column in inspector.get_columns(table)),
+            tuple(index["name"] for index in inspector.get_indexes(table)),
         )
-
-    with pytest.raises(RuntimeError) as error:
-        initialize_db(database_url)
-
-    message = str(error.value)
-    assert "column collections.id has type TEXT, expected INTEGER" in message
-    assert "column collections.content_etag has nullable=True, expected False" in message
-    assert set(inspect(engine).get_table_names()) == {"collections"}
-
-
-def test_existing_catalog_requires_current_relational_contract(tmp_path: Path) -> None:
-    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    engine = create_catalog_engine(database_url)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE collection_files ("
-                "collection_id INTEGER NOT NULL, "
-                "path VARCHAR NOT NULL, "
-                "bytes BIGINT NOT NULL, "
-                "sha256 VARCHAR(64) NOT NULL, "
-                "PRIMARY KEY (collection_id, path)"
-                ")"
-            )
-        )
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"missing foreign key on collection_files",
-    ):
-        initialize_db(database_url)
-
-    assert set(inspect(engine).get_table_names()) == {"collection_files"}
+        for table in inspector.get_table_names()
+    }
+    assert status.condition == "current"
+    assert after == before

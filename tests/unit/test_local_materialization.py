@@ -75,6 +75,10 @@ JOB_OBJECTS = [
 ]
 
 
+def _prepare_local(target: Path) -> None:
+    local_materialization.local_state_schema(target / ".riverhog-local.sqlite3").upgrade()
+
+
 def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> None:
     imports = {
         (node.module, alias.name)
@@ -93,9 +97,28 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_protocol.paths", "normalize_tag"),
         ("riverhog_cli.output", "format_local_collection"),
         ("riverhog_cli.output", "format_local_collections"),
+        ("riverhog_cli.local_state", "state_schema"),
         ("riverhog_cli_support.output", "emit"),
         ("riverhog_cli_support.output", "format_list_ids"),
     }
+
+
+def test_local_state_commands_report_and_verify_the_current_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    runner = CliRunner()
+
+    empty = runner.invoke(local_materialization.local_app, ["state", "status", "--json"])
+    upgraded = runner.invoke(local_materialization.local_app, ["state", "upgrade", "--json"])
+    verified = runner.invoke(local_materialization.local_app, ["state", "verify", "--json"])
+
+    assert empty.exit_code == upgraded.exit_code == verified.exit_code == 0
+    assert json.loads(empty.stdout)["condition"] == "empty"
+    assert json.loads(upgraded.stdout)["current_revision"] == "v1_0001"
+    assert json.loads(verified.stdout)["condition"] == "current"
 
 
 class FakeApi:
@@ -231,6 +254,7 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -280,6 +304,7 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     api = FakeApi()
     api.job_state = "requested"
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -306,6 +331,7 @@ def test_local_evict_cancels_active_retrieval_before_removing_files(
     api = FakeApi()
     api.job_state = "requested"
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -330,6 +356,7 @@ def test_local_show_and_actions_have_human_and_json_projections(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -360,6 +387,7 @@ def test_local_evict_removes_retained_nested_collection_tree(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -390,6 +418,7 @@ def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
 
@@ -451,6 +480,7 @@ def test_local_list_uses_standard_human_json_and_id_views(
     target = tmp_path / "local"
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
     runner = CliRunner()
     assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
@@ -500,6 +530,7 @@ def test_local_list_pages_and_sorts_database_aggregates(
     target = tmp_path / "local"
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
     target.mkdir()
+    _prepare_local(target)
     db = local_materialization._connect(target)
     try:
         for collection_id, byte_count in ((1, 100), (2, 300), (3, 200)):
@@ -569,6 +600,7 @@ def test_local_projection_refuses_an_unmanaged_root_symlink(
     (target / "by-tag").symlink_to(elsewhere, target_is_directory=True)
     api = FakeApi()
     monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
     monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
 
     result = CliRunner().invoke(local_materialization.local_app, ["sync"])

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import CheckConstraint, UniqueConstraint, create_engine, event, inspect
-from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from state_schema import StateSchema, StateStatus
+
+STATE_VERSION_TABLE = "state_schema_revision"
+STATE_MIGRATIONS = Path(__file__).with_name("state_migrations")
 
 
 class Base(DeclarativeBase):
@@ -42,8 +47,8 @@ def create_catalog_engine(database_url: str) -> Engine:
     return engine
 
 
-def _type_name(value: Any, engine: Engine) -> str:
-    return " ".join(str(value.compile(dialect=engine.dialect)).upper().split())
+def _type_name(value: Any, bind: Connection | Engine) -> str:
+    return " ".join(str(value.compile(dialect=bind.dialect)).upper().split())
 
 
 def _foreign_key_signature(constraint: Any) -> tuple[tuple[str, ...], str, tuple[str, ...], str]:
@@ -67,10 +72,10 @@ def _inspected_foreign_key_signature(
     )
 
 
-def _assert_schema_matches_models(engine: Engine) -> None:
-    inspector = inspect(engine)
+def _assert_schema_matches_models(bind: Connection | Engine) -> None:
+    inspector = inspect(bind)
     expected = {table.name: table for table in Base.metadata.sorted_tables}
-    actual_tables = set(inspector.get_table_names())
+    actual_tables = set(inspector.get_table_names()) - {STATE_VERSION_TABLE}
     differences: list[str] = []
     for table_name in sorted(actual_tables - set(expected)):
         differences.append(f"unexpected table {table_name}")
@@ -89,8 +94,8 @@ def _assert_schema_matches_models(engine: Engine) -> None:
         for column_name in sorted(set(expected_columns) & set(actual_columns)):
             expected_column = expected_columns[column_name]
             actual_column = actual_columns[column_name]
-            expected_type = _type_name(expected_column.type, engine)
-            actual_type = _type_name(actual_column["type"], engine)
+            expected_type = _type_name(expected_column.type, bind)
+            actual_type = _type_name(actual_column["type"], bind)
             if actual_type != expected_type:
                 differences.append(
                     f"column {table_name}.{column_name} has type {actual_type}, "
@@ -101,7 +106,7 @@ def _assert_schema_matches_models(engine: Engine) -> None:
                     f"column {table_name}.{column_name} has nullable="
                     f"{bool(actual_column['nullable'])}, expected {bool(expected_column.nullable)}"
                 )
-            if engine.dialect.name != "sqlite":
+            if bind.dialect.name != "sqlite":
                 expected_identity = expected_column.identity is not None
                 actual_identity = actual_column.get("identity") is not None
                 if actual_identity != expected_identity:
@@ -193,8 +198,7 @@ def _assert_schema_matches_models(engine: Engine) -> None:
         )
 
 
-def initialize_db(database_url: str) -> None:
-    """Create an empty catalog or validate an existing catalog exactly."""
+def _load_catalog_models() -> None:
     from riverhog_core.catalog_models import (  # noqa: PLC0415
         AppKeyAccessGrantRecord,
         AppKeyRecord,
@@ -266,10 +270,30 @@ def initialize_db(database_url: str) -> None:
         RetrievalCacheLeaseRecord,
         TagRecord,
     )
-    engine = create_catalog_engine(database_url)
-    if not inspect(engine).get_table_names():
-        Base.metadata.create_all(engine)
-    _assert_schema_matches_models(engine)
+
+
+def catalog_state_schema(database_url: str) -> StateSchema:
+    _load_catalog_models()
+    return StateSchema(
+        name="riverhog catalog",
+        engine_factory=lambda: create_catalog_engine(database_url),
+        script_location=STATE_MIGRATIONS,
+        bootstrap=lambda connection: Base.metadata.create_all(connection),
+        verify=_assert_schema_matches_models,
+        version_table=STATE_VERSION_TABLE,
+    )
+
+
+def initialize_db(database_url: str) -> StateStatus:
+    """Explicitly create or forward-migrate the catalog to the current revision."""
+
+    return catalog_state_schema(database_url).upgrade()
+
+
+def validate_db(database_url: str) -> StateStatus:
+    """Validate current catalog state without applying schema changes."""
+
+    return catalog_state_schema(database_url).validate()
 
 
 def make_session_factory(database_url: str) -> sessionmaker[Session]:

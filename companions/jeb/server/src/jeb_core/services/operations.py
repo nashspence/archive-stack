@@ -17,13 +17,18 @@ class JebServiceOperations:
 
     _HISTORY_LIMIT = 100
 
-    def __init__(self, store: state_store.SQLiteJebStore) -> None:
+    def __init__(
+        self,
+        store: state_store.SQLiteJebStore,
+        initialize: Callable[[], None],
+    ) -> None:
         self._store = store
+        self._initialize_state = initialize
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
 
     def _initialize(self) -> None:
-        self._store.initialize()
+        self._initialize_state()
 
     def recover_interrupted(self) -> int:
         self._initialize()

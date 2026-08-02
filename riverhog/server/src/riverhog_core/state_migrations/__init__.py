@@ -1,0 +1,1 @@
+"""Riverhog catalog migration history."""

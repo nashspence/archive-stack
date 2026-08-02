@@ -16,6 +16,7 @@ from jeb_core.ingress import (
     prepare_tus_upload,
     reap_stale_incomplete_tus_uploads,
 )
+from jeb_core.persistence.schema import upgrade_state
 
 
 def jeb_env(tmp_path: Path) -> dict[str, str]:
@@ -28,6 +29,7 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
 
 def services_for(env: dict[str, str]) -> JebServices:
     services = create_services(config_from_env(env))
+    upgrade_state(services.config)
     services.sources.add_source(
         "phone",
         adapters=("tus",),

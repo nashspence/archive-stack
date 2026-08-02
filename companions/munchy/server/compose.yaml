@@ -1,4 +1,18 @@
 services:
+  munchy-state:
+    build:
+      context: ../../..
+      dockerfile: companions/munchy/server/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: munchy-server:latest
+    restart: "no"
+    command: ["munchy-server", "state", "upgrade"]
+    environment:
+      MUNCHY_STATE_DB: ${MUNCHY_STATE_DB:-/state/munchy.sqlite3}
+    volumes:
+      - ${MUNCHY_STATE_HOST_DIR:-./runtime/state}:/state
+
   munchy-server:
     build:
       context: ../../..
@@ -12,6 +26,9 @@ services:
     mem_limit: "2g"
     memswap_limit: "2g"
     stop_grace_period: 30s
+    depends_on:
+      munchy-state:
+        condition: service_completed_successfully
 
     environment:
       MUNCHY_HOST: ${MUNCHY_HOST:-127.0.0.1}

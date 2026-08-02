@@ -1,0 +1,3 @@
+from state_schema import run_migration_environment
+
+run_migration_environment()

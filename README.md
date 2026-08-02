@@ -56,6 +56,8 @@ suspected vulnerabilities privately through [security reporting](SECURITY.md).
 - [Architecture](docs/architecture.md) explains archive and component boundaries.
 - [Public interface conventions](docs/public-interfaces.md) defines the shared HTTP,
   official-client, and CLI contracts.
+- [Persistent-state contract](docs/persistent-state.md) defines schema ownership, explicit
+  forward upgrades, fixtures, backup, and rollback limits.
 - [Operator responsibilities](docs/operator-responsibilities.md) covers the human checks
   around durable storage, recovery, and deletion.
 - [Recovery without Riverhog](docs/recovery-without-riverhog.md) is the independent archive

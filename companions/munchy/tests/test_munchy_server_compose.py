@@ -30,3 +30,18 @@ def test_server_compose_exposes_every_runtime_setting() -> None:
         )
 
     assert runtime_settings <= environment
+
+
+def test_server_compose_upgrades_state_before_startup() -> None:
+    compose = yaml.safe_load(
+        (REPO_ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
+    )
+
+    assert compose["services"]["munchy-state"]["command"] == [
+        "munchy-server",
+        "state",
+        "upgrade",
+    ]
+    assert compose["services"]["munchy-server"]["depends_on"]["munchy-state"] == {
+        "condition": "service_completed_successfully"
+    }

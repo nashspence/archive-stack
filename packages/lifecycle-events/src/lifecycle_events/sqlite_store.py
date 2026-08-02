@@ -9,6 +9,46 @@ from datetime import UTC, datetime
 
 from lifecycle_events.models import CloudEvent, EventPage, normalize_event_context
 
+LIFECYCLE_EVENT_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS lifecycle_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        owner TEXT NOT NULL,
+        event_json TEXT NOT NULL,
+        context_json TEXT,
+        context_expires_at TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS lifecycle_events_owner_sequence
+    ON lifecycle_events(owner, sequence)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS lifecycle_events_context_expiry
+    ON lifecycle_events(context_expires_at)
+    WHERE context_json IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS lifecycle_events_owner_subject_context
+    ON lifecycle_events(owner, json_extract(event_json, '$.subject'))
+    WHERE context_json IS NOT NULL AND context_expires_at IS NULL
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS lifecycle_event_cursors (
+        source TEXT PRIMARY KEY,
+        cursor TEXT NOT NULL
+    )
+    """,
+)
+
+
+def create_lifecycle_event_schema(connection: sqlite3.Connection) -> None:
+    """Create the current schema when composed by a physical database owner."""
+
+    for statement in LIFECYCLE_EVENT_SCHEMA:
+        connection.execute(statement)
+
 
 def _now_text() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -31,26 +71,7 @@ class SQLiteLifecycleEventLog:
 
     def initialize(self) -> None:
         with closing(self._connect()) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS lifecycle_events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_id TEXT NOT NULL UNIQUE,
-                    owner TEXT NOT NULL,
-                    event_json TEXT NOT NULL,
-                    context_json TEXT,
-                    context_expires_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS lifecycle_events_owner_sequence
-                ON lifecycle_events(owner, sequence);
-                CREATE INDEX IF NOT EXISTS lifecycle_events_context_expiry
-                ON lifecycle_events(context_expires_at)
-                WHERE context_json IS NOT NULL;
-                CREATE INDEX IF NOT EXISTS lifecycle_events_owner_subject_context
-                ON lifecycle_events(owner, json_extract(event_json, '$.subject'))
-                WHERE context_json IS NOT NULL AND context_expires_at IS NULL;
-                """
-            )
+            create_lifecycle_event_schema(connection)
             connection.commit()
 
     def append(
@@ -206,14 +227,7 @@ class SQLiteEventCursorStore:
 
     def initialize(self) -> None:
         with closing(self._connect()) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS lifecycle_event_cursors (
-                    source TEXT PRIMARY KEY,
-                    cursor TEXT NOT NULL
-                )
-                """
-            )
+            create_lifecycle_event_schema(connection)
             connection.commit()
 
     def cursor(self, source: str) -> str:
@@ -236,4 +250,9 @@ class SQLiteEventCursorStore:
             connection.commit()
 
 
-__all__ = ["SQLiteEventCursorStore", "SQLiteLifecycleEventLog"]
+__all__ = [
+    "LIFECYCLE_EVENT_SCHEMA",
+    "SQLiteEventCursorStore",
+    "SQLiteLifecycleEventLog",
+    "create_lifecycle_event_schema",
+]

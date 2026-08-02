@@ -319,28 +319,6 @@ RIVERHOG_CAUSAL_EVENT_TYPES = {
 }
 
 
-def ensure_riverhog_event_lookup_indexes() -> None:
-    with closing(state_store.state_db()) as conn:
-        for name, expression in (
-            (
-                "riverhog_jobs_adapter_collection",
-                "json_extract(payload, '$.handoff_adapter_state.collection_id')",
-            ),
-            (
-                "riverhog_jobs_receipt_collection",
-                "json_extract(payload, '$.handoff_receipt.external_id')",
-            ),
-            (
-                "riverhog_jobs_progress_collection",
-                "json_extract(payload, '$.handoff_progress.external_id')",
-            ),
-        ):
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {name} ON states(kind, {expression}, updated_at)"
-            )
-        conn.commit()
-
-
 def job_for_riverhog_collection(
     collection_id: int,
     *,
@@ -1535,7 +1513,6 @@ class RiverhogHandoffAdapter:
         global upstream_event_thread
         if not self.enabled:
             return
-        ensure_riverhog_event_lookup_indexes()
         upstream_event_stop.clear()
         upstream_event_thread = threading.Thread(
             target=riverhog_event_loop,

@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import initialize_db
+from riverhog_core.catalog_db import validate_db
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
@@ -70,7 +70,7 @@ class ServiceContainer:
 @lru_cache(maxsize=1)
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
-    initialize_db(config.database_url)
+    validate_db(config.database_url)
     ensure_bucket_exists(config)
     retrieval_cache = S3RetrievalCache(config) if config.retrieval_cache is not None else None
     download_allowance = SqlAlchemyDownloadAllowance(config)

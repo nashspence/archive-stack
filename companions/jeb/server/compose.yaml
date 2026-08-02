@@ -1,4 +1,27 @@
 services:
+  jeb-state:
+    build:
+      context: ../../..
+      dockerfile: companions/jeb/server/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: jeb:latest
+    restart: "no"
+    env_file:
+      - ./config/jeb.env
+    environment:
+      JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
+      JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/files/}
+      JEB_MUNCHY_TOKEN: ${JEB_MUNCHY_TOKEN:-}
+    command: ["jeb-service", "state", "upgrade"]
+    volumes:
+      - type: bind
+        source: ${JEB_LANDING_HOST_DIR:-./runtime/landing}
+        target: /landing
+      - type: bind
+        source: ${JEB_STATE_HOST_DIR:-./runtime/state}
+        target: /state
+
   jeb:
     build:
       context: ../../..
@@ -7,6 +30,9 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     image: jeb:latest
     restart: unless-stopped
+    depends_on:
+      jeb-state:
+        condition: service_completed_successfully
     env_file:
       - ./config/jeb.env
     environment:

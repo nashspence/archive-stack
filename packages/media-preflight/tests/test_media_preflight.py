@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from media_preflight import (
+    PREFLIGHT_CACHE_SCHEMA_VERSION,
     MediaPreflightCache,
     MediaPreflightCacheFile,
     MediaPreflightFile,
@@ -179,3 +180,6 @@ def test_media_preflight_cache_commits_each_write_for_parallel_runs(tmp_path: Pa
         assert not first.conn.in_transaction
         issues = second.get(file)
         assert issues == [MediaPreflightIssue("ffprobe_failed", "broken")]
+        assert first.conn.execute("PRAGMA user_version").fetchone()[0] == (
+            PREFLIGHT_CACHE_SCHEMA_VERSION
+        )

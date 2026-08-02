@@ -53,9 +53,14 @@ def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:
         "jeb",
         "jeb-ftp",
         "jeb-ingress-init",
+        "jeb-state",
         "jeb-tus",
         "jeb-tusd",
     }
+    assert services["jeb"]["depends_on"]["jeb-state"]["condition"] == (
+        "service_completed_successfully"
+    )
+    assert services["jeb-state"]["command"] == ["jeb-service", "state", "upgrade"]
     assert services["jeb-tusd"]["command"][-1] == "pre-create,post-finish"
     assert "/files/" in services["jeb-tusd"]["command"]
     assert services["jeb-tusd"].get("ports", []) == []

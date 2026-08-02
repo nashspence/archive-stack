@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.domain.models import EligibleFile, JebConfig, TargetConfig, current_time
 from jeb_core.domain.sources import SourceConfig
+from jeb_core.persistence.schema import validate_state
 from jeb_core.persistence.source_registry import SourceRegistry
 from jeb_core.persistence.sqlite_state import SQLiteJebStore
 from jeb_core.ports.target import TargetAdapter, TargetContext
@@ -127,16 +128,14 @@ def create_services(
     holder: dict[str, JebServices] = {}
 
     def initialize() -> None:
-        store.initialize()
+        validate_state(config)
         source_registry.initialize()
-        event_log.initialize()
-        event_cursors.initialize()
 
     def target_context() -> TargetContext:
         return holder["services"]
 
     events = JebEventService(config, store, event_log)
-    operations = JebServiceOperations(store)
+    operations = JebServiceOperations(store, initialize)
     sources = JebSourceService(
         config,
         store,

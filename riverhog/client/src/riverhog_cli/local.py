@@ -16,14 +16,18 @@ from riverhog_api_client.client import ApiClient
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from state_schema import StateSchemaError
 from time_formats import parse_utc_timestamp
 
+from riverhog_cli.local_state import state_schema as local_state_schema
 from riverhog_cli.output import format_local_collection, format_local_collections
 
 local_app = typer.Typer(
     no_args_is_help=True,
     help="Maintain selected archive collections in a local directory.",
 )
+local_state_app = typer.Typer(no_args_is_help=True, help="Manage local durable state.")
+local_app.add_typer(local_state_app, name="state")
 
 LOCAL_LIST_PAGE_SIZE_MAX = 100
 LOCAL_LIST_SORT_FIELDS = {
@@ -37,12 +41,13 @@ PROJECTION_NAME_BYTES_MAX = 240
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
 
 
-def _target() -> Path:
+def _target(*, create: bool = True) -> Path:
     raw = os.getenv("RIVERHOG_LOCAL_ROOT", "").strip()
     if not raw:
         raise typer.BadParameter("RIVERHOG_LOCAL_ROOT is required")
     target = Path(raw).expanduser().resolve()
-    target.mkdir(parents=True, exist_ok=True)
+    if create:
+        target.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -52,40 +57,64 @@ def _database(target: Path) -> Path:
 
 
 def _connect(target: Path) -> sqlite3.Connection:
-    db = sqlite3.connect(_database(target))
+    database = _database(target)
+    local_state_schema(database).validate()
+    db = sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS desired_collections (
-            collection_id INTEGER PRIMARY KEY,
-            record_etag TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            tags_json TEXT NOT NULL,
-            remote_deleted INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS desired_files (
-            collection_id INTEGER NOT NULL,
-            path TEXT NOT NULL,
-            bytes INTEGER NOT NULL,
-            sha256 TEXT NOT NULL,
-            PRIMARY KEY (collection_id, path),
-            FOREIGN KEY (collection_id) REFERENCES desired_collections(collection_id)
-                ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS retrieval_jobs (
-            id TEXT PRIMARY KEY,
-            state TEXT NOT NULL,
-            files_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
     return db
+
+
+def _state_command(command: str, *, json_mode: bool) -> None:
+    target = _target(create=command == "upgrade")
+    schema = local_state_schema(_database(target))
+    try:
+        if command == "status":
+            status = schema.status()
+        elif command == "upgrade":
+            status = schema.upgrade()
+        else:
+            status = schema.validate()
+    except StateSchemaError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    payload = status.as_dict()
+    emit(
+        payload
+        if json_mode
+        else (
+            f"riverhog local state: {payload['condition']} "
+            f"({payload['current_revision'] or 'none'} -> {payload['head_revision']})"
+        ),
+        json_mode=json_mode,
+    )
+
+
+@local_state_app.command("status")
+def state_status(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Show the current and required local-state revisions."""
+
+    _state_command("status", json_mode=json_mode)
+
+
+@local_state_app.command("upgrade")
+def state_upgrade(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Explicitly upgrade local state to the current revision."""
+
+    _state_command("upgrade", json_mode=json_mode)
+
+
+@local_state_app.command("verify")
+def state_verify(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Verify the current revision and exact local-state schema."""
+
+    _state_command("verify", json_mode=json_mode)
 
 
 def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, object]:

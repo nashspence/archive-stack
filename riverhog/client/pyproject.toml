@@ -16,6 +16,7 @@ dependencies = [
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-cli-support>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
+  "state-schema>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
   "tus-transport>=0.1,<0.2",
   "typer>=0.12,<1.0",
@@ -29,6 +30,7 @@ riverhog-age = { workspace = true }
 riverhog-api-client = { workspace = true }
 riverhog-cli-support = { workspace = true }
 riverhog-protocol = { workspace = true }
+state-schema = { workspace = true }
 time-formats = { workspace = true }
 tus-transport = { workspace = true }
 

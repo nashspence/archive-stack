@@ -13,6 +13,7 @@ from time_formats import utc_timestamp_now
 from munchy_api_client.filesystem_metadata import collect_filesystem_metadata
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
+FILE_HASH_CACHE_SCHEMA_VERSION = 1
 SQLITE_CACHE_TIMEOUT_SECONDS = 60.0
 SQLITE_CACHE_BUSY_TIMEOUT_MS = int(SQLITE_CACHE_TIMEOUT_SECONDS * 1000)
 
@@ -64,6 +65,9 @@ class FileHashCache:
         self.conn.execute(f"PRAGMA busy_timeout={SQLITE_CACHE_BUSY_TIMEOUT_MS}")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        schema_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if schema_version != FILE_HASH_CACHE_SCHEMA_VERSION:
+            self.conn.execute("DROP TABLE IF EXISTS file_hashes")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS file_hashes (
@@ -77,6 +81,7 @@ class FileHashCache:
             """
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS file_hashes_path_idx ON file_hashes(path)")
+        self.conn.execute(f"PRAGMA user_version={FILE_HASH_CACHE_SCHEMA_VERSION}")
         self.conn.commit()
         return self
 

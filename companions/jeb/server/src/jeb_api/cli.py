@@ -17,8 +17,10 @@ from jeb_cli_support.output import (
     format_status,
 )
 from jeb_core.domain.models import UnrecoverableJebError
+from jeb_core.persistence.schema import state_schema
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 from riverhog_cli_support.output import emit, format_list_ids
+from state_schema import StateSchemaError
 
 from jeb_api.app import JebServiceState, start_jeb_service_server
 from jeb_api.composition import config_from_env, create_services
@@ -53,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
             "  archive-now   archive one source immediately\n"
             "  status        show read-only service status\n"
             "  attempt list  list processing attempts\n"
-            "  check-config  validate env configuration and initialize state"
+            "  state         inspect or explicitly upgrade durable state\n"
+            "  check-config  validate configuration and current state"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -115,12 +118,44 @@ def main(argv: list[str] | None = None) -> int:
     attempt_cancel.add_argument("--json", action="store_true", help="Emit JSON.")
     sub.add_parser(
         "check-config",
-        help="validate env configuration and initialize state",
+        help="validate configuration and current state",
     )
+    state_parser = sub.add_parser("state", help="inspect or explicitly upgrade durable state")
+    state_subparsers = state_parser.add_subparsers(dest="state_command", required=True)
+    for command_name, help_text in (
+        ("status", "show the current and required state revisions"),
+        ("upgrade", "explicitly upgrade state to the current revision"),
+        ("verify", "verify the current revision and exact state schema"),
+    ):
+        command_parser = state_subparsers.add_parser(command_name, help=help_text)
+        command_parser.add_argument("--json", action="store_true", help="Emit JSON.")
     args = parser.parse_args(argv)
     command = args.command or "run"
 
-    services = create_services(config_from_env())
+    config = config_from_env()
+    services = create_services(config)
+    if command == "state":
+        schema = state_schema(config)
+        try:
+            if args.state_command == "status":
+                state_status = schema.status()
+            elif args.state_command == "upgrade":
+                state_status = schema.upgrade()
+            else:
+                state_status = schema.validate()
+        except StateSchemaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        payload = state_status.as_dict()
+        if args.json:
+            emit(payload, json_mode=True)
+        else:
+            emit(
+                f"jeb state: {payload['condition']} "
+                f"({payload['current_revision'] or 'none'} -> {payload['head_revision']})",
+                json_mode=False,
+            )
+        return 0
     if command == "check-config":
         services.runtime.initialize()
         emit(

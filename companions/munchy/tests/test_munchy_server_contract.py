@@ -86,6 +86,7 @@ def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     server = importlib.import_module("munchy_api.app")
     for alias, module_name in SERVER_MODULES.items():
         setattr(server, alias, importlib.import_module(module_name))
+    server.persistence.initialize_persistence()
     return server
 
 
@@ -127,6 +128,25 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
 
     assert access_filter.filter(health) is False
     assert access_filter.filter(api) is True
+
+
+def test_munchy_state_commands_report_and_verify_the_current_revision(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    server = load_server(tmp_path, monkeypatch)
+
+    assert server.main(["state", "status", "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert server.main(["state", "upgrade", "--json"]) == 0
+    upgraded = json.loads(capsys.readouterr().out)
+    assert server.main(["state", "verify", "--json"]) == 0
+    verified = json.loads(capsys.readouterr().out)
+
+    assert status["condition"] == "current"
+    assert upgraded["current_revision"] == "v1_0001"
+    assert verified["condition"] == "current"
 
 
 def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -3737,7 +3757,6 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    server.riverhog.ensure_riverhog_event_lookup_indexes()
     collection_id = 41
     server.state_store.save_job(
         {
@@ -3802,7 +3821,6 @@ def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    server.riverhog.ensure_riverhog_event_lookup_indexes()
     collection_id = 41
     for job_id, created_at in (
         ("job-1", "2026-06-05T12:00:00.000000Z"),

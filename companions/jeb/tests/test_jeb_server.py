@@ -18,6 +18,7 @@ from jeb_core.domain.models import (
     parse_size,
 )
 from jeb_core.domain.sources import SourceRegistryError
+from jeb_core.persistence.schema import upgrade_state
 from lifecycle_events import cloud_event
 
 TEST_TEMPLATE = "camera-archive"
@@ -47,6 +48,7 @@ def services_from_env(
         config_from_env(runtime_env),
         target_adapters=target_adapters,
     )
+    upgrade_state(services.config)
     services.runtime.initialize()
     for source_id in source_ids:
         if not source_id:
