@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
 
-def test_ci_is_a_thin_adapter_over_repository_make_targets() -> None:
+def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
 
@@ -18,7 +18,7 @@ def test_ci_is_a_thin_adapter_over_repository_make_targets() -> None:
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "true"
 
-    assert set(workflow["jobs"]) == {"repository"}
+    assert set(workflow["jobs"]) == {"repository", "images"}
     job = workflow["jobs"]["repository"]
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["strategy"]["fail-fast"] == "false"
@@ -32,12 +32,10 @@ def test_ci_is_a_thin_adapter_over_repository_make_targets() -> None:
         "postgres-concurrency",
         "compose-smoke",
         "dist-smoke",
-        "build",
     ]
     assert [entry["target"] for entry in matrix if entry.get("docker") == "true"] == [
         "postgres-concurrency",
         "compose-smoke",
-        "build",
     ]
 
     steps = job["steps"]
@@ -47,9 +45,13 @@ def test_ci_is_a_thin_adapter_over_repository_make_targets() -> None:
         "docker/setup-docker-action",
         "docker/setup-compose-action",
     ]
-    assert all(
-        re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in steps if "uses" in step
-    )
+    action_steps = [
+        step
+        for workflow_job in workflow["jobs"].values()
+        for step in workflow_job["steps"]
+        if "uses" in step
+    ]
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in action_steps)
     assert steps[0]["with"]["persist-credentials"] == "false"
     assert steps[2]["if"] == "matrix.docker"
     assert steps[2]["with"]["version"] == "v29.3.1"

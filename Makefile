@@ -9,6 +9,7 @@ POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integr
 PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
+BAKE_FILE = docker-bake.json
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
 	companions/jeb/client/src \
@@ -51,6 +52,12 @@ define UV_CMD
 		exit 127; \
 	fi; \
 	$(if $(2),$(2) )$(UV_RUN) $(1)
+endef
+
+define BAKE_IMAGE
+	@revision="$$(git rev-parse --verify HEAD)"; \
+	docker buildx bake --file "$(BAKE_FILE)" --load --sbom=true \
+		--set "$(1).args.SOURCE_REVISION=$$revision" "$(1)"
 endef
 
 help:
@@ -171,22 +178,22 @@ dist-smoke: dist
 	@MISE_BIN="$(MISE_BIN)" ./scripts/test_distributions.sh
 
 build-riverhog:
-	@./scripts/build_riverhog.sh
+	$(call BAKE_IMAGE,riverhog)
 
 build-jeb:
-	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/jeb/server/compose.yaml build --sbom=true jeb
+	$(call BAKE_IMAGE,jeb)
 
 build-mango-fish:
-	@docker build --sbom=true --build-arg SOURCE_REVISION="$$(git rev-parse --verify HEAD)" --file utilities/mango-fish/Dockerfile --tag mango-fish:dev .
+	$(call BAKE_IMAGE,mango-fish)
 
 build-munchy-server:
-	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/compose.yaml build --sbom=true munchy-server
+	$(call BAKE_IMAGE,munchy-server)
 
 build-munchy-av1-nvenc:
-	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api
+	$(call BAKE_IMAGE,munchy-av1-nvenc)
 
 build-test:
-	@./scripts/build_test.sh
+	$(call BAKE_IMAGE,test)
 
 build: build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test
 

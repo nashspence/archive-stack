@@ -8,8 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy
 
 ARG AGE_VERSION=v1.3.1
+ARG SOURCE_REVISION=unknown
 
-LABEL org.opencontainers.image.licenses="CAL-1.0 AND Apache-2.0"
+LABEL org.opencontainers.image.licenses="CAL-1.0 AND Apache-2.0" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt

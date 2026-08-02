@@ -31,8 +31,6 @@ jobs:
           - target: compose-smoke
             docker: true
           - target: dist-smoke
-          - target: build
-            docker: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,3 +58,51 @@ jobs:
         env:
           CI_TARGET: ${{ matrix.target }}
         run: make "$CI_TARGET"
+
+  images:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - riverhog
+          - jeb
+          - mango-fish
+          - munchy-server
+          - munchy-av1-nvenc
+          - test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure Docker engine
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: v29.3.1
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.0
+      - name: Build image
+        uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
+        with:
+          source: .
+          files: docker-bake.json
+          targets: ${{ matrix.target }}
+          load: true
+          sbom: true
+          set: |
+            *.args.SOURCE_REVISION=${{ github.sha }}
+            *.cache-from=type=gha,scope=${{ matrix.target }}
+            *.cache-to=type=gha,scope=${{ matrix.target }},mode=min,ignore-error=true

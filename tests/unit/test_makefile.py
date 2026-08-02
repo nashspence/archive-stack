@@ -457,26 +457,35 @@ def test_lint_runs_license_format_ruff_and_mypy(tmp_path: Path) -> None:
     assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[3]
 
 
-def test_build_targets_are_atomic(tmp_path: Path) -> None:
+def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(tmp_path, "build")
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
-    docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build --sbom=true app" in docker_log
-    assert "companions/jeb/server/compose.yaml build --sbom=true jeb" in docker_log
-    assert "utilities/mango-fish/Dockerfile --tag mango-fish:dev" in docker_log
-    assert "--sbom=true --build-arg SOURCE_REVISION=" in docker_log
-    assert "companions/munchy/server/compose.yaml build --sbom=true munchy-server" in docker_log
-    assert (
-        "companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api"
-        in docker_log
+    revision = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    targets = (
+        "riverhog",
+        "jeb",
+        "mango-fish",
+        "munchy-server",
+        "munchy-av1-nvenc",
+        "test",
     )
-    assert " build --sbom=true test" in docker_log
+    assert _read_log_lines(docker_log_path) == [
+        "|buildx bake --file docker-bake.json --load --sbom=true "
+        f"--set {target}.args.SOURCE_REVISION={revision} {target}"
+        for target in targets
+    ]
 
 
 def test_compose_helpers_need_no_environment_file(tmp_path: Path) -> None:
-    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "build-riverhog")
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "down")
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
@@ -489,7 +498,7 @@ def test_compose_helpers_honor_an_explicit_environment_file(tmp_path: Path) -> N
     env_file.write_text("TEST_COMPOSE_PROJECT_NAME=riverhog-explicit\n")
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
-        "build-riverhog",
+        "down",
         extra_env={"COMPOSE_ENV_FILE": str(env_file)},
     )
 
@@ -504,7 +513,7 @@ def test_compose_helpers_reject_a_missing_explicit_environment_file(tmp_path: Pa
     missing = tmp_path / "missing.env"
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
-        "build-riverhog",
+        "down",
         extra_env={"COMPOSE_ENV_FILE": str(missing)},
     )
 
@@ -699,22 +708,6 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         assert "PYTHONPATH=/riverhog/src" not in dockerfile
 
 
-def test_munchy_av1_image_identifies_its_source_revision() -> None:
-    dockerfile = (
-        REPO_ROOT / "companions/munchy/server/targets/av1-nvenc" / "Dockerfile"
-    ).read_text(encoding="utf-8")
-    compose = (REPO_ROOT / "companions/munchy/server/targets/av1-nvenc" / "compose.yaml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "ARG SOURCE_REVISION=unknown" in dockerfile
-    assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
-    assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
-    assert "MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:dev" in compose
-    makefile = MAKEFILE.read_text(encoding="utf-8")
-    assert 'SOURCE_REVISION="$$(git rev-parse --verify HEAD)"' in makefile
-
-
 def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
     target = REPO_ROOT / "companions/munchy/server/targets/av1-nvenc"
     dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
@@ -733,17 +726,6 @@ def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
     for capability in ("av1_nvenc", "libopus", "av1_cuvid", "scale_cuda", "uhq"):
         assert capability in verification
     assert "FFmpeg must not be built with --enable-nonfree" in verification
-
-
-def test_riverhog_image_identifies_its_source_revision() -> None:
-    dockerfile = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
-    compose = (REPO_ROOT / "riverhog/server/compose.yaml").read_text(encoding="utf-8")
-    build_script = (REPO_ROOT / "scripts/build_riverhog.sh").read_text(encoding="utf-8")
-
-    assert "ARG SOURCE_REVISION=unknown" in dockerfile
-    assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
-    assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
-    assert 'SOURCE_REVISION="$(git -C "${ROOT_DIR}" rev-parse --verify HEAD)"' in build_script
 
 
 def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:

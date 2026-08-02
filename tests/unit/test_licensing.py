@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
+
+import yaml
 
 from tests.workspace import workspace_pyprojects
 
@@ -86,14 +89,24 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 
 def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
+    graph = json.loads((REPO_ROOT / "docker-bake.json").read_text(encoding="utf-8"))
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-    riverhog_build = (REPO_ROOT / "scripts/build_riverhog.sh").read_text(encoding="utf-8")
-    test_build = (REPO_ROOT / "scripts/build_test.sh").read_text(encoding="utf-8")
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     compose_helper = (REPO_ROOT / "scripts/_compose_env.sh").read_text(encoding="utf-8")
 
-    assert makefile.count("--sbom=true") == 4
-    assert "compose build --sbom=true app" in riverhog_build
-    assert "compose build --sbom=true test" in test_build
+    assert graph["group"]["default"]["targets"] == [
+        "riverhog",
+        "jeb",
+        "mango-fish",
+        "munchy-server",
+        "munchy-av1-nvenc",
+        "test",
+    ]
+    assert 'docker buildx bake --file "$(BAKE_FILE)" --load --sbom=true' in makefile
+    image_steps = workflow["jobs"]["images"]["steps"]
+    assert (
+        next(step for step in image_steps if step["name"] == "Build image")["with"]["sbom"] is True
+    )
     assert 'compose build --sbom=true "${service}"' in compose_helper
 
 
