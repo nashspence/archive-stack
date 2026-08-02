@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-import json
+import importlib.metadata
 import os
 import secrets
+import socket
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Literal, cast
-from urllib.parse import parse_qs, urlsplit
+from typing import Annotated, Any
 
+import uvicorn
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, Query, Request, Response, Security
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jeb_core.domain.models import UnrecoverableJebError
-from jeb_core.domain.sources import SourceRegistryError
+from jeb_core.domain.sources import SourceNotFoundError, SourceRegistryError
 from jeb_core.ingress import (
     JebIngressAuthenticationError,
     JebIngressError,
@@ -20,13 +26,57 @@ from jeb_core.ingress import (
     prepare_tus_upload,
     publish_tus_upload,
 )
-from jeb_core.services.operations import JebServiceOperations
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from jeb_api.composition import JebServices
+from jeb_api.composition import JebServices, config_from_env, create_services
+from jeb_api.schemas import (
+    ArchiveNowIn,
+    AttemptOut,
+    AttemptPageOut,
+    ConfigCheckOut,
+    CredentialRotateIn,
+    ErrorBody,
+    ErrorResponse,
+    EventPage,
+    HealthLiveOut,
+    HealthReadyOut,
+    OperationOut,
+    OperationPageOut,
+    OperationStartedOut,
+    SourceCreatedOut,
+    SourceCreateIn,
+    SourceOut,
+    SourcePageOut,
+    SourceRemovalIn,
+    SourceRemovalPlanIn,
+    SourceUpdateIn,
+    StatusOut,
+)
 
-ResolutionFilter = Literal["unresolved", "resolved", "all"]
 DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {"model": ErrorResponse},
+    401: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
+}
+JEB_BEARER = HTTPBearer(
+    auto_error=False,
+    scheme_name="JebBearer",
+    description="Jeb management API bearer token.",
+)
+
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class ResolutionFilter(StrEnum):
+    UNRESOLVED = "unresolved"
+    RESOLVED = "resolved"
+    ALL = "all"
 
 
 @dataclass(frozen=True)
@@ -36,133 +86,85 @@ class JebServiceState:
         default_factory=lambda: os.getenv("JEB_API_TOKEN") or DEFAULT_JEB_API_TOKEN
     )
 
-    @property
-    def operations(self) -> JebServiceOperations:
-        return self.services.operations
+
+@dataclass(frozen=True)
+class JebHttpError(Exception):
+    status: HTTPStatus
+    code: str
+    message: str
+    headers: Mapping[str, str] | None = None
 
 
-def _response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, sort_keys=True).encode("utf-8")
-    handler.send_response(int(status))
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-def _empty_response(
-    handler: BaseHTTPRequestHandler,
-    status: HTTPStatus,
-    *,
-    headers: Mapping[str, str] | None = None,
+def authorize_management_api(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(JEB_BEARER)],
 ) -> None:
-    handler.send_response(int(status))
-    for name, value in (headers or {}).items():
-        handler.send_header(name, value)
-    handler.send_header("Content-Length", "0")
-    handler.end_headers()
+    state: JebServiceState = request.app.state.jeb
+    if (
+        credentials is not None
+        and credentials.scheme.casefold() == "bearer"
+        and secrets.compare_digest(credentials.credentials, state.api_token)
+    ):
+        return
+    raise JebHttpError(
+        HTTPStatus.UNAUTHORIZED,
+        "unauthorized",
+        "valid Jeb bearer credentials are required",
+        {"WWW-Authenticate": "Bearer"},
+    )
 
 
-def _error(
-    handler: BaseHTTPRequestHandler,
-    status: HTTPStatus,
+class JebServiceServer:
+    def __init__(
+        self,
+        server: uvicorn.Server,
+        thread: threading.Thread,
+        listener: socket.socket,
+    ) -> None:
+        self._server = server
+        self._thread = thread
+        self._listener = listener
+
+    @property
+    def server_address(self) -> tuple[str, int]:
+        address = self._listener.getsockname()
+        return str(address[0]), int(address[1])
+
+    def shutdown(self) -> None:
+        self._server.should_exit = True
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            raise RuntimeError("Jeb API server did not stop")
+
+    def server_close(self) -> None:
+        try:
+            self._listener.close()
+        except OSError:
+            pass
+
+
+def _error_response(
+    status: HTTPStatus | int,
     *,
     code: str,
     message: str,
-) -> None:
-    _response(handler, status, {"error": {"code": code, "message": message}})
-
-
-def _first(params: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
-    values = params.get(key)
-    if not values:
-        return default
-    value = values[0]
-    return value if value != "" else default
-
-
-def _positive_int(params: dict[str, list[str]], key: str, default: int) -> int:
-    raw = _first(params, key, str(default))
-    try:
-        value = int(str(raw))
-    except ValueError as exc:
-        raise ValueError(f"{key} must be an integer") from exc
-    if value < 1:
-        raise ValueError(f"{key} must be >= 1")
-    return value
-
-
-def _bool(params: dict[str, list[str]], key: str, default: bool) -> bool:
-    raw = _first(params, key)
-    if raw is None:
-        return default
-    normalized = raw.casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{key} must be true or false")
-
-
-def _optional_bool(params: dict[str, list[str]], key: str) -> bool | None:
-    if _first(params, key) is None:
-        return None
-    return _bool(params, key, False)
-
-
-def _resolution(params: dict[str, list[str]]) -> ResolutionFilter:
-    value = _first(params, "resolution", "unresolved") or "unresolved"
-    if value not in {"unresolved", "resolved", "all"}:
-        raise ValueError("resolution must be unresolved, resolved, or all")
-    return cast(ResolutionFilter, value)
-
-
-def _payload_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
-    value = payload.get(key, default)
-    if isinstance(value, bool):
-        return value
-    raise ValueError(f"{key} must be true or false")
-
-
-def _json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    length = int(handler.headers.get("content-length") or "0")
-    if length <= 0:
-        return {}
-    try:
-        payload = json.loads(handler.rfile.read(length).decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError("request body must be JSON") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("request body must be a JSON object")
-    return payload
-
-
-def _handle_bad_request(handler: BaseHTTPRequestHandler, exc: ValueError) -> None:
-    _error(handler, HTTPStatus.BAD_REQUEST, code="bad_request", message=str(exc))
-
-
-def _handle_invalid_state(handler: BaseHTTPRequestHandler, exc: UnrecoverableJebError) -> None:
-    _error(handler, HTTPStatus.CONFLICT, code="invalid_state", message=str(exc))
-
-
-def _authorize_management_api(
-    handler: BaseHTTPRequestHandler,
-    *,
-    expected_token: str,
-) -> bool:
-    scheme, _, supplied = handler.headers.get("Authorization", "").partition(" ")
-    if (
-        scheme.casefold() == "bearer"
-        and supplied
-        and secrets.compare_digest(supplied, expected_token)
-    ):
-        return True
-    _empty_response(
-        handler,
-        HTTPStatus.UNAUTHORIZED,
-        headers={"WWW-Authenticate": "Bearer"},
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    payload = ErrorResponse(error=ErrorBody(code=code, message=message))
+    return JSONResponse(
+        status_code=int(status),
+        content=payload.model_dump(),
+        headers=dict(headers or {}),
     )
-    return False
+
+
+def _validation_message(exc: RequestValidationError) -> str:
+    first = exc.errors()[0]
+    location = ".".join(str(item) for item in first["loc"] if item not in {"body", "query"})
+    message = str(first["msg"])
+    if message == "Input should be a valid boolean":
+        message = "must be true or false"
+    return f"{location} {message}" if location else message
 
 
 def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
@@ -176,512 +178,599 @@ def _tus_rejection(status: HTTPStatus, message: str) -> dict[str, Any]:
     }
 
 
-def _source_path(path: str, *, action: str | None = None) -> str | None:
-    prefix = "/v1/sources/"
-    if not path.startswith(prefix):
-        return None
-    remainder = path.removeprefix(prefix)
-    if action is None:
-        return remainder if remainder and "/" not in remainder else None
-    suffix = f"/{action}"
-    if not remainder.endswith(suffix):
-        return None
-    source_id = remainder.removesuffix(suffix)
-    return source_id if source_id and "/" not in source_id else None
+def create_app(state: JebServiceState | None = None) -> FastAPI:
+    resolved_state = state or JebServiceState(
+        services=create_services(config_from_env()),
+    )
+    services = resolved_state.services
+    app = FastAPI(
+        title="Jeb API",
+        version=importlib.metadata.version("jeb-server"),
+        description="Source enrollment, watched-drop ingestion, and target delivery management.",
+    )
+    app.state.jeb = resolved_state
 
+    @app.exception_handler(JebHttpError)
+    async def handle_jeb_http_error(_request: object, exc: JebHttpError) -> JSONResponse:
+        return _error_response(
+            exc.status,
+            code=exc.code,
+            message=exc.message,
+            headers=exc.headers,
+        )
 
-def _attempt_path(path: str) -> str | None:
-    prefix = "/v1/attempts/"
-    if not path.startswith(prefix):
-        return None
-    attempt_id = path.removeprefix(prefix)
-    return attempt_id if attempt_id and "/" not in attempt_id else None
+    @app.exception_handler(SourceNotFoundError)
+    async def handle_source_not_found(
+        _request: object,
+        exc: SourceNotFoundError,
+    ) -> JSONResponse:
+        return _error_response(HTTPStatus.NOT_FOUND, code="not_found", message=str(exc))
 
+    @app.exception_handler(SourceRegistryError)
+    async def handle_source_registry_error(
+        _request: object,
+        exc: SourceRegistryError,
+    ) -> JSONResponse:
+        return _error_response(HTTPStatus.BAD_REQUEST, code="bad_request", message=str(exc))
 
-def _operation_path(path: str) -> str | None:
-    prefix = "/v1/operations/"
-    if not path.startswith(prefix):
-        return None
-    operation_id = path.removeprefix(prefix)
-    return operation_id if operation_id and "/" not in operation_id else None
+    @app.exception_handler(UnrecoverableJebError)
+    async def handle_invalid_state(
+        _request: object,
+        exc: UnrecoverableJebError,
+    ) -> JSONResponse:
+        return _error_response(HTTPStatus.CONFLICT, code="invalid_state", message=str(exc))
 
+    @app.exception_handler(JebIngressError)
+    async def handle_ingress_error(_request: object, exc: JebIngressError) -> JSONResponse:
+        return _error_response(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            code="ingress_failed",
+            message=str(exc),
+        )
 
-def _sequence(payload: Mapping[str, Any], key: str) -> list[str]:
-    value = payload.get(key)
-    if not isinstance(value, list):
-        raise ValueError(f"{key} must be a JSON array")
-    return [str(item) for item in value]
+    @app.exception_handler(ValueError)
+    async def handle_value_error(_request: object, exc: ValueError) -> JSONResponse:
+        return _error_response(HTTPStatus.BAD_REQUEST, code="bad_request", message=str(exc))
 
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        _request: object,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        return _error_response(
+            HTTPStatus.BAD_REQUEST,
+            code="bad_request",
+            message=_validation_message(exc),
+        )
 
-def _mapping(payload: Mapping[str, Any], key: str) -> dict[str, Any]:
-    value = payload.get(key)
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{key} must be a JSON object")
-    return dict(value)
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_error(_request: object, exc: StarletteHTTPException) -> JSONResponse:
+        status = HTTPStatus(exc.status_code)
+        code = {
+            HTTPStatus.UNAUTHORIZED: "unauthorized",
+            HTTPStatus.NOT_FOUND: "not_found",
+            HTTPStatus.METHOD_NOT_ALLOWED: "method_not_allowed",
+        }.get(status, "bad_request")
+        return _error_response(
+            status,
+            code=code,
+            message=str(exc.detail),
+            headers=exc.headers,
+        )
 
+    @app.get(
+        "/health/live",
+        response_model=HealthLiveOut,
+        operation_id="health_live",
+        tags=["health"],
+    )
+    def health_live() -> dict[str, Any]:
+        return {"service": "jeb", "status": "ok"}
 
-def jeb_service_handler(state: JebServiceState) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            split = urlsplit(self.path)
-            params = parse_qs(split.query, keep_blank_values=True)
+    @app.get(
+        "/health/ready",
+        response_model=HealthReadyOut,
+        operation_id="health_ready",
+        tags=["health"],
+    )
+    def health_ready() -> dict[str, Any]:
+        services.runtime.initialize()
+        return {
+            "service": "jeb",
+            "source_count": services.source_registry.count(),
+            "status": "ok",
+        }
+
+    internal = APIRouter(prefix="/internal", tags=["internal"])
+
+    @internal.get(
+        "/ingress/tus/auth",
+        status_code=HTTPStatus.NO_CONTENT,
+        operation_id="authenticate_tus_ingress",
+    )
+    def authenticate_tus_ingress(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        services.runtime.initialize()
+        try:
+            authenticate_tus_source(services.source_registry, authorization)
+        except JebIngressAuthenticationError:
+            return Response(
+                status_code=HTTPStatus.UNAUTHORIZED,
+                headers={"WWW-Authenticate": 'Basic realm="Jeb ingress"'},
+            )
+        return Response(status_code=HTTPStatus.NO_CONTENT)
+
+    @internal.post(
+        "/ingress/tus/hooks",
+        operation_id="handle_tus_hook",
+    )
+    def handle_tus_hook(
+        payload: Annotated[dict[str, Any], Body()],
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        hook_type = str(payload.get("Type") or "")
+        event = payload.get("Event")
+        upload = event.get("Upload") if isinstance(event, Mapping) else None
+        if not isinstance(upload, Mapping):
+            raise JebIngressError("Jeb TUS hook is missing its upload record")
+        if hook_type == "pre-create":
+            metadata = upload.get("MetaData")
+            if not isinstance(metadata, Mapping):
+                metadata = {}
             try:
-                if split.path == "/internal/ingress/tus/auth":
-                    state.services.runtime.initialize()
-                    try:
-                        authenticate_tus_source(
-                            state.services.source_registry,
-                            self.headers.get("Authorization"),
-                        )
-                    except JebIngressAuthenticationError:
-                        _empty_response(
-                            self,
-                            HTTPStatus.UNAUTHORIZED,
-                            headers={"WWW-Authenticate": 'Basic realm="Jeb ingress"'},
-                        )
-                    else:
-                        _empty_response(self, HTTPStatus.NO_CONTENT)
-                    return
-                if split.path == "/health/live":
-                    _response(self, HTTPStatus.OK, {"service": "jeb", "status": "ok"})
-                    return
-                if split.path == "/health/ready":
-                    state.services.runtime.initialize()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        {
-                            "service": "jeb",
-                            "source_count": state.services.source_registry.count(),
-                            "status": "ok",
-                        },
-                    )
-                    return
-                if not _authorize_management_api(self, expected_token=state.api_token):
-                    return
-                if split.path == "/v1/events":
-                    state.services.runtime.initialize()
-                    page = state.services.event_log.page(
-                        after=_first(params, "after"),
-                        limit=_positive_int(params, "limit", 100),
-                    )
-                    _response(self, HTTPStatus.OK, page.model_dump(mode="json"))
-                    return
-                if split.path == "/v1/config/check":
-                    state.services.runtime.initialize()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        {
-                            "status": "ok",
-                            "source_count": state.services.source_registry.count(),
-                        },
-                    )
-                    return
-                if split.path == "/v1/operations":
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.operations.list_page(
-                            page=_positive_int(params, "page", 1),
-                            per_page=_positive_int(params, "per_page", 25),
-                            sort=_first(params, "sort", "started_at") or "started_at",
-                            order=_first(params, "order", "desc") or "desc",
-                            query=_first(params, "q") or _first(params, "query"),
-                            state=_first(params, "state"),
-                            all_items=_bool(params, "all", False),
-                        ),
-                    )
-                    return
-                operation_id = _operation_path(split.path)
-                if operation_id is not None:
-                    try:
-                        payload = state.operations.get(operation_id)
-                    except KeyError:
-                        _error(
-                            self,
-                            HTTPStatus.NOT_FOUND,
-                            code="not_found",
-                            message=f"Jeb operation not found: {operation_id}",
-                        )
-                    else:
-                        _response(self, HTTPStatus.OK, payload)
-                    return
-                if split.path == "/v1/sources":
-                    state.services.runtime.initialize()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.services.source_registry.list_page(
-                            page=_positive_int(params, "page", 1),
-                            per_page=_positive_int(params, "per_page", 25),
-                            sort=_first(params, "sort", "id") or "id",
-                            order=_first(params, "order", "asc") or "asc",
-                            query=_first(params, "q") or _first(params, "query"),
-                            enabled=_optional_bool(params, "enabled"),
-                            adapter=_first(params, "adapter"),
-                            target=_first(params, "target"),
-                            all_items=_bool(params, "all", False),
-                        ),
-                    )
-                    return
-                source_id = _source_path(split.path)
-                if source_id is not None:
-                    state.services.runtime.initialize()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.services.source_registry.get(source_id).summary(),
-                    )
-                    return
-                if split.path == "/v1/status":
-                    state.services.runtime.initialize()
-                    payload = state.services.runtime.status_summary(
-                        include_backlog=_bool(params, "include_backlog", True)
-                    )
-                    payload["active_operation"] = state.operations.active_summary()
-                    _response(self, HTTPStatus.OK, payload)
-                    return
-                if split.path == "/v1/attempts":
-                    sort = _first(params, "sort", "updated_at") or "updated_at"
-                    if sort not in ATTEMPT_LIST_SORT_FIELDS:
-                        raise ValueError(
-                            "sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS))
-                        )
-                    state.services.runtime.initialize()
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.services.store.list_attempts(
-                            page=_positive_int(params, "page", 1),
-                            per_page=_positive_int(params, "per_page", 25),
-                            sort=sort,
-                            order=_first(params, "order", "desc") or "desc",
-                            query=_first(params, "q") or _first(params, "query"),
-                            resolution=_resolution(params),
-                            state=_first(params, "state"),
-                            source=_first(params, "source"),
-                            target=_first(params, "target"),
-                            all_items=_bool(params, "all", False),
-                        ),
-                    )
-                    return
-                attempt_id = _attempt_path(split.path)
-                if attempt_id is not None:
-                    state.services.runtime.initialize()
-                    try:
-                        payload = state.services.store.get_attempt(attempt_id)
-                    except KeyError:
-                        _error(
-                            self,
-                            HTTPStatus.NOT_FOUND,
-                            code="not_found",
-                            message=f"Jeb attempt not found: {attempt_id}",
-                        )
-                    else:
-                        _response(self, HTTPStatus.OK, payload)
-                    return
-                _response(self, HTTPStatus.NOT_FOUND, {"service": "jeb", "status": "not_found"})
-            except ValueError as exc:
-                _handle_bad_request(self, exc)
-
-        def do_POST(self) -> None:  # noqa: N802
-            split = urlsplit(self.path)
-            try:
-                if split.path == "/internal/ingress/tus/hooks":
-                    payload = _json_body(self)
-                    hook_type = str(payload.get("Type") or "")
-                    event = payload.get("Event")
-                    upload = event.get("Upload") if isinstance(event, Mapping) else None
-                    if not isinstance(upload, Mapping):
-                        raise JebIngressError("Jeb TUS hook is missing its upload record")
-                    if hook_type == "pre-create":
-                        metadata = upload.get("MetaData")
-                        if not isinstance(metadata, Mapping):
-                            metadata = {}
-                        try:
-                            prepared = prepare_tus_upload(
-                                state.services.config.ingress,
-                                state.services.source_registry,
-                                authorization=self.headers.get("Authorization"),
-                                metadata=metadata,
-                                size=upload.get("Size"),
-                            )
-                        except JebIngressAuthenticationError as exc:
-                            _response(
-                                self,
-                                HTTPStatus.OK,
-                                _tus_rejection(HTTPStatus.UNAUTHORIZED, str(exc)),
-                            )
-                            return
-                        except JebIngressError as exc:
-                            _response(
-                                self,
-                                HTTPStatus.OK,
-                                _tus_rejection(HTTPStatus.BAD_REQUEST, str(exc)),
-                            )
-                            return
-                        _response(
-                            self,
-                            HTTPStatus.OK,
-                            {
-                                "ChangeFileInfo": {
-                                    "ID": prepared.upload_id,
-                                    "MetaData": prepared.hook_metadata(),
-                                }
-                            },
-                        )
-                        return
-                    if hook_type == "post-finish":
-                        publish_tus_upload(
-                            state.services.config.ingress,
-                            state.services.source_registry,
-                            upload=upload,
-                        )
-                    _response(self, HTTPStatus.OK, {})
-                    return
-                if not _authorize_management_api(self, expected_token=state.api_token):
-                    return
-                if split.path == "/v1/sources":
-                    payload = _json_body(self)
-                    source_id = str(payload.get("id") or "").strip()
-                    if not source_id:
-                        raise ValueError("id is required")
-                    source_config, credential = state.services.sources.add_source(
-                        source_id,
-                        adapters=_sequence(payload, "adapters"),
-                        target_config=_mapping(payload, "target_config"),
-                        credential=(
-                            str(payload["credential"])
-                            if payload.get("credential") is not None
-                            else None
-                        ),
-                        enabled=_payload_bool(payload, "enabled", True),
-                        stable_seconds=int(payload.get("stable_seconds", 600)),
-                        include_extensions=(
-                            _sequence(payload, "include_extensions")
-                            if "include_extensions" in payload
-                            else ()
-                        ),
-                        target=str(payload.get("target") or "munchy"),
-                        threshold_bytes=int(payload.get("threshold_bytes", 0)),
-                        cleanup=cast(
-                            Literal["never", "after_target_success"],
-                            str(payload.get("cleanup") or "after_target_success"),
-                        ),
-                        cadence=cast(
-                            Literal["weekly", "monthly", "seasonal", "manual"],
-                            str(payload.get("cadence") or "weekly"),
-                        ),
-                        weekday=int(payload.get("weekday", 0)),
-                        hour=int(payload.get("hour", 3)),
-                        minute=int(payload.get("minute", 0)),
-                    )
-                    created_payload: dict[str, Any] = {"source": source_config.summary()}
-                    if credential is not None:
-                        created_payload["credential"] = credential
-                    _response(self, HTTPStatus.CREATED, created_payload)
-                    return
-                for action, enabled in (("enable", True), ("disable", False)):
-                    selected_source = _source_path(split.path, action=action)
-                    if selected_source is not None:
-                        state.services.runtime.initialize()
-                        source_config = state.services.source_registry.set_enabled(
-                            selected_source,
-                            enabled,
-                        )
-                        _response(self, HTTPStatus.OK, source_config.summary())
-                        return
-                selected_source = _source_path(split.path, action="credential")
-                if selected_source is not None:
-                    payload = _json_body(self)
-                    state.services.runtime.initialize()
-                    source_config, credential = state.services.source_registry.rotate_credential(
-                        selected_source,
-                        credential=(
-                            str(payload["credential"])
-                            if payload.get("credential") is not None
-                            else None
-                        ),
-                    )
-                    credential_payload: dict[str, Any] = {"source": source_config.summary()}
-                    if credential is not None:
-                        credential_payload["credential"] = credential
-                    _response(self, HTTPStatus.OK, credential_payload)
-                    return
-                selected_source = _source_path(split.path, action="removal-plan")
-                if selected_source is not None:
-                    if state.operations.active_summary() is not None:
-                        raise UnrecoverableJebError(
-                            "a Jeb operation is running; request the removal plan again later"
-                        )
-                    payload = _json_body(self)
-                    _response(
-                        self,
-                        HTTPStatus.OK,
-                        state.services.sources.source_removal_plan(
-                            selected_source,
-                            purge=_payload_bool(payload, "purge", False),
-                        ),
-                    )
-                    return
-                if split.path == "/v1/once":
-                    state.services.runtime.initialize()
-                    operation_summary = state.operations.start(
-                        operation="once",
-                        run=state.services.runtime.run_once,
-                    )
-                    _response(
-                        self,
-                        HTTPStatus.ACCEPTED,
-                        {"status": "started", "operation": operation_summary},
-                    )
-                    return
-                if split.path == "/v1/archive-now":
-                    payload = _json_body(self)
-                    source = str(payload.get("source") or "").strip()
-                    if not source:
-                        raise ValueError("source is required")
-                    process = _payload_bool(payload, "process", True)
-                    dry_run = _payload_bool(payload, "dry_run", False)
-                    state.services.runtime.initialize()
-                    if dry_run:
-                        _response(
-                            self,
-                            HTTPStatus.OK,
-                            state.services.attempts.archive_plan(source_id=source, process=process),
-                        )
-                        return
-                    archive_operation: dict[str, Any] | None = None
-                    if process:
-                        attempt_id, archive_operation = state.operations.prepare_and_start(
-                            operation="archive-now",
-                            source=source,
-                            prepare=lambda: state.services.attempts.archive_now(
-                                source_id=source,
-                                process=False,
-                            ),
-                            run=state.services.attempts.process_attempt,
-                        )
-                    else:
-                        attempt_id = state.services.attempts.archive_now(
-                            source_id=source, process=False
-                        )
-                    if attempt_id is None:
-                        _response(
-                            self,
-                            HTTPStatus.OK,
-                            {"status": "no_eligible_files", "source": source},
-                        )
-                        return
-                    attempt = state.services.store.load_attempt(attempt_id)
-                    _response(
-                        self,
-                        HTTPStatus.ACCEPTED,
-                        {
-                            "status": "started",
-                            "source": source,
-                            "attempt_id": attempt_id,
-                            "batch_id": str(attempt["batch_id"]),
-                            "operation": archive_operation,
-                        },
-                    )
-                    return
-                _response(self, HTTPStatus.NOT_FOUND, {"service": "jeb", "status": "not_found"})
-            except ValueError as exc:
-                _handle_bad_request(self, exc)
-            except UnrecoverableJebError as exc:
-                _handle_invalid_state(self, exc)
+                prepared = prepare_tus_upload(
+                    services.config.ingress,
+                    services.source_registry,
+                    authorization=authorization,
+                    metadata=metadata,
+                    size=upload.get("Size"),
+                )
+            except JebIngressAuthenticationError as exc:
+                return _tus_rejection(HTTPStatus.UNAUTHORIZED, str(exc))
             except JebIngressError as exc:
-                _error(
-                    self,
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    code="ingress_failed",
-                    message=str(exc),
-                )
+                return _tus_rejection(HTTPStatus.BAD_REQUEST, str(exc))
+            return {
+                "ChangeFileInfo": {
+                    "ID": prepared.upload_id,
+                    "MetaData": prepared.hook_metadata(),
+                }
+            }
+        if hook_type == "post-finish":
+            publish_tus_upload(
+                services.config.ingress,
+                services.source_registry,
+                upload=upload,
+            )
+        return {}
 
-        def do_PATCH(self) -> None:  # noqa: N802
-            split = urlsplit(self.path)
-            if not _authorize_management_api(self, expected_token=state.api_token):
-                return
-            try:
-                source_id = _source_path(split.path)
-                if source_id is None:
-                    _response(
-                        self,
-                        HTTPStatus.NOT_FOUND,
-                        {"service": "jeb", "status": "not_found"},
-                    )
-                    return
-                payload = _json_body(self)
-                source = state.services.sources.update_source(source_id, payload)
-                _response(self, HTTPStatus.OK, source.summary())
-            except (SourceRegistryError, ValueError) as exc:
-                _handle_bad_request(self, exc)
-            except UnrecoverableJebError as exc:
-                _handle_invalid_state(self, exc)
+    management = APIRouter(
+        prefix="/v1",
+        dependencies=[Depends(authorize_management_api)],
+        responses=ERROR_RESPONSES,
+    )
 
-        def do_DELETE(self) -> None:  # noqa: N802
-            split = urlsplit(self.path)
-            if not _authorize_management_api(self, expected_token=state.api_token):
-                return
-            try:
-                attempt_id = _attempt_path(split.path)
-                if attempt_id is not None:
-                    state.services.runtime.initialize()
-                    try:
-                        payload = state.services.attempts.cancel_attempt(attempt_id)
-                    except KeyError:
-                        _error(
-                            self,
-                            HTTPStatus.NOT_FOUND,
-                            code="not_found",
-                            message=f"Jeb attempt not found: {attempt_id}",
-                        )
-                    else:
-                        _response(self, HTTPStatus.OK, payload)
-                    return
-                source_id = _source_path(split.path)
-                if source_id is None:
-                    _response(
-                        self,
-                        HTTPStatus.NOT_FOUND,
-                        {"service": "jeb", "status": "not_found"},
-                    )
-                    return
-                if state.operations.active_summary() is not None:
-                    raise UnrecoverableJebError(
-                        "a Jeb operation is running; source removal cannot begin"
-                    )
-                payload = _json_body(self)
-                challenge = str(payload.get("challenge") or "")
-                _response(
-                    self,
-                    HTTPStatus.OK,
-                    state.services.sources.remove_source(source_id, challenge=challenge),
-                )
-            except (SourceRegistryError, ValueError) as exc:
-                _handle_bad_request(self, exc)
-            except UnrecoverableJebError as exc:
-                _handle_invalid_state(self, exc)
+    @management.get(
+        "/events",
+        response_model=EventPage,
+        operation_id="list_lifecycle_events",
+        tags=["events"],
+    )
+    def list_lifecycle_events(
+        after: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    ) -> EventPage:
+        services.runtime.initialize()
+        return services.event_log.page(after=after, limit=limit)
 
-        def log_message(self, _format: str, *_args: object) -> None:
-            return
+    @management.get(
+        "/config/check",
+        response_model=ConfigCheckOut,
+        operation_id="check_config",
+        tags=["service"],
+    )
+    def check_config() -> dict[str, Any]:
+        services.runtime.initialize()
+        return {
+            "status": "ok",
+            "source_count": services.source_registry.count(),
+        }
 
-    return Handler
+    @management.get(
+        "/operations",
+        response_model=OperationPageOut,
+        response_model_exclude_none=True,
+        operation_id="list_operations",
+        tags=["operations"],
+    )
+    def list_operations(
+        page: Annotated[int, Query(ge=1)] = 1,
+        per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+        sort: str = "started_at",
+        order: SortOrder = SortOrder.DESC,
+        query: Annotated[str | None, Query(alias="q")] = None,
+        state_filter: Annotated[str | None, Query(alias="state")] = None,
+        all_items: Annotated[bool, Query(alias="all")] = False,
+    ) -> dict[str, Any]:
+        return services.operations.list_page(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order.value,
+            query=query,
+            state=state_filter,
+            all_items=all_items,
+        )
+
+    @management.get(
+        "/operations/{operation_id}",
+        response_model=OperationOut,
+        response_model_exclude_none=True,
+        operation_id="get_operation",
+        tags=["operations"],
+    )
+    def get_operation(operation_id: str) -> dict[str, Any]:
+        try:
+            return services.operations.get(operation_id)
+        except KeyError as exc:
+            raise JebHttpError(
+                HTTPStatus.NOT_FOUND,
+                "not_found",
+                f"Jeb operation not found: {operation_id}",
+            ) from exc
+
+    @management.get(
+        "/sources",
+        response_model=SourcePageOut,
+        operation_id="list_sources",
+        tags=["sources"],
+    )
+    def list_sources(
+        page: Annotated[int, Query(ge=1)] = 1,
+        per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+        sort: str = "id",
+        order: SortOrder = SortOrder.ASC,
+        query: Annotated[str | None, Query(alias="q")] = None,
+        enabled: bool | None = None,
+        adapter: str | None = None,
+        target: str | None = None,
+        all_items: Annotated[bool, Query(alias="all")] = False,
+    ) -> dict[str, Any]:
+        services.runtime.initialize()
+        return services.source_registry.list_page(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order.value,
+            query=query,
+            enabled=enabled,
+            adapter=adapter,
+            target=target,
+            all_items=all_items,
+        )
+
+    @management.get(
+        "/sources/{source_id}",
+        response_model=SourceOut,
+        operation_id="get_source",
+        tags=["sources"],
+    )
+    def get_source(source_id: str) -> dict[str, Any]:
+        services.runtime.initialize()
+        return services.source_registry.get(source_id).summary()
+
+    @management.get(
+        "/status",
+        response_model=StatusOut,
+        operation_id="get_status",
+        tags=["service"],
+    )
+    def get_status(include_backlog: bool = True) -> dict[str, Any]:
+        services.runtime.initialize()
+        payload = services.runtime.status_summary(include_backlog=include_backlog)
+        payload["active_operation"] = services.operations.active_summary()
+        return payload
+
+    @management.get(
+        "/attempts",
+        response_model=AttemptPageOut,
+        operation_id="list_attempts",
+        tags=["attempts"],
+    )
+    def list_attempts(
+        page: Annotated[int, Query(ge=1)] = 1,
+        per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+        sort: str = "updated_at",
+        order: SortOrder = SortOrder.DESC,
+        query: Annotated[str | None, Query(alias="q")] = None,
+        resolution: ResolutionFilter = ResolutionFilter.UNRESOLVED,
+        state_filter: Annotated[str | None, Query(alias="state")] = None,
+        source: str | None = None,
+        target: str | None = None,
+        all_items: Annotated[bool, Query(alias="all")] = False,
+    ) -> dict[str, Any]:
+        if sort not in ATTEMPT_LIST_SORT_FIELDS:
+            raise ValueError("sort must be one of: " + ", ".join(sorted(ATTEMPT_LIST_SORT_FIELDS)))
+        services.runtime.initialize()
+        return services.store.list_attempts(
+            page=page,
+            per_page=per_page,
+            sort=sort,
+            order=order.value,
+            query=query,
+            resolution=resolution.value,
+            state=state_filter,
+            source=source,
+            target=target,
+            all_items=all_items,
+        )
+
+    @management.get(
+        "/attempts/{attempt_id}",
+        response_model=AttemptOut,
+        operation_id="get_attempt",
+        tags=["attempts"],
+    )
+    def get_attempt(attempt_id: str) -> dict[str, Any]:
+        services.runtime.initialize()
+        try:
+            return services.store.get_attempt(attempt_id)
+        except KeyError as exc:
+            raise JebHttpError(
+                HTTPStatus.NOT_FOUND,
+                "not_found",
+                f"Jeb attempt not found: {attempt_id}",
+            ) from exc
+
+    @management.post(
+        "/sources",
+        status_code=HTTPStatus.CREATED,
+        response_model=SourceCreatedOut,
+        response_model_exclude_none=True,
+        operation_id="create_source",
+        tags=["sources"],
+    )
+    def create_source(payload: SourceCreateIn) -> dict[str, Any]:
+        source, credential = services.sources.add_source(
+            payload.id.strip(),
+            adapters=payload.adapters,
+            target_config=payload.target_config,
+            credential=payload.credential,
+            enabled=bool(payload.enabled),
+            stable_seconds=payload.stable_seconds,
+            include_extensions=payload.include_extensions,
+            target=payload.target,
+            threshold_bytes=payload.threshold_bytes,
+            cleanup=payload.cleanup,
+            cadence=payload.cadence,
+            weekday=payload.weekday,
+            hour=payload.hour,
+            minute=payload.minute,
+        )
+        response: dict[str, Any] = {"source": source.summary()}
+        if credential is not None:
+            response["credential"] = credential
+        return response
+
+    @management.post(
+        "/sources/{source_id}/enable",
+        response_model=SourceOut,
+        operation_id="enable_source",
+        tags=["sources"],
+    )
+    def enable_source(source_id: str) -> dict[str, Any]:
+        services.runtime.initialize()
+        return services.source_registry.set_enabled(source_id, True).summary()
+
+    @management.post(
+        "/sources/{source_id}/disable",
+        response_model=SourceOut,
+        operation_id="disable_source",
+        tags=["sources"],
+    )
+    def disable_source(source_id: str) -> dict[str, Any]:
+        services.runtime.initialize()
+        return services.source_registry.set_enabled(source_id, False).summary()
+
+    @management.post(
+        "/sources/{source_id}/credential",
+        response_model=SourceCreatedOut,
+        response_model_exclude_none=True,
+        operation_id="rotate_source_credential",
+        tags=["sources"],
+    )
+    def rotate_source_credential(
+        source_id: str,
+        payload: CredentialRotateIn,
+    ) -> dict[str, Any]:
+        services.runtime.initialize()
+        source, credential = services.source_registry.rotate_credential(
+            source_id,
+            credential=payload.credential,
+        )
+        response: dict[str, Any] = {"source": source.summary()}
+        if credential is not None:
+            response["credential"] = credential
+        return response
+
+    @management.post(
+        "/sources/{source_id}/removal-plan",
+        operation_id="plan_source_removal",
+        tags=["sources"],
+    )
+    def plan_source_removal(
+        source_id: str,
+        payload: SourceRemovalPlanIn,
+    ) -> dict[str, Any]:
+        if services.operations.active_summary() is not None:
+            raise UnrecoverableJebError(
+                "a Jeb operation is running; request the removal plan again later"
+            )
+        return services.sources.source_removal_plan(source_id, purge=bool(payload.purge))
+
+    @management.post(
+        "/once",
+        status_code=HTTPStatus.ACCEPTED,
+        response_model=OperationStartedOut,
+        response_model_exclude_none=True,
+        operation_id="run_once",
+        tags=["operations"],
+    )
+    def run_once() -> dict[str, Any]:
+        services.runtime.initialize()
+        operation = services.operations.start(
+            operation="once",
+            run=services.runtime.run_once,
+        )
+        return {"status": "started", "operation": operation}
+
+    @management.post(
+        "/archive-now",
+        operation_id="archive_source_now",
+        tags=["attempts"],
+        responses={
+            **ERROR_RESPONSES,
+            200: {"description": "Archive plan or no eligible files."},
+            202: {"description": "Archive attempt started."},
+        },
+    )
+    def archive_source_now(payload: ArchiveNowIn) -> JSONResponse:
+        services.runtime.initialize()
+        if payload.dry_run:
+            return JSONResponse(
+                status_code=HTTPStatus.OK,
+                content=services.attempts.archive_plan(
+                    source_id=payload.source.strip(),
+                    process=bool(payload.process),
+                ),
+            )
+        operation: dict[str, Any] | None = None
+        if payload.process:
+            attempt_id, operation = services.operations.prepare_and_start(
+                operation="archive-now",
+                source=payload.source.strip(),
+                prepare=lambda: services.attempts.archive_now(
+                    source_id=payload.source.strip(),
+                    process=False,
+                ),
+                run=services.attempts.process_attempt,
+            )
+        else:
+            attempt_id = services.attempts.archive_now(
+                source_id=payload.source.strip(),
+                process=False,
+            )
+        if attempt_id is None:
+            return JSONResponse(
+                status_code=HTTPStatus.OK,
+                content={"status": "no_eligible_files", "source": payload.source.strip()},
+            )
+        attempt = services.store.load_attempt(attempt_id)
+        return JSONResponse(
+            status_code=HTTPStatus.ACCEPTED,
+            content={
+                "status": "started",
+                "source": payload.source.strip(),
+                "attempt_id": attempt_id,
+                "batch_id": str(attempt["batch_id"]),
+                "operation": operation,
+            },
+        )
+
+    @management.patch(
+        "/sources/{source_id}",
+        response_model=SourceOut,
+        operation_id="update_source",
+        tags=["sources"],
+    )
+    def update_source(source_id: str, payload: SourceUpdateIn) -> dict[str, Any]:
+        changes = payload.model_dump(exclude_unset=True)
+        source = services.sources.update_source(source_id, changes)
+        return source.summary()
+
+    @management.delete(
+        "/attempts/{attempt_id}",
+        response_model=AttemptOut,
+        operation_id="cancel_attempt",
+        tags=["attempts"],
+    )
+    def cancel_attempt(attempt_id: str) -> dict[str, Any]:
+        services.runtime.initialize()
+        try:
+            return services.attempts.cancel_attempt(attempt_id)
+        except KeyError as exc:
+            raise JebHttpError(
+                HTTPStatus.NOT_FOUND,
+                "not_found",
+                f"Jeb attempt not found: {attempt_id}",
+            ) from exc
+
+    @management.delete(
+        "/sources/{source_id}",
+        operation_id="remove_source",
+        tags=["sources"],
+    )
+    def remove_source(source_id: str, payload: SourceRemovalIn) -> dict[str, Any]:
+        if services.operations.active_summary() is not None:
+            raise UnrecoverableJebError("a Jeb operation is running; source removal cannot begin")
+        return services.sources.remove_source(source_id, challenge=payload.challenge)
+
+    app.include_router(internal)
+    app.include_router(management)
+    openapi = app.openapi()
+    for path_item in openapi["paths"].values():
+        for operation in path_item.values():
+            if isinstance(operation, dict):
+                operation.get("responses", {}).pop("422", None)
+    app.openapi_schema = openapi
+    return app
 
 
 def start_jeb_service_server(
     host: str,
     port: int,
     state: JebServiceState,
-) -> ThreadingHTTPServer:
-    state.operations.recover_interrupted()
-    server = ThreadingHTTPServer((host, port), jeb_service_handler(state))
+) -> JebServiceServer:
+    state.services.operations.recover_interrupted()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((host, port))
+    listener.listen(2048)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(state),
+            host=host,
+            port=port,
+            log_level="error",
+            access_log=False,
+            ws="none",
+        )
+    )
     thread = threading.Thread(
-        target=server.serve_forever,
-        name="jeb-service-api",
+        target=server.run,
+        kwargs={"sockets": [listener]},
+        name="jeb-api",
         daemon=True,
     )
     thread.start()
-    return server
+    deadline = time.monotonic() + 5
+    while not server.started:
+        if not thread.is_alive():
+            listener.close()
+            raise RuntimeError("Jeb API server failed to start")
+        if time.monotonic() >= deadline:
+            server.should_exit = True
+            thread.join(timeout=5)
+            listener.close()
+            raise RuntimeError("Jeb API server did not become ready")
+        time.sleep(0.01)
+    return JebServiceServer(server, thread, listener)
+
+
+__all__ = [
+    "DEFAULT_JEB_API_TOKEN",
+    "JebServiceServer",
+    "JebServiceState",
+    "create_app",
+    "start_jeb_service_server",
+]

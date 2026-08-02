@@ -158,7 +158,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   jeb-server \
   'jeb_server-*.whl' \
-  'import importlib.metadata as m; import jeb_api.app; import jeb_api.composition; import jeb_core.services.attempts; m.version("jeb-server")' \
+  'import importlib.metadata as m; from jeb_api.app import create_app; app = create_app(); assert app.version == m.version("jeb-server"); assert "SourceCreateIn" in app.openapi()["components"]["schemas"]' \
   jeb-service
 smoke_workspace_distribution \
   munchy-client \

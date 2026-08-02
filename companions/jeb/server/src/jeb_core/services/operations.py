@@ -21,9 +21,12 @@ class JebServiceOperations:
         self._store = store
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
+
+    def _initialize(self) -> None:
         self._store.initialize()
 
     def recover_interrupted(self) -> int:
+        self._initialize()
         return self._store.recover_interrupted_service_operations()
 
     def _prune_locked(self) -> None:
@@ -42,11 +45,13 @@ class JebServiceOperations:
             self._threads.pop(operation_id, None)
 
     def active_summary(self) -> dict[str, Any] | None:
+        self._initialize()
         with self._lock:
             self._prune_locked()
             return self._store.active_service_operation()
 
     def get(self, operation_id: str) -> dict[str, Any]:
+        self._initialize()
         with self._lock:
             self._prune_locked()
             return self._store.get_service_operation(operation_id)
@@ -62,6 +67,7 @@ class JebServiceOperations:
         state: str | None,
         all_items: bool,
     ) -> dict[str, Any]:
+        self._initialize()
         with self._lock:
             self._prune_locked()
             return self._store.list_service_operations(
@@ -141,6 +147,7 @@ class JebServiceOperations:
         source: str | None = None,
         attempt_id: str | None = None,
     ) -> dict[str, Any]:
+        self._initialize()
         with self._lock:
             self._prune_locked()
             active_summary = self._store.active_service_operation()
@@ -164,6 +171,7 @@ class JebServiceOperations:
         run: Callable[[str], None],
         source: str | None = None,
     ) -> tuple[str | None, dict[str, Any] | None]:
+        self._initialize()
         with self._lock:
             self._prune_locked()
             active_summary = self._store.active_service_operation()

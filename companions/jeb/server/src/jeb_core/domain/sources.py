@@ -14,6 +14,10 @@ class SourceRegistryError(ValueError):
     pass
 
 
+class SourceNotFoundError(SourceRegistryError):
+    pass
+
+
 @dataclass(frozen=True)
 class SourceConfig:
     id: str

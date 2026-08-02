@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.metadata
 import json
 import os
 import threading
@@ -12,7 +13,7 @@ from typing import Any
 
 import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
-from jeb_api.app import JebServiceState, start_jeb_service_server
+from jeb_api.app import JebServiceState, create_app, start_jeb_service_server
 from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 
@@ -180,6 +181,12 @@ def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> Non
             urllib.request.urlopen(request, timeout=5)
         assert denied.value.code == 401
         assert denied.value.headers["WWW-Authenticate"] == "Bearer"
+        assert json.loads(denied.value.read().decode("utf-8")) == {
+            "error": {
+                "code": "unauthorized",
+                "message": "valid Jeb bearer credentials are required",
+            }
+        }
     finally:
         server.shutdown()
         server.server_close()
@@ -238,6 +245,15 @@ def test_jeb_service_api_manages_source_lifecycle(tmp_path: Path) -> None:
         )
         assert status == 201
         assert "credential" not in created
+
+        missing_status, missing = request_json("GET", f"{base}/missing")
+        assert missing_status == 404
+        assert missing == {
+            "error": {
+                "code": "not_found",
+                "message": "source not found: missing",
+            }
+        }
 
         listed = read_json(base)
         assert [source["id"] for source in listed["sources"]] == ["phone"]
@@ -515,6 +531,7 @@ def test_jeb_service_operations_survive_service_recreation(tmp_path: Path) -> No
 def test_jeb_service_startup_marks_an_interrupted_operation_failed(tmp_path: Path) -> None:
     env = jeb_env(tmp_path)
     services = create_services(config_from_env(env))
+    services.runtime.initialize()
     services.store.create_service_operation(
         operation_id="interrupted-operation",
         operation="archive-now",
@@ -524,13 +541,16 @@ def test_jeb_service_startup_marks_an_interrupted_operation_failed(tmp_path: Pat
     )
 
     restarted = create_services(config_from_env(env))
-    restarted.operations.recover_interrupted()
-
-    shown = restarted.operations.get("interrupted-operation")
-    assert shown["state"] == "failed"
-    assert shown["completed_at"]
-    assert shown["failure"] == "service restarted before operation completed"
-    assert restarted.operations.active_summary() is None
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=restarted))
+    try:
+        shown = restarted.operations.get("interrupted-operation")
+        assert shown["state"] == "failed"
+        assert shown["completed_at"]
+        assert shown["failure"] == "service restarted before operation completed"
+        assert restarted.operations.active_summary() is None
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_jeb_service_api_cancels_an_unresolved_attempt(tmp_path: Path) -> None:
@@ -560,22 +580,55 @@ def test_jeb_service_api_cancels_an_unresolved_attempt(tmp_path: Path) -> None:
         server.server_close()
 
 
-def test_jeb_service_api_unknown_paths_are_not_healthy(tmp_path: Path) -> None:
+def test_jeb_running_app_publishes_its_openapi_contract(tmp_path: Path) -> None:
     services = services_for(jeb_env(tmp_path))
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
     try:
         host, port = server.server_address[:2]
+        document = read_json(f"http://{host}:{port}/openapi.json", headers={})
 
-        try:
-            read_json(f"http://{host}:{port}/not-health")
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 404
-            assert json.loads(exc.read().decode("utf-8")) == {
-                "service": "jeb",
-                "status": "not_found",
-            }
-        else:
-            raise AssertionError("unknown Jeb health paths must return 404")
+        assert document["info"] == {
+            "title": "Jeb API",
+            "description": (
+                "Source enrollment, watched-drop ingestion, and target delivery management."
+            ),
+            "version": importlib.metadata.version("jeb-server"),
+        }
+        assert document["components"]["securitySchemes"]["JebBearer"] == {
+            "type": "http",
+            "description": "Jeb management API bearer token.",
+            "scheme": "bearer",
+        }
+        public_operations = [
+            operation
+            for path, methods in document["paths"].items()
+            if path.startswith("/v1/")
+            for method, operation in methods.items()
+            if method in {"get", "post", "patch", "delete"}
+        ]
+        operation_ids = [operation["operationId"] for operation in public_operations]
+        assert operation_ids
+        assert len(operation_ids) == len(set(operation_ids))
+        assert all(operation["security"] == [{"JebBearer": []}] for operation in public_operations)
+        assert all("422" not in operation["responses"] for operation in public_operations)
+        assert all(
+            operation["responses"]["400"]["content"]["application/json"]["schema"]
+            == {"$ref": "#/components/schemas/ErrorResponse"}
+            for operation in public_operations
+        )
+        assert {
+            "ArchiveNowIn",
+            "AttemptOut",
+            "AttemptPageOut",
+            "ErrorResponse",
+            "SourceCreateIn",
+            "SourceOut",
+            "SourcePageOut",
+            "SourceUpdateIn",
+        } <= set(document["components"]["schemas"])
+
+        direct = create_app(JebServiceState(services=services)).openapi()
+        assert direct["paths"] == document["paths"]
     finally:
         server.shutdown()
         server.server_close()

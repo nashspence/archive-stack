@@ -22,6 +22,7 @@ from jeb_core.domain.sources import (
     Cadence,
     Cleanup,
     SourceConfig,
+    SourceNotFoundError,
     SourceRegistryError,
 )
 from jeb_core.persistence.sql import like_literal
@@ -317,7 +318,7 @@ class SourceRegistry:
                 (normalized_id,),
             ).fetchone()
             if row is None:
-                raise SourceRegistryError(f"source not found: {normalized_id}")
+                raise SourceNotFoundError(f"source not found: {normalized_id}")
             return self._source(connection, row)
 
     def set_enabled(self, source_id: str, enabled: bool) -> SourceConfig:
@@ -328,7 +329,7 @@ class SourceRegistry:
                 (int(enabled), format_utc_timestamp(utc_now()), normalized_id),
             ).rowcount
             if not changed:
-                raise SourceRegistryError(f"source not found: {normalized_id}")
+                raise SourceNotFoundError(f"source not found: {normalized_id}")
         self.write_ftp_projection()
         return self.get(normalized_id)
 
@@ -461,7 +462,7 @@ class SourceRegistry:
                 (normalized_id,),
             ).rowcount
             if not changed:
-                raise SourceRegistryError(f"source not found: {normalized_id}")
+                raise SourceNotFoundError(f"source not found: {normalized_id}")
         self.write_ftp_projection()
 
     def write_ftp_projection(self) -> None:

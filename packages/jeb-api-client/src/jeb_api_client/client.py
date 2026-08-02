@@ -14,7 +14,16 @@ QueryValue = str | int | float | bool | None
 
 
 class JebApiError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "client_error",
+        status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -90,13 +99,26 @@ class JebApiClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise JebApiError(f"Jeb returned HTTP {response.status_code} without JSON") from exc
+            raise JebApiError(
+                f"Jeb returned HTTP {response.status_code} without JSON",
+                code="invalid_response",
+                status=response.status_code,
+            ) from exc
         if response.status_code >= 400:
             error = payload.get("error") if isinstance(payload, dict) else None
+            code = error.get("code") if isinstance(error, dict) else None
             message = error.get("message") if isinstance(error, dict) else None
-            raise JebApiError(str(message or f"Jeb returned HTTP {response.status_code}"))
+            raise JebApiError(
+                str(message or f"Jeb returned HTTP {response.status_code}"),
+                code=str(code or "http_error"),
+                status=response.status_code,
+            )
         if not isinstance(payload, dict):
-            raise JebApiError("Jeb returned a non-object JSON response")
+            raise JebApiError(
+                "Jeb returned a non-object JSON response",
+                code="invalid_response",
+                status=response.status_code,
+            )
         return payload
 
     def status(self, *, include_backlog: bool = True) -> dict[str, Any]:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import httpx
-from jeb_api_client.client import JebApiClient
+import pytest
+from jeb_api_client.client import JebApiClient, JebApiError
 
 
 def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
@@ -25,7 +26,10 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
             return httpx.Response(200, json={"operations": []})
         if request.url.path == "/v1/operations/op-1":
             return httpx.Response(200, json={"id": "op-1", "state": "succeeded"})
-        return httpx.Response(404, json={"error": {"message": "not found"}})
+        return httpx.Response(
+            404,
+            json={"error": {"code": "not_found", "message": "not found"}},
+        )
 
     client = JebApiClient(base_url="https://jeb.example.test", token="jeb-token")
     transport_client = httpx.Client(
@@ -54,6 +58,33 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
         "/v1/operations/op-1",
     ]
     assert all(request.headers["Authorization"] == "Bearer jeb-token" for request in requests)
+
+
+def test_jeb_client_preserves_the_server_error_contract() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "error": {
+                    "code": "not_found",
+                    "message": "source not found: missing",
+                }
+            },
+        )
+
+    client = JebApiClient(base_url="https://jeb.example.test")
+    client._client = httpx.Client(
+        base_url=client.base_url,
+        transport=httpx.MockTransport(handle),
+    )
+    try:
+        with pytest.raises(JebApiError, match="source not found: missing") as denied:
+            client.get_source("missing")
+    finally:
+        client.close()
+
+    assert denied.value.code == "not_found"
+    assert denied.value.status == 404
 
 
 def test_jeb_client_attempt_list_uses_resolution_vocabulary() -> None:
