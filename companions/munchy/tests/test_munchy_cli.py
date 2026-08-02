@@ -101,9 +101,7 @@ def test_munchy_json_mode_emits_the_public_error_document(monkeypatch) -> None: 
     )
 
     assert result.exit_code == 1
-    assert json.loads(result.stdout) == {
-        "error": {"code": "forbidden", "message": "events denied"}
-    }
+    assert json.loads(result.stdout) == {"error": {"code": "forbidden", "message": "events denied"}}
     assert result.stderr == ""
 
 

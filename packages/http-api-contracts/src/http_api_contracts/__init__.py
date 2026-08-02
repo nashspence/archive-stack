@@ -66,8 +66,7 @@ _ERROR_CODE_BY_STATUS: dict[int, str] = {
 }
 
 PUBLIC_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
-    status: {"model": ErrorResponse}
-    for status in (400, 401, 403, 404, 409, 500, 503)
+    status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 500, 503)
 }
 
 
@@ -95,9 +94,7 @@ def error_payload(
 
 
 def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
-    error_schema = ErrorResponse.model_json_schema(
-        ref_template="#/components/schemas/{model}"
-    )
+    error_schema = ErrorResponse.model_json_schema(ref_template="#/components/schemas/{model}")
     definitions = error_schema.pop("$defs", {})
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     components.update(definitions)
