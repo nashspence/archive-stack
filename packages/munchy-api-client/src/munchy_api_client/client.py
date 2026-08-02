@@ -1390,13 +1390,11 @@ class MunchyClient:
     ) -> None:
         self.base_url = server_url_setting(base_url)
         self.token = token_setting(token)
-        self.verify_tls = _bool_env("MUNCHY_TLS_VERIFY", True)
         self.http2 = _bool_env("MUNCHY_HTTP2", True)
         self.timeout_seconds = _http_timeout_seconds()
         self._http = httpx.Client(
             transport=transport,
             timeout=self.timeout_seconds,
-            verify=self.verify_tls,
             http2=self.http2,
         )
         tus_headers = {"Authorization": f"Bearer {self.token}"} if self.token else None

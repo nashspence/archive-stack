@@ -81,7 +81,6 @@ class _HttpApiClient:
         ).rstrip("/")
         self.token = token or os.getenv(token_env)
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
-        self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
         self.timeout_seconds = _timeout_seconds(
             "RIVERHOG_HTTP_TIMEOUT_SECONDS",
@@ -100,7 +99,6 @@ class _HttpApiClient:
             base_url=self.base_url,
             headers=headers,
             timeout=timeout_seconds,
-            verify=self.verify_tls,
             http2=self.http2,
         )
 
@@ -275,7 +273,6 @@ class ApiClient(_HttpApiClient):
                     "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
                     _UPLOAD_TIMEOUT_SECONDS,
                 ),
-                verify_tls=self.verify_tls,
                 http2=self.upload_http2,
                 url_rewriter=self._upload_url,
             )

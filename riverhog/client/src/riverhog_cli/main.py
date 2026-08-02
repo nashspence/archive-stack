@@ -863,7 +863,6 @@ def _upload_file_window(file_concurrency: int) -> int:
 def _new_upload_worker_client(api: ApiClient) -> ApiClient:
     worker = ApiClient(base_url=api.base_url, token=api.token)
     worker.host_header = api.host_header
-    worker.verify_tls = api.verify_tls
     worker.http2 = api.http2
     worker.upload_base_url = api.upload_base_url
     worker.upload_http2 = api.upload_http2

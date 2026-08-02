@@ -157,7 +157,6 @@ def test_official_clients_share_transport_configuration(
 ) -> None:
     monkeypatch.setenv(f"{prefix}_BASE_URL", f"{base_url}/")
     monkeypatch.setenv(f"{prefix}_TOKEN", "example-token")
-    monkeypatch.setenv(f"{prefix}_TLS_VERIFY", "false")
     monkeypatch.setenv(f"{prefix}_HTTP2", "false")
     monkeypatch.setenv(f"{prefix}_HTTP_TIMEOUT_SECONDS", "17")
 
@@ -165,7 +164,6 @@ def test_official_clients_share_transport_configuration(
     try:
         assert client.base_url == base_url
         assert client.token == "example-token"
-        assert client.verify_tls is False
         assert client.http2 is False
         assert client.timeout_seconds == 17
     finally:

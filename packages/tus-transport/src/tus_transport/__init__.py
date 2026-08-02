@@ -31,7 +31,6 @@ class TusTransport:
         client: httpx.Client | None = None,
         headers: Mapping[str, str] | None = None,
         timeout_seconds: float = 300.0,
-        verify_tls: bool = True,
         http2: bool = True,
         url_rewriter: Callable[[str], str] | None = None,
     ) -> None:
@@ -39,7 +38,6 @@ class TusTransport:
         self._owns_client = client is None
         self._headers = dict(headers or {})
         self._timeout_seconds = timeout_seconds
-        self._verify_tls = verify_tls
         self._http2 = http2
         self._url_rewriter = url_rewriter or (lambda value: value)
 
@@ -58,7 +56,6 @@ class TusTransport:
         if self._client is None:
             self._client = httpx.Client(
                 timeout=self._timeout_seconds,
-                verify=self._verify_tls,
                 http2=self._http2,
             )
         return self._client

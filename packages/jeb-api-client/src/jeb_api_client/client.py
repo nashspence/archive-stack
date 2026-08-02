@@ -58,7 +58,6 @@ class JebApiClient:
             "/"
         )
         self.token = token or os.getenv("JEB_TOKEN")
-        self.verify_tls = _bool_env("JEB_TLS_VERIFY", True)
         self.http2 = _bool_env("JEB_HTTP2", True)
         self.timeout_seconds = _timeout()
         self._client: httpx.Client | None = None
@@ -72,7 +71,6 @@ class JebApiClient:
                 base_url=self.base_url,
                 headers=headers,
                 timeout=self.timeout_seconds,
-                verify=self.verify_tls,
                 http2=self.http2,
             )
         return self._client

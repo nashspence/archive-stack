@@ -32,14 +32,12 @@ class TusHttpClient:
         *,
         headers: Mapping[str, str] | None = None,
         timeout_seconds: float = 300.0,
-        verify_tls: bool = True,
         http2: bool = True,
         url_rewriter: Callable[[str], str] | None = None,
     ) -> None:
         self._transport = TusTransport(
             headers=headers,
             timeout_seconds=timeout_seconds,
-            verify_tls=verify_tls,
             http2=http2,
             url_rewriter=url_rewriter,
         )
