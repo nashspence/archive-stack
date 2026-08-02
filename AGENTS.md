@@ -70,3 +70,6 @@ make spec
 make dist-smoke
 make build
 ```
+
+After pushing, watch the pushed commit's GitHub Actions checks through completion. Required
+GitHub checks are part of complete validation; fix any failure before handing work back.

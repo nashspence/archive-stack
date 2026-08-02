@@ -99,6 +99,13 @@ def test_readme_section_order_is_intentional() -> None:
     ]
 
 
+def test_agents_requires_post_push_github_validation() -> None:
+    agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+
+    assert "watch the pushed commit's GitHub Actions checks through completion" in agents
+    assert "Required GitHub checks are part of complete validation" in agents
+
+
 def test_architecture_is_scoped_to_quick_context() -> None:
     architecture = (REPO / "docs/architecture.md").read_text(encoding="utf-8")
 
