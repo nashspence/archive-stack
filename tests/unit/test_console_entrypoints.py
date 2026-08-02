@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import subprocess
 
 import pytest
@@ -21,6 +22,19 @@ CONSOLE_DISTRIBUTIONS = {
 }
 
 
+def _run_help(command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update({"COLUMNS": "240", "NO_COLOR": "1", "TERM": "dumb"})
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+        timeout=10,
+    )
+
+
 def test_munchy_http_api_versions_match_their_installed_distributions() -> None:
     assert munchy_api_app.app.version == importlib.metadata.version("munchy-server")
     assert munchy_av1_nvenc_app.app.version == importlib.metadata.version("munchy-av1-nvenc-target")
@@ -28,13 +42,7 @@ def test_munchy_http_api_versions_match_their_installed_distributions() -> None:
 
 @pytest.mark.parametrize("command", CONSOLE_DISTRIBUTIONS)
 def test_published_console_entrypoint_help_is_side_effect_free(command: str) -> None:
-    completed = subprocess.run(
-        [command, "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    completed = _run_help((command, "--help"))
 
     assert completed.returncode == 0, completed.stderr
     assert "usage" in completed.stdout.casefold()
@@ -66,13 +74,7 @@ def test_published_console_entrypoint_reports_installed_version(
     ),
 )
 def test_lifecycle_event_cli_help_uses_the_shared_contract(command: tuple[str, ...]) -> None:
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
     for option in ("--after", "--limit", "--json"):
@@ -88,13 +90,7 @@ def test_lifecycle_event_cli_help_uses_the_shared_contract(command: tuple[str, .
     ),
 )
 def test_paged_list_cli_help_uses_the_shared_contract(command: tuple[str, ...]) -> None:
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
     for option in ("--page", "--per-page", "--sort", "--order", "--query", "--all", "--json"):
