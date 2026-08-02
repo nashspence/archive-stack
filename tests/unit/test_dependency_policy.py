@@ -4,6 +4,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from tests.workspace import workspace_pyprojects
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -119,3 +121,45 @@ def test_workspace_distributions_bound_internal_dependency_versions() -> None:
                 f"{member.relative_to(REPO_ROOT)} does not bound internal dependency "
                 f"{requirement!r}"
             )
+
+
+def test_dependabot_owns_every_release_dependency_ecosystem() -> None:
+    config = yaml.safe_load((REPO_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8"))
+    updates = {entry["package-ecosystem"]: entry for entry in config["updates"]}
+
+    assert config["version"] == 2
+    assert set(updates) == {"uv", "github-actions", "docker"}
+    assert updates["uv"]["directory"] == "/"
+    assert updates["github-actions"]["directory"] == "/"
+
+    docker_directories = {
+        f"/{path.parent.relative_to(REPO_ROOT)}" for path in REPO_ROOT.rglob("Dockerfile")
+    }
+    assert set(updates["docker"]["directories"]) == docker_directories
+
+
+def test_dependabot_updates_share_one_low_noise_policy() -> None:
+    config = yaml.safe_load((REPO_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8"))
+    expected_groups = {
+        "version-updates": {
+            "applies-to": "version-updates",
+            "patterns": ["*"],
+        },
+        "security-updates": {
+            "applies-to": "security-updates",
+            "patterns": ["*"],
+        },
+    }
+    expected_schedule = {
+        "interval": "weekly",
+        "day": "monday",
+        "time": "04:00",
+        "timezone": "Etc/UTC",
+    }
+
+    for update in config["updates"]:
+        assert update["schedule"] == expected_schedule
+        assert update["open-pull-requests-limit"] == 1
+        assert update["assignees"] == ["nashspence"]
+        assert update["commit-message"] == {"prefix": "deps"}
+        assert update["groups"] == expected_groups
