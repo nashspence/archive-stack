@@ -5,7 +5,7 @@ services:
       dockerfile: companions/jeb/server/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-    image: jeb:latest
+    image: jeb:dev
     restart: "no"
     env_file:
       - ./config/jeb.env
@@ -28,7 +28,7 @@ services:
       dockerfile: companions/jeb/server/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-    image: jeb:latest
+    image: jeb:dev
     restart: unless-stopped
     depends_on:
       jeb-state:

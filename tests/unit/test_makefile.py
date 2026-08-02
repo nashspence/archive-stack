@@ -711,9 +711,8 @@ def test_munchy_av1_image_identifies_its_source_revision() -> None:
     assert "ARG SOURCE_REVISION=unknown" in dockerfile
     assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
     assert "SOURCE_REVISION: ${SOURCE_REVISION:-unknown}" in compose
-    assert "MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:latest" in compose
+    assert "MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:dev" in compose
     makefile = MAKEFILE.read_text(encoding="utf-8")
-    assert "MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev" in makefile
     assert 'SOURCE_REVISION="$$(git rev-parse --verify HEAD)"' in makefile
 
 

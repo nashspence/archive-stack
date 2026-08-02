@@ -5,7 +5,7 @@ services:
       dockerfile: companions/munchy/server/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-    image: munchy-server:latest
+    image: munchy-server:dev
     restart: "no"
     command: ["munchy-server", "state", "upgrade"]
     environment:
@@ -19,7 +19,7 @@ services:
       dockerfile: companions/munchy/server/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-    image: munchy-server:latest
+    image: munchy-server:dev
     container_name: munchy-server
     network_mode: host
     restart: unless-stopped
@@ -106,7 +106,7 @@ services:
       RCLONE_CONFIG: ${MUNCHY_RCLONE_CONFIG:-/rclone/rclone.conf}
       MUNCHY_HANDOFF_RETRY_INITIAL_SECONDS: ${MUNCHY_HANDOFF_RETRY_INITIAL_SECONDS:-30}
       MUNCHY_HANDOFF_RETRY_MAX_SECONDS: ${MUNCHY_HANDOFF_RETRY_MAX_SECONDS:-3600}
-      TZ: America/Los_Angeles
+      TZ: ${TZ:-UTC}
 
     volumes:
       - ${MUNCHY_STATE_HOST_DIR:-./runtime/state}:/state

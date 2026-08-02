@@ -6,6 +6,8 @@ import shlex
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from tests.workspace import workspace_pyprojects
 
 REPO = Path(__file__).resolve().parents[2]
@@ -152,6 +154,11 @@ def dependency_cycle(graph: dict[str, set[str]]) -> list[str] | None:
     return None
 
 
+def compose_interpolation_default(value: str) -> str:
+    match = re.fullmatch(r"\$\{[A-Z0-9_]+:-(.+)\}", value)
+    return match.group(1) if match else value
+
+
 def test_implementation_projects_do_not_cross_owner_boundaries() -> None:
     violations: list[str] = []
     for owner, (source, owned_modules) in IMPLEMENTATION_OWNERS.items():
@@ -265,6 +272,37 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             or source in allowed_manifests.get(dockerfile, set())
             for source in copied
         )
+
+
+def test_locally_built_compose_services_use_development_image_tags() -> None:
+    built_services: list[str] = []
+    for compose_file in REPO.rglob("compose.yaml"):
+        compose = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+        for service_name, service in compose["services"].items():
+            if "build" not in service:
+                continue
+            label = f"{compose_file.relative_to(REPO)}:{service_name}"
+            built_services.append(label)
+            image = service.get("image")
+            assert isinstance(image, str), f"{label} has no explicit image"
+            assert compose_interpolation_default(image).endswith(":dev"), label
+
+    assert built_services
+
+
+def test_compose_timezone_defaults_are_configurable_utc() -> None:
+    configured_services: list[str] = []
+    for compose_file in REPO.rglob("compose.yaml"):
+        compose = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+        for service_name, service in compose["services"].items():
+            environment = service.get("environment", {})
+            if "TZ" not in environment:
+                continue
+            label = f"{compose_file.relative_to(REPO)}:{service_name}"
+            configured_services.append(label)
+            assert environment["TZ"] == "${TZ:-UTC}", label
+
+    assert configured_services
 
 
 def test_images_copy_their_complete_internal_dependency_closure() -> None:

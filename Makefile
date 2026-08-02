@@ -183,7 +183,7 @@ build-munchy-server:
 	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/compose.yaml build --sbom=true munchy-server
 
 build-munchy-av1-nvenc:
-	@MUNCHY_AV1_NVENC_IMAGE=munchy-av1-nvenc-target:dev SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api
+	@SOURCE_REVISION="$$(git rev-parse --verify HEAD)" docker compose --file companions/munchy/server/targets/av1-nvenc/compose.yaml build --sbom=true api
 
 build-test:
 	@./scripts/build_test.sh
