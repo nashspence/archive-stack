@@ -13,8 +13,6 @@ every store.
 After account, credential, provider, or storage-class changes, inspect the affected store
 with `riverhog archive store show` and retrieve known files through the application
 interface. A storage summary or object listing alone does not establish recoverability.
-Periodically follow [Recovery without Riverhog](recovery-without-riverhog.md) against a
-disposable collection without using the Riverhog database or server.
 
 Riverhog maintains plaintext `README.md` and `AGENTS.md` guidance at each archive root.
 Opaque names do not mean objects are unused; encrypted collection objects may be the sole

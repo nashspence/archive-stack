@@ -17,6 +17,8 @@ downstream.
 - Keep ingress and retrieval-cache objects encrypted whenever they leave a client or
   Riverhog process.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
+- Preserve archive recovery without Riverhog or its database using standard tools;
+  `riverhog/recovery` remains an independent reference implementation.
 - Treat catalog and object-store mutations as one archive mutation.
 - Never expose secrets or private deployment identity in public code, fixtures, logs,
   examples, or generated contracts.
@@ -30,12 +32,11 @@ inventories of those surfaces to `main`; release reference is generated from a t
 
 Durable documentation has distinct roles:
 
-- [README](README.md) is the human entrypoint and repository map;
-- [architecture](docs/architecture.md) owns the stable mental model, boundaries, and terms;
+- [README](README.md) is the human entrypoint;
+- [architecture](docs/architecture.md) owns the authority and implementation-boundary
+  mental model and repository map;
 - [operator responsibilities](docs/operator-responsibilities.md) owns human archive-safety
-  judgment;
-- [recovery without Riverhog](docs/recovery-without-riverhog.md) owns the portable recovery
-  procedure.
+  judgment.
 
 Licensing and security reporting remain in their conventional top-level files. Do not add
 release reference or duplicate executable contracts to `main`.
@@ -49,6 +50,14 @@ release reference or duplicate executable contracts to `main`.
   formatting in adapters.
 - Put reusable behavior in a focused package; never share code by importing across a
   server, client, companion, target, or utility implementation boundary.
+- Keep each durable relational database under one application owner and one linear,
+  forward-only migration history. Runtime startup validates state; deployment applies
+  upgrades explicitly.
+- Treat application databases as durable operational state, projections and
+  format-versioned caches as rebuildable, and archive stores as the separate durable
+  archive authority.
+- Keep released state fixtures immutable and public; later schema heads must restore and
+  verify every earlier fixture.
 
 ## Validation
 

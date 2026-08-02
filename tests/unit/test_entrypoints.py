@@ -3,12 +3,22 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.workspace import workspace_pyprojects
+
 REPO = Path(__file__).resolve().parents[2]
 ENTRYPOINTS = {REPO / "README.md", REPO / "AGENTS.md"}
 DURABLE_CONTEXT = {
     REPO / "docs/architecture.md",
     REPO / "docs/operator-responsibilities.md",
-    REPO / "docs/recovery-without-riverhog.md",
+}
+REPOSITORY_MAP_TARGETS = {
+    REPO / "riverhog/server",
+    REPO / "riverhog/client",
+    REPO / "riverhog/recovery",
+    REPO / "companions",
+    REPO / "companions/munchy/server/targets",
+    REPO / "utilities",
+    REPO / "packages",
 }
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 IGNORED_TREES = {
@@ -64,20 +74,60 @@ def test_all_markdown_is_reachable_and_links_resolve() -> None:
     assert markdown == reachable
 
 
-def test_both_entrypoints_route_once_to_each_durable_context_document() -> None:
+def test_main_context_documents_are_exact_and_directly_routed() -> None:
+    assert set((REPO / "docs").glob("*.md")) == DURABLE_CONTEXT
+
     for entrypoint in ENTRYPOINTS:
         links = [
             (entrypoint.parent / target.split("#", 1)[0]).resolve()
             for target in MARKDOWN_LINK_RE.findall(entrypoint.read_text(encoding="utf-8"))
             if "://" not in target and not target.startswith("#")
         ]
-        for document in DURABLE_CONTEXT:
-            assert links.count(document) == 1
+        direct_context = [link for link in links if link.parent == REPO / "docs"]
+        assert len(direct_context) == len(DURABLE_CONTEXT)
+        assert set(direct_context) == DURABLE_CONTEXT
 
 
-def test_recovery_documents_restored_glacier_download_gate() -> None:
-    recovery = (REPO / "docs/recovery-without-riverhog.md").read_text(encoding="utf-8")
+def test_readme_section_order_is_intentional() -> None:
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
 
-    assert "--recursive" in recovery
-    assert "--force-glacier-transfer" in recovery
-    assert "The flag does not initiate restoration" in recovery
+    assert re.findall(r"^## (.+)$", readme, flags=re.MULTILINE) == [
+        "Deployment scope",
+        "Contributions",
+        "Start here",
+        "Context",
+    ]
+
+
+def test_architecture_is_scoped_to_quick_context() -> None:
+    architecture = (REPO / "docs/architecture.md").read_text(encoding="utf-8")
+
+    assert re.findall(r"^## (.+)$", architecture, flags=re.MULTILINE) == [
+        "Authority model",
+        "Boundary model",
+        "Repository map",
+    ]
+    assert len(architecture.split()) <= 500
+
+
+def test_repository_map_exactly_covers_the_workspace_layout() -> None:
+    architecture_path = REPO / "docs/architecture.md"
+    architecture = architecture_path.read_text(encoding="utf-8")
+    section = architecture.partition("## Repository map\n")[2].partition("\n## ")[0]
+    targets = [
+        (architecture_path.parent / target.split("#", 1)[0]).resolve()
+        for target in MARKDOWN_LINK_RE.findall(section)
+        if "://" not in target and not target.startswith("#")
+    ]
+    projects = {path.parent.resolve() for path in workspace_pyprojects(REPO)}
+
+    assert len(targets) == len(REPOSITORY_MAP_TARGETS)
+    assert set(targets) == REPOSITORY_MAP_TARGETS
+    assert all(
+        any(project == target or target in project.parents for project in projects)
+        for target in targets
+    )
+    assert all(
+        any(project == target or target in project.parents for target in targets)
+        for project in projects
+    )

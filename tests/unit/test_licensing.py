@@ -54,12 +54,18 @@ def test_every_workspace_distribution_declares_and_contains_its_component_licens
         assert (pyproject.parent / "LICENSE").read_bytes() == expected_text
 
 
-def test_reference_recovery_distribution_has_no_server_dependency() -> None:
+def test_reference_recovery_is_independent_and_advertised() -> None:
     config = tomllib.loads(
         (REPO_ROOT / "riverhog/recovery/pyproject.toml").read_text(encoding="utf-8")
     )
+    architecture = " ".join(
+        (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
+    )
+
     assert config["project"]["dependencies"] == ["PyYAML>=6,<7"]
     assert config["project"]["scripts"] == {"riverhog-recover": "riverhog_recover.cli:main"}
+    assert "independently packaged, permissively licensed reference implementation" in architecture
+    assert "recoverable without Riverhog using standard tools" in architecture
 
 
 def test_published_images_carry_source_and_license_identity() -> None:
@@ -91,7 +97,7 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
     assert 'compose build --sbom=true "${service}"' in compose_helper
 
 
-def test_entrypoint_documents_route_to_one_operational_disclaimer_and_recovery() -> None:
+def test_entrypoint_documents_route_to_one_operational_disclaimer() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     durable_documents = [
         " ".join(path.read_text(encoding="utf-8").split())
@@ -99,12 +105,9 @@ def test_entrypoint_documents_route_to_one_operational_disclaimer_and_recovery()
             REPO_ROOT / "README.md",
             REPO_ROOT / "docs/architecture.md",
             REPO_ROOT / "docs/operator-responsibilities.md",
-            REPO_ROOT / "docs/recovery-without-riverhog.md",
         )
     ]
-    recovery = (REPO_ROOT / "docs/recovery-without-riverhog.md").read_text(encoding="utf-8")
     normalized_readme = " ".join(readme.split())
-    normalized_recovery = " ".join(recovery.split())
 
     assert "one operator per deployment" in normalized_readme
     assert "multi-tenant storage service" in normalized_readme
@@ -114,5 +117,3 @@ def test_entrypoint_documents_route_to_one_operational_disclaimer_and_recovery()
         sum(document.count("does not guarantee preservation") for document in durable_documents)
         == 1
     )
-    assert "riverhog-recover ./archives/ARCHIVE_ID ./recovered-collection" in recovery
-    assert "does not import Riverhog server code or read a Riverhog database" in normalized_recovery
