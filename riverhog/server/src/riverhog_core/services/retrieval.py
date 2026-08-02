@@ -16,8 +16,6 @@ from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_objects import (
-    CollectionArchiveDataObject,
-    CollectionArchiveFile,
     iter_verified_file_chunks,
     iter_verified_object_chunks,
     load_collection_archive,
@@ -43,6 +41,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.collection_metadata import collection_record_manifest
+from riverhog_core.domain.archive import CollectionArchiveDataObject, CollectionArchiveFile
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt

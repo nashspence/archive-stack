@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
-from riverhog_core.archive_objects import STORED_OBJECT_LIMIT, CollectionArchive
+from riverhog_core.archive_objects import STORED_OBJECT_LIMIT
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
@@ -17,6 +17,7 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
+from riverhog_core.domain.archive import CollectionArchive
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     CollectionArchiveIdentity,

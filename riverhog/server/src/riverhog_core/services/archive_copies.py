@@ -9,11 +9,7 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
-from riverhog_core.archive_objects import (
-    CollectionArchive,
-    CollectionArchiveFile,
-    load_collection_archive,
-)
+from riverhog_core.archive_objects import load_collection_archive
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -26,6 +22,10 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
+from riverhog_core.domain.archive import (
+    CollectionArchive,
+    CollectionArchiveFile,
+)
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     CollectionArchiveIdentity,

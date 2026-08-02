@@ -7,15 +7,13 @@ from typing import Any
 
 from sqlalchemy import CheckConstraint, UniqueConstraint, create_engine, event, inspect
 from sqlalchemy.engine import Connection, Engine, make_url
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from state_schema import StateSchema, StateStatus
+
+from riverhog_core.catalog_base import Base
 
 STATE_VERSION_TABLE = "state_schema_revision"
 STATE_MIGRATIONS = Path(__file__).with_name("state_migrations")
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 def _normalize_database_url(database_url: str) -> str:

@@ -13,7 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from riverhog_core.catalog_db import Base
+from riverhog_core.catalog_base import Base
 
 COLLECTION_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
 

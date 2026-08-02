@@ -12,14 +12,13 @@ from riverhog_core.archive_objects import (
     PACK_PAYLOAD_LIMIT,
     SMALL_FILE_LIMIT,
     STORED_OBJECT_LIMIT,
-    CollectionArchiveFile,
-    CollectionArchiveSourceFile,
     build_collection_archive,
     build_collection_archive_from_manifest,
     iter_verified_file_chunks,
     max_age_plaintext_object_bytes,
     parse_collection_archive_manifest,
 )
+from riverhog_core.domain.archive import CollectionArchiveFile, CollectionArchiveSourceFile
 
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 

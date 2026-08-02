@@ -35,11 +35,10 @@ from riverhog_core.archive_object_paths import archive_store_object_path
 from riverhog_core.archive_objects import (
     PACK_PAYLOAD_LIMIT,
     STORED_OBJECT_LIMIT,
-    CollectionArchive,
-    CollectionArchiveDataObject,
     max_age_plaintext_object_bytes,
 )
 from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING, archive_agents_guidance
+from riverhog_core.domain.archive import CollectionArchive, CollectionArchiveDataObject
 from riverhog_core.ports.archive_store import (
     ArchiveArtifactRead,
     ArchiveMultipartUploadedPart,

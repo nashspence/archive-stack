@@ -6,12 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from riverhog_core.archive_objects import (
-    CollectionArchive,
-    CollectionArchiveDataObject,
-    CollectionArchiveSourceFile,
-    build_collection_archive,
-)
+from riverhog_core.archive_objects import build_collection_archive
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -23,6 +18,11 @@ from riverhog_core.catalog_models import (
 from riverhog_core.collection_metadata import (
     collection_content_etag,
     collection_record_manifest,
+)
+from riverhog_core.domain.archive import (
+    CollectionArchive,
+    CollectionArchiveDataObject,
+    CollectionArchiveSourceFile,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveArtifactRead,

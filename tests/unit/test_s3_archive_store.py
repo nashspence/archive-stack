@@ -19,12 +19,14 @@ from riverhog_core.archive_attestations import archive_copy_checksums
 from riverhog_core.archive_objects import (
     SMALL_FILE_LIMIT,
     STORED_OBJECT_LIMIT,
-    CollectionArchive,
-    CollectionArchiveDataObject,
-    CollectionArchiveSourceFile,
     build_collection_archive,
 )
 from riverhog_core.catalog_db import initialize_db
+from riverhog_core.domain.archive import (
+    CollectionArchive,
+    CollectionArchiveDataObject,
+    CollectionArchiveSourceFile,
+)
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,

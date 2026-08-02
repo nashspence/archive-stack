@@ -10,10 +10,8 @@ from typing import Any
 
 import pytest
 from riverhog_age import decrypt_age_scrypt
-from riverhog_core.archive_objects import (
-    CollectionArchiveSourceFile,
-    build_collection_archive,
-)
+from riverhog_core.archive_objects import build_collection_archive
+from riverhog_core.domain.archive import CollectionArchiveSourceFile
 from riverhog_core.ports.archive_store import (
     ArchiveMultipartUploadedPart,
     ArchiveMultipartUploadState,

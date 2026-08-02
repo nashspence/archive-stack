@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 IMPLEMENTATION_OWNERS = {
     "riverhog-server": (REPO / "riverhog/server/src", {"riverhog_api", "riverhog_core"}),
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
+    "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
     "munchy-server": (
         REPO / "companions/munchy/server/src",
         {"munchy_api", "munchy_core"},
@@ -30,7 +31,8 @@ IMPLEMENTATION_OWNERS = {
 ALL_IMPLEMENTATION_MODULES = set().union(
     *(modules for _, modules in IMPLEMENTATION_OWNERS.values())
 )
-COMPANION_CORE_ROOTS = {
+CORE_ROOTS = {
+    "riverhog_core": REPO / "riverhog/server/src/riverhog_core",
     "munchy_core": REPO / "companions/munchy/server/src/munchy_core",
     "jeb_core": REPO / "companions/jeb/server/src/jeb_core",
 }
@@ -82,6 +84,14 @@ def imported_roots(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             roots.add(node.module.partition(".")[0])
     return roots
+
+
+def source_module_roots(source: Path) -> set[str]:
+    packages = {
+        path.name for path in source.iterdir() if path.is_dir() and (path / "__init__.py").is_file()
+    }
+    modules = {path.stem for path in source.glob("*.py") if path.name != "__init__.py"}
+    return packages | modules
 
 
 def python_module(path: Path, source: Path, package: str) -> str:
@@ -153,6 +163,22 @@ def test_implementation_projects_do_not_cross_owner_boundaries() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_every_implementation_project_and_module_has_exactly_one_owner() -> None:
+    projects: dict[str, Path] = {}
+    for pyproject in workspace_pyprojects(REPO):
+        if pyproject.relative_to(REPO).parts[0] == "packages":
+            continue
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        projects[normalize_distribution_name(str(config["project"]["name"]))] = (
+            pyproject.parent / "src"
+        )
+
+    assert set(IMPLEMENTATION_OWNERS) == set(projects)
+    for owner, (source, owned_modules) in IMPLEMENTATION_OWNERS.items():
+        assert source == projects[owner]
+        assert owned_modules == source_module_roots(source)
+
+
 def test_shared_packages_do_not_import_implementation_projects() -> None:
     violations = [
         f"{path.relative_to(REPO)} imports {', '.join(crossed)}"
@@ -183,14 +209,14 @@ def test_companion_platform_clients_are_owned_by_contained_adapters() -> None:
         assert actual == expected_paths
 
 
-def test_companion_core_dependency_graphs_are_acyclic() -> None:
-    for package, source in COMPANION_CORE_ROOTS.items():
+def test_core_dependency_graphs_are_acyclic() -> None:
+    for package, source in CORE_ROOTS.items():
         cycle = dependency_cycle(internal_module_graph(source, package))
         assert cycle is None, " -> ".join(cycle or ())
 
 
-def test_companion_domain_and_ports_are_dependency_roots() -> None:
-    for package, source in COMPANION_CORE_ROOTS.items():
+def test_core_domain_and_ports_are_dependency_roots() -> None:
+    for package, source in CORE_ROOTS.items():
         for path in (source / "domain").rglob("*.py"):
             internal = {
                 imported

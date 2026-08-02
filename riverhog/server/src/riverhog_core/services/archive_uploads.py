@@ -14,8 +14,6 @@ from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.archive_object_paths import archive_storage_prefix_from_object_path
 from riverhog_core.archive_objects import (
-    CollectionArchive,
-    CollectionArchiveFile,
     build_collection_archive_from_chunk_reader,
     build_collection_archive_from_manifest,
 )
@@ -41,6 +39,7 @@ from riverhog_core.collection_metadata import (
     collection_metadata_manifest,
     collection_record_manifest,
 )
+from riverhog_core.domain.archive import CollectionArchive, CollectionArchiveFile
 from riverhog_core.ingress_crypto import iter_ingress_plaintext
 from riverhog_core.ports.archive_store import (
     ArchiveObjectUploadReceipt,
