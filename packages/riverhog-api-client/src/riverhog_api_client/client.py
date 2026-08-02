@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 
 import httpx
 from file_download import verified_download
+from http_api_contracts import parse_error_payload
 from lifecycle_events import EventPage
 from riverhog_protocol.errors import (
     BadRequest,
@@ -82,6 +83,10 @@ class _HttpApiClient:
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.verify_tls = _bool_env("RIVERHOG_TLS_VERIFY", True)
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
+        self.timeout_seconds = _timeout_seconds(
+            "RIVERHOG_HTTP_TIMEOUT_SECONDS",
+            _HTTP_TIMEOUT_SECONDS,
+        )
         self._request_client: httpx.Client | None = None
         self._download_client: httpx.Client | None = None
 
@@ -100,9 +105,7 @@ class _HttpApiClient:
         )
 
     def _client(self) -> httpx.Client:
-        return self._make_client(
-            timeout_seconds=_timeout_seconds("RIVERHOG_HTTP_TIMEOUT_SECONDS", _HTTP_TIMEOUT_SECONDS)
-        )
+        return self._make_client(timeout_seconds=self.timeout_seconds)
 
     def _persistent_client(self) -> httpx.Client:
         if self._request_client is None:
@@ -140,9 +143,10 @@ class _HttpApiClient:
             data = response.json()
         except Exception:  # pragma: no cover
             response.raise_for_status()
-        error = data.get("error", {}) if isinstance(data, Mapping) else {}
-        code = error.get("code", "bad_request")
-        message = error.get("message", response.text)
+        code, message, details = parse_error_payload(
+            data,
+            fallback_message=response.text or f"HTTP {response.status_code}",
+        )
         exc_map: dict[str, type[RiverhogError]] = {
             "bad_request": BadRequest,
             "unauthorized": Unauthorized,
@@ -156,7 +160,12 @@ class _HttpApiClient:
             "service_unavailable": ServiceUnavailable,
             "download_allowance_exceeded": DownloadAllowanceExceeded,
         }
-        raise exc_map.get(code, RiverhogError)(str(message))
+        raise exc_map.get(code, RiverhogError)(
+            str(message),
+            code=str(code),
+            status=response.status_code,
+            details=details,
+        )
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:

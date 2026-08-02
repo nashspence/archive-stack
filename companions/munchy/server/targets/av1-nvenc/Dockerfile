@@ -66,6 +66,7 @@ COPY companions/munchy/server/pyproject.toml companions/munchy/server/pyproject.
 COPY companions/munchy/server/targets/av1-nvenc companions/munchy/server/targets/av1-nvenc
 COPY packages/config-validation packages/config-validation
 COPY packages/file-download packages/file-download
+COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/munchy-api-client packages/munchy-api-client
 COPY packages/munchy-config packages/munchy-config

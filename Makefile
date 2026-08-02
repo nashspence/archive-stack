@@ -16,9 +16,9 @@ MYPY_SOURCES = \
 	companions/munchy/client/src \
 	companions/munchy/server/src \
 	packages/application-access/src \
-	packages/riverhog-cli-support/src \
 	packages/config-validation/src \
 	packages/file-download/src \
+	packages/http-api-contracts/src \
 	packages/jeb-api-client/src \
 	packages/jeb-cli-support/src \
 	packages/jeb-protocol/src \
@@ -30,6 +30,7 @@ MYPY_SOURCES = \
 	packages/munchy-workflows/src \
 	packages/riverhog-age/src \
 	packages/riverhog-api-client/src \
+	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
 	packages/time-formats/src \
 	packages/tus-transport/src \

@@ -934,12 +934,15 @@ def test_munchy_http_error_formats_insufficient_storage_concisely() -> None:
         507,
         b"""
         {
-          "detail": {
-            "error": "insufficient_storage",
-            "label": "source upload spool, future gpu scratch",
-            "required_bytes": 2147483648,
-            "free_bytes": 1073741824,
-            "reserved_bytes": 536870912
+          "error": {
+            "code": "insufficient_storage",
+            "message": "storage capacity is insufficient",
+            "details": {
+              "label": "source upload spool, future gpu scratch",
+              "required_bytes": 2147483648,
+              "free_bytes": 1073741824,
+              "reserved_bytes": 536870912
+            }
           }
         }
         """,

@@ -12,6 +12,7 @@ COPY companions/munchy/server/src companions/munchy/server/src
 COPY packages/application-access packages/application-access
 COPY packages/config-validation packages/config-validation
 COPY packages/file-download packages/file-download
+COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/munchy-api-client packages/munchy-api-client
 COPY packages/munchy-config packages/munchy-config

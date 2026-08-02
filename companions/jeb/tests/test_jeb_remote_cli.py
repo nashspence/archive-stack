@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jeb_api_client import JebApiError
 from jeb_cli import main as jeb_cli
 from lifecycle_events import EventPage, cloud_event
 
@@ -605,3 +606,29 @@ def test_remote_cli_closes_its_shared_api_client(capsys, monkeypatch) -> None:  
     assert json.loads(capsys.readouterr().out)["sources"] == []
     assert closed == [True]
     assert jeb_cli._API_CLIENT is None
+
+
+def test_jeb_json_mode_emits_the_public_error_document(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FailingApi(FakeJebApi):
+        def get_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
+            del include_backlog
+            raise JebApiError(
+                "status denied",
+                code="forbidden",
+                status=403,
+                details={"permission": "status:read"},
+            )
+
+    monkeypatch.setattr(jeb_cli, "client", lambda: FailingApi())
+
+    assert jeb_cli.main(["status", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "error": {
+            "code": "forbidden",
+            "message": "status denied",
+            "details": {"permission": "status:read"},
+        }
+    }
+    assert captured.err == ""

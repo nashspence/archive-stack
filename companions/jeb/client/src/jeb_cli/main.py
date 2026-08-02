@@ -28,7 +28,12 @@ from jeb_cli_support.output import (
     format_status,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, SOURCE_LIST_SORT_FIELDS, attempt_succeeded
-from riverhog_cli_support.output import emit, format_lifecycle_events, format_list_ids
+from riverhog_cli_support.output import (
+    emit,
+    error_document,
+    format_lifecycle_events,
+    format_list_ids,
+)
 
 _API_CLIENT: JebApiClient | None = None
 
@@ -579,9 +584,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _error_message(exc: BaseException) -> str:
-    if isinstance(exc, httpx.TransportError):
-        return f"transport error: {exc}"
     return str(exc) or type(exc).__name__
+
+
+def _error_code(exc: BaseException) -> str:
+    if isinstance(exc, JebApiError):
+        return exc.code
+    if isinstance(exc, httpx.TransportError):
+        return "transport_error"
+    if isinstance(exc, ValueError):
+        return "bad_request"
+    return "error"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -590,7 +603,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args) or 0)
     except (JebApiError, httpx.TransportError, ValueError) as exc:
-        print(f"jeb: {_error_message(exc)}", file=sys.stderr)
+        if bool(getattr(args, "json", False)):
+            emit(
+                error_document(
+                    code=_error_code(exc),
+                    message=_error_message(exc),
+                    details=exc.details if isinstance(exc, JebApiError) else None,
+                ),
+                json_mode=True,
+            )
+            return 1
+        prefix = "transport error: " if isinstance(exc, httpx.TransportError) else ""
+        print(f"jeb: {prefix}{_error_message(exc)}", file=sys.stderr)
         return 1
     finally:
         _close_client()

@@ -15,6 +15,7 @@ dependencies = [
   "boto3>=1.35,<2.0",
   "cryptography>=48.0.1,<49",
   "fastapi>=0.111,<1.0",
+  "http-api-contracts>=0.1,<0.2",
   "httpx[http2]>=0.27,<1.0",
   "lifecycle-events>=0.1,<0.2",
   "opentimestamps-client>=0.7,<1.0",
@@ -32,6 +33,7 @@ riverhog-api = "riverhog_api.app:main"
 
 [tool.uv.sources]
 application-access = { workspace = true }
+http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
 riverhog-age = { workspace = true }
 riverhog-protocol = { workspace = true }

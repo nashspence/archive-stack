@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+from typing import Any
+
 
 class RiverhogError(Exception):
     code = "riverhog_error"
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status: int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
+        self.code = code or type(self).code
+        self.status = status
+        self.details = dict(details or {})
 
 
 class BadRequest(RiverhogError):

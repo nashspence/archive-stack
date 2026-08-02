@@ -17,6 +17,12 @@ from fastapi import APIRouter, Body, Depends, FastAPI, Header, Query, Request, R
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from http_api_contracts import (
+    PUBLIC_ERROR_RESPONSES,
+    apply_openapi_error_contract,
+    error_payload,
+    status_for_error_code,
+)
 from jeb_core.domain.models import UnrecoverableJebError
 from jeb_core.domain.sources import SourceNotFoundError, SourceRegistryError
 from jeb_core.ingress import (
@@ -36,11 +42,9 @@ from jeb_api.schemas import (
     AttemptPageOut,
     ConfigCheckOut,
     CredentialRotateIn,
-    ErrorBody,
     ErrorResponse,
     EventPage,
-    HealthLiveOut,
-    HealthReadyOut,
+    HealthResponse,
     OperationOut,
     OperationPageOut,
     OperationStartedOut,
@@ -56,10 +60,7 @@ from jeb_api.schemas import (
 
 DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    400: {"model": ErrorResponse},
-    401: {"model": ErrorResponse},
-    404: {"model": ErrorResponse},
-    409: {"model": ErrorResponse},
+    status: response for status, response in PUBLIC_ERROR_RESPONSES.items()
 }
 JEB_BEARER = HTTPBearer(
     auto_error=False,
@@ -150,10 +151,9 @@ def _error_response(
     message: str,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
-    payload = ErrorResponse(error=ErrorBody(code=code, message=message))
     return JSONResponse(
-        status_code=int(status),
-        content=payload.model_dump(),
+        status_code=status_for_error_code(code, fallback=int(status)),
+        content=error_payload(code=code, message=message),
         headers=dict(headers or {}),
     )
 
@@ -258,9 +258,17 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
             headers=exc.headers,
         )
 
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(_request: object, _exc: Exception) -> JSONResponse:
+        return _error_response(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            code="internal_error",
+            message="internal server error",
+        )
+
     @app.get(
         "/health/live",
-        response_model=HealthLiveOut,
+        response_model=HealthResponse,
         operation_id="health_live",
         tags=["health"],
     )
@@ -269,17 +277,21 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
 
     @app.get(
         "/health/ready",
-        response_model=HealthReadyOut,
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
         operation_id="health_ready",
         tags=["health"],
     )
     def health_ready() -> dict[str, Any]:
-        services.runtime.initialize()
-        return {
-            "service": "jeb",
-            "source_count": services.source_registry.count(),
-            "status": "ok",
-        }
+        try:
+            services.runtime.initialize()
+        except Exception as exc:
+            raise JebHttpError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                "Jeb runtime dependencies are not ready",
+            ) from exc
+        return {"service": "jeb", "status": "ok"}
 
     internal = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -717,12 +729,7 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
 
     app.include_router(internal)
     app.include_router(management)
-    openapi = app.openapi()
-    for path_item in openapi["paths"].values():
-        for operation in path_item.values():
-            if isinstance(operation, dict):
-                operation.get("responses", {}).pop("422", None)
-    app.openapi_schema = openapi
+    app.openapi_schema = apply_openapi_error_contract(app.openapi())
     return app
 
 

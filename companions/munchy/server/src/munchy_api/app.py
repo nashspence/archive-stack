@@ -7,10 +7,10 @@ import os
 import secrets
 import threading
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any
+from typing import Annotated, Any
 
 import munchy_core.domain.errors as domain_errors
 import munchy_core.domain.models as domain_models
@@ -33,8 +33,17 @@ import munchy_core.services.templates as template_service
 import munchy_core.services.uploads as upload_service
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
+from http_api_contracts import (
+    ErrorResponse,
+    HealthResponse,
+    apply_openapi_error_contract,
+    error_code_for_status,
+    error_payload,
+    status_for_error_code,
+)
 from lifecycle_events import cloud_event, normalize_event_context
 from munchy_core.domain.errors import ServiceError
 from munchy_core.persistence.application_keys import (
@@ -48,9 +57,17 @@ from munchy_core.persistence.template_registry import (
     validate_template_registry,
 )
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from time_formats import utc_timestamp_now
 
 from munchy_api.composition import configure_adapters
+from munchy_api.schemas import (
+    AppKeyPageResponse,
+    AppPageResponse,
+    JobDiagnosticPageResponse,
+    JobPageResponse,
+    JobTemplatePageResponse,
+)
 
 log = logging.getLogger("munchy.server")
 adapters = configure_adapters()
@@ -103,9 +120,60 @@ app = FastAPI(
 )
 
 
+def api_error_response(
+    status_code: int,
+    *,
+    message: str,
+    code: str | None = None,
+    details: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    resolved_code = code or error_code_for_status(status_code)
+    return JSONResponse(
+        status_code=status_for_error_code(resolved_code, fallback=status_code),
+        content=error_payload(code=resolved_code, message=message, details=details),
+        headers=dict(headers or {}),
+    )
+
+
 @app.exception_handler(ServiceError)
 async def service_error_handler(_request: Request, exc: ServiceError) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if isinstance(exc.detail, Mapping):
+        details = dict(exc.detail)
+        code = str(details.pop("error", "") or error_code_for_status(exc.status_code))
+        message = str(details.pop("message", "") or code.replace("_", " "))
+        return api_error_response(
+            exc.status_code,
+            code=code,
+            message=message,
+            details=details,
+        )
+    return api_error_response(exc.status_code, message=str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    first = exc.errors()[0]
+    location = ".".join(str(item) for item in first["loc"] if item not in {"body", "query"})
+    message = str(first["msg"])
+    if location:
+        message = f"{location} {message}"
+    return api_error_response(400, code="bad_request", message=message)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    return api_error_response(
+        exc.status_code,
+        message=str(exc.detail),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    log.error("unhandled Munchy API error", exc_info=exc)
+    return api_error_response(500, code="internal_error", message="internal server error")
 
 
 def request_bearer_token(request: Request) -> str:
@@ -131,18 +199,18 @@ def request_principal(request: Request) -> MunchyPrincipal:
 async def require_api_auth(request: Request, call_next):  # type: ignore[no-untyped-def]
     if request.url.path.startswith("/v1/admin/"):
         if not authorized_admin_bearer(request):
-            return JSONResponse(
-                {"detail": "invalid admin token"},
-                status_code=401,
+            return api_error_response(
+                401,
+                message="invalid admin token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
     elif request.url.path.startswith("/v1/"):
         if runtime_config.APPLICATION_AUTH_REQUIRED:
             principal = state_store.application_keys().authenticate(request_bearer_token(request))
             if principal is None:
-                return JSONResponse(
-                    {"detail": "invalid application token"},
-                    status_code=401,
+                return api_error_response(
+                    401,
+                    message="invalid application token",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
         else:
@@ -155,9 +223,9 @@ async def require_api_auth(request: Request, call_next):  # type: ignore[no-unty
             EVENTS_READ if request.url.path == "/v1/events" else SUBMISSIONS_MANAGE
         )
         if not principal.allows(required_permission):
-            return JSONResponse(
-                {"detail": f"application permission required: {required_permission}"},
-                status_code=403,
+            return api_error_response(
+                403,
+                message=f"application permission required: {required_permission}",
             )
         request.state.principal = principal
     return await call_next(request)
@@ -167,17 +235,15 @@ async def require_api_auth(request: Request, call_next):  # type: ignore[no-unty
 async def insufficient_storage_handler(
     _request: Request, exc: domain_errors.InsufficientStorage
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=507,
-        content={
-            "detail": {
-                "error": "insufficient_storage",
-                "message": str(exc),
-                "label": exc.label,
-                "required_bytes": exc.required_bytes,
-                "free_bytes": exc.free_bytes,
-                "reserved_bytes": exc.reserved_bytes,
-            }
+    return api_error_response(
+        507,
+        code="insufficient_storage",
+        message=str(exc),
+        details={
+            "label": exc.label,
+            "required_bytes": exc.required_bytes,
+            "free_bytes": exc.free_bytes,
+            "reserved_bytes": exc.reserved_bytes,
         },
     )
 
@@ -195,50 +261,26 @@ def hook_error(message: str, status_code: int = 400) -> JSONResponse:
     )
 
 
-@app.get("/health/live")
+@app.get("/health/live", response_model=HealthResponse, tags=["health"])
 def health_live() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"service": "munchy", "status": "ok"}
 
 
-@app.get("/health/ready")
-def health_ready() -> dict[str, Any]:
+@app.get(
+    "/health/ready",
+    response_model=HealthResponse,
+    responses={503: {"model": ErrorResponse}},
+    tags=["health"],
+)
+def health_ready() -> dict[str, str]:
     try:
-        template_count = validate_template_registry(runtime_config.STATE_DB_PATH)
+        validate_template_registry(runtime_config.STATE_DB_PATH)
     except TemplateRegistryError as exc:
         raise HTTPException(
             status_code=503,
             detail="job template registry does not satisfy the current contract",
         ) from exc
-    return {
-        "status": "ok",
-        "state_dir": str(runtime_config.STATE_DIR),
-        "work_dir": str(runtime_config.WORK_DIR),
-        "tusd_public_base_url": runtime_config.TUSD_PUBLIC_BASE_URL,
-        "gpu_target": runtime_config.GPU_TARGET,
-        "handoff_adapters": {
-            "command": {
-                "enabled": adapters.command_enabled,
-            },
-            "rclone": {
-                "enabled": adapters.rclone_enabled,
-            },
-            "riverhog": {
-                "enabled": adapters.riverhog.enabled,
-                "eager_workers": adapters.riverhog.worker_count,
-                "eager_worker_running": bool(
-                    execution_runtime.handoff_thread is not None
-                    and execution_runtime.handoff_thread.is_alive()
-                ),
-                "event_worker_running": adapters.riverhog.background_running,
-            },
-        },
-        "event_source": runtime_config.EVENT_SOURCE,
-        "scheduler_paused": scheduling_service.scheduling_paused(),
-        "running_job_limit": runtime_config.MAX_RUNNING_JOBS,
-        "running_jobs": len(execution_runtime.active_jobs),
-        "scheduled_jobs": len(execution_runtime.scheduled_jobs),
-        "job_templates": template_count,
-    }
+    return {"service": "munchy", "status": "ok"}
 
 
 def _tail_truncate(value: str, limit: int) -> str:
@@ -359,7 +401,7 @@ def validate_job_template(req: domain_models.JobTemplateCreateRequest) -> dict[s
     }
 
 
-@app.get("/v1/admin/apps")
+@app.get("/v1/admin/apps", response_model=AppPageResponse)
 def list_apps(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
@@ -402,7 +444,7 @@ def create_app_key(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/v1/admin/apps/{app_name}/keys")
+@app.get("/v1/admin/apps/{app_name}/keys", response_model=AppKeyPageResponse)
 def list_app_keys(
     app_name: str,
     page: int = Query(1, ge=1),
@@ -438,14 +480,13 @@ def revoke_app_key(app_name: str, key_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=exc.args[0]) from exc
 
 
-@app.get("/v1/admin/job-templates")
+@app.get("/v1/admin/job-templates", response_model=JobTemplatePageResponse)
 def list_job_templates(
-    page: int = 1,
-    per_page: int = 25,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
     sort: str = "template_id",
     order: str = "asc",
     q: str | None = None,
-    query: str | None = None,
     enabled: bool | None = None,
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
@@ -454,7 +495,7 @@ def list_job_templates(
         per_page=per_page,
         sort=sort,
         order=order,
-        query=q if q is not None else query,
+        query=q,
         enabled=enabled,
         all_items=all_items is True,
     )
@@ -631,14 +672,13 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     )
 
 
-@app.get("/v1/jobs")
+@app.get("/v1/jobs", response_model=JobPageResponse)
 def list_jobs(
-    page: int = 1,
-    per_page: int = 25,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
     sort: str = "updated_at",
     order: str = "desc",
     q: str | None = None,
-    query: str | None = None,
     terminal: str = "active",
     state: str | None = None,
     workflow_mode: str | None = None,
@@ -652,7 +692,7 @@ def list_jobs(
         per_page=per_page,
         sort=sort,
         order=order,
-        query=q if q is not None else query,
+        query=q,
         terminal=terminal,
         state=state,
         workflow_mode=workflow_mode,
@@ -674,14 +714,13 @@ def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
     )
 
 
-@app.get("/v1/admin/job-diagnostics")
+@app.get("/v1/admin/job-diagnostics", response_model=JobDiagnosticPageResponse)
 def list_job_diagnostics(
-    page: int = 1,
-    per_page: int = 25,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
     sort: str = "created_at",
     order: str = "desc",
     q: str | None = None,
-    query: str | None = None,
     all_items: bool = Query(False, alias="all"),
 ) -> dict[str, Any]:
     return diagnostic_service.list_job_diagnostics_page(
@@ -689,7 +728,7 @@ def list_job_diagnostics(
         per_page=per_page,
         sort=sort,
         order=order,
-        query=q if q is not None else query,
+        query=q,
         all_items=all_items is True,
     )
 
@@ -797,6 +836,9 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     if finalize_now:
         return cleanup_service.finalize_canceled_job(job, reason="job_canceled")
     return job
+
+
+app.openapi_schema = apply_openapi_error_contract(app.openapi())
 
 
 def _parser() -> argparse.ArgumentParser:

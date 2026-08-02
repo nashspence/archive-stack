@@ -44,7 +44,7 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
     app = create_app(container=cast(Any, object()))
     protected: list[tuple[str, str, str]] = []
     for path, route in _api_routes(app.routes):
-        if path == "/healthz" or path.startswith("/internal/"):
+        if path.startswith("/health/") or path.startswith("/internal/"):
             continue
         permissions = list(_permission_dependencies(route.dependant))
         assert len(permissions) == 1, (path, route.methods, permissions)

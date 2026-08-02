@@ -5,18 +5,24 @@ import asyncio
 import contextlib
 import importlib.metadata
 import logging
-import os
 import threading
-import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import timedelta
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from http_api_contracts import (
+    apply_openapi_error_contract,
+    error_code_for_status,
+    error_payload,
+    status_for_error_code,
+)
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_protocol.errors import RiverhogError
+from riverhog_protocol.errors import RiverhogError, ServiceUnavailable
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from time_formats import utc_now
 
 from riverhog_api.deps import ServiceContainer, default_container, get_container
@@ -30,7 +36,7 @@ from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
 from riverhog_api.routers.tags import router as tags_router
-from riverhog_api.schemas.common import ErrorBody, ErrorResponse
+from riverhog_api.schemas.common import ErrorResponse, HealthResponse
 
 _LOG = logging.getLogger(__name__)
 
@@ -52,14 +58,16 @@ class _RiverhogAccessLogFilter(logging.Filter):
                 status_code = None
         else:
             message = record.getMessage()
-            if " /healthz " in message:
-                path = "/healthz"
+            if " /health/live " in message:
+                path = "/health/live"
+            elif " /health/ready " in message:
+                path = "/health/ready"
             elif " /internal/tusd/hooks " in message:
                 path = "/internal/tusd/hooks"
             if '" 2' in message or '" 3' in message:
                 status_code = 200
 
-        if path == "/healthz":
+        if path in {"/health/live", "/health/ready"}:
             return False
         successful = status_code is not None and status_code < 400
         if successful and path == "/internal/tusd/hooks":
@@ -477,45 +485,75 @@ def create_app(
         lifespan=lifespan,
         generate_unique_id_function=_operation_id,
     )
-    app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
     app.dependency_overrides[get_container] = get_or_create_container
 
     @app.exception_handler(RiverhogError)
     async def handle_riverhog_error(_: Request, exc: RiverhogError) -> JSONResponse:
-        status_map = {
-            "bad_request": 400,
-            "unauthorized": 401,
-            "forbidden": 403,
-            "invalid_target": 400,
-            "not_found": 404,
-            "conflict": 409,
-            "invalid_state": 409,
-            "hash_mismatch": 409,
-            "not_implemented": 501,
-            "service_unavailable": 503,
-            "download_allowance_exceeded": 429,
-        }
-        payload = ErrorResponse(error=ErrorBody(code=exc.code, message=exc.message))
         return JSONResponse(
-            status_code=status_map.get(exc.code, 400),
-            content=payload.model_dump(),
+            status_code=status_for_error_code(exc.code),
+            content=error_payload(
+                code=exc.code,
+                message=exc.message,
+                details=exc.details,
+            ),
             headers={"WWW-Authenticate": "Bearer"} if exc.code == "unauthorized" else None,
         )
 
     @app.exception_handler(NotImplementedError)
     async def handle_builtin_not_implemented(_: Request, exc: NotImplementedError) -> JSONResponse:
-        payload = ErrorResponse(
-            error=ErrorBody(code="not_implemented", message=str(exc) or "not implemented")
+        return JSONResponse(
+            status_code=501,
+            content=error_payload(
+                code="not_implemented",
+                message=str(exc) or "not implemented",
+            ),
         )
-        return JSONResponse(status_code=501, content=payload.model_dump())
 
-    @app.get("/healthz", include_in_schema=False)
-    async def healthz() -> dict[str, object]:
-        return {
-            "status": "ok",
-            "instance_id": str(app.state.instance_id),
-            "ingress_cleanup": get_or_create_container().archive_uploads.ingress_cleanup_status(),
-        }
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        first = exc.errors()[0]
+        location = ".".join(str(item) for item in first["loc"] if item not in {"body", "query"})
+        message = str(first["msg"])
+        if location:
+            message = f"{location} {message}"
+        return JSONResponse(
+            status_code=400,
+            content=error_payload(code="bad_request", message=message),
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        code = error_code_for_status(exc.status_code)
+        return JSONResponse(
+            status_code=status_for_error_code(code, fallback=exc.status_code),
+            content=error_payload(code=code, message=str(exc.detail)),
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+        _LOG.error("unhandled Riverhog API error", exc_info=exc)
+        return JSONResponse(
+            status_code=500,
+            content=error_payload(code="internal_error", message="internal server error"),
+        )
+
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
+    async def health_live() -> dict[str, str]:
+        return {"service": "riverhog", "status": "ok"}
+
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
+        tags=["health"],
+    )
+    async def health_ready() -> dict[str, str]:
+        try:
+            get_or_create_container().archive_uploads.ingress_cleanup_status()
+        except Exception as exc:
+            raise ServiceUnavailable("Riverhog runtime dependencies are not ready") from exc
+        return {"service": "riverhog", "status": "ok"}
 
     app.include_router(internal_router)
     app.include_router(collections_router, prefix="/v1")
@@ -527,6 +565,7 @@ def create_app(
     app.include_router(quotas_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)
+    app.openapi_schema = apply_openapi_error_contract(app.openapi())
     return app
 
 

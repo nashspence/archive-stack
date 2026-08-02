@@ -14,6 +14,7 @@ dependencies = [
   "argon2-cffi>=23,<26",
   "config-validation>=0.1,<0.2",
   "fastapi>=0.111,<1.0",
+  "http-api-contracts>=0.1,<0.2",
   "httpx>=0.27,<1.0",
   "jsonschema>=4.25,<5.0",
   "lifecycle-events>=0.1,<0.2",
@@ -35,6 +36,7 @@ munchy-server = "munchy_api.app:main"
 [tool.uv.sources]
 application-access = { workspace = true }
 config-validation = { workspace = true }
+http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
 munchy-api-client = { workspace = true }
 munchy-config = { workspace = true }

@@ -54,6 +54,8 @@ suspected vulnerabilities privately through [security reporting](SECURITY.md).
 ## Context
 
 - [Architecture](docs/architecture.md) explains archive and component boundaries.
+- [Public interface conventions](docs/public-interfaces.md) defines the shared HTTP,
+  official-client, and CLI contracts.
 - [Operator responsibilities](docs/operator-responsibilities.md) covers the human checks
   around durable storage, recovery, and deletion.
 - [Recovery without Riverhog](docs/recovery-without-riverhog.md) is the independent archive

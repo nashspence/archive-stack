@@ -18,7 +18,7 @@ compose up --detach --wait app
 
 bootstrap_token="$(compose_env_value RIVERHOG_BOOTSTRAP_TOKEN riverhog-development-bootstrap-token)"
 create_code="import json, os, urllib.request
-health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz'))
+health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready'))
 assert health['status'] == 'ok'
 openapi = json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json'))
 assert '/v1/apps' in openapi['paths']
@@ -45,7 +45,7 @@ compose restart app
 compose up --detach --wait app
 
 restart_code="import json, os, urllib.request
-health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz'))
+health = json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready'))
 assert health['status'] == 'ok'
 request = urllib.request.Request(
     'http://127.0.0.1:8000/v1/apps',

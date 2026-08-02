@@ -2,30 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from http_api_contracts import ErrorBody, ErrorResponse, HealthResponse
 from lifecycle_events import EventPage
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
 class JebModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class ErrorBody(JebModel):
-    code: str
-    message: str
-
-
-class ErrorResponse(JebModel):
-    error: ErrorBody
-
-
-class HealthLiveOut(JebModel):
-    service: Literal["jeb"]
-    status: Literal["ok"]
-
-
-class HealthReadyOut(HealthLiveOut):
-    source_count: int
 
 
 class ConfigCheckOut(JebModel):
@@ -232,8 +215,7 @@ __all__ = [
     "ErrorBody",
     "ErrorResponse",
     "EventPage",
-    "HealthLiveOut",
-    "HealthReadyOut",
+    "HealthResponse",
     "OperationOut",
     "OperationPageOut",
     "OperationStartedOut",

@@ -4,6 +4,7 @@ import contextlib
 import json
 
 from lifecycle_events import EventPage, cloud_event
+from munchy_api_client.client import MunchyHttpError
 from munchy_cli.main import app
 from typer.testing import CliRunner
 
@@ -77,6 +78,68 @@ def test_munchy_event_list_has_human_and_json_output(monkeypatch) -> None:  # ty
     assert "io.riverhog.munchy.job.succeeded" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout)["next_cursor"] == "19"
+
+
+def test_munchy_json_mode_emits_the_public_error_document(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def list_lifecycle_events(self, **_kwargs: object) -> EventPage:
+            raise MunchyHttpError(
+                "GET",
+                "http://munchy.test/v1/events",
+                403,
+                b'{"error":{"code":"forbidden","message":"events denied"}}',
+            )
+
+    monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        ["event", "list", "--server-url", "http://munchy.test", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "error": {"code": "forbidden", "message": "events denied"}
+    }
+    assert result.stderr == ""
+
+
+def test_munchy_watch_json_emits_unsuccessful_final_document(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def wait_for_job(self, job_id: str, *, interval: float) -> dict[str, object]:
+            assert job_id == "job-1"
+            assert interval == 0.5
+            return {"job_id": job_id, "state": "failed", "error": "encoder failed"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "job",
+            "watch",
+            "job-1",
+            "--server-url",
+            "http://munchy.test",
+            "--interval",
+            "0.5",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "job_id": "job-1",
+        "state": "failed",
+        "error": "encoder failed",
+    }
+    assert result.stderr == ""
 
 
 def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: ignore[no-untyped-def]

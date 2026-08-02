@@ -31,7 +31,12 @@ from riverhog_cli_support.application_keys import (
     format_app_keys,
     format_apps,
 )
-from riverhog_cli_support.output import emit, format_lifecycle_events, format_list_ids
+from riverhog_cli_support.output import (
+    emit,
+    error_document,
+    format_lifecycle_events,
+    format_list_ids,
+)
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
@@ -2494,9 +2499,10 @@ def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
     code = _error_code(exc)
     message = _error_message(exc)
     if json_mode:
+        details = exc.details if isinstance(exc, RiverhogError) else None
         typer.echo(
             json.dumps(
-                {"error": {"code": code, "message": message}},
+                error_document(code=code, message=message, details=details),
                 sort_keys=True,
                 separators=(",", ":"),
             )

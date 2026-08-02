@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 from file_download import DownloadProgress, verified_download
+from http_api_contracts import parse_error_payload
 from lifecycle_events import EventPage
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusHttpError, TusTransport
 
@@ -27,6 +28,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8092"
 BASE_URL_ENV = "MUNCHY_BASE_URL"
 TOKEN_ENV = "MUNCHY_TOKEN"
 ADMIN_TOKEN_ENV = "MUNCHY_ADMIN_TOKEN"
+DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 PROGRESS_ENV = "MUNCHY_PROGRESS"
 KEEP_AWAKE_ENV = "MUNCHY_KEEP_AWAKE"
 DEFAULT_UPLOAD_WORKERS = 12
@@ -97,6 +99,29 @@ def token_setting(token: str | None = None) -> str:
 
 def admin_token_setting(token: str | None = None) -> str:
     return (token or os.getenv(ADMIN_TOKEN_ENV) or "").strip()
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _http_timeout_seconds() -> float:
+    raw = os.getenv("MUNCHY_HTTP_TIMEOUT_SECONDS", str(DEFAULT_HTTP_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError("MUNCHY_HTTP_TIMEOUT_SECONDS must be a positive number") from exc
+    if value <= 0:
+        raise ValueError("MUNCHY_HTTP_TIMEOUT_SECONDS must be a positive number")
+    return value
 
 
 def submission_payload(
@@ -225,30 +250,23 @@ def format_http_body(status: int, body: bytes) -> str:
         return text
     if not isinstance(parsed, dict):
         return text
-    detail = parsed.get("detail")
-    if isinstance(detail, dict):
-        error = str(detail.get("error") or "").strip()
-        message = str(detail.get("message") or "").strip()
-        if status == 507 and error == "insufficient_storage":
-            label = str(detail.get("label") or "storage").strip()
-            required = int(detail.get("required_bytes") or 0)
-            free = int(detail.get("free_bytes") or 0)
-            reserved = int(detail.get("reserved_bytes") or 0)
-            parts = [
-                f"insufficient storage for {label}",
-                f"need {format_bytes(required)} free",
-                f"have {format_bytes(free)}",
-            ]
-            if reserved:
-                parts.append(f"{format_bytes(reserved)} reserved by active uploads")
-            return "; ".join(parts)
-        if error and message:
-            return f"{error}: {message}"
-        if message:
-            return message
-        if error:
-            return error
-    return text
+    code, message, details = parse_error_payload(parsed, fallback_message=text)
+    if code == "invalid_response":
+        return text
+    if status == 507 and code == "insufficient_storage":
+        label = str(details.get("label") or "storage").strip()
+        required = int(details.get("required_bytes") or 0)
+        free = int(details.get("free_bytes") or 0)
+        reserved = int(details.get("reserved_bytes") or 0)
+        parts = [
+            f"insufficient storage for {label}",
+            f"need {format_bytes(required)} free",
+            f"have {format_bytes(free)}",
+        ]
+        if reserved:
+            parts.append(f"{format_bytes(reserved)} reserved by active uploads")
+        return "; ".join(parts)
+    return message
 
 
 class MunchyHttpError(RuntimeError):
@@ -262,6 +280,14 @@ class MunchyHttpError(RuntimeError):
         self.url = url
         self.status = status
         self.body = body
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        self.code, self.message, self.details = parse_error_payload(
+            payload,
+            fallback_message=text or f"HTTP {status}",
+        )
 
 
 class JobTerminalDuringUpload(RuntimeError):
@@ -1357,14 +1383,22 @@ class UploadProgress:
 class MunchyClient:
     def __init__(
         self,
-        base_url: str,
+        base_url: str | None = None,
         *,
         token: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = server_url_setting(base_url)
         self.token = token_setting(token)
-        self._http = httpx.Client(transport=transport)
+        self.verify_tls = _bool_env("MUNCHY_TLS_VERIFY", True)
+        self.http2 = _bool_env("MUNCHY_HTTP2", True)
+        self.timeout_seconds = _http_timeout_seconds()
+        self._http = httpx.Client(
+            transport=transport,
+            timeout=self.timeout_seconds,
+            verify=self.verify_tls,
+            http2=self.http2,
+        )
         tus_headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         self._tus = TusTransport(client=self._http, headers=tus_headers)
 
@@ -1396,7 +1430,7 @@ class MunchyClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         expect: set[int] | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> tuple[int, bytes, Any]:
         if path_or_url.startswith(("http://", "https://")):
             url = path_or_url
@@ -1409,13 +1443,13 @@ class MunchyClient:
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
             request_headers.setdefault("Content-Type", "application/json")
-        response = self._http.request(
-            method,
-            url,
-            content=body,
-            headers=request_headers,
-            timeout=timeout,
-        )
+        request_options: dict[str, Any] = {
+            "content": body,
+            "headers": request_headers,
+        }
+        if timeout is not None:
+            request_options["timeout"] = timeout
+        response = self._http.request(method, url, **request_options)
         response_body = response.content
         status = response.status_code
         if (status >= 400 and (expect is None or status not in expect)) or (
@@ -1431,7 +1465,7 @@ class MunchyClient:
         *,
         payload: dict[str, Any] | None = None,
         expect: set[int] | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         _, body, _ = self.request(method, path, payload=payload, expect=expect, timeout=timeout)
         if not body:
@@ -1507,7 +1541,7 @@ class MunchyClient:
                     path,
                     payload=payload,
                     expect=expect,
-                    timeout=timeout if timeout is not None else 60.0,
+                    timeout=timeout,
                 )
                 retry_reporter.finish()
                 return result
@@ -1544,7 +1578,7 @@ class MunchyClient:
                     path,
                     payload=payload,
                     expect=expect,
-                    timeout=timeout if timeout is not None else 60.0,
+                    timeout=timeout,
                 )
                 retry_reporter.finish()
                 return payload_doc
@@ -2013,7 +2047,7 @@ class MunchyClient:
 
 
 class MunchyAdminClient(MunchyClient):
-    def __init__(self, base_url: str, *, token: str | None = None) -> None:
+    def __init__(self, base_url: str | None = None, *, token: str | None = None) -> None:
         super().__init__(base_url, token=admin_token_setting(token))
 
     def get_scheduler_status(self) -> dict[str, Any]:

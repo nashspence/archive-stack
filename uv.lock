@@ -13,6 +13,7 @@ members = [
     "config-validation",
     "file-download",
     "gogurt",
+    "http-api-contracts",
     "jeb-api-client",
     "jeb-cli-support",
     "jeb-client",
@@ -589,6 +590,17 @@ wheels = [
 ]
 
 [[package]]
+name = "http-api-contracts"
+version = "0.1.0"
+source = { editable = "packages/http-api-contracts" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -689,6 +701,7 @@ name = "jeb-api-client"
 version = "0.1.0"
 source = { editable = "packages/jeb-api-client" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "jeb-protocol" },
     { name = "lifecycle-events" },
@@ -696,6 +709,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
@@ -721,6 +735,7 @@ name = "jeb-client"
 version = "0.1.0"
 source = { editable = "companions/jeb/client" }
 dependencies = [
+    { name = "httpx" },
     { name = "jeb-api-client" },
     { name = "jeb-cli-support" },
     { name = "jeb-protocol" },
@@ -730,6 +745,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jeb-api-client", editable = "packages/jeb-api-client" },
     { name = "jeb-cli-support", editable = "packages/jeb-cli-support" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
@@ -749,6 +765,7 @@ source = { editable = "companions/jeb/server" }
 dependencies = [
     { name = "argon2-cffi" },
     { name = "fastapi" },
+    { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "jeb-cli-support" },
     { name = "jeb-protocol" },
@@ -765,6 +782,7 @@ dependencies = [
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jeb-cli-support", editable = "packages/jeb-cli-support" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
@@ -1033,6 +1051,7 @@ source = { editable = "packages/munchy-api-client" }
 dependencies = [
     { name = "file-download" },
     { name = "h2" },
+    { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "lifecycle-events" },
     { name = "time-formats" },
@@ -1043,6 +1062,7 @@ dependencies = [
 requires-dist = [
     { name = "file-download", editable = "packages/file-download" },
     { name = "h2", specifier = ">=4,<5" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "time-formats", editable = "packages/time-formats" },
@@ -1080,6 +1100,7 @@ version = "0.1.0"
 source = { editable = "companions/munchy/client" }
 dependencies = [
     { name = "config-validation" },
+    { name = "httpx" },
     { name = "munchy-api-client" },
     { name = "munchy-workflows" },
     { name = "pydantic" },
@@ -1093,6 +1114,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "config-validation", editable = "packages/config-validation" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "munchy-workflows", editable = "packages/munchy-workflows" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
@@ -1123,6 +1145,7 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "config-validation" },
     { name = "fastapi" },
+    { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "lifecycle-events" },
@@ -1144,6 +1167,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "config-validation", editable = "packages/config-validation" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
@@ -1703,6 +1727,7 @@ source = { editable = "packages/riverhog-api-client" }
 dependencies = [
     { name = "file-download" },
     { name = "h2" },
+    { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "lifecycle-events" },
     { name = "riverhog-age" },
@@ -1714,6 +1739,7 @@ dependencies = [
 requires-dist = [
     { name = "file-download", editable = "packages/file-download" },
     { name = "h2", specifier = ">=4,<5" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "riverhog-age", editable = "packages/riverhog-age" },
@@ -1725,6 +1751,12 @@ requires-dist = [
 name = "riverhog-cli-support"
 version = "0.1.0"
 source = { editable = "packages/riverhog-cli-support" }
+dependencies = [
+    { name = "http-api-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "http-api-contracts", editable = "packages/http-api-contracts" }]
 
 [[package]]
 name = "riverhog-client"
@@ -1781,6 +1813,7 @@ dependencies = [
     { name = "boto3" },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "http-api-contracts" },
     { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
     { name = "opentimestamps-client" },
@@ -1800,6 +1833,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35,<2.0" },
     { name = "cryptography", specifier = ">=48.0.1,<49" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "opentimestamps-client", specifier = ">=0.7,<1.0" },

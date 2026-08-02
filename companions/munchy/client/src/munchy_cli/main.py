@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
+import httpx
 import typer
 from config_validation import ConfigError
 from munchy_api_client.client import (
@@ -16,6 +17,7 @@ from munchy_api_client.client import (
     FIELD_STYLE,
     MunchyAdminClient,
     MunchyClient,
+    MunchyHttpError,
     SubmissionUploadRequest,
     format_bytes,
     format_job_failure,
@@ -55,7 +57,12 @@ from riverhog_cli_support.application_keys import (
     format_app_keys,
     format_apps,
 )
-from riverhog_cli_support.output import format_lifecycle_events, format_list_ids, json_text
+from riverhog_cli_support.output import (
+    error_document,
+    format_lifecycle_events,
+    format_list_ids,
+    json_text,
+)
 from time_formats import parse_duration
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
@@ -180,7 +187,26 @@ def _load_profiles_or_exit(path: Path) -> dict[str, EncodeProfile]:
         raise typer.BadParameter(str(exc), param_hint=str(path)) from exc
 
 
-def _exit_server_error(exc: BaseException) -> NoReturn:
+def _exit_server_error(exc: BaseException, *, json_mode: bool) -> NoReturn:
+    if isinstance(exc, MunchyHttpError):
+        code = exc.code
+        message = exc.message
+        details = exc.details
+    elif isinstance(exc, httpx.TransportError):
+        code = "transport_error"
+        message = str(exc) or type(exc).__name__
+        details = None
+    elif isinstance(exc, ValueError):
+        code = "bad_request"
+        message = str(exc) or type(exc).__name__
+        details = None
+    else:
+        code = "error"
+        message = str(exc) or type(exc).__name__
+        details = None
+    if json_mode:
+        typer.echo(json_text(error_document(code=code, message=message, details=details)))
+        raise typer.Exit(1) from exc
     typer.echo(f"munchy: {exc}", err=True)
     raise typer.Exit(1) from exc
 
@@ -816,7 +842,7 @@ def list_lifecycle_events(
     try:
         page = _server_client(server_url).list_lifecycle_events(after=after, limit=limit)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     payload = page.model_dump(mode="json")
     emit(payload if json_mode else format_lifecycle_events(payload), json_mode=json_mode)
 
@@ -835,7 +861,7 @@ def scheduler_status(
     try:
         payload = _scheduler_status(server_url)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
 
 
@@ -851,7 +877,7 @@ def scheduler_pause(
         client.pause_scheduler()
         payload = client.get_scheduler_status()
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
 
 
@@ -867,7 +893,7 @@ def scheduler_resume(
         client.resume_scheduler()
         payload = client.get_scheduler_status()
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
 
 
@@ -1040,7 +1066,7 @@ def list_job_templates(
             all_items=all_items,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     if ids:
         emit(format_list_ids(payload, "templates", id_key="template_id"), json_mode=False)
         return
@@ -1058,7 +1084,7 @@ def show_job_template(
     try:
         payload = _admin_client(server_url).get_job_template(template_id)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
 
 
@@ -1075,7 +1101,7 @@ def check_job_template(
     try:
         payload = _admin_client(server_url).validate_job_template(template_id, definition)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(
         payload if json_mode else f"{template_id}: ok ({payload.get('digest')})",
         json_mode=json_mode,
@@ -1100,7 +1126,7 @@ def create_job_template(
             enabled=not disabled,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
 
 
@@ -1125,7 +1151,7 @@ def replace_job_template(
             enabled=not disabled,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
 
 
@@ -1142,7 +1168,7 @@ def _set_job_template_enabled(
         operation = client.enable_job_template if enabled else client.disable_job_template
         payload = operation(template_id, expected_revision=int(current["revision"]))
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
 
 
@@ -1186,7 +1212,7 @@ def remove_job_template(
             expected_revision=int(current["revision"]),
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(
         payload
         if json_mode
@@ -1386,6 +1412,7 @@ def submit(
             raise typer.BadParameter(str(exc)) from exc
         resolved_server_url = server_url_setting(server_url)
         client = _track_client(MunchyClient(resolved_server_url))
+        terminal_failure = False
         try:
             preflight = client.preflight_submission(request)
             if dry_run:
@@ -1404,13 +1431,18 @@ def submit(
                 submission = client.wait_for_submission(request.submission_id, interval=interval)
                 job = _mapping(submission.get("job"), label="job")
                 if not job_finished_cleanly(job):
-                    typer.echo(format_job_failure(job, label="munchy submission"), err=True)
-                    raise typer.Exit(1)
+                    terminal_failure = True
+                    if not json_mode:
+                        typer.echo(format_job_failure(job, label="munchy submission"), err=True)
             elif not json_mode:
                 job = _mapping(submission.get("job"), label="job")
                 typer.echo(format_job_status_line(job), err=True)
         except Exception as exc:
-            _exit_server_error(exc)
+            _exit_server_error(exc, json_mode=json_mode)
+    if terminal_failure:
+        if json_mode:
+            emit(submission, json_mode=True)
+        raise typer.Exit(1)
     emit(submission if json_mode else _submission_summary(request, submission), json_mode=json_mode)
 
 
@@ -1509,7 +1541,7 @@ def list_jobs(
             all_items=all_items,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     if ids:
         emit(format_list_ids(payload, "jobs", id_key="job_id"), json_mode=False)
         return
@@ -1554,7 +1586,7 @@ def list_job_diagnostics(
             all_items=all_items,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     if ids:
         emit(format_list_ids(payload, "diagnostics", id_key="job_id"), json_mode=False)
         return
@@ -1587,7 +1619,7 @@ def download_job_diagnostic(
             overwrite=overwrite,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_download_receipt(payload), json_mode=json_mode)
 
 
@@ -1608,7 +1640,7 @@ def remove_job_diagnostics(
         for job_id in job_ids:
             removed.append(client.remove_job_diagnostic(job_id))
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     payload = {"removed": removed}
     human = "\n".join(f"removed job diagnostic: {item['job_id']}" for item in removed)
     emit(payload if json_mode else human, json_mode=json_mode)
@@ -1631,7 +1663,7 @@ def remove_terminal_jobs(
         for job_id in job_ids:
             removed.append(client.remove_terminal_job(job_id))
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     payload = {"removed": removed}
     human = "\n".join(f"removed terminal job: {item['job_id']}" for item in removed)
     emit(payload if json_mode else human, json_mode=json_mode)
@@ -1655,7 +1687,7 @@ def retention(
         client = _admin_client(server_url)
         payload = client.apply_retention() if apply else client.get_retention_plan()
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(payload if json_mode else format_retention(payload), json_mode=json_mode)
 
 
@@ -1677,7 +1709,7 @@ def show_job(
     try:
         job = _server_client(server_url).get_job(job_id, compact=compact)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 
@@ -1699,9 +1731,12 @@ def watch_job(
             interval=interval,
         )
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     if not job_finished_cleanly(final):
-        typer.echo(format_job_failure(final, label="munchy job"), err=True)
+        if json_mode:
+            emit(final, json_mode=True)
+        else:
+            typer.echo(format_job_failure(final, label="munchy job"), err=True)
         raise typer.Exit(1)
     emit(final if json_mode else format_job(final), json_mode=json_mode)
 
@@ -1727,11 +1762,14 @@ def resume_job(
         job = client.resume_job(job_id)
         if wait:
             job = client.wait_for_job(job_id, interval=interval)
-            if not job_finished_cleanly(job):
-                typer.echo(format_job_failure(job, label="munchy job"), err=True)
-                raise typer.Exit(1)
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
+    if wait and not job_finished_cleanly(job):
+        if json_mode:
+            emit(job, json_mode=True)
+        else:
+            typer.echo(format_job_failure(job, label="munchy job"), err=True)
+        raise typer.Exit(1)
     emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 
@@ -1764,7 +1802,7 @@ def cancel_job(
             if not cleanup and job.get("state") != "canceled":
                 raise RuntimeError(f"job did not cancel cleanly: {format_job_status_line(job)}")
     except Exception as exc:
-        _exit_server_error(exc)
+        _exit_server_error(exc, json_mode=json_mode)
     emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 

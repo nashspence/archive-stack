@@ -7,6 +7,7 @@ from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
+from http_api_contracts import parse_error_payload
 from jeb_protocol import attempt_state, attempt_watch_finished
 from lifecycle_events import EventPage
 
@@ -20,10 +21,12 @@ class JebApiError(RuntimeError):
         *,
         code: str = "client_error",
         status: int | None = None,
+        details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        self.details = dict(details or {})
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -55,6 +58,9 @@ class JebApiClient:
             "/"
         )
         self.token = token or os.getenv("JEB_TOKEN")
+        self.verify_tls = _bool_env("JEB_TLS_VERIFY", True)
+        self.http2 = _bool_env("JEB_HTTP2", True)
+        self.timeout_seconds = _timeout()
         self._client: httpx.Client | None = None
 
     def _persistent_client(self) -> httpx.Client:
@@ -65,9 +71,9 @@ class JebApiClient:
             self._client = httpx.Client(
                 base_url=self.base_url,
                 headers=headers,
-                timeout=_timeout(),
-                verify=_bool_env("JEB_TLS_VERIFY", True),
-                http2=_bool_env("JEB_HTTP2", True),
+                timeout=self.timeout_seconds,
+                verify=self.verify_tls,
+                http2=self.http2,
             )
         return self._client
 
@@ -105,13 +111,15 @@ class JebApiClient:
                 status=response.status_code,
             ) from exc
         if response.status_code >= 400:
-            error = payload.get("error") if isinstance(payload, dict) else None
-            code = error.get("code") if isinstance(error, dict) else None
-            message = error.get("message") if isinstance(error, dict) else None
+            code, message, details = parse_error_payload(
+                payload,
+                fallback_message=f"Jeb returned HTTP {response.status_code}",
+            )
             raise JebApiError(
-                str(message or f"Jeb returned HTTP {response.status_code}"),
-                code=str(code or "http_error"),
+                message,
+                code=code,
                 status=response.status_code,
+                details=details,
             )
         if not isinstance(payload, dict):
             raise JebApiError(

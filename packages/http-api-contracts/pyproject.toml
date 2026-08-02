@@ -3,18 +3,15 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "riverhog-cli-support"
+name = "http-api-contracts"
 version = "0.1.0"
-description = "Shared structured CLI projection helpers."
+description = "Shared typed HTTP error, health, and OpenAPI contracts."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "http-api-contracts>=0.1,<0.2",
+  "pydantic>=2.7,<3.0",
 ]
 
-[tool.uv.sources]
-http-api-contracts = { workspace = true }
-
 [tool.hatch.build.targets.wheel]
-packages = ["src/riverhog_cli_support"]
+packages = ["src/http_api_contracts"]

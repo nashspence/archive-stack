@@ -163,7 +163,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import json, urllib.request; payload = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz')); assert payload['status'] == 'ok'",
+          "import json, urllib.request; payload = json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready')); assert payload == {'service': 'riverhog', 'status': 'ok'}",
         ]
       interval: 2s
       timeout: 2s

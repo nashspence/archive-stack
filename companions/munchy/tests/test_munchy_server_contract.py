@@ -157,7 +157,7 @@ def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monk
     with TestClient(server.app) as client:
         ready = client.get("/health/ready")
         assert ready.status_code == 200
-        assert ready.json()["job_templates"] == 0
+        assert ready.json() == {"service": "munchy", "status": "ok"}
 
         definition = {
             "schema_version": 1,
@@ -188,7 +188,10 @@ def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monk
         not_ready = client.get("/health/ready")
         assert not_ready.status_code == 503
         assert not_ready.json() == {
-            "detail": "job template registry does not satisfy the current contract"
+            "error": {
+                "code": "service_unavailable",
+                "message": "job template registry does not satisfy the current contract",
+            }
         }
 
 
@@ -385,7 +388,15 @@ def test_job_template_crud_is_revision_guarded_and_database_listed(
             },
         )
         assert conflict.status_code == 409
-        assert conflict.json()["detail"]["error"] == "job_template_revision_conflict"
+        assert conflict.json()["error"] == {
+            "code": "job_template_revision_conflict",
+            "message": "job template revision conflict",
+            "details": {
+                "template_id": "camera-archive",
+                "expected_revision": 1,
+                "current_revision": 2,
+            },
+        }
 
         disabled = client.post(
             "/v1/admin/job-templates/camera-archive/disable",
@@ -414,8 +425,8 @@ def test_job_template_rejects_submission_owned_fields(tmp_path: Path, monkeypatc
             json={"template_id": "invalid", "definition": definition},
         )
 
-    assert response.status_code == 422
-    assert "submission-owned" in response.json()["detail"]
+    assert response.status_code == 400
+    assert "submission-owned" in response.json()["error"]["message"]
 
 
 def test_riverhog_handoff_template_owns_tags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -602,8 +613,8 @@ def test_submission_preflight_requires_explicit_missing_filesystem_metadata_poli
             },
         )
 
-    assert response.status_code == 422
-    assert "allow_missing_filesystem_metadata" in response.json()["detail"]
+    assert response.status_code == 400
+    assert "allow_missing_filesystem_metadata" in response.json()["error"]["message"]
 
 
 def test_job_template_rejects_missing_filesystem_metadata_policy_with_birthtime_source(
@@ -629,8 +640,8 @@ def test_job_template_rejects_missing_filesystem_metadata_policy_with_birthtime_
             json={"template_id": "contradictory", "definition": definition},
         )
 
-    assert response.status_code == 422
-    assert "filesystem_birthtime" in str(response.json()["detail"])
+    assert response.status_code == 400
+    assert "filesystem_birthtime" in response.json()["error"]["message"]
 
 
 def test_job_template_rejects_missing_filesystem_metadata_policy_with_routing_fact(
@@ -663,8 +674,8 @@ def test_job_template_rejects_missing_filesystem_metadata_policy_with_routing_fa
             json={"template_id": "routing-contradiction", "definition": definition},
         )
 
-    assert response.status_code == 422
-    assert "routing cannot reference filesystem metadata" in str(response.json()["detail"])
+    assert response.status_code == 400
+    assert "routing cannot reference filesystem metadata" in response.json()["error"]["message"]
     assert server.state_store.list_states("job") == []
     assert server.state_store.list_states("input-upload") == []
 
@@ -717,7 +728,11 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         conflict_request["files"] = [{"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}]
         conflict = client.post("/v1/submissions", json=conflict_request)
         assert conflict.status_code == 409
-        assert conflict.json()["detail"]["error"] == "submission_conflict"
+        assert conflict.json()["error"] == {
+            "code": "submission_conflict",
+            "message": "submission conflict",
+            "details": {"submission_id": "submission-1"},
+        }
 
     job = server.state_store.load_job("submission-1")
     assert job["template_id"] == "camera-archive"

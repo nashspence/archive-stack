@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from http_api_contracts import error_payload
+
 
 def json_text(payload: object) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -13,6 +15,15 @@ def json_text(payload: object) -> str:
 
 def emit(payload: Any, *, json_mode: bool) -> None:
     print(json_text(payload) if json_mode else payload)
+
+
+def error_document(
+    *,
+    code: str,
+    message: str,
+    details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return error_payload(code=code, message=message, details=details)
 
 
 def human_bytes(value: object) -> str:
@@ -86,6 +97,7 @@ def format_lifecycle_events(payload: Mapping[str, object]) -> str:
 
 __all__ = [
     "emit",
+    "error_document",
     "format_lifecycle_events",
     "format_list_ids",
     "human_bytes",

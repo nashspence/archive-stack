@@ -148,7 +148,6 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
         }
         assert read_json(f"http://{host}:{port}/health/ready") == {
             "service": "jeb",
-            "source_count": 1,
             "status": "ok",
         }
         status = read_json(f"http://{host}:{port}/v1/status")
