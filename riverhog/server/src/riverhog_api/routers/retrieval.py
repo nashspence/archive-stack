@@ -111,7 +111,7 @@ def acknowledge_retrieval_job(
     "/retrieval-jobs/{job_id}/objects/{object_id}/content",
     response_class=StreamingResponse,
 )
-def get_retrieval_object_content(
+def download_retrieval_object(
     job_id: str,
     object_id: str,
     principal: RetrievalManager,
@@ -158,7 +158,7 @@ def get_retrieval_object_content(
     "/retrieval-jobs/{job_id}/content",
     response_class=StreamingResponse,
 )
-def get_retrieval_content(
+def download_retrieval_file(
     job_id: str,
     principal: RetrievalManager,
     container: ContainerDep,

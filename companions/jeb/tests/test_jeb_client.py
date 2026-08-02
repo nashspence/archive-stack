@@ -39,7 +39,7 @@ def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
     )
     client._client = transport_client
     try:
-        assert client.status() == {"status": "ok"}
+        assert client.get_status() == {"status": "ok"}
         assert client.list_sources() == {"sources": []}
         assert client.get_attempt("attempt-1")["state"] == "batching"
         assert client.cancel_attempt("attempt-1")["state"] == "canceled"

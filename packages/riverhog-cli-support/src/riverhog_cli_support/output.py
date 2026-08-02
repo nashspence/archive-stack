@@ -61,8 +61,32 @@ def format_list_ids(
     )
 
 
+def format_lifecycle_events(payload: Mapping[str, object]) -> str:
+    events = mapping_items(payload, "events")
+    lines = [f"events: {len(events)}"]
+    for event in events:
+        lines.append(
+            " ".join(
+                (
+                    str(event.get("time") or "-"),
+                    str(event.get("type") or "-"),
+                    f"subject={event.get('subject') or '-'}",
+                    f"id={event.get('id') or '-'}",
+                )
+            )
+        )
+    lines.extend(
+        (
+            f"next cursor: {payload.get('next_cursor') or '0'}",
+            f"has more: {'yes' if payload.get('has_more') else 'no'}",
+        )
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
     "emit",
+    "format_lifecycle_events",
     "format_list_ids",
     "human_bytes",
     "json_text",

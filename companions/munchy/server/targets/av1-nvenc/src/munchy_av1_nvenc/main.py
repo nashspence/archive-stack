@@ -34,7 +34,6 @@ from munchy_target_support.metadata_projection import (
 from munchy_target_support.source_artifact_bridge import build_strict_source_artifacts
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
 from munchy_workflows.profiles import (
-    MUNCHY_PROFILE_TARGET,
     ArchiveAudioProfile,
     ArchiveContainer,
     ArchiveEncodeProfile,
@@ -1889,104 +1888,6 @@ def health_ready() -> dict[str, Any]:
         "video_scale_mode": VIDEO_SCALE_MODE,
         "scale_cuda": ffmpeg_filter_available("scale_cuda"),
         "scale_npp": ffmpeg_filter_available("scale_npp"),
-    }
-
-
-@app.get("/v1/capabilities")
-def capabilities() -> dict[str, Any]:
-    encoders = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-encoders"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    ).stdout
-    filters = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-filters"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    ).stdout
-    av1_help = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-h", "encoder=av1_nvenc"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    ).stdout
-    return {
-        "profiles": ["av1-nvenc-high"],
-        "encode_profile": {
-            "schema_versions": [1],
-            "targets": [MUNCHY_PROFILE_TARGET],
-            "archive_codecs": ["av1_nvenc"],
-            "containers": ["mkv", "webm"],
-            "source_artifact_drops": [
-                "stream:N",
-                "atom:TYPE",
-                "top-level-atom:TYPE",
-                "atom-offset:OFFSET",
-            ],
-            "fps_modes": ["passthrough", "halve_60_to_30"],
-            "audio_codecs": ["opus"],
-            "scale_flags": ["fast_bilinear", "bilinear", "bicubic", "lanczos", "spline"],
-            "scale_modes": [
-                "software",
-                "cuda",
-                "cuda-required",
-                "npp",
-                "npp-required",
-                "auto",
-            ],
-        },
-        "tasks": ["archive_video", "qcut_video", "audio_review"],
-        "job_payload": {
-            "max_parallel_encodes": {
-                "max": MAX_PARALLEL_ENCODES,
-            },
-        },
-        "ffmpeg": {
-            "av1_nvenc": "av1_nvenc" in encoders,
-            "libopus": "libopus" in encoders,
-            "scale_cuda": "scale_cuda" in filters,
-            "scale_npp": "scale_npp" in filters,
-            "av1_nvenc_uhq": "uhq" in av1_help,
-        },
-        "archive": {
-            "decode_mode": VIDEO_DECODE_MODE,
-            "scale_mode": VIDEO_SCALE_MODE,
-            "preset": ARCHIVE_PRESET,
-            "tune": ARCHIVE_TUNE,
-            "cq": ARCHIVE_CQ,
-            "lookahead_level": ARCHIVE_LOOKAHEAD_LEVEL,
-            "split_encode_mode": ARCHIVE_SPLIT_ENCODE_MODE,
-            "pix_fmt": ARCHIVE_PIX_FMT,
-            "max_parallel_encodes": MAX_PARALLEL_ENCODES,
-            "cuvid_decoders": sorted(CUVID_DECODERS.values()),
-            "source_artifacts": {
-                "enabled": True,
-                "bundle_suffix": SOURCE_ARTIFACTS_SUFFIX,
-                "kind": "munchy.source-artifacts",
-                "strict_accounting": True,
-                "includes": [
-                    "manifest.json",
-                    "inventory/source-ffprobe.json",
-                    "inventory/source-inventory.json",
-                    "stream transforms",
-                    "rebuild plan",
-                    "source container atoms",
-                    "source stream artifacts",
-                ],
-            },
-        },
-        "qcut": {
-            "decode_mode": VIDEO_DECODE_MODE,
-            "encode_profile_source": "archive",
-            "target_seconds": QCUT_TARGET_SECONDS,
-            "min_seconds": QCUT_MIN_SECONDS,
-            "max_seconds": QCUT_MAX_SECONDS,
-        },
     }
 
 

@@ -856,6 +856,51 @@ def test_cancel_job_cleanup_uses_long_timeout() -> None:
     }
 
 
+def test_submission_preflight_failure_uses_submission_scoped_endpoint() -> None:
+    client = MunchyClient("http://munchy.test")
+    seen: dict[str, object] = {}
+    payload = {
+        "submission_id": "submission-1",
+        "message": "local validation failed",
+    }
+
+    def fake_json(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        seen.update(method=method, path=path, **kwargs)
+        return {"status": "recorded"}
+
+    client.json = fake_json  # type: ignore[method-assign]
+
+    result = client.record_submission_preflight_failure(payload)
+
+    assert result == {"status": "recorded"}
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/submissions/preflight-failures",
+        "payload": payload,
+        "expect": {202},
+    }
+
+
+def test_admin_client_controls_scheduler_through_admin_endpoints() -> None:
+    client = MunchyAdminClient("http://munchy.test", token="admin-token")
+    seen: list[tuple[str, str]] = []
+
+    def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        seen.append((method, path))
+        return {"paused": path.endswith("pause")}
+
+    client.json = fake_json  # type: ignore[method-assign]
+
+    assert client.get_scheduler_status() == {"paused": False}
+    assert client.pause_scheduler() == {"paused": True}
+    assert client.resume_scheduler() == {"paused": False}
+    assert seen == [
+        ("GET", "/v1/admin/scheduler"),
+        ("POST", "/v1/admin/scheduler/pause"),
+        ("POST", "/v1/admin/scheduler/resume"),
+    ]
+
+
 def test_resume_job_posts_server_resume_endpoint() -> None:
     client = MunchyClient("http://munchy.test")
     seen: dict[str, object] = {}

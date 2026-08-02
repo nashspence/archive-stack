@@ -31,7 +31,7 @@ from riverhog_cli_support.application_keys import (
     format_app_keys,
     format_apps,
 )
-from riverhog_cli_support.output import emit, format_list_ids
+from riverhog_cli_support.output import emit, format_lifecycle_events, format_list_ids
 from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
@@ -84,6 +84,7 @@ app_key_app = typer.Typer(help="Application key management.")
 app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
 tag_app = typer.Typer(help="Collection tag catalog.")
+event_app = typer.Typer(help="Lifecycle event inspection.")
 app_key_app.add_typer(app_key_access_app, name="access")
 app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
@@ -95,6 +96,7 @@ archive_app.add_typer(archive_store_app, name="store")
 archive_app.add_typer(archive_copy_app, name="copy")
 app.add_typer(application_app, name="app")
 app.add_typer(tag_app, name="tag")
+app.add_typer(event_app, name="event")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -165,6 +167,21 @@ def _root(
     ] = False,
 ) -> None:
     ctx.call_on_close(_close_client)
+
+
+@event_app.command("list")
+def event_list_cmd(
+    after: Annotated[
+        str | None,
+        typer.Option("--after", help="Return events after this cursor"),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List application-visible lifecycle events."""
+
+    payload = client().list_lifecycle_events(after=after, limit=limit).model_dump(mode="json")
+    emit(payload if json_mode else format_lifecycle_events(payload), json_mode=json_mode)
 
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}

@@ -55,7 +55,7 @@ from riverhog_cli_support.application_keys import (
     format_app_keys,
     format_apps,
 )
-from riverhog_cli_support.output import format_list_ids, json_text
+from riverhog_cli_support.output import format_lifecycle_events, format_list_ids, json_text
 from time_formats import parse_duration
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
@@ -85,6 +85,8 @@ job_app = typer.Typer(help="Munchy job operations.")
 job_diagnostic_app = typer.Typer(help="Failed-job diagnostic bundles.")
 maintenance_app = typer.Typer(help="Server maintenance inspection and actions.")
 routing_app = typer.Typer(help="Routing authoring tools.")
+event_app = typer.Typer(help="Lifecycle event inspection.")
+scheduler_app = typer.Typer(help="Job scheduler controls.")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(application_app, name="app")
 app.add_typer(profile_app, name="profile")
@@ -93,6 +95,8 @@ app.add_typer(job_app, name="job")
 job_app.add_typer(job_diagnostic_app, name="diagnostic")
 app.add_typer(maintenance_app, name="maintenance")
 app.add_typer(routing_app, name="routing")
+app.add_typer(event_app, name="event")
+app.add_typer(scheduler_app, name="scheduler")
 _CLIENTS: list[Any] = []
 
 
@@ -775,6 +779,98 @@ def _server_client(server_url: str | None) -> MunchyClient:
     return _track_client(MunchyClient(server_url_setting(server_url)))
 
 
+def format_scheduler_status(payload: Mapping[str, object]) -> str:
+    state = "paused" if payload.get("paused") else "running"
+    active = [str(item) for item in _sequence(payload.get("active_jobs"))]
+    scheduled = [str(item) for item in _sequence(payload.get("scheduled_jobs"))]
+    runnable = [str(item) for item in _sequence(payload.get("runnable_jobs"))]
+    return "\n".join(
+        (
+            f"scheduler: {state}",
+            f"running jobs: {len(active)}/{payload.get('running_job_limit', 0)}",
+            f"running slots available: {payload.get('running_job_slots_available', 0)}",
+            f"scheduled jobs: {len(scheduled)}",
+            f"runnable jobs: {payload.get('runnable_job_count', len(runnable))}",
+            f"active: {', '.join(active) if active else '-'}",
+            f"scheduled: {', '.join(scheduled) if scheduled else '-'}",
+            f"runnable: {', '.join(runnable) if runnable else '-'}",
+        )
+    )
+
+
+@event_app.command("list")
+def list_lifecycle_events(
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Munchy server URL; defaults to MUNCHY_BASE_URL"),
+    ] = None,
+    after: Annotated[
+        str | None,
+        typer.Option("--after", help="Return events after this cursor"),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List application-visible lifecycle events."""
+
+    try:
+        page = _server_client(server_url).list_lifecycle_events(after=after, limit=limit)
+    except Exception as exc:
+        _exit_server_error(exc)
+    payload = page.model_dump(mode="json")
+    emit(payload if json_mode else format_lifecycle_events(payload), json_mode=json_mode)
+
+
+def _scheduler_status(server_url: str | None) -> dict[str, Any]:
+    return _admin_client(server_url).get_scheduler_status()
+
+
+@scheduler_app.command("status")
+def scheduler_status(
+    server_url: Annotated[str | None, typer.Option("--server-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show scheduler capacity, queue, and pause state."""
+
+    try:
+        payload = _scheduler_status(server_url)
+    except Exception as exc:
+        _exit_server_error(exc)
+    emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
+
+
+@scheduler_app.command("pause")
+def scheduler_pause(
+    server_url: Annotated[str | None, typer.Option("--server-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Stop starting new jobs; running jobs continue."""
+
+    try:
+        client = _admin_client(server_url)
+        client.pause_scheduler()
+        payload = client.get_scheduler_status()
+    except Exception as exc:
+        _exit_server_error(exc)
+    emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
+
+
+@scheduler_app.command("resume")
+def scheduler_resume(
+    server_url: Annotated[str | None, typer.Option("--server-url")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Resume starting queued jobs subject to capacity."""
+
+    try:
+        client = _admin_client(server_url)
+        client.resume_scheduler()
+        payload = client.get_scheduler_status()
+    except Exception as exc:
+        _exit_server_error(exc)
+    emit(payload if json_mode else format_scheduler_status(payload), json_mode=json_mode)
+
+
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 
@@ -1043,11 +1139,8 @@ def _set_job_template_enabled(
     client = _admin_client(server_url)
     try:
         current = client.get_job_template(template_id)
-        payload = client.set_job_template_enabled(
-            template_id,
-            enabled=enabled,
-            expected_revision=int(current["revision"]),
-        )
+        operation = client.enable_job_template if enabled else client.disable_job_template
+        payload = operation(template_id, expected_revision=int(current["revision"]))
     except Exception as exc:
         _exit_server_error(exc)
     emit(payload if json_mode else format_job_template(payload), json_mode=json_mode)
@@ -1560,7 +1653,7 @@ def retention(
 
     try:
         client = _admin_client(server_url)
-        payload = client.apply_retention() if apply else client.retention_plan()
+        payload = client.apply_retention() if apply else client.get_retention_plan()
     except Exception as exc:
         _exit_server_error(exc)
     emit(payload if json_mode else format_retention(payload), json_mode=json_mode)

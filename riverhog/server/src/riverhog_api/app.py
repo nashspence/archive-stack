@@ -14,6 +14,7 @@ from datetime import timedelta
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_protocol.errors import RiverhogError
 from time_formats import utc_now
@@ -32,6 +33,10 @@ from riverhog_api.routers.tags import router as tags_router
 from riverhog_api.schemas.common import ErrorBody, ErrorResponse
 
 _LOG = logging.getLogger(__name__)
+
+
+def _operation_id(route: APIRoute) -> str:
+    return route.name
 
 
 class _RiverhogAccessLogFilter(logging.Filter):
@@ -470,6 +475,7 @@ def create_app(
         title="riverhog API",
         version=importlib.metadata.version("riverhog-server"),
         lifespan=lifespan,
+        generate_unique_id_function=_operation_id,
     )
     app.state.instance_id = f"{os.getpid()}-{time.time_ns()}"
     app.dependency_overrides[get_container] = get_or_create_container

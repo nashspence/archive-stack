@@ -141,15 +141,15 @@ def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> Non
     client = TestClient(server.app)
 
     assert client.get("/health/live").status_code == 200
-    unauthorized = client.get("/v1/capabilities")
+    unauthorized = client.get("/v1/jobs")
     assert unauthorized.status_code == 401
     assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
     authorized = client.get(
-        "/v1/capabilities",
+        "/v1/jobs",
         headers={"Authorization": f"Bearer {server_token}"},
     )
     assert authorized.status_code == 200
-    assert authorized.json()["operations"]["list_jobs"] is True
+    assert authorized.json()["jobs"] == []
 
 
 def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -229,7 +229,7 @@ def test_admin_auth_is_separate_from_submission_auth(tmp_path: Path, monkeypatch
         )
         assert (
             client.get(
-                "/v1/capabilities",
+                "/v1/jobs",
                 headers={"Authorization": "Bearer admin-token"},
             ).status_code
             == 401
@@ -760,32 +760,6 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
     assert upload.json()["protocol"] == "tus"
     assert upload.json()["length"] == 4
     assert unknown.status_code == 404
-
-
-def test_capabilities_advertise_munchy_profile_target(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-
-    capabilities = server.capabilities()
-
-    assert capabilities["output_modes"] == ["video", "audio", "preserve"]
-    assert capabilities["tasks"] == [
-        "archive_video",
-        "archive_audio",
-        "qcut_video",
-        "audio_review",
-    ]
-    assert capabilities["encode_profile"]["targets"] == ["munchy-av1-nvenc", "munchy-audio"]
-    assert capabilities["encode_profile"]["archive_codecs"] == ["av1_nvenc", "opus"]
-    assert capabilities["encode_profile"]["containers"] == ["mkv", "webm", "opus"]
-    assert capabilities["groups"]["input_path_shape"] == "<group>/<file>"
-    assert capabilities["groups"]["structured_routing"] is True
-    assert capabilities["storage"]["eager_archive_only_encoding"] is True
-    assert capabilities["storage"]["eager_archive_pipeline_batches"] == 3
-    assert capabilities["storage"]["max_running_jobs"] == 1
-    assert capabilities["events"]["format"] == "CloudEvents 1.0"
-    assert capabilities["events"]["cursor_log"] is True
-    assert capabilities["events"]["operation_context_max_bytes"] == 4096
-    assert capabilities["operations"]["record_preflight_failure"] is True
 
 
 def test_handoff_failure_policy_is_runtime_job_option(
@@ -3645,7 +3619,7 @@ def test_scheduler_reserves_running_job_slots_and_leaves_extra_jobs_queued(
     assert first == ["job-a"]
     assert second == []
     assert scheduled_tasks == [(server.job_service.run_job, ("job-a",))]
-    assert server.scheduler_status()["scheduled_jobs"] == ["job-a"]
+    assert server.get_scheduler_status()["scheduled_jobs"] == ["job-a"]
     assert job_b["queue"]["position"] == 2
     assert job_b["queue"]["running_job_limit"] == 1
 
@@ -3947,7 +3921,7 @@ def test_job_issue_event_carries_operational_facts_without_presentation(
     assert event.data["severity"] == "critical"
 
 
-def test_client_preflight_failure_is_recorded_as_a_terminal_event(
+def test_submission_preflight_failure_is_recorded_as_a_lifecycle_event(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -3955,17 +3929,16 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
 
-    result = server.record_preflight_failure(
-        server.domain_models.ClientPreflightFailureRequest(
+    result = server.record_submission_preflight_failure(
+        server.domain_models.SubmissionPreflightFailureCreate(
+            submission_id="submission-1",
             message="Local media preflight failed for camera.",
             template_id="camera-archive",
             workflow_mode="collection_archive",
             group="camera-video",
             run_id="20260606T120000Z",
-            input_upload_id="upload-1",
-            job_id="job-1",
-            files=2,
-            failed_file_count=1,
+            files_total=2,
+            failed_files_total=1,
             failed_files=[
                 {
                     "path": "camera-video/bad.mp4",
@@ -3981,11 +3954,11 @@ def test_client_preflight_failure_is_recorded_as_a_terminal_event(
 
     assert result["status"] == "recorded"
     assert event.type == "io.riverhog.munchy.submission.preflight_failed"
-    assert event.subject == "job-1"
+    assert event.subject == "submission-1"
     assert event.data["component"] == "preflight"
     assert event.data["template_id"] == "camera-archive"
     assert event.data["error"] == "bad atom (bad.mp4)"
-    assert event.data["failed_file_count"] == 1
+    assert event.data["failed_files_total"] == 1
     assert event.data["context"] == {"workflow": "desktop-archive"}
 
 

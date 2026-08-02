@@ -15,7 +15,7 @@ router = APIRouter(tags=["download quotas"])
 
 
 @router.get("/download-quota", response_model=KeyDownloadQuotaOut)
-def get_own_download_quota(
+def get_download_quota(
     container: ContainerDep,
     principal: RetrievalManager,
 ) -> KeyDownloadQuotaOut:
@@ -57,7 +57,7 @@ def list_download_quotas(
     "/apps/{app}/keys/{key_id}/download-quota",
     response_model=KeyDownloadQuotaOut,
 )
-def set_download_quota(
+def set_app_key_download_quota(
     app: str,
     key_id: str,
     request: SetKeyDownloadQuotaRequest,

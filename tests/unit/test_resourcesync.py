@@ -5,7 +5,7 @@ from xml.etree import ElementTree
 
 import httpx
 from riverhog_api.routers.resourcesync import (
-    collection_portable_manifest,
+    get_portable_collection_manifest,
     resourcesync_change_list,
     resourcesync_resource_list,
     resourcesync_resource_list_page,
@@ -144,7 +144,7 @@ def test_cli_parses_resourcesync_cursor_and_collection_change() -> None:
 
 
 def test_portable_manifest_response_has_a_content_etag() -> None:
-    response = collection_portable_manifest(
+    response = get_portable_collection_manifest(
         COLLECTION_ID,
         "app",
         SimpleNamespace(retrieval=RetrievalStub()),

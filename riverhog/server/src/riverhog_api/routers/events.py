@@ -11,7 +11,7 @@ router = APIRouter(tags=["events"])
 
 
 @router.get("/events", response_model=EventPage)
-def list_events(
+def list_lifecycle_events(
     container: ContainerDep,
     principal: EventsReader,
     after: str | None = Query(default=None),

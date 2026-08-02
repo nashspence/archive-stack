@@ -34,6 +34,7 @@ import munchy_core.services.uploads as upload_service
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from lifecycle_events import cloud_event, normalize_event_context
 from munchy_core.domain.errors import ServiceError
 from munchy_core.persistence.application_keys import (
@@ -47,13 +48,16 @@ from munchy_core.persistence.template_registry import (
     validate_template_registry,
 )
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
-from munchy_workflows.profiles import MUNCHY_AUDIO_PROFILE_TARGET, MUNCHY_PROFILE_TARGET
 from time_formats import utc_timestamp_now
 
 from munchy_api.composition import configure_adapters
 
 log = logging.getLogger("munchy.server")
 adapters = configure_adapters()
+
+
+def _operation_id(route: APIRoute) -> str:
+    return route.name
 
 
 @asynccontextmanager
@@ -95,6 +99,7 @@ app = FastAPI(
     title="munchy-server",
     version=importlib.metadata.version("munchy-server"),
     lifespan=lifespan,
+    generate_unique_id_function=_operation_id,
 )
 
 
@@ -236,111 +241,6 @@ def health_ready() -> dict[str, Any]:
     }
 
 
-@app.get("/v1/capabilities")
-def capabilities() -> dict[str, Any]:
-    return {
-        "workflow_modes": ["collection_archive", "review"],
-        "handoff": {
-            "destinations": {
-                "command": {"options": ["exclude"]},
-                "rclone": {"options": ["location", "mode", "exclude"]},
-                "riverhog": {"options": ["archive_store", "tags"]},
-            },
-            "failure_actions": ["preserve_for_resume", "cancel"],
-            "template_fields": [
-                "job_id",
-                "template_id",
-                "route_id",
-                "profile_id",
-                "run_id",
-            ],
-        },
-        "output_modes": ["video", "audio", "preserve"],
-        "tasks": ["archive_video", "archive_audio", "qcut_video", "audio_review"],
-        "encode_profile": {
-            "schema_versions": [1],
-            "targets": [MUNCHY_PROFILE_TARGET, MUNCHY_AUDIO_PROFILE_TARGET],
-            "archive_codecs": ["av1_nvenc", "opus"],
-            "containers": ["mkv", "webm", "opus"],
-            "source_artifact_drops": [
-                "stream:N",
-                "atom:TYPE",
-                "top-level-atom:TYPE",
-                "atom-offset:OFFSET",
-            ],
-            "fps_modes": ["passthrough", "halve_60_to_30"],
-            "audio_codecs": ["opus"],
-        },
-        "groups": {
-            "input_path_shape": "<group>/<file>",
-            "structured_input_path_shape": "<source-or-device>/<original-relative-path>",
-            "structured_routing": True,
-            "routing_match_fields": [
-                "when.all",
-                "when.any",
-                "when.not",
-                "when.path",
-                "when.fact",
-                "when.gate",
-                "when.pair",
-                "pairings",
-                "gates",
-                "into",
-                "action",
-            ],
-            "group_name_chars": "letters, digits, dots, underscores, dashes",
-            "job_groups": True,
-        },
-        "review": {
-            "sweep": {
-                "axes": ["quality", "max_height", "audio_bitrate"],
-                "custom_axes": "encode-profile dotted paths",
-                "variants": True,
-                "single_job": True,
-            },
-            "clip_plan": {
-                "target_seconds": domain_models.DEFAULT_REVIEW_CLIP_TARGET_SECONDS,
-                "min_seconds": domain_models.DEFAULT_REVIEW_CLIP_MIN_SECONDS,
-                "max_seconds": domain_models.DEFAULT_REVIEW_CLIP_MAX_SECONDS,
-            },
-        },
-        "storage": {
-            "same_filesystem_hardlink_discount": upload_service.path_device(runtime_config.TUSD_DIR)
-            == upload_service.path_device(runtime_config.GPU_RUNTIME_DIR),
-            "max_active_input_uploads": runtime_config.MAX_ACTIVE_INPUT_UPLOADS,
-            "max_running_jobs": runtime_config.MAX_RUNNING_JOBS,
-            "eager_archive_only_encoding": True,
-            "eager_archive_batch_files": runtime_config.EAGER_ARCHIVE_BATCH_FILES,
-            "eager_archive_pipeline_batches": runtime_config.EAGER_ARCHIVE_PIPELINE_BATCHES,
-            "storage_wait_seconds": runtime_config.STORAGE_WAIT_SECONDS,
-            "scratch_extra_multipliers": {
-                "review": runtime_config.REVIEW_SCRATCH_EXTRA_MULTIPLIER,
-                "buffered_handoff": runtime_config.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER,
-                "handoff.riverhog": runtime_config.GPU_SCRATCH_MULTIPLIER,
-            },
-        },
-        "events": {
-            "format": "CloudEvents 1.0",
-            "cursor_log": True,
-            "operation_context_max_bytes": 4096,
-            "operation_context_retention_seconds": int(
-                runtime_config.EVENT_CONTEXT_RETENTION.total_seconds()
-            ),
-        },
-        "operations": {
-            "submit": True,
-            "preflight_submission": True,
-            "cancel_submission": True,
-            "cancel_job": True,
-            "list_jobs": True,
-            "compact_job_status": True,
-            "record_preflight_failure": True,
-            "pause_scheduler": True,
-            "resume_scheduler": True,
-        },
-    }
-
-
 def _tail_truncate(value: str, limit: int) -> str:
     normalized = " ".join(str(value).split())
     if len(normalized) <= limit:
@@ -390,9 +290,9 @@ def list_lifecycle_events(
     return page.model_dump(mode="json")
 
 
-@app.post("/v1/preflight-failures", status_code=202)
-def record_preflight_failure(
-    req: domain_models.ClientPreflightFailureRequest,
+@app.post("/v1/submissions/preflight-failures", status_code=202)
+def record_submission_preflight_failure(
+    req: domain_models.SubmissionPreflightFailureCreate,
     request: Request,
 ) -> dict[str, Any]:
     principal = request_principal(request)
@@ -406,16 +306,15 @@ def record_preflight_failure(
     data: dict[str, Any] = {
         "component": "preflight",
         "error": first_issue or req.message,
-        "client_source": req.source,
+        "submission_id": req.submission_id,
         "template_id": req.template_id,
         "workflow_mode": req.workflow_mode,
         "group": req.group,
         "run_id": req.run_id or "",
         "route_id": req.route_id or "",
         "profile_id": req.profile_id or "",
-        "input_upload_id": req.input_upload_id or "",
-        "files": req.files,
-        "failed_file_count": req.failed_file_count,
+        "files_total": req.files_total,
+        "failed_files_total": req.failed_files_total,
         "failed_files": [
             {
                 "path": item.path,
@@ -429,11 +328,10 @@ def record_preflight_failure(
     }
     if req.elapsed_seconds is not None:
         data["elapsed_seconds"] = req.elapsed_seconds
-    subject = req.job_id or req.run_id
     event = cloud_event(
         source=runtime_config.EVENT_SOURCE,
         type="io.riverhog.munchy.submission.preflight_failed",
-        subject=subject,
+        subject=req.submission_id,
         data=data,
     )
     cursor = lifecycle_store.lifecycle_event_log().append(
@@ -462,7 +360,7 @@ def validate_job_template(req: domain_models.JobTemplateCreateRequest) -> dict[s
 
 
 @app.get("/v1/admin/apps")
-def list_applications(
+def list_apps(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     sort: str = "name",
@@ -486,7 +384,7 @@ def list_applications(
 
 
 @app.post("/v1/admin/apps/{app_name}/keys", status_code=201)
-def create_application_key(
+def create_app_key(
     app_name: str,
     req: domain_models.CreateApplicationKeyRequest,
 ) -> dict[str, object]:
@@ -505,7 +403,7 @@ def create_application_key(
 
 
 @app.get("/v1/admin/apps/{app_name}/keys")
-def list_application_keys(
+def list_app_keys(
     app_name: str,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
@@ -531,7 +429,7 @@ def list_application_keys(
 
 
 @app.post("/v1/admin/apps/{app_name}/keys/{key_id}/revoke")
-def revoke_application_key(app_name: str, key_id: str) -> dict[str, object]:
+def revoke_app_key(app_name: str, key_id: str) -> dict[str, object]:
     try:
         return state_store.application_keys().revoke(app=app_name, key_id=key_id)
     except ValueError as exc:
@@ -665,15 +563,8 @@ def create_or_resume_submission_file_upload(
         return job_service._create_or_resume_input_file_upload(submission_id, rel_path)
 
 
-@app.delete("/v1/submissions/{submission_id}", status_code=202)
-def cancel_submission(submission_id: str) -> dict[str, Any]:
-    job_service.load_submission(submission_id)
-    cancel_job(submission_id, cleanup=True)
-    return job_service.submission_response(job_service.load_submission(submission_id))
-
-
 @app.get("/v1/admin/scheduler")
-def scheduler_status() -> dict[str, Any]:
+def get_scheduler_status() -> dict[str, Any]:
     control = scheduling_service.scheduler_control()
     return {
         **control,
@@ -834,7 +725,7 @@ def remove_terminal_job(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/admin/maintenance/retention")
-def show_retention() -> dict[str, Any]:
+def get_retention_plan() -> dict[str, Any]:
     return retention_service.retention_plan()
 
 
@@ -906,11 +797,6 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     if finalize_now:
         return cleanup_service.finalize_canceled_job(job, reason="job_canceled")
     return job
-
-
-@app.post("/v1/maintenance/cleanup")
-def cleanup() -> dict[str, Any]:
-    return job_service.cleanup_once()
 
 
 def _parser() -> argparse.ArgumentParser:

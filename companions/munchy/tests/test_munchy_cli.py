@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 
+from lifecycle_events import EventPage, cloud_event
 from munchy_cli.main import app
 from typer.testing import CliRunner
 
@@ -17,6 +18,110 @@ def test_munchy_help() -> None:
     assert "Encode profile operations." in result.stdout
     assert "Munchy job operations." in result.stdout
     assert "Submit local files through a server-owned job template." in result.stdout
+    assert "Lifecycle event inspection." in result.stdout
+    assert "Job scheduler controls." in result.stdout
+
+
+def test_munchy_event_list_has_human_and_json_output(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://munchy.test"
+
+        def list_lifecycle_events(self, *, after: str | None, limit: int) -> EventPage:
+            assert after == "12"
+            assert limit == 7
+            return EventPage(
+                events=[
+                    cloud_event(
+                        event_id="event-1",
+                        source="urn:riverhog:munchy",
+                        type="io.riverhog.munchy.job.succeeded",
+                        subject="job-1",
+                    )
+                ],
+                next_cursor="19",
+                has_more=False,
+            )
+
+    monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
+
+    human = runner.invoke(
+        app,
+        [
+            "event",
+            "list",
+            "--server-url",
+            "http://munchy.test",
+            "--after",
+            "12",
+            "--limit",
+            "7",
+        ],
+    )
+    machine = runner.invoke(
+        app,
+        [
+            "event",
+            "list",
+            "--server-url",
+            "http://munchy.test",
+            "--after",
+            "12",
+            "--limit",
+            "7",
+            "--json",
+        ],
+    )
+
+    assert human.exit_code == 0
+    assert "io.riverhog.munchy.job.succeeded" in human.stdout
+    assert machine.exit_code == 0
+    assert json.loads(machine.stdout)["next_cursor"] == "19"
+
+
+def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    class FakeAdminClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "http://munchy.test"
+
+        def get_scheduler_status(self) -> dict[str, object]:
+            calls.append("status")
+            return {
+                "paused": "pause" in calls and "resume" not in calls,
+                "active_jobs": ["job-1"],
+                "scheduled_jobs": [],
+                "running_job_limit": 2,
+                "running_job_slots_available": 1,
+                "runnable_job_count": 1,
+                "runnable_jobs": ["job-2"],
+            }
+
+        def pause_scheduler(self) -> dict[str, object]:
+            calls.append("pause")
+            return {"paused": True}
+
+        def resume_scheduler(self) -> dict[str, object]:
+            calls.append("resume")
+            return {"paused": False}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeAdminClient)
+
+    paused = runner.invoke(
+        app,
+        ["scheduler", "pause", "--server-url", "http://munchy.test"],
+    )
+    resumed = runner.invoke(
+        app,
+        ["scheduler", "resume", "--server-url", "http://munchy.test", "--json"],
+    )
+
+    assert paused.exit_code == 0
+    assert "scheduler: paused" in paused.stdout
+    assert resumed.exit_code == 0
+    assert json.loads(resumed.stdout)["paused"] is False
+    assert calls == ["pause", "status", "resume", "status"]
 
 
 def test_munchy_command_help_has_summaries() -> None:
@@ -601,7 +706,7 @@ def test_munchy_retention_is_a_plan_until_apply_is_explicit(monkeypatch) -> None
         def __init__(self, _base_url: str) -> None:
             pass
 
-        def retention_plan(self) -> dict[str, object]:
+        def get_retention_plan(self) -> dict[str, object]:
             calls.append("plan")
             return {
                 "policy": {

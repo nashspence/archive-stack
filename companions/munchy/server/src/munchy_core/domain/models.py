@@ -276,25 +276,25 @@ class ReviewConfig(BaseModel):
         return self
 
 
-class ClientPreflightIssue(BaseModel):
+class SubmissionPreflightIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: str = Field(min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=1000)
 
 
-class ClientPreflightFailedFile(BaseModel):
+class SubmissionPreflightFailedFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
     source: str = Field(min_length=1, max_length=4096)
-    issues: list[ClientPreflightIssue] = Field(default_factory=list)
+    issues: list[SubmissionPreflightIssue] = Field(default_factory=list)
 
 
-class ClientPreflightFailureRequest(BaseModel):
+class SubmissionPreflightFailureCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: str = Field(default="client", min_length=1, max_length=120)
+    submission_id: str = Field(min_length=1, max_length=180)
     message: str = Field(min_length=1, max_length=1000)
     template_id: str = Field(min_length=1, max_length=160)
     workflow_mode: WorkflowMode
@@ -302,11 +302,9 @@ class ClientPreflightFailureRequest(BaseModel):
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     route_id: str | None = Field(default=None, min_length=1, max_length=180)
     profile_id: str | None = Field(default=None, min_length=1, max_length=180)
-    input_upload_id: str | None = Field(default=None, min_length=1, max_length=180)
-    job_id: str | None = Field(default=None, min_length=1, max_length=180)
-    files: int = Field(ge=0)
-    failed_file_count: int = Field(ge=1)
-    failed_files: list[ClientPreflightFailedFile] = Field(default_factory=list)
+    files_total: int = Field(ge=0)
+    failed_files_total: int = Field(ge=1)
+    failed_files: list[SubmissionPreflightFailedFile] = Field(default_factory=list)
     elapsed_seconds: float | None = Field(default=None, ge=0)
     event_context: dict[str, Any] | None = None
 

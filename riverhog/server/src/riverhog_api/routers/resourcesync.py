@@ -138,7 +138,7 @@ def resourcesync_change_list(
 
 
 @router.get("/v1/catalog/collections/{collection_id}/manifest")
-def collection_portable_manifest(
+def get_portable_collection_manifest(
     collection_id: int,
     principal: CatalogReader,
     container: ContainerDep,

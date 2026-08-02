@@ -1441,20 +1441,13 @@ class MunchyClient:
             raise RuntimeError(f"{method} {path} did not return a JSON object")
         return parsed
 
-    def record_preflight_failure(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        try:
-            return self.json(
-                "POST",
-                "/v1/preflight-failures",
-                payload=payload,
-                expect={202},
-            )
-        except Exception as exc:
-            print(
-                f"warning: failed to record Munchy preflight failure: {exc}",
-                file=sys.stderr,
-            )
-            return None
+    def record_submission_preflight_failure(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            "/v1/submissions/preflight-failures",
+            payload=payload,
+            expect={202},
+        )
 
     def preflight_submission(self, request: SubmissionUploadRequest) -> dict[str, Any]:
         return self._json_with_transient_retries(
@@ -1481,13 +1474,17 @@ class MunchyClient:
             label="submission status",
         )
 
-    def cancel_submission(self, submission_id: str) -> dict[str, Any]:
-        return self._json_with_transient_retries(
-            "DELETE",
-            f"/v1/submissions/{urllib.parse.quote(submission_id)}",
-            expect={202},
-            label="submission cancellation",
-            timeout=CLEANUP_REQUEST_TIMEOUT_SECONDS,
+    def create_or_resume_submission_file_upload(
+        self,
+        submission_id: str,
+        rel_path: str,
+    ) -> dict[str, Any]:
+        escaped_submission_id = urllib.parse.quote(submission_id)
+        escaped_rel_path = urllib.parse.quote(rel_path, safe="/")
+        return self.json(
+            "POST",
+            f"/v1/submissions/{escaped_submission_id}/files/{escaped_rel_path}/upload",
+            expect={201},
         )
 
     def _request_with_transient_retries(
@@ -1802,10 +1799,7 @@ class MunchyClient:
         stop_event: Event | None = None,
         progress_callback: Callable[[SubmissionInputFile, int], None] | None = None,
     ) -> None:
-        escaped_submission_id = urllib.parse.quote(submission_id)
-        escaped_rel = urllib.parse.quote(item.rel_path, safe="/")
-        setup_path = f"/v1/submissions/{escaped_submission_id}/files/{escaped_rel}/upload"
-        upload = self.json("POST", setup_path, expect={201})
+        upload = self.create_or_resume_submission_file_upload(submission_id, item.rel_path)
         upload_url = str(upload["upload_url"])
         offset = int(upload.get("offset") or 0)
         length = int(upload.get("length") or item.bytes)
@@ -2022,6 +2016,15 @@ class MunchyAdminClient(MunchyClient):
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
         super().__init__(base_url, token=admin_token_setting(token))
 
+    def get_scheduler_status(self) -> dict[str, Any]:
+        return self.json("GET", "/v1/admin/scheduler")
+
+    def pause_scheduler(self) -> dict[str, Any]:
+        return self.json("POST", "/v1/admin/scheduler/pause")
+
+    def resume_scheduler(self) -> dict[str, Any]:
+        return self.json("POST", "/v1/admin/scheduler/resume")
+
     def list_apps(
         self,
         *,
@@ -2194,7 +2197,7 @@ class MunchyAdminClient(MunchyClient):
             f"/v1/admin/jobs/{urllib.parse.quote(job_id, safe='')}",
         )
 
-    def retention_plan(self) -> dict[str, Any]:
+    def get_retention_plan(self) -> dict[str, Any]:
         return self.json("GET", "/v1/admin/maintenance/retention")
 
     def apply_retention(self) -> dict[str, Any]:
@@ -2282,17 +2285,27 @@ class MunchyAdminClient(MunchyClient):
             },
         )
 
-    def set_job_template_enabled(
+    def enable_job_template(
         self,
         template_id: str,
         *,
-        enabled: bool,
         expected_revision: int,
     ) -> dict[str, Any]:
-        action = "enable" if enabled else "disable"
         return self.json(
             "POST",
-            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}/{action}",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}/enable",
+            payload={"expected_revision": expected_revision},
+        )
+
+    def disable_job_template(
+        self,
+        template_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            f"/v1/admin/job-templates/{urllib.parse.quote(template_id)}/disable",
             payload={"expected_revision": expected_revision},
         )
 

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from jeb_cli import main as jeb_cli
+from lifecycle_events import EventPage, cloud_event
 
 
 def source_payload(*, enabled: bool = True) -> dict[str, Any]:
@@ -28,7 +29,7 @@ class FakeJebApi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def status(self, *, include_backlog: bool = True) -> dict[str, Any]:
+    def get_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
         self.calls.append(("status", {"include_backlog": include_backlog}))
         return {
             "sources": [],
@@ -122,7 +123,7 @@ class FakeJebApi:
         self.calls.append(("once", {}))
         return {"status": "started", "operation": {"id": "op-once"}}
 
-    def archive_now(
+    def archive_source_now(
         self,
         *,
         source: str,
@@ -171,7 +172,7 @@ class FakeJebApi:
         self.calls.append(("source-show", {"source": source_id}))
         return source_payload()
 
-    def add_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(("source-add", payload))
         return {"source": source_payload(), "credential": "generated"}
 
@@ -179,9 +180,33 @@ class FakeJebApi:
         self.calls.append(("source-set", {"source": source_id, "changes": changes}))
         return source_payload()
 
-    def set_source_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
-        self.calls.append(("source-enabled", {"source": source_id, "enabled": enabled}))
-        return source_payload(enabled=enabled)
+    def enable_source(self, source_id: str) -> dict[str, Any]:
+        self.calls.append(("source-enabled", {"source": source_id, "enabled": True}))
+        return source_payload(enabled=True)
+
+    def disable_source(self, source_id: str) -> dict[str, Any]:
+        self.calls.append(("source-enabled", {"source": source_id, "enabled": False}))
+        return source_payload(enabled=False)
+
+    def list_lifecycle_events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> EventPage:
+        self.calls.append(("event-list", {"after": after, "limit": limit}))
+        return EventPage(
+            events=[
+                cloud_event(
+                    event_id="event-1",
+                    source="urn:riverhog:jeb",
+                    type="io.riverhog.jeb.attempt.succeeded",
+                    subject="attempt-1",
+                )
+            ],
+            next_cursor="8",
+            has_more=False,
+        )
 
     def rotate_source_credential(
         self,
@@ -221,6 +246,19 @@ def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # ty
     assert fake.calls == [("status", {"include_backlog": False})]
     payload = json.loads(capsys.readouterr().out)
     assert payload["batches"]["total"] == 0
+
+
+def test_jeb_remote_cli_lists_lifecycle_events(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = FakeJebApi()
+    monkeypatch.setattr(jeb_cli, "client", lambda: fake)
+
+    assert jeb_cli.main(["event", "list", "--after", "3", "--limit", "5"]) == 0
+
+    assert fake.calls == [("event-list", {"after": "3", "limit": 5})]
+    output = capsys.readouterr().out
+    assert "events: 1" in output
+    assert "io.riverhog.jeb.attempt.succeeded" in output
+    assert "next cursor: 8" in output
 
 
 def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -486,7 +524,7 @@ def test_jeb_remote_cli_fails_rejected_archive_dry_run(capsys, monkeypatch) -> N
     monkeypatch.setattr(jeb_cli, "client", lambda: fake)
     monkeypatch.setattr(
         fake,
-        "archive_now",
+        "archive_source_now",
         lambda **_kwargs: {
             "status": "target_preflight_failed",
             "source": "camera",

@@ -202,7 +202,7 @@ class MunchyTargetAdapter:
             )
         target = context.target_by_name(str(attempt["target_name"]))
         with closing(MunchyClient(target.url, token=target.token)) as client:
-            client.cancel_submission(submission_id)
+            client.cancel_job(submission_id, cleanup=True)
 
     def submission_request(
         self,

@@ -121,7 +121,7 @@ class JebApiClient:
             )
         return payload
 
-    def status(self, *, include_backlog: bool = True) -> dict[str, Any]:
+    def get_status(self, *, include_backlog: bool = True) -> dict[str, Any]:
         return self._json(
             "GET",
             "/v1/status",
@@ -259,7 +259,7 @@ class JebApiClient:
                 return operation
             time.sleep(interval)
 
-    def archive_now(
+    def archive_source_now(
         self,
         *,
         source: str,
@@ -306,7 +306,7 @@ class JebApiClient:
     def get_source(self, source_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/sources/{quote(source_id, safe='')}")
 
-    def add_source(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_source(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._json("POST", "/v1/sources", json=payload)
 
     def update_source(
@@ -320,9 +320,11 @@ class JebApiClient:
             json=changes,
         )
 
-    def set_source_enabled(self, source_id: str, *, enabled: bool) -> dict[str, Any]:
-        action = "enable" if enabled else "disable"
-        return self._json("POST", f"/v1/sources/{quote(source_id, safe='')}/{action}")
+    def enable_source(self, source_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/sources/{quote(source_id, safe='')}/enable")
+
+    def disable_source(self, source_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/sources/{quote(source_id, safe='')}/disable")
 
     def rotate_source_credential(
         self,

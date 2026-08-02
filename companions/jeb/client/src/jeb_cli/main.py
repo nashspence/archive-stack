@@ -28,7 +28,7 @@ from jeb_cli_support.output import (
     format_status,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, SOURCE_LIST_SORT_FIELDS, attempt_succeeded
-from riverhog_cli_support.output import emit, format_list_ids
+from riverhog_cli_support.output import emit, format_lifecycle_events, format_list_ids
 
 _API_CLIENT: JebApiClient | None = None
 
@@ -48,9 +48,23 @@ def _close_client() -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    payload = client().status(include_backlog=not args.no_backlog)
+    payload = client().get_status(include_backlog=not args.no_backlog)
     emit(payload if args.json else format_status(payload), json_mode=args.json)
     return 0
+
+
+def cmd_event_list(args: argparse.Namespace) -> int:
+    page = client().list_lifecycle_events(after=args.after, limit=args.limit)
+    payload = page.model_dump(mode="json")
+    emit(payload if args.json else format_lifecycle_events(payload), json_mode=args.json)
+    return 0
+
+
+def event_limit(value: str) -> int:
+    limit = int(value)
+    if not 1 <= limit <= 100:
+        raise argparse.ArgumentTypeError("event limit must be between 1 and 100")
+    return limit
 
 
 def cmd_attempt_list(args: argparse.Namespace) -> int:
@@ -144,7 +158,7 @@ def cmd_operation_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_archive_now(args: argparse.Namespace) -> int:
-    payload = client().archive_now(
+    payload = client().archive_source_now(
         source=args.source,
         process=not args.no_process,
         dry_run=args.dry_run,
@@ -242,7 +256,7 @@ def cmd_source_add(args: argparse.Namespace) -> int:
     credential = source_credential(args)
     if credential is not None:
         payload["credential"] = credential
-    result = client().add_source(payload)
+    result = client().create_source(payload)
     emit(result if args.json else format_source_result(result), json_mode=args.json)
     return 0
 
@@ -257,7 +271,8 @@ def cmd_source_set(args: argparse.Namespace) -> int:
 
 
 def cmd_source_enabled(args: argparse.Namespace) -> int:
-    payload = client().set_source_enabled(args.source, enabled=args.enabled)
+    operation = client().enable_source if args.enabled else client().disable_source
+    payload = operation(args.source)
     emit(payload if args.json else format_source(payload), json_mode=args.json)
     return 0
 
@@ -329,6 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "commands:\n"
             "  status        show read-only service status\n"
+            "  event         inspect lifecycle events\n"
             "  attempt       inspect processing attempts\n"
             "  operation     inspect service operations\n"
             "  check-config  validate deployed Jeb configuration\n"
@@ -353,6 +369,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip source directory eligible-file scans on the Jeb service.",
     )
     status.set_defaults(func=cmd_status)
+
+    event = sub.add_parser("event", help="inspect lifecycle events")
+    event_sub = event.add_subparsers(dest="event_command", required=True)
+    event_list = event_sub.add_parser("list", help="list application-visible lifecycle events")
+    event_list.add_argument("--after", help="Return events after this cursor.")
+    event_list.add_argument("--limit", type=event_limit, default=100)
+    event_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    event_list.set_defaults(func=cmd_event_list)
 
     attempt = sub.add_parser("attempt", help="inspect processing attempts")
     attempt_sub = attempt.add_subparsers(dest="attempt_command", required=True)

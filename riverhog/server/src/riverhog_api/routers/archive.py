@@ -21,7 +21,7 @@ router = APIRouter(tags=["archive"])
 
 
 @router.post("/archive/copies", response_model=ArchiveCopyJobOut)
-def create_archive_copy(
+def create_or_resume_archive_copy(
     request: CreateArchiveCopyRequest,
     container: ContainerDep,
     principal: ArchiveManager,
@@ -39,7 +39,7 @@ def create_archive_copy(
 
 
 @router.get("/archive/copies", response_model=ArchiveCopyJobListOut)
-def list_archive_copies(
+def list_archive_copy_jobs(
     container: ContainerDep,
     principal: ArchiveManager,
     page: int = Query(1, ge=1),
@@ -68,7 +68,7 @@ def list_archive_copies(
     "/archive/copies/{collection_id}/{destination_store}",
     response_model=ArchiveCopyJobOut,
 )
-def cancel_archive_copy(
+def cancel_archive_copy_job(
     collection_id: int,
     destination_store: str,
     container: ContainerDep,
@@ -88,7 +88,7 @@ def cancel_archive_copy(
     "/archive/copies/{collection_id}/{destination_store}",
     response_model=ArchiveCopyJobOut,
 )
-def get_archive_copy(
+def get_archive_copy_job(
     collection_id: int,
     destination_store: str,
     container: ContainerDep,
