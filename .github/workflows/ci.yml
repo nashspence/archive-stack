@@ -22,7 +22,6 @@ jobs:
       matrix:
         include:
           - target: lint
-          - target: format-check
           - target: compile
           - target: unit
           - target: spec

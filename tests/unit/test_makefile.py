@@ -445,16 +445,17 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert "--no-error-summary --no-color-output --strict" in uv_log_lines[0]
 
 
-def test_lint_runs_ruff_then_mypy(tmp_path: Path) -> None:
+def test_lint_runs_license_format_ruff_and_mypy(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(tmp_path, "lint")
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 3
+    assert len(uv_log_lines) == 4
     assert "python -m reuse lint" in uv_log_lines[0]
-    assert "python -m ruff check ." in uv_log_lines[1]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[2]
+    assert "python -m ruff format --check ." in uv_log_lines[1]
+    assert "python -m ruff check ." in uv_log_lines[2]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[3]
 
 
 def test_build_targets_are_atomic(tmp_path: Path) -> None:
@@ -775,12 +776,13 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     assert _read_log_lines(docker_log_path) == []
 
     uv_log_lines = _read_log_lines(uv_log_path)
-    assert len(uv_log_lines) == 4
+    assert len(uv_log_lines) == 5
     assert "python -m reuse lint" in uv_log_lines[0]
-    assert "python -m ruff check ." in uv_log_lines[1]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[2]
+    assert "python -m ruff format --check ." in uv_log_lines[1]
+    assert "python -m ruff check ." in uv_log_lines[2]
+    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[3]
     assert (
-        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[3]
+        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[4]
     )
 
 

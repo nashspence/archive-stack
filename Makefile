@@ -62,7 +62,7 @@ help:
 		'  make format-check      Verify ruff formatting without changing files.' \
 		'  make fix               Run ruff-fix, then format.' \
 		'  make mypy              Run repo-wide mypy in the locked local uv environment.' \
-		'  make lint              Run license, ruff, then mypy checks.' \
+		'  make lint              Run license, format, ruff, and mypy checks.' \
 		'  make compile           Byte-compile all repository Python files.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
@@ -121,7 +121,7 @@ fix: ruff-fix format
 mypy:
 	$(call UV_CMD,python -m mypy $(MYPY_SOURCES) $(MYPY_FLAGS) $(args))
 
-lint: license ruff mypy
+lint: license format-check ruff mypy
 
 compile:
 	$(call UV_CMD,python -m compileall -q $(PYTHON_PATHS))
