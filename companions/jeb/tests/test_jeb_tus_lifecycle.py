@@ -11,9 +11,11 @@ import pytest
 from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.ingress import (
     JebIngressError,
+    JebLandingPublisher,
     incomplete_tus_upload_status,
     normalize_tus_upload_id,
     prepare_tus_upload,
+    publish_tus_upload,
     reap_stale_incomplete_tus_uploads,
 )
 from jeb_core.persistence.schema import upgrade_state
@@ -203,3 +205,74 @@ def test_jeb_tus_cleanup_defaults_are_bounded(tmp_path: Path) -> None:
     assert config.ingress.tus_incomplete_max_age_seconds == 14 * 86_400
     with pytest.raises(ValueError, match="must be positive"):
         config_from_env({**jeb_env(tmp_path), "JEB_TUS_INCOMPLETE_MAX_AGE": "0s"})
+
+
+def test_jeb_tus_publication_resolves_destination_under_its_source_root(
+    tmp_path: Path,
+) -> None:
+    services = services_for(jeb_env(tmp_path))
+    prepared = prepare_tus_upload(
+        services.config.ingress,
+        services.source_registry,
+        authorization=basic_authorization("phone", "phone-password"),
+        metadata={"path": "notes/note.txt"},
+        size=5,
+    )
+    staging = services.config.ingress.tus_staging_dir
+    staging.mkdir(parents=True)
+    source = staging / prepared.upload_id
+    info = staging / f"{prepared.upload_id}.info"
+    source.write_bytes(b"notes")
+    info.write_text("{}", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source_landing = services.config.ingress.landing_dir / "phone"
+    source_landing.mkdir(parents=True)
+    (source_landing / "notes").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(JebIngressError, match="escaped its source landing directory"):
+        publish_tus_upload(
+            services.config.ingress,
+            services.source_registry,
+            upload={
+                "ID": prepared.upload_id,
+                "Size": 5,
+                "Offset": 5,
+                "MetaData": prepared.hook_metadata(),
+                "Storage": {
+                    "Type": "filestore",
+                    "Path": str(source),
+                    "InfoPath": str(info),
+                },
+            },
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_jeb_landing_publisher_resolves_every_mutated_path_under_its_root(
+    tmp_path: Path,
+) -> None:
+    services = services_for(jeb_env(tmp_path))
+    ingress = services.config.ingress
+    ingress.tus_staging_dir.mkdir(parents=True)
+    ingress.landing_dir.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_source = outside / "upload"
+    outside_source.write_bytes(b"notes")
+    source = ingress.tus_staging_dir / ("a" * 32)
+    source.symlink_to(outside_source)
+    info = ingress.tus_staging_dir / f"{'a' * 32}.info"
+    info.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(JebIngressError, match="source escaped its configured root"):
+        JebLandingPublisher(ingress).publish(
+            upload_id="a" * 32,
+            source=source,
+            info=info,
+            destination=ingress.landing_dir / "phone" / "note.txt",
+            size=5,
+        )
+
+    assert outside_source.read_bytes() == b"notes"

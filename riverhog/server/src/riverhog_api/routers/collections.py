@@ -161,10 +161,7 @@ def create_or_resume_registered_collection_file_upload(
         collection_id,
         request.model_dump(),
     )
-    payload["upload_url"] = public_tusd_upload_url(
-        str(payload["upload_url"]),
-        expires_at=str(payload["expires_at"]) if payload.get("expires_at") is not None else None,
-    )
+    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
     response.headers.update(
         tus_upload_headers(payload, request=req, location=str(payload["upload_url"]))
     )
@@ -231,10 +228,7 @@ def create_or_resume_collection_file_upload(
 ) -> CollectionFileUploadSessionOut:
     container.collections.require_upload_access(collection_id, principal)
     payload = container.collections.create_or_resume_file_upload(collection_id, path)
-    payload["upload_url"] = public_tusd_upload_url(
-        str(payload["upload_url"]),
-        expires_at=str(payload["expires_at"]) if payload.get("expires_at") is not None else None,
-    )
+    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
     response.headers.update(
         tus_upload_headers(payload, request=request, location=str(payload["upload_url"]))
     )

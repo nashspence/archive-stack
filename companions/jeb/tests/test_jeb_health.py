@@ -395,6 +395,58 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         server.server_close()
 
 
+def test_jeb_tus_pre_create_returns_bounded_public_rejections(tmp_path: Path) -> None:
+    services = services_for(jeb_env(tmp_path))
+    server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))
+    try:
+        host, port = server.server_address[:2]
+        endpoint = f"http://{host}:{port}/internal/ingress/tus/hooks"
+        request = {
+            "Type": "pre-create",
+            "Event": {
+                "Upload": {
+                    "Size": 5,
+                    "Offset": 0,
+                    "MetaData": {"filename": "../note.txt"},
+                }
+            },
+        }
+
+        assert post_json(
+            endpoint,
+            request,
+            headers={"Authorization": basic_authorization("phone", "wrong-password")},
+        ) == (
+            200,
+            {
+                "RejectUpload": True,
+                "HTTPResponse": {
+                    "StatusCode": 401,
+                    "Body": "invalid Jeb ingress credentials",
+                    "Header": {"Content-Type": "text/plain"},
+                },
+            },
+        )
+        assert post_json(
+            endpoint,
+            request,
+            headers={"Authorization": basic_authorization("phone", "phone-password")},
+        ) == (
+            200,
+            {
+                "RejectUpload": True,
+                "HTTPResponse": {
+                    "StatusCode": 400,
+                    "Body": "invalid Jeb TUS upload",
+                    "Header": {"Content-Type": "text/plain"},
+                },
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_jeb_service_api_requires_boolean_archive_now_process_flag(tmp_path: Path) -> None:
     services = services_for(jeb_env(tmp_path))
     server = start_jeb_service_server("127.0.0.1", 0, JebServiceState(services=services))

@@ -338,10 +338,16 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
                     metadata=metadata,
                     size=upload.get("Size"),
                 )
-            except JebIngressAuthenticationError as exc:
-                return _tus_rejection(HTTPStatus.UNAUTHORIZED, str(exc))
-            except JebIngressError as exc:
-                return _tus_rejection(HTTPStatus.BAD_REQUEST, str(exc))
+            except JebIngressAuthenticationError:
+                return _tus_rejection(
+                    HTTPStatus.UNAUTHORIZED,
+                    "invalid Jeb ingress credentials",
+                )
+            except JebIngressError:
+                return _tus_rejection(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid Jeb TUS upload",
+                )
             return {
                 "ChangeFileInfo": {
                     "ID": prepared.upload_id,

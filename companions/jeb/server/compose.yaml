@@ -37,8 +37,8 @@ services:
       - ./config/jeb.env
     environment:
       JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
-      JEB_HEALTH_HOST: 0.0.0.0
-      JEB_HEALTH_PORT: "8081"
+      JEB_HOST: 0.0.0.0
+      JEB_PORT: "8081"
       JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/files/}
       JEB_TUS_INCOMPLETE_MAX_AGE: ${JEB_TUS_INCOMPLETE_MAX_AGE:-14d}
       JEB_MUNCHY_TOKEN: ${JEB_MUNCHY_TOKEN:-}

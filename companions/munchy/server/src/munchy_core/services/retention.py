@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,6 +12,7 @@ import munchy_core.runtime.config as runtime_config
 import munchy_core.services.diagnostics as diagnostic_service
 
 PLAN_SAMPLE_SIZE = 10
+log = logging.getLogger(__name__)
 
 
 def _cutoff(retention_seconds: float) -> str:
@@ -115,14 +117,38 @@ def apply_retention() -> dict[str, Any]:
             if diagnostic_service.remove_job_diagnostic(job_id, missing_ok=True) is not None:
                 removed_diagnostics.append(job_id)
         except Exception as exc:
-            errors.append({"resource": "job_diagnostic", "job_id": job_id, "error": str(exc)})
+            log.error(
+                "Munchy retention could not remove a job diagnostic failure=%s",
+                exc.__class__.__name__,
+                extra={"job_id": job_id},
+            )
+            errors.append(
+                {
+                    "resource": "job_diagnostic",
+                    "job_id": job_id,
+                    "code": "removal_failed",
+                    "message": "retention removal failed",
+                }
+            )
 
     for job_id in terminal_job_ids:
         try:
             diagnostic_service.remove_terminal_job(job_id)
             removed_terminal_jobs.append(job_id)
         except Exception as exc:
-            errors.append({"resource": "terminal_job", "job_id": job_id, "error": str(exc)})
+            log.error(
+                "Munchy retention could not remove a terminal job failure=%s",
+                exc.__class__.__name__,
+                extra={"job_id": job_id},
+            )
+            errors.append(
+                {
+                    "resource": "terminal_job",
+                    "job_id": job_id,
+                    "code": "removal_failed",
+                    "message": "retention removal failed",
+                }
+            )
 
     return {
         "policy": before["policy"],

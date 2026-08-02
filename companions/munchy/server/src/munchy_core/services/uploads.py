@@ -10,10 +10,10 @@ import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from munchy_api_client.filesystem_metadata import (
@@ -23,12 +23,7 @@ from munchy_api_client.filesystem_metadata import (
 from munchy_target_support.source_artifact_bridge import (
     build_preserve_source_artifacts,
 )
-from time_formats import (
-    format_utc_timestamp,
-    parse_utc_timestamp,
-    utc_now,
-    utc_timestamp_now,
-)
+from time_formats import utc_timestamp_now
 
 import munchy_core.domain.models as domain_models
 import munchy_core.persistence.sqlite_state as state_store
@@ -54,7 +49,11 @@ def tusd_upload_id_for_target_path(target_path: str) -> str:
 
 
 def tusd_data_path(upload_id: str) -> Path:
-    return runtime_config.TUSD_DIR / upload_id
+    return domain_models.path_under(
+        runtime_config.TUSD_DIR,
+        upload_id,
+        label="TUS upload",
+    )
 
 
 def safe_local_id(value: str) -> str:
@@ -404,46 +403,6 @@ def normalize_public_tusd_url(location: str) -> str:
             parsed.query,
             parsed.fragment,
         )
-    )
-
-
-def tusd_upload_expires_at() -> str:
-    expires_at = utc_now() + timedelta(hours=runtime_config.INPUT_UPLOAD_TTL_HOURS)
-    return format_utc_timestamp(expires_at)
-
-
-def upload_expires_epoch(expires_at: str) -> int | None:
-    try:
-        parsed = parse_utc_timestamp(expires_at)
-    except ValueError:
-        return None
-    return int(parsed.timestamp())
-
-
-def signed_tusd_query(path: str, *, expires_at: str, secret: str) -> dict[str, str]:
-    expires = upload_expires_epoch(expires_at)
-    if expires is None:
-        return {}
-    normalized_uri = unquote(path)
-    digest = hashlib.md5(f"{expires}{normalized_uri} {secret}".encode()).digest()
-    token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return {"md5": token, "expires": str(expires)}
-
-
-def public_tusd_upload_url(upload_url: str) -> str:
-    if not runtime_config.TUSD_PUBLIC_SIGNING_SECRET:
-        return upload_url
-    parsed = urlsplit(upload_url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.update(
-        signed_tusd_query(
-            parsed.path,
-            expires_at=tusd_upload_expires_at(),
-            secret=runtime_config.TUSD_PUBLIC_SIGNING_SECRET,
-        )
-    )
-    return urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
     )
 
 

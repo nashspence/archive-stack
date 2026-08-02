@@ -197,7 +197,6 @@ class RuntimeConfig:
     tusd_hook_secret: str = "dev-tusd-hook-secret"
     s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     tusd_public_base_url: str | None = None
-    tusd_public_signing_secret: str | None = None
     tusd_append_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=60))
     database_url: str = ""
     upload_file_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -812,9 +811,6 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         tusd_public_base_url=(
             os.getenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
-        ),
-        tusd_public_signing_secret=(
-            os.getenv("RIVERHOG_TUSD_PUBLIC_SIGNING_SECRET", "").strip() or None
         ),
         tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
         tusd_append_timeout=parse_duration(os.getenv("RIVERHOG_TUSD_APPEND_TIMEOUT", "60s")),

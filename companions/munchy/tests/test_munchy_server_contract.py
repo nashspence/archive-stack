@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import errno
 import hashlib
 import importlib
@@ -13,7 +12,6 @@ import tarfile
 import threading
 from pathlib import Path
 from types import ModuleType
-from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,11 +59,6 @@ SERVER_MODULES = {
     "template_service": "munchy_core.services.templates",
     "upload_service": "munchy_core.services.uploads",
 }
-
-
-def secure_link_token(*, expires: str, path: str, secret: str) -> str:
-    digest = hashlib.md5(f"{expires}{unquote(path)} {secret}".encode()).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
@@ -844,43 +837,28 @@ def test_handoff_failure_policy_is_runtime_job_option(
     }
 
 
-def test_public_tusd_upload_url_signs_nginx_normalized_path(
+def test_input_file_upload_response_preserves_the_public_tusd_location(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "fixture-secret")
     server = load_server(tmp_path, monkeypatch)
 
-    url = server.upload_service.public_tusd_upload_url(
-        "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
+    response = server.job_service.input_file_upload_response(
+        upload_url="http://server.test/files/.munchy-server%2Fuploads%2Fabc",
+        offset=3,
+        length=8,
+        status={"upload_state": "partial"},
     )
 
-    parsed = urlsplit(url)
-    query = parse_qs(parsed.query)
-    expires = query["expires"][0]
-    assert query == {
-        "expires": [expires],
-        "md5": [
-            secure_link_token(
-                expires=expires,
-                path=parsed.path,
-                secret="fixture-secret",
-            )
-        ],
+    assert response == {
+        "protocol": "tus",
+        "upload_url": "http://server.test/files/.munchy-server%2Fuploads%2Fabc",
+        "offset": 3,
+        "length": 8,
+        "checksum_algorithm": "sha256",
+        "headers": {"Tus-Resumable": "1.0.0"},
+        "file": {"upload_state": "partial"},
     }
-
-
-def test_public_tusd_upload_url_omits_signature_without_secret(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-
-    url = server.upload_service.public_tusd_upload_url(
-        "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
-    )
-
-    assert url == "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
 
 
 def test_structured_input_upload_accepts_source_prefixed_paths(
@@ -9069,3 +9047,93 @@ def test_acquire_job_gpu_reuses_persisted_lease_token(
     assert token == "saved-token"
     assert requests[0]["lease_token"] == "saved-token"
     assert job["gpu_lease_token"] == "saved-token"
+
+
+def test_munchy_tus_paths_resolve_under_the_configured_upload_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (server.runtime_config.TUSD_DIR / "linked").symlink_to(outside, target_is_directory=True)
+
+    assert server.upload_service.tusd_data_path("upload-a") == (
+        server.runtime_config.TUSD_DIR / "upload-a"
+    )
+    with pytest.raises(RuntimeError, match="TUS upload escaped its configured root"):
+        server.upload_service.tusd_data_path("linked/upload-a")
+
+
+def test_metadata_projection_atomic_writes_are_owner_readable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    destination = tmp_path / "archive" / "clip.xmp"
+
+    assert server.routing_service.write_atomic_text(destination, "<xmpmeta />\n") is True
+    assert destination.read_text(encoding="utf-8") == "<xmpmeta />\n"
+    assert destination.stat().st_mode & 0o777 == 0o600
+
+
+def test_retention_reports_stable_item_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    before = {
+        "policy": {},
+        "terminal_jobs": {"sample_job_ids": ["terminal-job"]},
+        "job_diagnostics": {"sample_job_ids": ["diagnostic-job"]},
+    }
+    remaining = {
+        "policy": {},
+        "terminal_jobs": {"eligible": 1, "sample_job_ids": ["terminal-job"]},
+        "job_diagnostics": {"eligible": 1, "sample_job_ids": ["diagnostic-job"]},
+    }
+
+    def retention_plan(*, candidate_limit: int = 10) -> dict[str, object]:
+        if candidate_limit == server.runtime_config.RETENTION_BATCH_SIZE:
+            return before
+        return remaining
+
+    monkeypatch.setattr(server.retention_service, "retention_plan", retention_plan)
+    monkeypatch.setattr(
+        server.diagnostic_service,
+        "remove_job_diagnostic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private diagnostic path")),
+    )
+    monkeypatch.setattr(
+        server.diagnostic_service,
+        "remove_terminal_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private database detail")),
+    )
+
+    result = server.retention_service.apply_retention()
+
+    assert result == {
+        "policy": {},
+        "removed": {
+            "terminal_jobs": 0,
+            "terminal_job_ids": [],
+            "job_diagnostics": 0,
+            "job_diagnostic_ids": [],
+        },
+        "errors": [
+            {
+                "resource": "job_diagnostic",
+                "job_id": "diagnostic-job",
+                "code": "removal_failed",
+                "message": "retention removal failed",
+            },
+            {
+                "resource": "terminal_job",
+                "job_id": "terminal-job",
+                "code": "removal_failed",
+                "message": "retention removal failed",
+            },
+        ],
+        "remaining": remaining,
+    }

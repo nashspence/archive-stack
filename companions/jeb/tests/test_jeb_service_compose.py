@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import yaml
+from jeb_api.cli import api_host, api_port
 from jeb_api.composition import config_from_env
 from jeb_core.domain.models import parse_duration
 
@@ -14,8 +15,8 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     compose = yaml.safe_load((REPO / "companions/jeb/server/compose.yaml").read_text())
     service = compose["services"]["jeb"]
 
-    assert service["environment"]["JEB_HEALTH_HOST"] == "0.0.0.0"
-    assert service["environment"]["JEB_HEALTH_PORT"] == "8081"
+    assert service["environment"]["JEB_HOST"] == "0.0.0.0"
+    assert service["environment"]["JEB_PORT"] == "8081"
     assert service["environment"]["JEB_API_TOKEN"] == (
         "${JEB_API_TOKEN:-jeb-development-api-token}"
     )
@@ -43,6 +44,22 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert healthcheck["test"][:3] == ["CMD", "python", "-c"]
     assert "/health/ready" in healthcheck["test"][3]
     assert healthcheck["interval"] == "15s"
+
+
+def test_jeb_api_defaults_to_loopback_and_accepts_an_explicit_container_bind(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("JEB_HOST", raising=False)
+    monkeypatch.delenv("JEB_PORT", raising=False)
+
+    assert api_host() == "127.0.0.1"
+    assert api_port() == 8081
+
+    monkeypatch.setenv("JEB_HOST", "0.0.0.0")
+    monkeypatch.setenv("JEB_PORT", "9081")
+
+    assert api_host() == "0.0.0.0"
+    assert api_port() == 9081
 
 
 def test_jeb_compose_routes_adapters_to_the_shared_landing_contract() -> None:

@@ -54,9 +54,6 @@ APPLICATION_AUTH_REQUIRED = os.getenv(
 ).strip().casefold() in {"1", "true", "yes", "on"}
 
 
-TUSD_PUBLIC_SIGNING_SECRET = os.getenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "").strip()
-
-
 GPU_RUNTIME_DIR = Path(
     os.getenv("MUNCHY_GPU_RUNTIME_DIR", "/gpu-runtime/munchy-av1-nvenc")
 ).resolve()

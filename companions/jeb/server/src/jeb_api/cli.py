@@ -25,18 +25,22 @@ from state_schema import StateSchemaError
 from jeb_api.app import JebServiceState, start_jeb_service_server
 from jeb_api.composition import config_from_env, create_services
 
-DEFAULT_HEALTH_HOST = os.getenv("JEB_HEALTH_HOST", "0.0.0.0")
-DEFAULT_HEALTH_PORT = "8081"
+DEFAULT_API_HOST = "127.0.0.1"
+DEFAULT_API_PORT = "8081"
 
 
-def health_port() -> int:
-    value = os.getenv("JEB_HEALTH_PORT", DEFAULT_HEALTH_PORT)
+def api_host() -> str:
+    return os.getenv("JEB_HOST", DEFAULT_API_HOST)
+
+
+def api_port() -> int:
+    value = os.getenv("JEB_PORT", DEFAULT_API_PORT)
     try:
         port = int(value)
     except ValueError as exc:
-        raise ValueError(f"JEB_HEALTH_PORT must be an integer, got {value!r}") from exc
+        raise ValueError(f"JEB_PORT must be an integer, got {value!r}") from exc
     if not 0 < port < 65536:
-        raise ValueError(f"JEB_HEALTH_PORT must be between 1 and 65535, got {port}")
+        raise ValueError(f"JEB_PORT must be between 1 and 65535, got {port}")
     return port
 
 
@@ -260,8 +264,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     services.runtime.initialize()
     start_jeb_service_server(
-        DEFAULT_HEALTH_HOST,
-        health_port(),
+        api_host(),
+        api_port(),
         JebServiceState(services=services),
     )
     services.runtime.run_forever()

@@ -21,6 +21,21 @@ class SourceArtifactsTests(unittest.TestCase):
                 Path(tmp) / "jobs" / expected_segment / "status.json",
             )
 
+    def test_target_paths_resolve_under_the_configured_data_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (root / "input").symlink_to(outside, target_is_directory=True)
+            with patch.object(av1, "DATA_DIR", root):
+                self.assertEqual(
+                    av1.ensure_under_data_dir(root / "jobs" / "job-1", name="job"),
+                    root / "jobs" / "job-1",
+                )
+                with self.assertRaisesRegex(av1.HTTPException, "must be under"):
+                    av1.ensure_under_data_dir(root / "input" / "clip.mp4", name="input")
+
     def test_startup_recovers_interrupted_jobs(self) -> None:
         calls: list[str] = []
 

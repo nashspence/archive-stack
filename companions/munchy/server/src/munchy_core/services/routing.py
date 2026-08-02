@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import logging.config
+import os
 import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
@@ -1348,9 +1349,16 @@ def write_atomic_text(path: Path, text: str) -> bool:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-    return True
+    try:
+        descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def metadata_projection_handed_off_paths(job: dict[str, Any]) -> set[str]:
