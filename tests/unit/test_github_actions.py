@@ -14,7 +14,11 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
 
-    assert set(workflow["on"]) == {"pull_request", "push", "workflow_dispatch"}
+    assert workflow["on"] == {
+        "pull_request": "",
+        "push": {"branches": ["main"]},
+        "workflow_dispatch": "",
+    }
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "true"
 
