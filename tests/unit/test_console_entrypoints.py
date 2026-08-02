@@ -23,9 +23,7 @@ CONSOLE_DISTRIBUTIONS = {
 
 def test_munchy_http_api_versions_match_their_installed_distributions() -> None:
     assert munchy_api_app.app.version == importlib.metadata.version("munchy-server")
-    assert munchy_av1_nvenc_app.app.version == importlib.metadata.version(
-        "munchy-av1-nvenc-target"
-    )
+    assert munchy_av1_nvenc_app.app.version == importlib.metadata.version("munchy-av1-nvenc-target")
 
 
 @pytest.mark.parametrize("command", CONSOLE_DISTRIBUTIONS)
