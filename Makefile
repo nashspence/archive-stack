@@ -43,7 +43,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec c2sp-vectors postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness c2sp-vectors postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -74,6 +74,7 @@ help:
 		'  make compile           Byte-compile all repository Python files.' \
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
+		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
@@ -139,6 +140,9 @@ unit:
 
 spec:
 	$(call UV_CMD,python -m pytest -q $(SPEC_TESTS) $(args))
+
+dependency-readiness:
+	$(call UV_CMD,python scripts/check_dependency_readiness.py $(args))
 
 c2sp-vectors:
 	@MISE_BIN="$(MISE_BIN)" ./scripts/test_c2sp_vectors.sh

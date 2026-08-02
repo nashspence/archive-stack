@@ -90,6 +90,10 @@ def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:
 
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     assert 'c2sp-vectors:\n\t@MISE_BIN="$(MISE_BIN)" ./scripts/test_c2sp_vectors.sh' in makefile
+    assert (
+        "dependency-readiness:\n"
+        "\t$(call UV_CMD,python scripts/check_dependency_readiness.py $(args))"
+    ) in makefile
 
 
 def test_workspace_distributions_publish_their_inline_types() -> None:
