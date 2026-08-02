@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tomllib
 from pathlib import Path
 
@@ -89,12 +88,12 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 
 def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
-    graph = json.loads((REPO_ROOT / "docker-bake.json").read_text(encoding="utf-8"))
+    bake = (REPO_ROOT / "docker-bake.hcl").read_text(encoding="utf-8")
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     compose_helper = (REPO_ROOT / "scripts/_compose_env.sh").read_text(encoding="utf-8")
 
-    assert graph["group"]["default"]["targets"] == [
+    image_targets = [
         "riverhog",
         "jeb",
         "mango-fish",
@@ -102,6 +101,8 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
         "munchy-av1-nvenc",
         "test",
     ]
+    assert bake.count('target "') == len(image_targets)
+    assert all(f'target "{target}"' in bake for target in image_targets)
     assert 'docker buildx bake --file "$(BAKE_FILE)" --load --sbom=true' in makefile
     image_steps = workflow["jobs"]["images"]["steps"]
     assert (

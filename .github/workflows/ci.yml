@@ -98,7 +98,7 @@ jobs:
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
         with:
           source: .
-          files: docker-bake.json
+          files: docker-bake.hcl
           targets: ${{ matrix.target }}
           load: true
           sbom: true

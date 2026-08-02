@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
+import re
 from pathlib import Path
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BAKE_FILE = REPO_ROOT / "docker-bake.json"
+BAKE_FILE = REPO_ROOT / "docker-bake.hcl"
 CI_FILE = REPO_ROOT / ".github/workflows/ci.yml"
 
 IMAGE_CONTRACTS = {
@@ -58,8 +58,45 @@ IMAGE_CONTRACTS = {
 }
 
 
+def _bake_graph() -> dict[str, object]:
+    text = BAKE_FILE.read_text(encoding="utf-8")
+    group_match = re.search(r'group "default" \{(?P<body>.*?)\n\}', text, re.DOTALL)
+    assert group_match is not None
+    group_targets_match = re.search(
+        r"targets\s*=\s*\[(?P<targets>.*?)\]",
+        group_match.group("body"),
+        re.DOTALL,
+    )
+    assert group_targets_match is not None
+    group_targets = re.findall(r'"([^"]+)"', group_targets_match.group("targets"))
+
+    targets: dict[str, dict[str, object]] = {}
+    for match in re.finditer(
+        r'target "(?P<name>[^"]+)" \{(?P<body>.*?)\n\}',
+        text,
+        re.DOTALL,
+    ):
+        body = match.group("body")
+        context_match = re.search(r'context\s*=\s*"([^"]+)"', body)
+        dockerfile_match = re.search(r'dockerfile\s*=\s*"([^"]+)"', body)
+        tags_match = re.search(r"tags\s*=\s*\[(.*?)\]", body)
+        revision_match = re.search(r'SOURCE_REVISION\s*=\s*"([^"]+)"', body)
+        assert context_match is not None
+        assert dockerfile_match is not None
+        assert tags_match is not None
+        assert revision_match is not None
+        targets[match.group("name")] = {
+            "context": context_match.group(1),
+            "dockerfile": dockerfile_match.group(1),
+            "tags": re.findall(r'"([^"]+)"', tags_match.group(1)),
+            "args": {"SOURCE_REVISION": revision_match.group(1)},
+        }
+
+    return {"group": {"default": {"targets": group_targets}}, "target": targets}
+
+
 def test_bake_graph_is_the_canonical_image_build_contract() -> None:
-    graph = json.loads(BAKE_FILE.read_text(encoding="utf-8"))
+    graph = _bake_graph()
 
     assert graph["group"] == {"default": {"targets": list(IMAGE_CONTRACTS)}}
     assert set(graph["target"]) == set(IMAGE_CONTRACTS)
@@ -78,7 +115,7 @@ def test_bake_graph_is_the_canonical_image_build_contract() -> None:
 
 
 def test_compose_build_services_match_the_canonical_bake_graph() -> None:
-    graph = json.loads(BAKE_FILE.read_text(encoding="utf-8"))
+    graph = _bake_graph()
 
     for name, contract in IMAGE_CONTRACTS.items():
         target = graph["target"][name]
@@ -116,7 +153,7 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
         "uses": "docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b",
         "with": {
             "source": ".",
-            "files": "docker-bake.json",
+            "files": "docker-bake.hcl",
             "targets": "${{ matrix.target }}",
             "load": True,
             "sbom": True,

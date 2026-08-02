@@ -9,7 +9,7 @@ POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integr
 PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
-BAKE_FILE = docker-bake.json
+BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
 	companions/jeb/client/src \
