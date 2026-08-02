@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "fastapi>=0.111,<1.0",
+  "fastapi>=0.141.1,<1.0",
   "munchy-api-client>=0.1,<0.2",
   "munchy-target-support>=0.1,<0.2",
   "munchy-workflows>=0.1,<0.2",
