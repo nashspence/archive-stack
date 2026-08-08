@@ -288,8 +288,13 @@ class CollectionArchiveObjectRecord(Base):
     object_path: Mapped[str] = mapped_column(String)
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
     stored_bytes: Mapped[int] = mapped_column(BigInteger)
-    sha256: Mapped[str] = mapped_column(String(64))
-    stored_sha256: Mapped[str] = mapped_column(String(64))
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    age_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    part_receipts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    index_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     backend: Mapped[str] = mapped_column(String)
     storage_class: Mapped[str] = mapped_column(String)
     uploaded_at: Mapped[str] = mapped_column(String)
@@ -326,6 +331,7 @@ class CollectionArchiveFileObjectRecord(Base):
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
     object_id: Mapped[str] = mapped_column(String)
     file_offset: Mapped[int] = mapped_column(BigInteger)
+    object_offset: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes: Mapped[int] = mapped_column(BigInteger)
     member: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -422,21 +428,13 @@ class ArchiveCopyObjectUploadRecord(Base):
     kind: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
-    sha256: Mapped[str] = mapped_column(String(64))
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     multipart_content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    encryption_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     uploaded_parts: Mapped[int] = mapped_column(Integer, default=0)
     total_parts: Mapped[int] = mapped_column(Integer, default=0)
-    cache_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    cache_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    cache_cached_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -710,21 +708,21 @@ class CollectionUploadRecord(Base):
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    state: Mapped[str | None] = mapped_column(String, default="uploading", nullable=True)
+    state: Mapped[str] = mapped_column(String, default="open")
     archive_store: Mapped[str] = mapped_column(String, nullable=False)
-    opened_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_activity_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    opened_at: Mapped[str] = mapped_column(String)
+    last_activity_at: Mapped[str] = mapped_column(String)
     closed_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_phase: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_phase_updated_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_attempt_count: Mapped[int | None] = mapped_column(Integer, default=0, nullable=True)
+    archive_phase: Mapped[str] = mapped_column(String, default="planning")
+    archive_phase_updated_at: Mapped[str] = mapped_column(String)
+    archive_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     archive_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
-    archive_receipt_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    archive_storage_prefix: Mapped[str] = mapped_column(String)
     collection_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
     collection_manifest_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
+    planner_checkpoint_json: Mapped[str] = mapped_column(Text)
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
         back_populates="upload",
@@ -777,13 +775,8 @@ class CollectionUploadFileRecord(Base):
     file_order: Mapped[int] = mapped_column(Integer)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    ingress_bytes: Mapped[int] = mapped_column(BigInteger)
-    ingress_uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
-    ingress_secret_envelope: Mapped[str] = mapped_column(Text)
-    ingress_state_json: Mapped[str] = mapped_column(Text)
-    ingress_upload_id: Mapped[str] = mapped_column(String)
-    upload_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    tus_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_part_plaintext_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw_digest_manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -792,29 +785,15 @@ class CollectionUploadFileRecord(Base):
             ondelete="CASCADE",
         ),
         Index("idx_collection_upload_files_collection_order", "collection_id", "file_order"),
-        Index("ux_collection_upload_files_ingress_id", "ingress_upload_id", unique=True),
+        Index(
+            "ux_collection_upload_files_order",
+            "collection_id",
+            "file_order",
+            unique=True,
+        ),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
-
-
-class IngressCleanupRecord(Base):
-    __tablename__ = "ingress_cleanup"
-
-    target_path: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
-    ingress_upload_id: Mapped[str] = mapped_column(String)
-    state: Mapped[str] = mapped_column(String, default="pending")
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[str] = mapped_column(String)
-    next_attempt_at: Mapped[str] = mapped_column(String)
-    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    __table_args__ = (
-        Index("ix_ingress_cleanup_due", "state", "next_attempt_at", "target_path"),
-        Index("ux_ingress_cleanup_upload_id", "ingress_upload_id", unique=True),
-    )
 
 
 class CollectionArchiveObjectUploadRecord(Base):
@@ -822,30 +801,36 @@ class CollectionArchiveObjectUploadRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String)
+    relative_path: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
-    sha256: Mapped[str] = mapped_column(String(64))
-    multipart_upload_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    multipart_part_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    multipart_content_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    multipart_parts_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    encryption_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bytes: Mapped[int] = mapped_column(BigInteger)
+    unit_plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
+    plan_json: Mapped[str] = mapped_column(Text)
+    plan_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String, default="planned")
+    checkpoint_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sealed_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     uploaded_parts: Mapped[int] = mapped_column(Integer, default=0)
     total_parts: Mapped[int] = mapped_column(Integer, default=0)
-    cache_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    cache_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    cache_cached_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    cache_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str] = mapped_column(String)
+    sealed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
             ["collection_id"],
             ["collection_uploads.collection_id"],
             ondelete="CASCADE",
+        ),
+        Index(
+            "ux_collection_archive_object_uploads_sequence",
+            "collection_id",
+            "sequence",
+            unique=True,
         ),
     )
 

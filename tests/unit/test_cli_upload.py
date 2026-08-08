@@ -2,46 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
-from riverhog_age import iter_decrypt_age_scrypt
-from riverhog_api_client.ingress import iter_ingress_upload_parts
 from riverhog_cli import main as riverhog_main
-from riverhog_cli.upload_progress import CollectionUploadProgress, format_upload_progress_line
-from riverhog_core.ingress_crypto import (
-    create_ingress_encryption,
-    ingress_encryption_descriptor,
-)
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_cli.upload_progress import CollectionUploadProgressState, format_upload_progress_line
 from typer.testing import CliRunner
 
-from tests.unit.db_helpers import sqlite_url
-
 RUNNER = CliRunner()
-COLLECTION_ID = "1"
-
-
-def _descriptor(tmp_path: Path, *, content: bytes) -> dict[str, object]:
-    config = RuntimeConfig(database_url=sqlite_url(tmp_path / "state.sqlite3"))
-    encryption = create_ingress_encryption(
-        config,
-        collection_id=COLLECTION_ID,
-        path="clip.bin",
-        plaintext_bytes=len(content),
-    )
-    return ingress_encryption_descriptor(
-        config,
-        collection_id=COLLECTION_ID,
-        path="clip.bin",
-        plaintext_bytes=len(content),
-        ciphertext_bytes=encryption.ciphertext_bytes,
-        secret_envelope=encryption.secret_envelope,
-        state_json=encryption.state_json,
-    )
+COLLECTION_ID = 1
+LAYOUT = {
+    "pack_source_bytes": 1024,
+    "pack_files": 100,
+    "pack_member_bytes": 8,
+    "pack_part_plaintext_bytes": 5 * 1024 * 1024,
+    "raw_volume_plaintext_bytes": 10 * 1024 * 1024,
+    "raw_part_plaintext_bytes": 5 * 1024 * 1024,
+}
 
 
 def test_local_collection_manifest_streams_file_hashes(
@@ -103,480 +81,223 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
     payload = json.loads(result.stdout)
     assert payload["collection_id"] is None
     assert payload["tags"] == ["my-trip"]
-    assert payload["idempotency_key"] == "test-upload"
     assert payload["archive_store"] == "b2"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
 
 
-def test_upload_streams_client_encrypted_bytes_and_reports_plaintext_progress(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = (b"encrypted ingress\n" * 10_000) + b"end"
-    source = tmp_path / "clip.bin"
+def test_large_source_hash_includes_server_layout_part_digests(tmp_path: Path) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    source = root / "large.bin"
+    content = (b"a" * 65_536) + (b"b" * 65_536) + b"tail"
     source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    uploaded: list[bytes] = []
-    progress: list[int] = []
-    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
 
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, collection_id: int, path: str
-        ) -> dict[str, object]:
-            assert (collection_id, path) == (COLLECTION_ID, "clip.bin")
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": sum(len(chunk) for chunk in uploaded),
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            chunk = bytes(kwargs["content"])
-            uploaded.append(chunk)
-            return {"offset": int(kwargs["offset"]) + len(chunk), "expires_at": None}
-
-    riverhog_main._upload_collection_file(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
+    entry = riverhog_main._hash_collection_source(
+        root,
         source,
-        {"path": "clip.bin", "bytes": len(content)},
-        progress=progress.append,
+        pack_member_bytes=8,
+        raw_part_plaintext_bytes=65_536,
     )
 
-    ciphertext = b"".join(uploaded)
-    assert len(ciphertext) == descriptor["ciphertext_bytes"]
-    assert all(len(chunk) == 70_000 for chunk in uploaded[:-1])
-    assert sum(progress) == len(content)
-    assert b"".join(iter_decrypt_age_scrypt([ciphertext], str(descriptor["passphrase"]))) == content
-
-
-def test_resumed_upload_reports_existing_plaintext_without_counting_it_as_new_progress(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = (b"resume encrypted ingress\n" * 10_000) + b"end"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
-    parts = list(
-        iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=0,
-            target_part_bytes=70_000,
-        )
-    )
-    assert len(parts) > 1
-    resume_offset = parts[1].ciphertext_offset
-    resumed: list[int] = []
-    uploaded_ciphertext: list[int] = []
-    uploaded_plaintext: list[int] = []
-
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, _collection_id: int, _path: str
-        ) -> dict[str, object]:
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": resume_offset,
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            uploaded_ciphertext.append(len(bytes(kwargs["content"])))
-            return {
-                "offset": int(kwargs["offset"]) + uploaded_ciphertext[-1],
-                "expires_at": None,
-            }
-
-    riverhog_main._upload_collection_file(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        source,
-        {"path": "clip.bin", "bytes": len(content)},
-        progress=uploaded_plaintext.append,
-        resumed=resumed.append,
-    )
-
-    assert resumed == [parts[1].plaintext_start]
-    assert resumed[0] + sum(uploaded_plaintext) == len(content)
-
-
-def test_ingress_resume_survives_a_transport_chunk_size_change(tmp_path: Path) -> None:
-    content = (b"chunk-size-independent encrypted resume\n" * 20_000) + b"end"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-
-    original_parts = list(
-        iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=0,
-            target_part_bytes=70_000,
-        )
-    )
-    assert len(original_parts) > 2
-    resume_offset = original_parts[2].ciphertext_offset
-
-    larger_parts = list(
-        iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=0,
-            target_part_bytes=250_000,
-        )
-    )
-    assert resume_offset not in {part.ciphertext_offset for part in larger_parts}
-
-    resumed_parts = list(
-        iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=resume_offset,
-            target_part_bytes=250_000,
-        )
-    )
-
-    ciphertext = b"".join(part.ciphertext for part in larger_parts)
-    assert resumed_parts[0].ciphertext_offset == resume_offset
-    assert b"".join(part.ciphertext for part in resumed_parts) == ciphertext[resume_offset:]
-
-
-def test_ingress_resume_accepts_an_offset_inside_an_encrypted_chunk(tmp_path: Path) -> None:
-    content = (b"byte-exact encrypted resume\n" * 20_000) + b"end"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    ciphertext = b"".join(
-        part.ciphertext
-        for part in iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=0,
-            target_part_bytes=250_000,
-        )
-    )
-    resume_offset = 12_345
-
-    resumed_parts = list(
-        iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=resume_offset,
-            target_part_bytes=250_000,
-        )
-    )
-    resumed = b"".join(part.ciphertext for part in resumed_parts)
-
-    assert len(resumed_parts[0].ciphertext) == 250_000 - resume_offset
-    assert resumed == ciphertext[resume_offset:]
-    assert (
-        b"".join(
-            iter_decrypt_age_scrypt(
-                [ciphertext[:resume_offset], resumed],
-                str(descriptor["passphrase"]),
-            )
-        )
-        == content
-    )
-
-
-def test_upload_resumes_after_server_retains_a_partial_ciphertext_chunk(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = (b"server-retained encrypted prefix\n" * 10_000) + b"end"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    accepted = bytearray()
-    progress: list[int] = []
-    interrupted = False
-    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
-
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, _collection_id: int, _path: str
-        ) -> dict[str, object]:
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": len(accepted),
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            nonlocal interrupted
-            assert kwargs["offset"] == len(accepted)
-            chunk = bytes(kwargs["content"])
-            if not interrupted:
-                interrupted = True
-                accepted.extend(chunk[:12_345])
-                raise httpx.ReadError("response lost after a partial request")
-            accepted.extend(chunk)
-            return {"offset": len(accepted), "expires_at": None}
-
-    riverhog_main._upload_collection_file(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        source,
-        {"path": "clip.bin", "bytes": len(content)},
-        progress=progress.append,
-    )
-
-    assert len(accepted) == descriptor["ciphertext_bytes"]
-    assert sum(progress) == len(content)
-    assert (
-        b"".join(
-            iter_decrypt_age_scrypt(
-                [bytes(accepted)],
-                str(descriptor["passphrase"]),
-            )
-        )
-        == content
-    )
-
-
-def test_upload_resends_from_an_authoritative_storage_rollback(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = (b"authoritative storage rollback\n" * 10_000) + b"end"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    ciphertext = b"".join(
-        part.ciphertext
-        for part in iter_ingress_upload_parts(
-            source,
-            descriptor,
-            ciphertext_offset=0,
-            target_part_bytes=70_000,
-        )
-    )
-    accepted = bytearray(ciphertext[:70_000])
-    progress: list[int] = []
-    resumed: list[int] = []
-    successful_patches = 0
-    rolled_back = False
-    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
-
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, _collection_id: int, _path: str
-        ) -> dict[str, object]:
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": len(accepted),
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            nonlocal rolled_back, successful_patches
-            assert kwargs["offset"] == len(accepted)
-            if successful_patches == 1 and not rolled_back:
-                rolled_back = True
-                del accepted[105_000:]
-                raise riverhog_main.Conflict("authoritative offset changed")
-            accepted.extend(bytes(kwargs["content"]))
-            successful_patches += 1
-            return {"offset": len(accepted), "expires_at": None}
-
-    riverhog_main._upload_collection_file(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        source,
-        {"path": "clip.bin", "bytes": len(content)},
-        progress=progress.append,
-        resumed=resumed.append,
-    )
-
-    assert rolled_back
-    assert bytes(accepted) == ciphertext
-    assert sum(resumed) + sum(progress) == len(content)
-
-
-def test_upload_stops_after_repeated_storage_rollbacks(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = b"bounded storage rollback\n" * 20_000
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    authoritative_offset = 70_000
-    reported_offset = authoritative_offset
-    patch_offsets: list[int] = []
-    monkeypatch.setenv("RIVERHOG_UPLOAD_CHUNK_BYTES", "70000")
-
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, _collection_id: int, _path: str
-        ) -> dict[str, object]:
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": reported_offset,
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            nonlocal reported_offset
-            offset = int(kwargs["offset"])
-            patch_offsets.append(offset)
-            if offset > authoritative_offset:
-                reported_offset = authoritative_offset
-                raise riverhog_main.Conflict("authoritative offset changed")
-            reported_offset = offset + len(bytes(kwargs["content"]))
-            return {"offset": reported_offset, "expires_at": None}
-
-    with pytest.raises(RuntimeError, match="repeatedly rolled clip.bin back"):
-        riverhog_main._upload_collection_file(
-            Api(),  # type: ignore[arg-type]
-            COLLECTION_ID,
-            source,
-            {"path": "clip.bin", "bytes": len(content)},
-        )
-
-    assert patch_offsets == [70_000, 140_000] * riverhog_main.UPLOAD_STORAGE_ROLLBACK_LIMIT
-
-
-def test_upload_retries_the_same_deterministic_ciphertext_after_transport_loss(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    content = b"retry-safe ciphertext"
-    source = tmp_path / "clip.bin"
-    source.write_bytes(content)
-    descriptor = _descriptor(tmp_path, content=content)
-    attempts: list[bytes] = []
-    retry_delays: list[float] = []
-    monkeypatch.setattr(riverhog_main.time, "sleep", retry_delays.append)
-
-    class Api:
-        def create_or_resume_collection_file_upload(
-            self, _collection_id: int, _path: str
-        ) -> dict[str, object]:
-            return {
-                "upload_url": "https://uploads.test/opaque",
-                "offset": 0,
-                "length": descriptor["ciphertext_bytes"],
-                "checksum_algorithm": "sha256",
-                "encryption": descriptor,
-            }
-
-        def append_upload_chunk(self, _upload_url: str, **kwargs: Any) -> dict[str, object]:
-            chunk = bytes(kwargs["content"])
-            attempts.append(chunk)
-            if len(attempts) == 1:
-                raise httpx.ReadError("lost response")
-            return {"offset": len(chunk), "expires_at": None}
-
-    riverhog_main._upload_collection_file(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        source,
-        {"path": "clip.bin", "bytes": len(content)},
-    )
-
-    assert len(attempts) == 2
-    assert attempts[0] == attempts[1]
-    assert retry_delays == [riverhog_main.UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS]
-
-
-def test_upload_wait_mode_defaults_to_finalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RIVERHOG_UPLOAD_WAIT", raising=False)
-
-    assert riverhog_main._default_upload_wait_mode() == "finalized"
-    assert riverhog_main._normalize_upload_wait_mode("staged") == "staged"
-
-
-def test_staged_wait_requires_authoritative_server_handoff(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payloads = [
-        {
-            "collection_id": COLLECTION_ID,
-            "state": "uploading",
-            "files_total": 2,
-            "files_uploaded": 1,
-            "bytes_total": 20,
-            "uploaded_bytes": 10,
+    assert entry == {
+        "path": "large.bin",
+        "bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "raw_parts": {
+            "part_plaintext_bytes": 65_536,
+            "sha256s": [
+                hashlib.sha256(b"a" * 65_536).hexdigest(),
+                hashlib.sha256(b"b" * 65_536).hexdigest(),
+                hashlib.sha256(b"tail").hexdigest(),
+            ],
         },
-        {
-            "collection_id": COLLECTION_ID,
-            "state": "archiving",
-            "files_total": 2,
-            "files_uploaded": 2,
-            "bytes_total": 20,
-            "uploaded_bytes": 20,
-        },
-    ]
-    sleeps: list[float] = []
-    statuses: list[str] = []
-    monkeypatch.setenv("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS", "0.01")
-    monkeypatch.setattr(riverhog_main.time, "sleep", sleeps.append)
+    }
+
+
+def test_upload_unit_content_concatenates_planned_source_ranges(tmp_path: Path) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "a.bin").write_bytes(b"alpha")
+    (root / "b.bin").write_bytes(b"bravox")
+
+    assert (
+        riverhog_main._upload_unit_content(
+            root,
+            {
+                "payload_bytes": 7,
+                "sources": [
+                    {"path": "a.bin", "offset": 1, "bytes": 3},
+                    {"path": "b.bin", "offset": 2, "bytes": 4},
+                ],
+            },
+        )
+        == b"lphavox"
+    )
+
+
+def test_upload_unit_recovers_when_commit_response_is_lost(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "clip.bin").write_bytes(b"content")
+    committed = False
 
     class Api:
-        def get_collection(self, _collection_id: int) -> dict[str, object]:
-            raise riverhog_main.NotFound("not finalized")
+        def put_collection_upload_session_unit(
+            self, *_args: object, **kwargs: object
+        ) -> dict[str, object]:
+            nonlocal committed
+            assert kwargs["content"] == b"content"
+            committed = True
+            raise httpx.ReadError("response lost")
+
+        def get_collection_upload_session_unit(self, *_args: object) -> dict[str, object]:
+            return {"state": "committed" if committed else "pending"}
+
+    accepted = riverhog_main._put_collection_upload_session_unit(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        {"volume_id": "pack-000000000000", "plan_sha256": "a" * 64},
+        {
+            "unit": 0,
+            "payload_bytes": 7,
+            "sources": [{"path": "clip.bin", "offset": 0, "bytes": 7}],
+            "state": "pending",
+        },
+        root=root,
+    )
+
+    assert accepted == 7
+
+
+def test_direct_collection_upload_registers_plans_and_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collection"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"alpha")
+    (root / "b.txt").write_bytes(b"bravo")
+    registered: list[dict[str, object]] = []
+    uploaded = bytearray()
+    committed = False
+
+    class Api:
+        base_url = "https://riverhog.test"
+        token = "token"
+        host_header = None
+        http2 = True
+
+        def create_or_resume_collection_upload_session(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            return {
+                "collection_id": COLLECTION_ID,
+                "state": "open",
+                "layout": LAYOUT,
+            }
+
+        def register_collection_upload_session_files(
+            self,
+            collection_id: int,
+            files: list[dict[str, object]],
+        ) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            registered.extend(files)
+            return {"files": files}
+
+        def complete_collection_upload_session(
+            self,
+            collection_id: int,
+            *,
+            files_total: int,
+            content_etag: str,
+        ) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            assert files_total == 2
+            assert len(content_etag) == 64
+            return {"collection_id": collection_id, "state": "uploading"}
+
+        def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return {
+                "collection_id": collection_id,
+                "volumes": [
+                    {
+                        "volume_id": "pack-000000000000",
+                        "sequence": 0,
+                        "kind": "pack",
+                        "state": "sealed" if committed else "planned",
+                        "plan_sha256": "a" * 64,
+                        "plaintext_bytes": 10,
+                        "source_bytes": 10,
+                        "units": [
+                            {
+                                "unit": 0,
+                                "payload_bytes": 10,
+                                "plaintext_bytes": 10,
+                                "sources": [
+                                    {"path": "a.txt", "offset": 0, "bytes": 5},
+                                    {"path": "b.txt", "offset": 0, "bytes": 5},
+                                ],
+                                "state": "committed" if committed else "pending",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+        def put_collection_upload_session_unit(
+            self,
+            collection_id: int,
+            volume_id: str,
+            unit: int,
+            *,
+            plan_sha256: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            nonlocal committed
+            assert (collection_id, volume_id, unit) == (
+                COLLECTION_ID,
+                "pack-000000000000",
+                0,
+            )
+            assert plan_sha256 == "a" * 64
+            uploaded.extend(content)
+            committed = True
+            return {"unit": unit, "state": "committed"}
 
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
-            return payloads.pop(0)
-
-    payload, state = riverhog_main._wait_for_staged_collection(
-        Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        [
-            {"path": "a.bin", "bytes": 10, "sha256": "a" * 64},
-            {"path": "b.bin", "bytes": 10, "sha256": "b" * 64},
-        ],
-        status=statuses.append,
-    )
-
-    assert state == "staged"
-    assert payload["state"] == "archiving"
-    assert sleeps == [0.01]
-    assert statuses[0] == "All files uploaded; waiting for server handoff"
-
-
-def test_staged_wait_accepts_a_collection_that_already_finalized() -> None:
-    class Api:
-        def get_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
-            raise riverhog_main.NotFound("upload finalized")
-
-        def get_collection(self, collection_id: int) -> dict[str, object]:
-            assert collection_id == COLLECTION_ID
             return {
-                "id": collection_id,
-                "files": 1,
-                "bytes": 10,
-                "archive_copies": [{"store": "b2", "state": "uploaded", "stored_bytes": 12}],
+                "collection_id": collection_id,
+                "state": "finalized",
+                "files_total": 2,
+                "bytes_total": 10,
+                "layout": None,
             }
 
-    payload, state = riverhog_main._wait_for_staged_collection(
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+    payload = riverhog_main._upload_collection_via_session(
         Api(),  # type: ignore[arg-type]
-        COLLECTION_ID,
-        [{"path": "a.bin", "bytes": 10, "sha256": "a" * 64}],
+        "test-upload",
+        ["collection"],
+        root,
+        ingest_source=str(root),
+        file_concurrency=1,
+        json_mode=True,
     )
 
-    assert state == "staged"
     assert payload["state"] == "finalized"
+    assert [item["path"] for item in registered] == ["a.txt", "b.txt"]
+    assert bytes(uploaded) == b"alphabravo"
 
 
-def test_incremental_upload_retry_returns_an_already_finalized_collection(
+def test_upload_retry_returns_an_already_finalized_collection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -590,10 +311,15 @@ def test_incremental_upload_retry_returns_an_already_finalized_collection(
         "files_uploaded": 1,
         "bytes_total": 5,
         "uploaded_bytes": 5,
+        "layout": None,
     }
 
     class Api:
-        def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        def create_or_resume_collection_upload_session(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> dict[str, object]:
             return finalized
 
     def forbidden_hash(_path: Path) -> str:
@@ -608,310 +334,57 @@ def test_incremental_upload_retry_returns_an_already_finalized_collection(
             ["collection"],
             root,
             ingest_source=str(root),
-            wait_mode="finalized",
             file_concurrency=2,
         )
         == finalized
     )
 
 
-def test_upload_chunk_size_defaults_to_tusd_s3_part_size(
+def test_finalization_watch_returns_verified_custody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("RIVERHOG_UPLOAD_CHUNK_BYTES", raising=False)
-
-    assert riverhog_main._upload_chunk_bytes() == 50 * 1024 * 1024
-
-
-def test_upload_progress_tracks_authoritative_storage_rollback() -> None:
-    progress = CollectionUploadProgress(
-        collection_id=COLLECTION_ID,
-        files_total=1,
-        bytes_total=200,
-        uploaded_bytes=70,
-        interval_seconds=3600,
-    )
-
-    progress.uploaded(50)
-    progress.uploaded(-15)
-
-    assert progress.uploaded_bytes == 105
-    assert progress.accepted_bytes_this_run == 35
-
-
-@pytest.mark.parametrize(("concurrency", "expected_overlap"), [(1, 1), (2, 2)])
-def test_incremental_upload_uses_bounded_persistent_workers(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    concurrency: int,
-    expected_overlap: int,
-) -> None:
-    root = tmp_path / "collection"
-    root.mkdir()
-    for name in ("a.bin", "b.bin", "c.bin"):
-        (root / name).write_bytes(name.encode())
-
-    lock = threading.Lock()
-    overlap = threading.Barrier(2) if concurrency > 1 else None
-    second_finished = threading.Event()
-    registered: dict[str, dict[str, object]] = {}
-    registration_batch_sizes: list[int] = []
-    completion_order: list[str] = []
-    active = 0
-    max_active = 0
-    complete_calls = 0
-    workers: list[Api] = []
+    payloads = [
+        {"collection_id": COLLECTION_ID, "state": "finalizing"},
+        {"collection_id": COLLECTION_ID, "state": "finalized"},
+    ]
+    sleeps: list[float] = []
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS", "0.01")
+    monkeypatch.setattr(riverhog_main.time, "sleep", sleeps.append)
 
     class Api:
-        def __init__(self, *, worker: bool = False) -> None:
-            self.worker = worker
-            self.closed = False
-
-        def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            return {"collection_id": COLLECTION_ID}
-
-        def register_collection_upload_session_files(
-            self,
-            collection_id: int,
-            entries: list[dict[str, object]],
-        ) -> dict[str, object]:
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
-            with lock:
-                registration_batch_sizes.append(len(entries))
-                for entry in entries:
-                    registered[str(entry["path"])] = dict(entry)
-            return {
-                "files": [
-                    {**entry, "upload_state": "pending", "uploaded_bytes": 0} for entry in entries
-                ]
-            }
+            return payloads.pop(0)
 
-        def complete_collection_upload_session(
-            self,
-            collection_id: int,
-            *,
-            files_total: int,
-            content_etag: str,
-        ) -> dict[str, object]:
-            nonlocal complete_calls
-            assert collection_id == COLLECTION_ID
-            assert files_total == 3
-            assert len(content_etag) == 64
-            with lock:
-                assert set(completion_order) == set(registered) == {"a.bin", "b.bin", "c.bin"}
-                complete_calls += 1
-            return {"collection_id": COLLECTION_ID, "state": "archiving", "files": []}
-
-        def close(self) -> None:
-            self.closed = True
-
-    main_api = Api()
-
-    def api_factory() -> Api:
-        worker = Api(worker=True)
-        workers.append(worker)
-        return worker
-
-    def upload_file(
-        _api: Api,
-        _collection_id: int,
-        _source_path: Path,
-        file_payload: dict[str, object],
-        *,
-        progress=None,  # type: ignore[no-untyped-def]
-        resumed=None,  # type: ignore[no-untyped-def]
-    ) -> None:
-        del resumed
-        nonlocal active, max_active
-        path = str(file_payload["path"])
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-        try:
-            if overlap is not None and path in {"a.bin", "c.bin"}:
-                overlap.wait(timeout=2)
-                if path == "a.bin":
-                    assert second_finished.wait(timeout=2)
-                else:
-                    second_finished.set()
-            if progress is not None:
-                progress(int(file_payload["bytes"]))
-            with lock:
-                completion_order.append(path)
-        finally:
-            with lock:
-                active -= 1
-
-    monkeypatch.setattr(riverhog_main, "_upload_collection_file", upload_file)
-    payload = riverhog_main._upload_collection_via_session(
-        main_api,  # type: ignore[arg-type]
-        "test-upload",
-        ["collection"],
-        root,
-        ingest_source=str(root),
-        wait_mode="staged",
-        file_concurrency=concurrency,
-        api_factory=api_factory,  # type: ignore[arg-type]
+    payload, state = riverhog_main._wait_for_finalized_collection(
+        Api(),  # type: ignore[arg-type]
+        COLLECTION_ID,
+        None,
     )
 
-    assert payload["state"] == "archiving"
-    assert max_active == expected_overlap
-    assert max(registration_batch_sizes) > 1
-    assert complete_calls == 1
-    if concurrency > 1:
-        assert completion_order.index("c.bin") < completion_order.index("a.bin")
-        assert len(workers) == concurrency
-        assert all(worker.closed for worker in workers)
-    else:
-        assert workers == []
-        assert not main_api.closed
+    assert state == "finalized"
+    assert payload["state"] == "finalized"
+    assert sleeps == [0.01]
 
 
-def test_incremental_upload_failure_leaves_session_resumable_and_never_completes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "collection"
-    root.mkdir()
-    for name in ("a.bin", "b.bin", "c.bin"):
-        (root / name).write_bytes(name.encode())
-
-    lock = threading.Lock()
-    registered: dict[str, dict[str, object]] = {}
-    uploaded: set[str] = set()
-    attempts: dict[str, int] = {}
-    first_pair = threading.Barrier(2)
-    fail = True
-    complete_calls = 0
-
-    class Api:
-        def create_or_resume_collection_upload_session(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            return {"collection_id": COLLECTION_ID}
-
-        def register_collection_upload_session_files(
-            self,
-            _collection_id: int,
-            entries: list[dict[str, object]],
-        ) -> dict[str, object]:
-            with lock:
-                for entry in entries:
-                    registered[str(entry["path"])] = dict(entry)
-            return {
-                "files": [
-                    {**entry, "upload_state": "pending", "uploaded_bytes": 0} for entry in entries
-                ]
-            }
-
-        def complete_collection_upload_session(
-            self,
-            _collection_id: int,
-            *,
-            files_total: int,
-            content_etag: str,
-        ) -> dict[str, object]:
-            nonlocal complete_calls
-            assert files_total == 3
-            assert len(content_etag) == 64
-            with lock:
-                assert uploaded == set(registered) == {"a.bin", "b.bin", "c.bin"}
-                complete_calls += 1
-            return {"collection_id": COLLECTION_ID, "state": "archiving", "files": []}
-
-        def close(self) -> None:
-            return
-
-    api = Api()
-
-    def upload_file(
-        _api: Api,
-        _collection_id: int,
-        _source_path: Path,
-        file_payload: dict[str, object],
-        **_kwargs: object,
-    ) -> None:
-        path = str(file_payload["path"])
-        with lock:
-            attempts[path] = attempts.get(path, 0) + 1
-            already_uploaded = path in uploaded
-        if already_uploaded:
-            return
-        if fail and path in {"a.bin", "c.bin"}:
-            first_pair.wait(timeout=2)
-            if path == "a.bin":
-                raise RuntimeError("worker failed")
-        with lock:
-            uploaded.add(path)
-
-    monkeypatch.setattr(riverhog_main, "_upload_collection_file", upload_file)
-    with pytest.raises(RuntimeError, match="worker failed"):
-        riverhog_main._upload_collection_via_session(
-            api,  # type: ignore[arg-type]
-            "test-upload",
-            ["collection"],
-            root,
-            ingest_source=str(root),
-            wait_mode="staged",
+def test_plain_upload_progress_describes_direct_transport() -> None:
+    line = format_upload_progress_line(
+        CollectionUploadProgressState(
+            collection_id=COLLECTION_ID,
+            phase="uploading",
+            files_uploaded=1,
+            files_total=2,
+            files_hashed=2,
+            files_registered=2,
+            uploaded_bytes=5,
+            bytes_total=10,
+            rate_bytes_per_second=5,
             file_concurrency=2,
-            api_factory=lambda: Api(),  # type: ignore[arg-type]
+            chunk_bytes=5 * 1024 * 1024,
         )
-
-    assert complete_calls == 0
-    assert "c.bin" in uploaded
-    fail = False
-    payload = riverhog_main._upload_collection_via_session(
-        api,  # type: ignore[arg-type]
-        "test-upload",
-        ["collection"],
-        root,
-        ingest_source=str(root),
-        wait_mode="staged",
-        file_concurrency=2,
-        api_factory=lambda: Api(),  # type: ignore[arg-type]
     )
 
-    assert payload["state"] == "archiving"
-    assert complete_calls == 1
-    assert uploaded == {"a.bin", "b.bin", "c.bin"}
-    assert attempts["c.bin"] == 2
-
-
-def test_incremental_progress_does_not_report_a_final_percentage_during_discovery() -> None:
-    progress = CollectionUploadProgress(
-        collection_id=COLLECTION_ID,
-        files_total=0,
-        bytes_total=0,
-        files_hashed=0,
-        files_registered=0,
-        file_concurrency=2,
-        discovery_complete=False,
-    )
-    progress.set_totals(files_total=1, bytes_total=10)
-    progress.hashed_file()
-    progress.registered_file()
-    progress.uploaded(10)
-    progress.complete_file()
-
-    open_line = format_upload_progress_line(progress._state())
-    assert "final total open" in open_line
-    assert "100.0%" not in open_line
-    assert "pipeline=1 discovered/1 hashed/1 registered/1 uploaded" in open_line
-
-    progress.finish_discovery()
-    completed_line = format_upload_progress_line(progress._state())
-    assert "final total open" not in completed_line
-    assert "100.0%" in completed_line
-
-
-def test_upload_concurrency_and_window_defaults_are_bounded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", raising=False)
-    monkeypatch.delenv("RIVERHOG_UPLOAD_FILE_WINDOW", raising=False)
-
-    concurrency = riverhog_main._upload_file_concurrency()
-    assert concurrency == 8
-    assert riverhog_main._upload_file_window(concurrency) == 16
-
-    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "65")
-    with pytest.raises(Exception, match="between 1 and 64"):
-        riverhog_main._upload_file_concurrency()
+    assert "collection upload 1" in line
+    assert "1/2 files" in line
+    assert "5 B / 10 B" in line
+    assert "2 worker(s)" in line

@@ -12,6 +12,12 @@ class CollectionUploadFileIn(RiverhogModel):
     path: str
     bytes: int
     sha256: str
+    raw_parts: CollectionUploadRawPartsIn | None = None
+
+
+class CollectionUploadRawPartsIn(RiverhogModel):
+    part_plaintext_bytes: int = Field(ge=65536)
+    sha256s: list[str] = Field(min_length=1)
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -105,6 +111,13 @@ class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     archive_store: str
     state: Literal["open", "uploading"]
     files: list[CollectionUploadFileOut]
+    volumes: list[CollectionUploadVolumeSummaryOut]
+
+
+class CollectionUploadVolumeSummaryOut(RiverhogModel):
+    volume_id: str
+    sequence: int
+    kind: Literal["pack", "segment"]
 
 
 class ListCollectionUploadSessionFilesResponse(RiverhogModel):
@@ -121,7 +134,7 @@ class CollectionUploadListItemOut(RiverhogModel):
     tags: list[str]
     ingest_source: str | None
     archive_store: str
-    state: Literal["open", "uploading", "archiving", "failed", "canceled", "expired"]
+    state: Literal["open", "uploading", "finalizing", "failed"]
     files: int
     bytes: int
     uploaded_bytes: int
@@ -144,13 +157,23 @@ class ListCollectionUploadSessionsResponse(RiverhogModel):
     uploads: list[CollectionUploadListItemOut]
 
 
+class CollectionUploadLayoutOut(RiverhogModel):
+    pack_source_bytes: int
+    pack_files: int
+    pack_member_bytes: int
+    pack_part_plaintext_bytes: int
+    raw_volume_plaintext_bytes: int
+    raw_part_plaintext_bytes: int
+
+
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: int
     created_at: str
     tags: list[str]
     ingest_source: str | None
     archive_store: str
-    state: Literal["open", "uploading", "archiving", "finalized", "failed", "canceled", "expired"]
+    state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
+    layout: CollectionUploadLayoutOut | None
     files_total: int
     files_pending: int
     files_partial: int
@@ -170,29 +193,32 @@ class CollectionUploadSessionOut(RiverhogModel):
     collection: CollectionSummaryOut | None
 
 
-class CollectionUploadEncryptionOut(RiverhogModel):
-    format: Literal["age-v1-scrypt-resumable"]
-    passphrase: str = Field(json_schema_extra={"writeOnly": True})
-    state: dict[str, object]
-    plaintext_bytes: int
-    ciphertext_bytes: int
-    chunk_bytes: int
-
-
-class CollectionFileUploadSessionOut(RiverhogModel):
+class CollectionUploadUnitSourceOut(RiverhogModel):
     path: str
-    protocol: str
-    upload_url: str
     offset: int
-    length: int
-    checksum_algorithm: str
-    expires_at: str | None
-    encryption: CollectionUploadEncryptionOut
+    bytes: int
+    sha256: str | None = None
 
 
-class CollectionUploadSessionFileUploadOut(CollectionFileUploadSessionOut):
+class CollectionUploadUnitOut(RiverhogModel):
+    unit: int
+    payload_bytes: int
+    plaintext_bytes: int
+    sources: list[CollectionUploadUnitSourceOut]
+    state: Literal["pending", "committed"]
+
+
+class CollectionUploadVolumeOut(RiverhogModel):
+    volume_id: str
+    sequence: int
+    kind: Literal["pack", "segment"]
+    state: Literal["planned", "uploading", "sealed", "failed"]
+    plan_sha256: str
+    plaintext_bytes: int
+    source_bytes: int
+    units: list[CollectionUploadUnitOut]
+
+
+class ListCollectionUploadVolumesResponse(RiverhogModel):
     collection_id: int
-    ingest_source: str | None
-    archive_store: str
-    state: Literal["open", "uploading"]
-    file: CollectionUploadFileOut
+    volumes: list[CollectionUploadVolumeOut]

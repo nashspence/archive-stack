@@ -23,7 +23,7 @@ and do not mean that an object is unused.
   unfamiliar encrypted format.
 - Deletion, movement, renaming, overwriting, lifecycle expiration, storage-class
   changes, and object-version removal are mutations.
-- Use each `archives/ARCHIVE_ID/metadata.yml.age` to identify an opaque archive.
+- Use each `archives/ARCHIVE_ID/metadata.json.age` to identify an opaque archive.
 - Use Riverhog's guarded archive workflows for authorized collection or archive-copy
   retirement. Do not mutate archive objects directly as a shortcut.
 

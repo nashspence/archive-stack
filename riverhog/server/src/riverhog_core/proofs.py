@@ -127,8 +127,8 @@ class CommandProofVerifier:
             raise ProofVerifyError("proof verify command is empty")
         with tempfile.TemporaryDirectory(prefix="riverhog-ots-verify-") as tmp:
             root = Path(tmp)
-            manifest_path = root / "manifest.yml"
-            proof_path = root / "manifest.yml.ots"
+            manifest_path = root / "manifest.json"
+            proof_path = root / "manifest.json.ots"
             manifest_path.write_bytes(manifest_bytes)
             proof_path.write_bytes(proof_bytes)
             proc = subprocess.run(
@@ -152,7 +152,7 @@ class CommandProofUpgrader:
         if not self.command:
             raise ProofUpgradeError("proof upgrade command is empty")
         with tempfile.TemporaryDirectory(prefix="riverhog-ots-upgrade-") as tmp:
-            proof_path = Path(tmp) / "manifest.yml.ots"
+            proof_path = Path(tmp) / "manifest.json.ots"
             proof_path.write_bytes(proof_bytes)
             proc = subprocess.run(
                 [*self.command, "upgrade", str(proof_path)],

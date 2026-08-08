@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -13,22 +15,20 @@ from riverhog_core.catalog_models import (
     ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
     CollectionProofMaturationRecord,
-    RetrievalCacheLeaseRecord,
-    RetrievalCacheObjectRecord,
 )
-from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
-from riverhog_core.runtime_config import RetrievalCacheConfig
+from riverhog_core.ports.archive_ingress_store import MultipartPartReceipt, MultipartUpload
+from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
+from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
-from riverhog_core.services.archive_records import apply_archive_receipt
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from sqlalchemy import select
 
-from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
+    FixtureArchive,
     MemoryArchiveStore,
-    archive_receipt,
     as_archive_store,
+    as_ingress_store,
     seed_archive_copy,
 )
 
@@ -45,7 +45,13 @@ def _service(
     *,
     source_ready: bool = True,
     destination: MemoryArchiveStore | None = None,
-):
+) -> tuple[
+    RuntimeConfig,
+    FixtureArchive,
+    MemoryArchiveStore,
+    MemoryArchiveStore,
+    SqlAlchemyArchiveCopyService,
+]:
     config, archive = seed_archive_copy(path, FILES)
     b2_config = replace(
         config.archive_store("deep"),
@@ -67,43 +73,14 @@ def _service(
                 "b2": as_archive_store(destination),
             },
         ),
-        proof_verifier=FixtureProofVerifier(),
+        ArchiveIngressStoreRegistry(
+            {
+                "deep": as_ingress_store(source),
+                "b2": as_ingress_store(destination),
+            }
+        ),
     )
     return config, archive, source, destination, service
-
-
-class RestoreRequiredDestination(MemoryArchiveStore):
-    def __init__(self) -> None:
-        super().__init__(
-            backend="aws",
-            storage_class="DEEP_ARCHIVE",
-            read_mode="restore_required",
-        )
-
-    def upload_collection_archive(self, **kwargs):
-        tracker = kwargs.get("multipart_tracker")
-        assert tracker is not None
-        uploaded = super().upload_collection_archive(**kwargs)
-        objects = []
-        for current in uploaded.objects:
-            if current.kind not in {"pack", "file", "segment"}:
-                objects.append(current)
-                continue
-            cached = RetrievalCacheReceipt(
-                object_path=f"objects/cache-{current.object_id}",
-                version_id="cache-version",
-                stored_bytes=current.stored_bytes,
-                stored_sha256=current.stored_sha256,
-                cached_at=current.uploaded_at,
-                verified_at=str(current.verified_at),
-            )
-            tracker.save_retrieval_cache(
-                collection_id=kwargs["collection_id"],
-                object_id=current.object_id,
-                receipt=cached,
-            )
-            objects.append(replace(current, retrieval_cache=cached))
-        return replace(uploaded, objects=tuple(objects))
 
 
 def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) -> None:
@@ -119,23 +96,25 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
     assert service.process_due(limit=1) == 1
 
     assert requested["state"] == "requested"
-    assert destination.archive is not None
-    assert destination.multipart_tracker is not None
-    assert destination.archive.manifest_bytes == archive.manifest_bytes
-    assert [current.object_id for current in destination.archive.data_objects] == [
-        current.object_id for current in archive.data_objects
-    ]
-    assert source.prepared == [("data-000000",)]
-    assert source.cleaned == [("data-000000",)]
-    assert destination.verified == [("data-000000", "manifest", "proof")]
+    prefix = "archives/b2/new-copy"
+    assert destination.objects == {
+        f"{prefix}/{relative_path}": content
+        for relative_path, content in archive.stored_objects.items()
+    }
+    assert source.prepared == [("pack-000000000000",)]
+    assert source.cleaned == [("pack-000000000000",)]
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
         assert copy is not None
         assert [(current.kind, current.object_id) for current in copy.objects] == [
-            ("pack", "data-000000"),
+            ("pack", "pack-000000000000"),
             ("manifest", "manifest"),
             ("proof", "proof"),
         ]
+        pack = copy.objects[0]
+        assert [current.path for current in pack.placements] == sorted(FILES)
+        assert pack.plan_sha256 == archive.pack_plan_sha256
+        assert pack.index_sha256 == archive.pack_index_sha256
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None
         assert job.state == "completed"
@@ -170,7 +149,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
     assert events[-1].data["context"] == {"workflow": "promotion"}
 
 
-def test_archive_copy_to_restore_required_store_records_new_archive_cache_lease(
+def test_archive_copy_to_restore_required_store_writes_final_custody(
     tmp_path: Path,
 ) -> None:
     config, archive = seed_archive_copy(
@@ -199,7 +178,11 @@ def test_archive_copy_to_restore_required_store_records_new_archive_cache_lease(
         ),
     )
     source = MemoryArchiveStore(archive, backend="b2")
-    destination = RestoreRequiredDestination()
+    destination = MemoryArchiveStore(
+        backend="aws",
+        storage_class="DEEP_ARCHIVE",
+        read_mode="restore_required",
+    )
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -208,7 +191,12 @@ def test_archive_copy_to_restore_required_store_records_new_archive_cache_lease(
                 "deep": as_archive_store(destination),
             }
         ),
-        proof_verifier=FixtureProofVerifier(),
+        ArchiveIngressStoreRegistry(
+            {
+                "b2": as_ingress_store(source),
+                "deep": as_ingress_store(destination),
+            }
+        ),
     )
     service.create_or_resume(
         COLLECTION_ID,
@@ -219,20 +207,17 @@ def test_archive_copy_to_restore_required_store_records_new_archive_cache_lease(
 
     assert service.process_due(limit=1) == 1
 
-    data_object = archive.data_objects[0]
     with session_scope(make_session_factory(config.database_url)) as session:
-        cached = session.get(
-            RetrievalCacheObjectRecord,
-            ("deep", COLLECTION_ID, data_object.object_id),
-        )
-        lease = session.get(
-            RetrievalCacheLeaseRecord,
-            ("new-archive", "deep", COLLECTION_ID, data_object.object_id),
-        )
+        copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         checkpoints = session.scalars(select(ArchiveCopyObjectUploadRecord)).all()
-        assert cached is not None
-        assert lease is not None
+        assert copy is not None
+        assert copy.storage_class == "DEEP_ARCHIVE"
         assert checkpoints == []
+    assert set(destination.objects) == {
+        "archives/aws/new-copy/volumes/pack-000000000000.tar.age",
+        "archives/aws/new-copy/manifest.json.age",
+        "archives/aws/new-copy/manifest.json.ots.age",
+    }
 
 
 def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
@@ -250,8 +235,8 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None and job.state == "waiting"
-    assert source.prepared == [("data-000000",)]
-    assert destination.archive is None
+    assert source.prepared == [("pack-000000000000",)]
+    assert destination.objects == {}
 
 
 def test_archive_copy_checks_remote_source_outside_its_catalog_transaction(
@@ -265,11 +250,15 @@ def test_archive_copy_checks_remote_source_outside_its_catalog_transaction(
     service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
     original_prepare = source.prepare_archive_objects_read
 
-    def inspect_claim(**kwargs: object):
+    def inspect_claim(
+        *,
+        objects: Sequence[ArchiveObjectIdentity],
+        **kwargs: object,
+    ) -> ArchiveReadStatus:
         with session_scope(make_session_factory(config.database_url)) as session:
             job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
             assert job is not None and job.state == "checking"
-        return original_prepare(**kwargs)
+        return original_prepare(objects=objects, **kwargs)
 
     monkeypatch.setattr(source, "prepare_archive_objects_read", inspect_claim)
 
@@ -288,16 +277,20 @@ def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
     service.create_or_resume(COLLECTION_ID, destination_store="b2", initiator=INITIATOR)
     original_prepare = source.prepare_archive_objects_read
 
-    def cancel_during_check(**kwargs: object):
+    def cancel_during_check(
+        *,
+        objects: Sequence[ArchiveObjectIdentity],
+        **kwargs: object,
+    ) -> ArchiveReadStatus:
         canceling = service.cancel(COLLECTION_ID, destination_store="b2")
         assert canceling["state"] == "canceling"
-        return original_prepare(**kwargs)
+        return original_prepare(objects=objects, **kwargs)
 
     monkeypatch.setattr(source, "prepare_archive_objects_read", cancel_during_check)
 
     assert service.process_due(limit=1) == 1
     assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
-    assert source.cleaned == [("data-000000",)]
+    assert source.cleaned == [("pack-000000000000",)]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
 
 
@@ -314,7 +307,7 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
 
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
-    assert source.cleaned == [("data-000000",)]
+    assert source.cleaned == [("pack-000000000000",)]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     filtered = service.list(
         page=1,
@@ -356,13 +349,16 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     release = threading.Event()
 
     class BlockingDestination(MemoryArchiveStore):
-        def upload_collection_archive(self, **kwargs):
+        def upload_part(
+            self,
+            *,
+            upload: MultipartUpload,
+            number: int,
+            content: bytes,
+        ) -> MultipartPartReceipt:
             started.set()
             assert release.wait(timeout=5)
-            tracker = kwargs["multipart_tracker"]
-            assert tracker is not None
-            tracker.require_active(collection_id=kwargs["collection_id"])
-            return super().upload_collection_archive(**kwargs)
+            return super().upload_part(upload=upload, number=number, content=content)
 
     destination = BlockingDestination(backend="b2")
     config, _archive, _source, _destination, service = _service(
@@ -383,7 +379,7 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     canceled = service.get(COLLECTION_ID, destination_store="b2")
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
-    assert destination.archive is None
+    assert destination.objects == {}
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is None
@@ -412,32 +408,3 @@ def test_startup_resumes_a_claimed_archive_copy(
         assert job is not None
         assert job.state == "requested"
         assert job.next_attempt_at is not None
-
-
-@pytest.mark.parametrize(
-    ("replacement", "message"),
-    [
-        ({"sha256": "f" * 64}, "does not match its manifest"),
-        ({"verified_at": None}, "is not verified"),
-        ({"object_path": "archives/other/data.age"}, "outside its copy"),
-    ],
-)
-def test_archive_receipt_requires_exact_verified_owned_objects(
-    tmp_path: Path,
-    replacement: dict[str, object],
-    message: str,
-) -> None:
-    _config, archive = seed_archive_copy(
-        tmp_path / "catalog.sqlite3",
-        FILES,
-    )
-    receipt = archive_receipt(archive, prefix="archives/b2/opaque-copy")
-    changed = replace(receipt.objects[0], **replacement)
-    mismatched = replace(receipt, objects=(changed, *receipt.objects[1:]))
-    copy = CollectionArchiveCopyRecord(collection_id=COLLECTION_ID, store="b2")
-
-    with pytest.raises(ValueError, match=message):
-        apply_archive_receipt(copy, mismatched, archive)
-
-    assert copy.state is None or copy.state == "pending"
-    assert copy.objects == []

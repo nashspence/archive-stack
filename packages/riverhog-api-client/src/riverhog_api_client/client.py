@@ -4,7 +4,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Self
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 import httpx
@@ -26,11 +26,8 @@ from riverhog_protocol.errors import (
     Unauthorized,
 )
 
-from riverhog_api_client.tus import TusHttpClient
-
 _HTTP_TIMEOUT_SECONDS = 300.0
 _CANCEL_TIMEOUT_SECONDS = 1800.0
-_UPLOAD_TIMEOUT_SECONDS = 300.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -234,15 +231,6 @@ class _HttpApiClient:
 class ApiClient(_HttpApiClient):
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
-        self.upload_base_url = os.getenv("RIVERHOG_UPLOAD_BASE_URL", "").rstrip("/") or None
-        self.upload_http2 = _bool_env("RIVERHOG_UPLOAD_HTTP2", False)
-        self._upload_client: TusHttpClient | None = None
-
-    def close(self) -> None:
-        super().close()
-        if self._upload_client is not None:
-            self._upload_client.close()
-            self._upload_client = None
 
     def list_lifecycle_events(
         self,
@@ -256,36 +244,6 @@ class ApiClient(_HttpApiClient):
             params={"after": after or "0", "limit": limit},
         )
         return EventPage.model_validate(payload)
-
-    def _upload_headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if self.host_header:
-            headers["Host"] = self.host_header
-        return headers
-
-    def tus_client(self) -> TusHttpClient:
-        if self._upload_client is None:
-            self._upload_client = TusHttpClient(
-                headers=self._upload_headers(),
-                timeout_seconds=_timeout_seconds(
-                    "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
-                    _UPLOAD_TIMEOUT_SECONDS,
-                ),
-                http2=self.upload_http2,
-                url_rewriter=self._upload_url,
-            )
-        return self._upload_client
-
-    def _upload_url(self, upload_url: str) -> str:
-        if self.upload_base_url is None:
-            return upload_url
-        parsed = urlsplit(upload_url)
-        if not parsed.scheme or not parsed.netloc:
-            return upload_url
-        base = urlsplit(self.upload_base_url)
-        return urlunsplit((base.scheme, base.netloc, parsed.path, parsed.query, parsed.fragment))
 
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
         response = self._request(
@@ -377,28 +335,6 @@ class ApiClient(_HttpApiClient):
         result = self._download(
             f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content?"
             f"collection_id={str(collection_id)}&path={quote(path, safe='')}",
-            output,
-            expected_bytes=expected_bytes,
-            expected_sha256=expected_sha256,
-            progress=progress,
-        )
-        return int(result)
-
-    def download_retrieval_object(
-        self,
-        job_id: str,
-        *,
-        collection_id: int,
-        object_id: str,
-        output: Path,
-        expected_bytes: int,
-        expected_sha256: str,
-        progress: DownloadProgress | None = None,
-    ) -> int:
-        result = self._download(
-            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/objects/"
-            f"{quote(object_id, safe='')}/content?"
-            f"collection_id={str(collection_id)}",
             output,
             expected_bytes=expected_bytes,
             expected_sha256=expected_sha256,
@@ -507,24 +443,53 @@ class ApiClient(_HttpApiClient):
     def get_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
         return self._json("GET", f"/v1/collection-upload-sessions/{str(collection_id)}")
 
-    def create_or_resume_collection_file_upload(
-        self, collection_id: int, path: str
-    ) -> dict[str, Any]:
+    def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, Any]:
         return self._json(
-            "POST",
-            f"/v1/collection-upload-sessions/{str(collection_id)}/files/"
-            f"{quote(path, safe='/')}/upload",
+            "GET",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/volumes",
         )
 
-    def create_or_resume_registered_collection_file_upload(
+    def get_collection_upload_session_volume(
         self,
         collection_id: int,
-        file: Mapping[str, Any],
+        volume_id: str,
     ) -> dict[str, Any]:
         return self._json(
-            "POST",
-            f"/v1/collection-upload-sessions/{str(collection_id)}/files/upload",
-            json=dict(file),
+            "GET",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/volumes/"
+            f"{quote(volume_id, safe='')}",
+        )
+
+    def get_collection_upload_session_unit(
+        self,
+        collection_id: int,
+        volume_id: str,
+        unit: int,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/volumes/"
+            f"{quote(volume_id, safe='')}/units/{str(unit)}",
+        )
+
+    def put_collection_upload_session_unit(
+        self,
+        collection_id: int,
+        volume_id: str,
+        unit: int,
+        *,
+        plan_sha256: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/volumes/"
+            f"{quote(volume_id, safe='')}/units/{str(unit)}",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "If-Match": f'"{plan_sha256}"',
+            },
+            content=content,
         )
 
     def search(
@@ -1016,22 +981,3 @@ class ApiClient(_HttpApiClient):
                 "challenge": challenge,
             },
         )
-
-    def append_upload_chunk(
-        self,
-        upload_url: str,
-        *,
-        offset: int,
-        checksum_algorithm: str,
-        content: bytes,
-    ) -> dict[str, Any]:
-        next_offset = self.tus_client().patch_chunk(
-            upload_url,
-            offset=offset,
-            checksum_algorithm=checksum_algorithm,
-            content=content,
-        )
-        return {
-            "offset": next_offset,
-            "expires_at": None,
-        }

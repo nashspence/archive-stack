@@ -8,7 +8,6 @@ from typing import Protocol
 
 class RiverhogAdapterHealth(Protocol):
     enabled: bool
-    worker_count: int
 
     @property
     def background_running(self) -> bool: ...

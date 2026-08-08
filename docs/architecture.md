@@ -13,8 +13,9 @@ executable contracts; this document records only the ownership and authority mod
 - A component's relational database is its durable operational state and schema authority.
   Riverhog's catalog records logical identity, placement, and workflows, but is not required
   to recover a known archive copy.
-- Ingress storage is temporary client-encrypted staging. A retrieval cache contains leased,
-  exact archive ciphertext and is rebuildable from archive stores.
+- Ingress writes server-encrypted units directly to immutable final archive keys. A
+  retrieval cache contains leased, exact archive ciphertext and is rebuildable from archive
+  stores.
 - A collection is an immutable logical namespace and deletion unit. Tags are mutable
   catalog metadata. Applications own desired state and materializations derived through
   public APIs.

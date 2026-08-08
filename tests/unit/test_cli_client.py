@@ -159,13 +159,13 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     ]
 
 
-def test_retrieval_object_download_uses_the_planned_object_endpoint(
+def test_retrieval_file_download_uses_the_logical_file_endpoint(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     client = ApiClient(base_url="http://example.invalid")
     calls: list[tuple[str, Path]] = []
-    output = tmp_path / "object"
+    output = tmp_path / "document.txt"
 
     def download(path: str, destination: Path, **kwargs: object) -> int:
         calls.append((path, destination))
@@ -174,10 +174,10 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
 
     monkeypatch.setattr(client, "_download", download)
 
-    result = client.download_retrieval_object(
+    result = client.download_retrieval_file(
         "job-id",
         collection_id=42,
-        object_id="data-000000",
+        path="docs/document.txt",
         output=output,
         expected_bytes=42,
         expected_sha256="a" * 64,
@@ -186,37 +186,41 @@ def test_retrieval_object_download_uses_the_planned_object_endpoint(
     assert result == 42
     assert calls == [
         (
-            "/v1/retrieval-jobs/job-id/objects/data-000000/content?collection_id=42",
+            "/v1/retrieval-jobs/job-id/content?collection_id=42&path=docs%2Fdocument.txt",
             output,
         )
     ]
 
 
-def test_retrieval_object_download_streams_and_verifies_planned_metadata(
+def test_retrieval_file_download_streams_and_verifies_catalog_identity(
     tmp_path: Path,
 ) -> None:
     content = b"retrieved archive object"
     sha256 = hashlib.sha256(content).hexdigest()
 
     def handle(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/retrieval-jobs/job-id/objects/data-000000/content"
+        assert request.url.path == "/v1/retrieval-jobs/job-id/content"
+        assert dict(request.url.params) == {
+            "collection_id": "42",
+            "path": "docs/document.txt",
+        }
         return httpx.Response(
             200,
             content=content,
             headers={"Content-Length": str(len(content)), "ETag": f'"{sha256}"'},
         )
 
-    output = tmp_path / "object"
+    output = tmp_path / "document.txt"
     client = ApiClient(base_url="http://riverhog.test")
     client._download_client = httpx.Client(
         base_url=client.base_url,
         transport=httpx.MockTransport(handle),
     )
     try:
-        result = client.download_retrieval_object(
+        result = client.download_retrieval_file(
             "job-id",
             collection_id=42,
-            object_id="data-000000",
+            path="docs/document.txt",
             output=output,
             expected_bytes=len(content),
             expected_sha256=sha256,
@@ -329,11 +333,27 @@ def test_client_manages_explicit_tags() -> None:
     ]
 
 
-def test_archive_upload_transport_defaults_to_http_1_1(monkeypatch) -> None:
-    monkeypatch.delenv("RIVERHOG_UPLOAD_HTTP2", raising=False)
-    monkeypatch.delenv("RIVERHOG_HTTP2", raising=False)
+def test_collection_upload_unit_uses_the_canonical_content_contract() -> None:
+    client = RecordingClient()
 
-    client = ApiClient(base_url="https://example.invalid")
+    client.put_collection_upload_session_unit(
+        42,
+        "pack-000000000000",
+        3,
+        plan_sha256="a" * 64,
+        content=b"source bytes",
+    )
 
-    assert client.http2 is True
-    assert client.upload_http2 is False
+    assert client.calls == [
+        (
+            "PUT",
+            "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/3",
+            {
+                "headers": {
+                    "Content-Type": "application/octet-stream",
+                    "If-Match": '"' + "a" * 64 + '"',
+                },
+                "content": b"source bytes",
+            },
+        )
+    ]

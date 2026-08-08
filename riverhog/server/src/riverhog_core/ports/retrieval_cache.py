@@ -35,4 +35,13 @@ class RetrievalCache(Protocol):
         expected_sha256: str,
     ) -> Iterator[bytes]: ...
 
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]: ...
+
     def delete(self, *, object_path: str, version_id: str | None) -> None: ...

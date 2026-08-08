@@ -9,7 +9,6 @@ from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
     DEV_ARCHIVE_PASSPHRASE,
     ArchiveStoreConfig,
-    IngressStoreConfig,
     RetrievalCacheConfig,
     RuntimeConfig,
     load_runtime_config,
@@ -42,55 +41,7 @@ def test_restore_required_store_requires_retrieval_cache(tmp_path: Path) -> None
         )
 
 
-@pytest.mark.parametrize(
-    ("ingress_prefix", "cache_prefix"),
-    (
-        ("", ""),
-        ("work", "work"),
-        ("work", "work/retrieval"),
-        ("work/ingress", "work"),
-    ),
-)
-def test_ingress_and_retrieval_cache_namespaces_must_not_overlap(
-    tmp_path: Path,
-    ingress_prefix: str,
-    cache_prefix: str,
-) -> None:
-    ingress = IngressStoreConfig(
-        endpoint_url="http://127.0.0.1:9000",
-        region="us-east-1",
-        bucket="work",
-        access_key_id="minioadmin",
-        secret_access_key="minioadmin",
-        force_path_style=True,
-        prefix=ingress_prefix,
-    )
-    cache = RetrievalCacheConfig(
-        endpoint_url="http://127.0.0.1:9000/",
-        region="us-east-1",
-        bucket="work",
-        access_key_id="minioadmin",
-        secret_access_key="minioadmin",
-        force_path_style=True,
-        prefix=cache_prefix,
-    )
-
-    with pytest.raises(ValueError, match="must use non-overlapping S3 namespaces"):
-        _config(tmp_path, ingress_store=ingress, retrieval_cache=cache)
-
-
-def test_ingress_and_retrieval_cache_can_share_a_bucket_with_disjoint_prefixes(
-    tmp_path: Path,
-) -> None:
-    ingress = IngressStoreConfig(
-        endpoint_url="http://127.0.0.1:9000",
-        region="us-east-1",
-        bucket="work",
-        access_key_id="minioadmin",
-        secret_access_key="minioadmin",
-        force_path_style=True,
-        prefix="ingress",
-    )
+def test_retrieval_cache_prefix_is_normalized(tmp_path: Path) -> None:
     cache = RetrievalCacheConfig(
         endpoint_url="http://127.0.0.1:9000",
         region="us-east-1",
@@ -98,12 +49,11 @@ def test_ingress_and_retrieval_cache_can_share_a_bucket_with_disjoint_prefixes(
         access_key_id="minioadmin",
         secret_access_key="minioadmin",
         force_path_style=True,
-        prefix="retrieval",
+        prefix="/retrieval//",
     )
 
-    config = _config(tmp_path, ingress_store=ingress, retrieval_cache=cache)
+    config = _config(tmp_path, retrieval_cache=cache)
 
-    assert config.ingress_store.prefix == "ingress"
     assert config.retrieval_cache is not None
     assert config.retrieval_cache.prefix == "retrieval"
 
@@ -158,20 +108,6 @@ def test_load_runtime_config_parses_archive_multipart_safeguards(
     assert config.archive_multipart_sweep_interval == timedelta(hours=2)
 
 
-def test_load_runtime_config_parses_ingress_cleanup_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY", "12")
-    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY", "7m")
-    monkeypatch.setenv("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL", "15s")
-
-    config = load_runtime_config()
-
-    assert config.ingress_cleanup_concurrency == 12
-    assert config.ingress_cleanup_retry_delay == timedelta(minutes=7)
-    assert config.ingress_cleanup_sweep_interval == timedelta(seconds=15)
-
-
 def test_load_runtime_config_parses_lifecycle_event_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,18 +159,6 @@ def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatc
     monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
     config = load_runtime_config()
     assert config.database_url == DEFAULT_DATABASE_URL
-
-
-def test_load_runtime_config_parses_upload_lifecycle_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_TTL", "12h")
-    monkeypatch.setenv("RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL", "45s")
-
-    config = load_runtime_config()
-
-    assert config.upload_file_ttl == timedelta(hours=12)
-    assert config.upload_expiry_sweep_interval == timedelta(seconds=45)
 
 
 def test_load_runtime_config_parses_retrieval_settings(

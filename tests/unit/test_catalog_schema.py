@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
+    CollectionArchiveObjectUploadRecord,
     CollectionFileRecord,
     CollectionUploadFileRecord,
 )
@@ -17,8 +18,11 @@ from sqlalchemy.orm import DeclarativeBase
         (CollectionArchiveObjectRecord, "plaintext_bytes"),
         (CollectionArchiveObjectRecord, "stored_bytes"),
         (CollectionUploadFileRecord, "bytes"),
-        (CollectionUploadFileRecord, "ingress_bytes"),
-        (CollectionUploadFileRecord, "ingress_uploaded_bytes"),
+        (CollectionUploadFileRecord, "raw_part_plaintext_bytes"),
+        (CollectionArchiveObjectUploadRecord, "plaintext_bytes"),
+        (CollectionArchiveObjectUploadRecord, "source_bytes"),
+        (CollectionArchiveObjectUploadRecord, "unit_plaintext_bytes"),
+        (CollectionArchiveObjectUploadRecord, "uploaded_bytes"),
     ],
 )
 def test_catalog_byte_columns_use_bigint(

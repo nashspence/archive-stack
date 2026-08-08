@@ -4,7 +4,6 @@ import hashlib
 import json
 from collections.abc import Iterable, Sequence
 
-import yaml
 from riverhog_protocol.manifest import collection_content_etag
 
 
@@ -17,7 +16,7 @@ def collection_record_manifest(
     files: Iterable[tuple[str, int, str]],
 ) -> tuple[dict[str, object], str]:
     payload: dict[str, object] = {
-        "format": "riverhog-collection/v2",
+        "format": "riverhog-collection/v1",
         "collection": collection_id,
         "content_etag": content_etag,
         "metadata_revision": metadata_revision,
@@ -39,7 +38,7 @@ def collection_metadata_manifest(
     tags: Sequence[str],
     updated_at: str,
 ) -> bytes:
-    return yaml.safe_dump(
+    return _canonical_json(
         {
             "format": "riverhog-collection-metadata/v1",
             "collection": collection_id,
@@ -48,10 +47,8 @@ def collection_metadata_manifest(
             "metadata_revision": metadata_revision,
             "tags": sorted(tags),
             "updated_at": updated_at,
-        },
-        sort_keys=False,
-        allow_unicode=True,
-    ).encode("utf-8")
+        }
+    )
 
 
 def _canonical_json(payload: object) -> bytes:

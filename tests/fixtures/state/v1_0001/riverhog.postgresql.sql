@@ -1,4 +1,4 @@
--- Immutable Riverhog PostgreSQL v1.0 database fixture. Add a new fixture for later baselines; do not edit.
+-- Riverhog PostgreSQL v1 fixture for the current unreleased v1 contract.
 CREATE TABLE state_schema_revision (version_num VARCHAR(32) NOT NULL PRIMARY KEY);
 INSERT INTO state_schema_revision (version_num) VALUES ('v1_0001');
 CREATE TABLE app_keys (
@@ -41,21 +41,21 @@ CREATE TABLE collection_uploads (
 	initiated_by_app VARCHAR NOT NULL,
 	initiated_by_key_id VARCHAR,
 	event_context_json TEXT,
-	state VARCHAR,
+	state VARCHAR NOT NULL,
 	archive_store VARCHAR NOT NULL,
-	opened_at VARCHAR,
-	last_activity_at VARCHAR,
+	opened_at VARCHAR NOT NULL,
+	last_activity_at VARCHAR NOT NULL,
 	closed_at VARCHAR,
-	archive_phase VARCHAR,
-	archive_phase_updated_at VARCHAR,
-	archive_attempt_count INTEGER,
+	archive_phase VARCHAR NOT NULL,
+	archive_phase_updated_at VARCHAR NOT NULL,
+	archive_attempt_count INTEGER NOT NULL,
 	archive_next_attempt_at VARCHAR,
 	archive_last_attempt_at VARCHAR,
 	archive_failure VARCHAR,
-	archive_storage_prefix VARCHAR,
-	archive_receipt_json VARCHAR,
+	archive_storage_prefix VARCHAR NOT NULL,
 	collection_manifest_bytes_b64 VARCHAR,
 	collection_manifest_proof_bytes_b64 VARCHAR,
+	planner_checkpoint_json TEXT NOT NULL,
 	PRIMARY KEY (collection_id)
 );
 CREATE TABLE collections (
@@ -71,18 +71,6 @@ CREATE TABLE collections (
 	created_at VARCHAR NOT NULL,
 	PRIMARY KEY (id),
 	CONSTRAINT uq_collections_application_idempotency_key UNIQUE (created_by_app, creation_idempotency_key)
-);
-CREATE TABLE ingress_cleanup (
-	target_path VARCHAR NOT NULL,
-	collection_id BIGINT NOT NULL,
-	ingress_upload_id VARCHAR NOT NULL,
-	state VARCHAR NOT NULL,
-	attempt_count INTEGER NOT NULL,
-	created_at VARCHAR NOT NULL,
-	next_attempt_at VARCHAR NOT NULL,
-	last_attempt_at VARCHAR,
-	last_error TEXT,
-	PRIMARY KEY (target_path)
 );
 CREATE TABLE lifecycle_events (
 	sequence SERIAL NOT NULL,
@@ -163,24 +151,24 @@ CREATE TABLE collection_archive_copies (
 CREATE TABLE collection_archive_object_uploads (
 	collection_id BIGINT NOT NULL,
 	object_id VARCHAR NOT NULL,
+	sequence INTEGER NOT NULL,
 	kind VARCHAR NOT NULL,
+	relative_path VARCHAR NOT NULL,
 	object_path VARCHAR NOT NULL,
 	plaintext_bytes BIGINT NOT NULL,
-	sha256 VARCHAR(64) NOT NULL,
-	multipart_upload_id VARCHAR,
-	multipart_part_size BIGINT,
-	multipart_content_length BIGINT,
-	multipart_parts_json VARCHAR,
-	encryption_state_json VARCHAR,
+	source_bytes BIGINT NOT NULL,
+	unit_plaintext_bytes BIGINT NOT NULL,
+	plan_json TEXT NOT NULL,
+	plan_sha256 VARCHAR(64) NOT NULL,
+	state VARCHAR NOT NULL,
+	checkpoint_json TEXT,
+	sealed_receipt_json TEXT,
+	failure TEXT,
 	uploaded_bytes BIGINT NOT NULL,
 	uploaded_parts INTEGER NOT NULL,
 	total_parts INTEGER NOT NULL,
-	cache_object_path VARCHAR,
-	cache_version_id VARCHAR,
-	cache_stored_bytes BIGINT,
-	cache_stored_sha256 VARCHAR(64),
-	cache_cached_at VARCHAR,
-	cache_verified_at VARCHAR,
+	updated_at VARCHAR NOT NULL,
+	sealed_at VARCHAR,
 	PRIMARY KEY (collection_id, object_id),
 	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE
 );
@@ -208,13 +196,8 @@ CREATE TABLE collection_upload_files (
 	file_order INTEGER NOT NULL,
 	bytes BIGINT NOT NULL,
 	sha256 VARCHAR(64) NOT NULL,
-	ingress_bytes BIGINT NOT NULL,
-	ingress_uploaded_bytes BIGINT NOT NULL,
-	ingress_secret_envelope TEXT NOT NULL,
-	ingress_state_json TEXT NOT NULL,
-	ingress_upload_id VARCHAR NOT NULL,
-	upload_expires_at VARCHAR,
-	tus_url VARCHAR,
+	raw_part_plaintext_bytes BIGINT,
+	raw_digest_manifest_json TEXT,
 	PRIMARY KEY (collection_id, path),
 	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE
 );
@@ -295,8 +278,13 @@ CREATE TABLE collection_archive_objects (
 	object_path VARCHAR NOT NULL,
 	plaintext_bytes BIGINT NOT NULL,
 	stored_bytes BIGINT NOT NULL,
-	sha256 VARCHAR(64) NOT NULL,
-	stored_sha256 VARCHAR(64) NOT NULL,
+	sha256 VARCHAR(64),
+	stored_sha256 VARCHAR(64),
+	version_id VARCHAR,
+	age_state_json TEXT,
+	part_receipts_json TEXT,
+	plan_sha256 VARCHAR(64),
+	index_sha256 VARCHAR(64),
 	backend VARCHAR NOT NULL,
 	storage_class VARCHAR NOT NULL,
 	uploaded_at VARCHAR NOT NULL,
@@ -350,21 +338,13 @@ CREATE TABLE archive_copy_object_uploads (
 	kind VARCHAR NOT NULL,
 	object_path VARCHAR NOT NULL,
 	plaintext_bytes BIGINT NOT NULL,
-	sha256 VARCHAR(64) NOT NULL,
+	sha256 VARCHAR(64),
 	multipart_upload_id VARCHAR,
-	multipart_part_size BIGINT,
 	multipart_content_length BIGINT,
 	multipart_parts_json VARCHAR,
-	encryption_state_json VARCHAR,
 	uploaded_bytes BIGINT NOT NULL,
 	uploaded_parts INTEGER NOT NULL,
 	total_parts INTEGER NOT NULL,
-	cache_object_path VARCHAR,
-	cache_version_id VARCHAR,
-	cache_stored_bytes BIGINT,
-	cache_stored_sha256 VARCHAR(64),
-	cache_cached_at VARCHAR,
-	cache_verified_at VARCHAR,
 	PRIMARY KEY (collection_id, destination_store, object_id),
 	FOREIGN KEY(collection_id, destination_store) REFERENCES archive_copy_jobs (collection_id, destination_store) ON DELETE CASCADE
 );
@@ -375,6 +355,7 @@ CREATE TABLE collection_archive_file_objects (
 	sequence INTEGER NOT NULL,
 	object_id VARCHAR NOT NULL,
 	file_offset BIGINT NOT NULL,
+	object_offset BIGINT NOT NULL,
 	bytes BIGINT NOT NULL,
 	member VARCHAR,
 	PRIMARY KEY (collection_id, store, path, sequence),
@@ -419,8 +400,6 @@ CREATE INDEX ix_app_keys_app ON app_keys (app, id);
 CREATE UNIQUE INDEX ux_app_keys_token_sha256 ON app_keys (token_sha256);
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence);
 CREATE UNIQUE INDEX ux_collection_uploads_application_idempotency_key ON collection_uploads (initiated_by_app, idempotency_key);
-CREATE INDEX ix_ingress_cleanup_due ON ingress_cleanup (state, next_attempt_at, target_path);
-CREATE UNIQUE INDEX ux_ingress_cleanup_upload_id ON ingress_cleanup (ingress_upload_id);
 CREATE INDEX ix_lifecycle_events_context_expiry ON lifecycle_events (context_expires_at);
 CREATE INDEX ix_lifecycle_events_owner_sequence ON lifecycle_events (owner_app, sequence);
 CREATE INDEX ix_lifecycle_events_owner_subject_context ON lifecycle_events (owner_app, subject, context_expires_at);
@@ -429,9 +408,10 @@ CREATE INDEX ix_app_key_access_grants_permission ON app_key_access_grants (permi
 CREATE INDEX ix_app_key_access_grants_resource ON app_key_access_grants (resource, permission, key_id);
 CREATE INDEX ix_archive_download_reservations_expiry ON archive_download_reservations (store, expires_at);
 CREATE INDEX ix_catalog_event_tags_visibility ON catalog_event_tags (phase, tag_id, sequence);
+CREATE UNIQUE INDEX ux_collection_archive_object_uploads_sequence ON collection_archive_object_uploads (collection_id, sequence);
 CREATE INDEX ix_collection_tags_tag ON collection_tags (tag_id, collection_id);
 CREATE INDEX idx_collection_upload_files_collection_order ON collection_upload_files (collection_id, file_order);
-CREATE UNIQUE INDEX ux_collection_upload_files_ingress_id ON collection_upload_files (ingress_upload_id);
+CREATE UNIQUE INDEX ux_collection_upload_files_order ON collection_upload_files (collection_id, file_order);
 CREATE INDEX ix_collection_upload_tags_tag ON collection_upload_tags (tag_id, collection_id);
 CREATE INDEX ix_key_download_reservations_expiry ON key_download_reservations (expires_at, key_id);
 CREATE INDEX ix_key_download_reservations_job ON key_download_reservations (job_id, kind);
@@ -461,41 +441,54 @@ INSERT INTO collections (
     id, creation_idempotency_key, content_etag, record_etag, metadata_revision,
     metadata_updated_at, ingest_source, created_by_app, created_by_key_id, created_at
 ) VALUES (
-    1, 'fixture-collection', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 1,
-    '2026-01-01T00:00:00.000000Z', 'fixture', 'fixture-client', 'fixture-key',
+    1, 'fixture-collection',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    1, '2026-01-01T00:00:00.000000Z', 'fixture', 'fixture-client', 'fixture-key',
     '2026-01-01T00:00:00.000000Z'
 );
 INSERT INTO collection_files (collection_id, path, bytes, sha256)
-VALUES (1, 'notes/fixture.txt', 12, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc');
+VALUES (1, 'notes/fixture.txt', 12, '5cb72f90e968922d30557d0af8f719d21f61792becaa87eb32477767d739dc0b');
 INSERT INTO collection_archive_copies (
     collection_id, store, state, archive_storage_prefix, backend, storage_class,
     last_uploaded_at, last_verified_at
 ) VALUES (
-    1, 'fixture-archive', 'ready', 'collections/1', 's3', 'STANDARD',
+    1, 'fixture-archive', 'uploaded', 'archives/fixture-archive-id', 's3', 'STANDARD',
     '2026-01-01T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z'
 );
 INSERT INTO collection_archive_objects (
     collection_id, store, object_id, object_order, kind, object_path,
-    plaintext_bytes, stored_bytes, sha256, stored_sha256, backend, storage_class,
-    uploaded_at, verified_at
+    plaintext_bytes, stored_bytes, sha256, stored_sha256, version_id,
+    age_state_json, part_receipts_json, plan_sha256, index_sha256,
+    backend, storage_class, uploaded_at, verified_at
 ) VALUES (
-    1, 'fixture-archive', 'data-000000', 0, 'pack',
-    'collections/1/data-000000.age', 12, 128, 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 's3', 'STANDARD',
+    1, 'fixture-archive', 'segment-000000000000', 0, 'segment',
+    'archives/fixture-archive-id/volumes/segment-000000000000.age',
+    12, 193, NULL, NULL, 'fixture-version',
+    '{"format":"age-v1-scrypt-resumable","header_b64":"YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IHNjcnlwdCBBZ0lDQWdJQ0FnSUNBZ0lDQWdJQ0FnIDEKNjEyMGp3bzZEMGtEbXltOXMrdkNRcWNibnQ4bkc0U3kzMUlIbko3SExNRQotLS0gWDRWN2kwSnNmejZjaUNPTlVES2ZvUzdtTFdGMmc0aWx3V0x3Qm9acVZYQQo","payload_nonce_b64":"AwMDAwMDAwMDAwMDAwMDAw","plaintext_size":12}', '[{"etag":"e475137133e22134d3410b682f082ae214768f3caf8607519ef6702691caeca5","number":1,"plaintext_bytes":12,"plaintext_sha256":"5cb72f90e968922d30557d0af8f719d21f61792becaa87eb32477767d739dc0b","plaintext_start":0,"stored_bytes":193,"stored_sha256":"e475137133e22134d3410b682f082ae214768f3caf8607519ef6702691caeca5"}]',
+    'a78a447154425433f992bd67e82acdbfe7aa8636fa5fda2403e86c193304c920', NULL, 's3', 'STANDARD',
     '2026-01-01T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z'
+);
+INSERT INTO collection_archive_file_objects (
+    collection_id, store, path, sequence, object_id, file_offset, object_offset, bytes, member
+) VALUES (
+    1, 'fixture-archive', 'notes/fixture.txt', 0, 'segment-000000000000',
+    0, 0, 12, NULL
 );
 INSERT INTO retrieval_cache_objects (
     source_store, collection_id, object_id, object_path, version_id, stored_bytes,
     stored_sha256, cached_at, verified_at, state
 ) VALUES (
-    'fixture-archive', 1, 'data-000000', 'cache/1/data-000000.age', 'fixture-version',
-    128, 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', '2026-01-01T00:00:00.000000Z',
-    '2026-01-01T00:00:00.000000Z', 'ready'
+    'fixture-archive', 1, 'segment-000000000000',
+    'cache/fixture-archive/1/segment-000000000000', 'fixture-cache-version',
+    193, 'e475137133e22134d3410b682f082ae214768f3caf8607519ef6702691caeca5',
+    '2026-01-01T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z', 'ready'
 );
 INSERT INTO retrieval_cache_leases (
     owner, source_store, collection_id, object_id, expires_at
 ) VALUES (
-    'fixture-job', 'fixture-archive', 1, 'data-000000', '2026-02-01T00:00:00.000000Z'
+    'fixture-job', 'fixture-archive', 1, 'segment-000000000000',
+    '2026-02-01T00:00:00.000000Z'
 );
 INSERT INTO lifecycle_events (
     sequence, event_id, owner_app, subject, event_json, context_json

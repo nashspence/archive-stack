@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from riverhog_api_client.ingress import DEFAULT_INGRESS_PART_BYTES
 from riverhog_core.runtime_config import load_runtime_config
 from yaml.nodes import MappingNode, Node, SequenceNode
 
@@ -118,16 +117,6 @@ def _read_log_lines(log_path: Path) -> list[str]:
     if not log_path.exists():
         return []
     return log_path.read_text().splitlines()
-
-
-def test_checked_in_compose_streams_tusd_into_the_ingress_object_store() -> None:
-    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
-
-    assert '- "-s3-bucket"' in compose_text
-    assert '- "-s3-endpoint"' in compose_text
-    assert '- "${RIVERHOG_TUSD_NETWORK_TIMEOUT:-10m}"' in compose_text
-    assert f'- "${{RIVERHOG_UPLOAD_CHUNK_BYTES:-{DEFAULT_INGRESS_PART_BYTES}}}"' in compose_text
-    assert '"pre-create,post-finish"' in compose_text
 
 
 def _assert_unique_yaml_mapping_keys(node: Node) -> None:
@@ -239,9 +228,7 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
     topology_fields = {
         "database_url",
         "public_base_url",
-        "ingress_store",
         "retrieval_cache",
-        "tusd_base_url",
     }
     archive_topology_fields = {
         "access_key_id",
@@ -286,20 +273,23 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         "RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE",
         "RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL",
-        "RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
+        "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY",
+        "RIVERHOG_ARCHIVE_UPLOAD_REQUEST_CONCURRENCY",
         "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE",
         "RIVERHOG_ARCHIVE_PASSPHRASE",
         "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
-        "RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
         "RIVERHOG_BOOTSTRAP_TOKEN",
         "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
-        "RIVERHOG_INGRESS_ENDPOINT_URL",
-        "RIVERHOG_INGRESS_BUCKET",
-        "RIVERHOG_INGRESS_SECRET_KEY",
-        "RIVERHOG_INGRESS_CLEANUP_CONCURRENCY",
-        "RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY",
-        "RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL",
+        "RIVERHOG_UPLOAD_FILE_CONCURRENCY",
+        "RIVERHOG_UPLOAD_FILE_WINDOW",
+        "RIVERHOG_UPLOAD_CHUNK_BYTES",
+        "RIVERHOG_INGRESS_VOLUME_CONCURRENCY",
+        "RIVERHOG_INGRESS_VOLUME_WINDOW",
+        "RIVERHOG_INGRESS_MAX_INFLIGHT_BYTES",
+        "RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES",
+        "RIVERHOG_AGE_SESSION_CACHE_ENTRIES",
+        "RIVERHOG_AGE_SESSION_DERIVATION_CONCURRENCY",
         "RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL",
         "RIVERHOG_RETRIEVAL_CACHE_BUCKET",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE",
@@ -308,6 +298,17 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_RETRIEVAL_SWEEP_INTERVAL",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY",
         "RIVERHOG_RETRIEVAL_TIER",
+        "RIVERHOG_DOWNLOAD_FILE_CONCURRENCY",
+        "RIVERHOG_DOWNLOAD_FILE_WINDOW",
+        "RIVERHOG_DOWNLOAD_CHUNK_BYTES",
+        "RIVERHOG_RETRIEVAL_REQUEST_CONCURRENCY",
+        "RIVERHOG_RETRIEVAL_MAX_INFLIGHT_BYTES",
+        "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
+        "RIVERHOG_S3_CONNECT_TIMEOUT_SECONDS",
+        "RIVERHOG_S3_READ_TIMEOUT_SECONDS",
+        "RIVERHOG_S3_MAX_ATTEMPTS",
+        "RIVERHOG_S3_RETRY_MODE",
+        "RIVERHOG_S3_TCP_KEEPALIVE",
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
         "RIVERHOG_OTS_STAMP_COMMAND",
@@ -317,9 +318,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE",
         "RIVERHOG_PROOF_MATURATION_RETRY_DELAY",
         "RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL",
-        "RIVERHOG_TUSD_APPEND_TIMEOUT",
-        "RIVERHOG_UPLOAD_FILE_TTL",
-        "RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
@@ -373,16 +371,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "tus-throughput",
             ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
             "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
-        ),
-        (
-            "archive-throughput",
-            ("ARCHIVE_SOURCE=/tmp/probe.bin", "args=--concurrency 2"),
-            "python scripts/archive_upload_throughput.py /tmp/probe.bin --concurrency 2",
-        ),
-        (
-            "archive-download-smoke",
-            ("ARCHIVE_STORE=deep",),
-            "python scripts/archive_download_smoke.py --store deep",
         ),
     ],
 )

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-import yaml
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTION_TAGS_MANAGE,
@@ -20,16 +20,16 @@ from riverhog_core.catalog_models import (
     CatalogEventTagRecord,
     CollectionDeletionRecord,
     CollectionMetadataPublicationRecord,
+    CollectionUploadRecord,
+    CollectionUploadTagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
-from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
-from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_protocol.errors import Conflict
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
@@ -160,16 +160,15 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         ]
 
     archive_store = MemoryArchiveStore()
-    publisher = SqlAlchemyArchiveUploadService(
+    publisher = SqlAlchemyArchiveMaintenanceService(
         config,
         ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
-        proof_stamper=FixtureProofStamper(),
     )
     assert publisher.process_due_metadata_publications(limit=10) == 1
 
     assert len(archive_store.published_metadata) == 1
     collection_id, prefix, manifest_bytes = archive_store.published_metadata[0]
-    manifest = yaml.safe_load(manifest_bytes)
+    manifest = json.loads(manifest_bytes)
     assert collection_id == 1
     assert prefix.endswith("opaque-docs")
     assert manifest["format"] == "riverhog-collection-metadata/v1"
@@ -218,16 +217,24 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
         access=(ApplicationAccess(CATALOG_READ, "tag:photos"),),
         grantor=BOOTSTRAP,
     )
-    upload_service = SqlAlchemyCollectionService(config, object())  # type: ignore[arg-type]
-    upload = upload_service.create_or_resume_upload_session(
-        idempotency_key="photos-upload",
-        tags=["photos"],
-        initiator=ApplicationPrincipal(
-            app="uploader",
-            key_id=None,
-            access=frozenset({ApplicationAccess(COLLECTIONS_CREATE)}),
-        ),
-    )
+    with session_scope(make_session_factory(config.database_url)) as session:
+        now = "2026-08-08T00:00:00.000000Z"
+        upload = CollectionUploadRecord(
+            idempotency_key="photos-upload",
+            initiated_by_app="uploader",
+            archive_store="archive",
+            state="open",
+            opened_at=now,
+            last_activity_at=now,
+            archive_phase="planning",
+            archive_phase_updated_at=now,
+            archive_storage_prefix="archives/test-upload",
+            planner_checkpoint_json="{}",
+            tags=[CollectionUploadTagRecord(tag_id="photos")],
+        )
+        session.add(upload)
+        session.flush()
+        upload_id = upload.collection_id
 
     plan = tags.plan_deletion("photos")
 
@@ -237,13 +244,14 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
     assert dependencies["collections"]["count"] == 0
     assert dependencies["upload_sessions"] == {
         "count": 1,
-        "sample": [str(upload["collection_id"])],
+        "sample": [str(upload_id)],
         "truncated": False,
     }
     assert dependencies["app_key_access"]["count"] == 1
     assert "clients, companions, and automation" in plan["warning"]
 
-    upload_service.cancel_upload_session(int(upload["collection_id"]))
+    with session_scope(make_session_factory(config.database_url)) as session:
+        session.delete(session.get(CollectionUploadRecord, upload_id))
     keys.revoke(app="reader", key_id=str(active["id"]))
     ready = tags.plan_deletion("photos")
     assert ready["status"] == "ready"
@@ -301,10 +309,9 @@ def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:
         assert publication is not None
         publication.state = "publishing"
 
-    restarted = SqlAlchemyArchiveUploadService(
+    restarted = SqlAlchemyArchiveMaintenanceService(
         config,
         ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore())}),
-        proof_stamper=FixtureProofStamper(),
     )
 
     assert restarted.requeue_interrupted_metadata_publications_for_startup() == 1

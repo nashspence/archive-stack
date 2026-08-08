@@ -30,6 +30,9 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/collection-upload-sessions/{collection_id}/files",
         "/v1/collection-upload-sessions/{collection_id}/complete",
         "/v1/collection-upload-sessions/{collection_id}/cancel",
+        "/v1/collection-upload-sessions/{collection_id}/volumes",
+        "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
+        "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "/v1/collections/{collection_id}",
         "/v1/collections/{collection_id}/deletion-plan",
         "/v1/collections/{collection_id}/delete",
@@ -37,7 +40,6 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/retrieval-jobs",
         "/v1/retrieval-jobs/{job_id}",
         "/v1/retrieval-jobs/{job_id}/content",
-        "/v1/retrieval-jobs/{job_id}/objects/{object_id}/content",
         "/v1/retrieval-jobs/{job_id}/ack",
         "/v1/download-quota",
         "/v1/download-quotas",
@@ -65,14 +67,20 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     )
 
 
-def test_collection_file_preflight_requires_client_side_encryption() -> None:
+def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
-    encryption = schemas["CollectionUploadEncryptionOut"]
-    response = schemas["CollectionUploadSessionFileUploadOut"]
+    unit = schemas["CollectionUploadUnitOut"]
+    source = schemas["CollectionUploadUnitSourceOut"]
 
-    assert encryption["properties"]["format"]["const"] == "age-v1-scrypt-resumable"
-    assert encryption["properties"]["passphrase"]["writeOnly"] is True
-    assert {"encryption", "length", "offset", "archive_store"} <= set(response["required"])
+    assert set(unit["required"]) == {
+        "unit",
+        "payload_bytes",
+        "plaintext_bytes",
+        "sources",
+        "state",
+    }
+    assert set(source["required"]) == {"path", "offset", "bytes"}
+    assert source["properties"]["sha256"]
 
 
 def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:

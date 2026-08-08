@@ -4,10 +4,7 @@ import hashlib
 import logging
 import re
 import secrets
-import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, TypedDict, cast
@@ -18,10 +15,6 @@ from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from riverhog_age import (
-    AEAD_TAG_SIZE,
-    CHUNK_SIZE,
-    ResumableAgeScryptSession,
-    age_ciphertext_len_for_plaintext_len,
     encrypt_age_scrypt,
     iter_decrypt_age_scrypt,
 )
@@ -32,18 +25,9 @@ from riverhog_core.archive_attestations import (
     ATTESTATION_OBJECT_KINDS,
 )
 from riverhog_core.archive_object_paths import archive_store_object_path
-from riverhog_core.archive_objects import (
-    PACK_PAYLOAD_LIMIT,
-    STORED_OBJECT_LIMIT,
-    max_age_plaintext_object_bytes,
-)
 from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING, archive_agents_guidance
-from riverhog_core.domain.archive import CollectionArchive, CollectionArchiveDataObject
 from riverhog_core.ports.archive_store import (
     ArchiveArtifactRead,
-    ArchiveMultipartUploadedPart,
-    ArchiveMultipartUploadState,
-    ArchiveMultipartUploadTracker,
     ArchiveObjectIdentity,
     ArchiveObjectUploadReceipt,
     ArchiveReadStatus,
@@ -83,191 +67,6 @@ class _RestoreHeader(TypedDict):
     expires_at: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class ArchiveMultipartTiming:
-    object_id: str
-    stored_bytes: int
-    parts: int
-    concurrency: int
-    elapsed_seconds: float
-    preparation_seconds: float
-    upload_request_seconds: float
-    checkpoint_seconds: float
-
-
-def _multipart_part_size(content_length: int, configured_part_size: int) -> int:
-    part_size = max(
-        _MIN_MULTIPART_PART_SIZE,
-        configured_part_size,
-        (content_length + _MAX_MULTIPART_PARTS - 1) // _MAX_MULTIPART_PARTS,
-    )
-    if part_size > _MAX_MULTIPART_PART_SIZE:
-        raise ValueError("collection archive stream exceeds S3 multipart object size limit")
-    return part_size
-
-
-def _should_log_multipart_progress(part_number: int, expected_part_count: int) -> bool:
-    return (
-        part_number == 1
-        or part_number == expected_part_count
-        or expected_part_count <= 20
-        or part_number % 100 == 0
-    )
-
-
-def _is_chunk_iterable(content: Any) -> bool:
-    return (
-        isinstance(content, Iterable)
-        and not isinstance(content, (bytes, bytearray, memoryview, str))
-        and not callable(getattr(content, "read", None))
-    )
-
-
-def _should_use_multipart(*, content: Any, content_length: int) -> bool:
-    return content_length > _MAX_SINGLE_PUT_OBJECT_SIZE or (
-        _is_chunk_iterable(content) and content_length >= _MIN_MULTIPART_PART_SIZE
-    )
-
-
-def _iter_content_chunks(content: Any) -> Iterator[bytes]:
-    if isinstance(content, bytes):
-        yield content
-        return
-    if isinstance(content, bytearray):
-        yield bytes(content)
-        return
-    if isinstance(content, memoryview):
-        yield content.tobytes()
-        return
-
-    read = getattr(content, "read", None)
-    if callable(read):
-        while True:
-            chunk = read(1024 * 1024)
-            if not chunk:
-                return
-            yield bytes(chunk)
-
-    for chunk in cast(Iterable[Any], content):
-        yield bytes(chunk)
-
-
-def _single_put_body(content: Any) -> Any:
-    if isinstance(content, (bytes, bytearray)):
-        return bytes(content)
-    if isinstance(content, memoryview):
-        return content.tobytes()
-    if callable(getattr(content, "read", None)):
-        return content
-    return b"".join(_iter_content_chunks(content))
-
-
-def _iter_chunks_after_skipping(chunks: Iterable[bytes], skip_bytes: int) -> Iterator[bytes]:
-    remaining = skip_bytes
-    for chunk in chunks:
-        if remaining <= 0:
-            yield chunk
-            continue
-        if len(chunk) <= remaining:
-            remaining -= len(chunk)
-            continue
-        yield chunk[remaining:]
-        remaining = 0
-    if remaining:
-        raise ValueError("collection archive stream ended before resumable upload offset")
-
-
-def _iter_encrypted_object(
-    *,
-    object: CollectionArchiveDataObject,
-    session: ResumableAgeScryptSession,
-) -> Iterator[bytes]:
-    yield session.age_prefix
-    chunks = iter(object.iter_plaintext())
-    buffer = bytearray()
-    chunk_index = 0
-    plaintext_bytes = 0
-    for chunk in chunks:
-        buffer.extend(chunk)
-        while len(buffer) > CHUNK_SIZE:
-            plaintext = bytes(buffer[:CHUNK_SIZE])
-            del buffer[:CHUNK_SIZE]
-            plaintext_bytes += len(plaintext)
-            yield session.encrypt_chunk(chunk_index, plaintext, final=False)
-            chunk_index += 1
-    plaintext_bytes += len(buffer)
-    if plaintext_bytes != object.plaintext_bytes:
-        raise ValueError("archive object stream size changed during encryption")
-    yield session.encrypt_chunk(chunk_index, bytes(buffer), final=True)
-
-
-def _encrypted_object_part_body(
-    *,
-    object: CollectionArchiveDataObject,
-    session: ResumableAgeScryptSession,
-    plan: Any,
-) -> bytes:
-    plaintext = _read_object_range(object, plan.plaintext_start, plan.plaintext_len)
-
-    def provider(_chunk_index: int, start: int, end: int) -> bytes:
-        relative_start = start - plan.plaintext_start
-        relative_end = end - plan.plaintext_start
-        return plaintext[relative_start:relative_end]
-
-    return session.encrypt_part(plan, provider, plaintext_size=object.plaintext_bytes)
-
-
-def _read_object_range(
-    object: CollectionArchiveDataObject,
-    offset: int,
-    size: int,
-) -> bytes:
-    if size == 0:
-        return b""
-    out = bytearray()
-    for chunk in object.iter_plaintext_range(offset, size):
-        needed = size - len(out)
-        out.extend(chunk[:needed])
-        if len(out) == size:
-            break
-    if len(out) != size:
-        raise ValueError("archive object stream ended before encrypted part range")
-    return bytes(out)
-
-
-def _plaintext_chunks(plaintext_size: int) -> Iterator[tuple[int, int, int, bool]]:
-    if plaintext_size == 0:
-        yield 0, 0, 0, True
-        return
-    chunk_count = (plaintext_size + CHUNK_SIZE - 1) // CHUNK_SIZE
-    for chunk_index in range(chunk_count):
-        start = chunk_index * CHUNK_SIZE
-        end = min(start + CHUNK_SIZE, plaintext_size)
-        yield chunk_index, start, end, chunk_index == chunk_count - 1
-
-
-def _age_chunks_per_s3_part(target_part_size: int) -> int:
-    chunk_ciphertext_size = CHUNK_SIZE + AEAD_TAG_SIZE
-    minimum_chunks = (_MIN_MULTIPART_PART_SIZE + chunk_ciphertext_size - 1) // (
-        chunk_ciphertext_size
-    )
-    target_chunks = max(1, target_part_size // chunk_ciphertext_size)
-    return max(minimum_chunks, target_chunks)
-
-
-def _validate_recorded_parts_exist_remotely(
-    recorded_parts: list[ArchiveMultipartUploadedPart],
-    remote_parts: list[dict[str, object]],
-) -> None:
-    remote_parts_by_number = {int(str(part["PartNumber"])): part for part in remote_parts}
-    for part in recorded_parts:
-        remote = remote_parts_by_number.get(part.part_number)
-        if remote is None:
-            raise ValueError("collection archive multipart upload is missing a recorded part")
-        if str(remote["ETag"]) != part.etag or int(str(remote["Size"])) != part.size:
-            raise ValueError("collection archive multipart upload remote part mismatch")
-
-
 class S3ArchiveStore:
     def __init__(
         self,
@@ -276,7 +75,6 @@ class S3ArchiveStore:
         *,
         retrieval_cache: RetrievalCache | None = None,
         download_allowance: DownloadAllowance | None = None,
-        multipart_timing_observer: Callable[[ArchiveMultipartTiming], None] | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -284,7 +82,6 @@ class S3ArchiveStore:
         self._client = create_archive_s3_client(config, store)
         self._retrieval_cache = retrieval_cache
         self._download_allowance = download_allowance
-        self._multipart_timing_observer = multipart_timing_observer
         if store.monthly_download_allowance_bytes is not None and download_allowance is None:
             raise ValueError("configured archive download allowance requires its service")
         self._cloudfront_signer: CloudFrontSigner | None = None
@@ -318,13 +115,6 @@ class S3ArchiveStore:
     def new_collection_archive_storage_prefix(self) -> str:
         archive_id = secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)
         return archive_store_object_path(self._store.prefix, "archives", archive_id)
-
-    def max_plaintext_object_bytes(self) -> int:
-        session = ResumableAgeScryptSession.create(
-            self._config.archive_passphrase,
-            log_n=self._config.archive_scrypt_work_factor,
-        )
-        return max_age_plaintext_object_bytes(age_prefix_len=len(session.age_prefix))
 
     def abort_incomplete_multipart_uploads(
         self,
@@ -417,23 +207,6 @@ class S3ArchiveStore:
             prefix=object_prefix,
         )
 
-    def _collection_object_key(
-        self,
-        *,
-        object_id: str,
-        archive_storage_prefix: str | None,
-    ) -> str:
-        collection_prefix = (
-            archive_storage_prefix.strip("/")
-            if archive_storage_prefix
-            else self.new_collection_archive_storage_prefix()
-        )
-        filename = {
-            "manifest": "manifest.yml.age",
-            "proof": "manifest.yml.ots.age",
-        }.get(object_id, f"objects/{object_id}.age")
-        return f"{collection_prefix}/{filename}"
-
     def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
         try:
             return cast(
@@ -472,8 +245,6 @@ class S3ArchiveStore:
                 expected_storage_class=expected_storage_class,
             )
         stored_bytes = int(head.get("ContentLength", 0))
-        if stored_bytes > STORED_OBJECT_LIMIT:
-            raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
         if not _SHA256_RE.fullmatch(expected_stored_sha256):
             raise ValueError("stored archive object sha256 is invalid")
         metadata_stored_sha256 = _head_metadata(head).get(STORED_SHA256_METADATA)
@@ -498,91 +269,6 @@ class S3ArchiveStore:
             verified_at=verified_at,
             retrieval_cache=retrieval_cache,
         )
-
-    def upload_collection_archive(
-        self,
-        *,
-        collection_id: int,
-        archive: CollectionArchive,
-        archive_storage_prefix: str | None = None,
-        multipart_tracker: ArchiveMultipartUploadTracker | None = None,
-    ) -> CollectionArchiveUploadReceipt:
-        if archive.collection_id != collection_id:
-            raise ValueError("collection archive id mismatch")
-        storage_prefix = archive_storage_prefix or self.new_collection_archive_storage_prefix()
-        receipts: list[ArchiveObjectUploadReceipt] = []
-
-        def require_active() -> None:
-            if multipart_tracker is not None:
-                multipart_tracker.require_active(collection_id=collection_id)
-
-        def upload_data_object(current: CollectionArchiveDataObject) -> ArchiveObjectUploadReceipt:
-            require_active()
-            return self._put_archive_object(
-                collection_id=collection_id,
-                object_id=current.object_id,
-                kind=current.kind,
-                object_key=self._collection_object_key(
-                    object_id=current.object_id,
-                    archive_storage_prefix=storage_prefix,
-                ),
-                content=current.iter_plaintext(),
-                plaintext_bytes=current.plaintext_bytes,
-                sha256=current.sha256,
-                data_object=current,
-                multipart_tracker=multipart_tracker,
-            )
-
-        one_part_limit = min(
-            PACK_PAYLOAD_LIMIT,
-            max(0, self._config.archive_multipart_part_bytes - 1024 * 1024),
-        )
-        concurrent_batch: list[CollectionArchiveDataObject] = []
-
-        def flush_concurrent_batch() -> None:
-            if not concurrent_batch:
-                return
-            if self._config.archive_object_concurrency == 1 or len(concurrent_batch) == 1:
-                receipts.extend(upload_data_object(current) for current in concurrent_batch)
-            else:
-                with ThreadPoolExecutor(
-                    max_workers=self._config.archive_object_concurrency,
-                    thread_name_prefix="riverhog-archive-object",
-                ) as executor:
-                    receipts.extend(executor.map(upload_data_object, concurrent_batch))
-            concurrent_batch.clear()
-
-        for current in archive.data_objects:
-            require_active()
-            if current.plaintext_bytes <= one_part_limit:
-                concurrent_batch.append(current)
-                continue
-            flush_concurrent_batch()
-            receipts.append(upload_data_object(current))
-        flush_concurrent_batch()
-        for object_id, kind, content, sha256 in (
-            ("manifest", "manifest", archive.manifest_bytes, archive.manifest_sha256),
-            ("proof", "proof", archive.proof_bytes, archive.proof_sha256),
-        ):
-            require_active()
-            receipts.append(
-                self._put_archive_object(
-                    collection_id=collection_id,
-                    object_id=object_id,
-                    kind=kind,
-                    object_key=self._collection_object_key(
-                        object_id=object_id,
-                        archive_storage_prefix=storage_prefix,
-                    ),
-                    content=content,
-                    plaintext_bytes=len(content),
-                    sha256=sha256,
-                    data_object=None,
-                    multipart_tracker=None,
-                )
-            )
-        require_active()
-        return CollectionArchiveUploadReceipt(objects=tuple(receipts))
 
     def verify_collection_archive(
         self,
@@ -638,10 +324,7 @@ class S3ArchiveStore:
             raise ValueError("collection archive has no objects")
         object_paths = tuple(current.object_path for current in objects)
         archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
-        archive_prefixes = {
-            path.rsplit("/objects/", 1)[0] if "/objects/" in path else path.rsplit("/", 1)[0]
-            for path in object_paths
-        }
+        archive_prefixes = {_archive_storage_prefix(path) for path in object_paths}
         if len(archive_prefixes) != 1 or any(
             not path.startswith(archive_root) for path in object_paths
         ):
@@ -664,7 +347,7 @@ class S3ArchiveStore:
         manifest: bytes,
     ) -> MutableManifestReceipt:
         self._put_archive_root_guidance()
-        object_key = f"{archive_storage_prefix.strip('/')}/metadata.yml.age"
+        object_key = f"{archive_storage_prefix.strip('/')}/metadata.json.age"
         ciphertext = encrypt_age_scrypt(
             manifest,
             self._config.archive_passphrase,
@@ -701,6 +384,8 @@ class S3ArchiveStore:
     ) -> ArchiveArtifactRead:
         if object.kind not in {"manifest", "proof"}:
             raise ValueError("only collection manifests and proofs are archive artifacts")
+        if object.stored_sha256 is None:
+            raise ValueError("archive artifact is missing its stored sha256")
         head = self._head_object(object_key=object.object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object.object_path}")
@@ -764,7 +449,7 @@ class S3ArchiveStore:
         _ = collection_id
         if object.object_id != "proof" or object.kind != "proof":
             raise ValueError("archive proof replacement requires the proof object")
-        if not object.object_path.endswith("/manifest.yml.ots.age"):
+        if not object.object_path.endswith("/manifest.json.ots.age"):
             raise ValueError("archive proof path is not canonical")
         archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
         if not object.object_path.startswith(archive_root):
@@ -772,7 +457,7 @@ class S3ArchiveStore:
 
         proof_sha256 = hashlib.sha256(proof_bytes).hexdigest()
         existing = self._head_object(object_key=object.object_path)
-        if existing is not None:
+        if existing is not None and object.stored_sha256 is not None:
             try:
                 receipt = self._collection_receipt_from_head(
                     object_id="proof",
@@ -1038,905 +723,6 @@ class S3ArchiveStore:
                 ContentLength=len(content),
                 Metadata={"archive-guidance-format": format_name},
             )
-
-    def _put_archive_object(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        object_key: str,
-        content: Any,
-        plaintext_bytes: int,
-        sha256: str,
-        kind: str,
-        data_object: CollectionArchiveDataObject | None,
-        multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> ArchiveObjectUploadReceipt:
-        if multipart_tracker is not None:
-            multipart_tracker.require_active(collection_id=collection_id)
-        storage_class = _collection_object_storage_class(
-            archive_storage_class=self._store.storage_class,
-            kind=kind,
-        )
-        cache_required = self.read_mode() == "restore_required" and data_object is not None
-        retrieval_cache: RetrievalCacheReceipt | None = None
-        if cache_required:
-            if self._retrieval_cache is None:
-                raise RuntimeError("restore-required archive writes require a retrieval cache")
-            if multipart_tracker is None:
-                raise RuntimeError(
-                    "restore-required archive writes require retrieval-cache checkpointing"
-                )
-            retrieval_cache = multipart_tracker.load_retrieval_cache(
-                collection_id=collection_id,
-                object_id=object_id,
-            )
-        existing = self._head_object(object_key=object_key)
-        if existing is not None:
-            if cache_required and retrieval_cache is None:
-                raise RuntimeError(
-                    "restore-required archive object exists without its retrieval-cache receipt"
-                )
-            stored_sha256 = (
-                retrieval_cache.stored_sha256
-                if retrieval_cache is not None
-                else _head_metadata(existing).get(STORED_SHA256_METADATA)
-            )
-            if stored_sha256 is None:
-                stored_sha256 = self._hash_stored_archive_object(
-                    collection_id=collection_id,
-                    object=ArchiveObjectIdentity(
-                        object_id=object_id,
-                        kind=kind,
-                        object_path=object_key,
-                        plaintext_bytes=plaintext_bytes,
-                        stored_bytes=int(existing.get("ContentLength", 0)),
-                        sha256=sha256,
-                        stored_sha256="0" * 64,
-                    ),
-                )
-            return self._collection_receipt_from_head(
-                object_id=object_id,
-                kind=kind,
-                object_key=object_key,
-                head=existing,
-                expected_bytes=plaintext_bytes,
-                expected_sha256=sha256,
-                expected_stored_sha256=stored_sha256,
-                expected_storage_class=storage_class,
-                retrieval_cache=retrieval_cache,
-            )
-
-        age_session: ResumableAgeScryptSession | None = None
-        stored_sha256 = retrieval_cache.stored_sha256 if retrieval_cache is not None else None
-        if data_object is not None:
-            if retrieval_cache is not None:
-                assert self._retrieval_cache is not None
-                content_length = retrieval_cache.stored_bytes
-                content = self._retrieval_cache.iter_object(
-                    object_path=retrieval_cache.object_path,
-                    version_id=retrieval_cache.version_id,
-                    expected_bytes=retrieval_cache.stored_bytes,
-                    expected_sha256=retrieval_cache.stored_sha256,
-                )
-            else:
-                age_session = ResumableAgeScryptSession.create(
-                    self._config.archive_passphrase,
-                    log_n=self._config.archive_scrypt_work_factor,
-                    plaintext_size=plaintext_bytes,
-                )
-                content_length = age_ciphertext_len_for_plaintext_len(
-                    plaintext_bytes,
-                    age_prefix_len=len(age_session.age_prefix),
-                )
-                content = _iter_encrypted_object(object=data_object, session=age_session)
-                if cache_required:
-                    assert self._retrieval_cache is not None
-                    retrieval_cache = self._retrieval_cache.put(
-                        source_store=self._store.name,
-                        collection_id=collection_id,
-                        object_id=object_id,
-                        content=content,
-                        content_length=content_length,
-                    )
-                    assert multipart_tracker is not None
-                    multipart_tracker.save_retrieval_cache(
-                        collection_id=collection_id,
-                        object_id=object_id,
-                        receipt=retrieval_cache,
-                    )
-                    content = self._retrieval_cache.iter_object(
-                        object_path=retrieval_cache.object_path,
-                        version_id=retrieval_cache.version_id,
-                        expected_bytes=retrieval_cache.stored_bytes,
-                        expected_sha256=retrieval_cache.stored_sha256,
-                    )
-        else:
-            plaintext = _single_put_body(content)
-            content = encrypt_age_scrypt(
-                plaintext,
-                self._config.archive_passphrase,
-                log_n=self._config.archive_scrypt_work_factor,
-            )
-            content_length = len(content)
-            stored_sha256 = hashlib.sha256(content).hexdigest()
-        if content_length > STORED_OBJECT_LIMIT:
-            raise ValueError("encrypted archive object exceeds the 32 GiB stored limit")
-
-        uploaded_at = utc_timestamp_now()
-        extra_args: dict[str, Any] = {
-            "Metadata": {
-                "riverhog-backend": self._store.backend,
-                "riverhog-storage-class": _configured_s3_storage_class(storage_class),
-                "riverhog-object-kind": f"collection-{kind}",
-                "riverhog-object-id": object_id,
-                ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
-                PLAINTEXT_BYTES_METADATA: str(plaintext_bytes),
-                PLAINTEXT_SHA256_METADATA: sha256,
-                COLLECTION_BYTES_METADATA: str(plaintext_bytes),
-                COLLECTION_SHA256_METADATA: sha256,
-            }
-        }
-        if stored_sha256 is not None:
-            extra_args["Metadata"][STORED_SHA256_METADATA] = stored_sha256
-        if (
-            self._uses_aws_restore_api()
-            and _configured_s3_storage_class(storage_class) != "STANDARD"
-        ):
-            extra_args["StorageClass"] = storage_class
-        if _should_use_multipart(content=content, content_length=content_length):
-            if data_object is not None and data_object.supports_ranges and not cache_required:
-                if age_session is None:
-                    raise RuntimeError("encrypted object upload session was not initialized")
-                stored_sha256 = self._put_encrypted_object_multipart(
-                    collection_id=collection_id,
-                    object_id=object_id,
-                    object_key=object_key,
-                    object=data_object,
-                    content_length=content_length,
-                    logical_sha256=sha256,
-                    initial_session=age_session,
-                    extra_args=extra_args,
-                    multipart_tracker=multipart_tracker,
-                )
-            else:
-                stored_sha256 = self._put_archive_object_multipart(
-                    collection_id=collection_id,
-                    object_id=object_id,
-                    object_key=object_key,
-                    content=content,
-                    content_length=content_length,
-                    sha256=sha256,
-                    extra_args=extra_args,
-                    multipart_tracker=multipart_tracker,
-                )
-        else:
-            body = _single_put_body(content)
-            stored_sha256 = hashlib.sha256(body).hexdigest()
-            extra_args["Metadata"][STORED_SHA256_METADATA] = stored_sha256
-            self._client.put_object(
-                Bucket=self._bucket,
-                Key=object_key,
-                Body=body,
-                ContentLength=content_length,
-                **extra_args,
-            )
-        if multipart_tracker is not None:
-            multipart_tracker.require_active(collection_id=collection_id)
-        head = cast(
-            dict[str, Any],
-            self._client.head_object(Bucket=self._bucket, Key=object_key),
-        )
-        if stored_sha256 is None:
-            raise RuntimeError("archive upload did not calculate the stored sha256")
-        return self._collection_receipt_from_head(
-            object_id=object_id,
-            kind=kind,
-            object_key=object_key,
-            head=head,
-            expected_bytes=plaintext_bytes,
-            expected_sha256=sha256,
-            expected_stored_sha256=stored_sha256,
-            expected_storage_class=storage_class,
-            uploaded_at=uploaded_at,
-            retrieval_cache=retrieval_cache,
-        )
-
-    def _put_archive_object_multipart(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        object_key: str,
-        content: Any,
-        content_length: int,
-        sha256: str,
-        extra_args: dict[str, Any],
-        multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> str:
-        part_number = 1
-        upload_state: ArchiveMultipartUploadState | None = None
-        buffer = bytearray()
-        part_size = _multipart_part_size(
-            content_length,
-            self._config.archive_multipart_part_bytes,
-        )
-        multipart_concurrency = self._config.archive_multipart_concurrency
-        expected_part_count = (content_length + part_size - 1) // part_size
-        uploaded_bytes = 0
-        size = 0
-        resumed_part_count = 0
-        skip_bytes = 0
-        completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
-        stored_hasher = hashlib.sha256()
-
-        if multipart_tracker is not None:
-            upload_state = multipart_tracker.load_multipart_upload(
-                collection_id=collection_id,
-                object_id=object_id,
-                object_path=object_key,
-                part_size=part_size,
-                content_length=content_length,
-                sha256=sha256,
-            )
-            if upload_state is not None:
-                try:
-                    resumed_parts = self._contiguous_uploaded_parts(
-                        object_key=object_key,
-                        upload_id=upload_state.upload_id,
-                        recorded_parts=upload_state.parts,
-                        part_size=part_size,
-                        content_length=content_length,
-                    )
-                except Exception as exc:
-                    if not _is_missing_upload_error(exc):
-                        raise
-                    multipart_tracker.clear_multipart_upload(
-                        collection_id=collection_id,
-                        object_id=object_id,
-                        upload_id=upload_state.upload_id,
-                    )
-                    upload_state = None
-                    resumed_parts = []
-                if upload_state is not None:
-                    resumed_part_count = len(resumed_parts)
-                    skip_bytes = sum(part.size for part in resumed_parts)
-                    part_number = resumed_part_count + 1
-                    uploaded_bytes = skip_bytes
-                    completed_parts_by_number.update(
-                        (part.part_number, part) for part in resumed_parts
-                    )
-                    _LOG.info(
-                        "resuming S3 multipart upload for %s: upload_id=%s parts=%s/%s bytes=%s/%s",
-                        object_key,
-                        upload_state.upload_id,
-                        resumed_part_count,
-                        expected_part_count,
-                        uploaded_bytes,
-                        content_length,
-                    )
-
-        def ensure_upload() -> str:
-            nonlocal upload_state
-            if upload_state is None:
-                _LOG.info(
-                    "starting S3 multipart upload for %s: size=%s part_size=%s "
-                    "parts=%s concurrency=%s",
-                    object_key,
-                    content_length,
-                    part_size,
-                    expected_part_count,
-                    multipart_concurrency,
-                )
-                response = cast(
-                    dict[str, Any],
-                    self._client.create_multipart_upload(
-                        Bucket=self._bucket,
-                        Key=object_key,
-                        **extra_args,
-                    ),
-                )
-                upload_state = ArchiveMultipartUploadState(
-                    object_id=object_id,
-                    upload_id=str(response["UploadId"]),
-                    object_path=object_key,
-                    part_size=part_size,
-                    content_length=content_length,
-                    sha256=sha256,
-                )
-                if multipart_tracker is not None:
-                    multipart_tracker.save_multipart_upload(
-                        collection_id=collection_id,
-                        state=upload_state,
-                    )
-            return upload_state.upload_id
-
-        def upload_part_body(
-            *,
-            upload_id: str,
-            current_part_number: int,
-            body: bytes,
-        ) -> ArchiveMultipartUploadedPart:
-            response = cast(
-                dict[str, Any],
-                self._client.upload_part(
-                    Bucket=self._bucket,
-                    Key=object_key,
-                    UploadId=upload_id,
-                    PartNumber=current_part_number,
-                    Body=body,
-                ),
-            )
-            return ArchiveMultipartUploadedPart(
-                part_number=current_part_number,
-                etag=str(response["ETag"]),
-                size=len(body),
-            )
-
-        def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
-            nonlocal uploaded_bytes
-            if multipart_tracker is not None:
-                multipart_tracker.require_active(collection_id=collection_id)
-            completed_parts_by_number[part.part_number] = part
-            uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
-            uploaded_parts = len(completed_parts_by_number)
-            if multipart_tracker is not None and upload_state is not None:
-                multipart_tracker.record_multipart_upload_progress(
-                    collection_id=collection_id,
-                    state=upload_state,
-                    part=part,
-                    uploaded_bytes=uploaded_bytes,
-                    uploaded_parts=uploaded_parts,
-                    total_parts=expected_part_count,
-                )
-            if _should_log_multipart_progress(uploaded_parts, expected_part_count):
-                _LOG.info(
-                    "S3 multipart upload progress for %s: part=%s/%s bytes=%s/%s pct=%.2f",
-                    object_key,
-                    uploaded_parts,
-                    expected_part_count,
-                    uploaded_bytes,
-                    content_length,
-                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
-                )
-
-        try:
-            with ThreadPoolExecutor(
-                max_workers=multipart_concurrency,
-                thread_name_prefix="riverhog-s3-archive",
-            ) as executor:
-                pending: set[Future[ArchiveMultipartUploadedPart]] = set()
-
-                def drain_completed(*, return_when: str) -> None:
-                    if not pending:
-                        return
-                    done, still_pending = wait(pending, return_when=return_when)
-                    pending.clear()
-                    pending.update(still_pending)
-                    error: BaseException | None = None
-                    for future in done:
-                        try:
-                            record_completed_part(future.result())
-                        except BaseException as exc:
-                            error = exc
-                    if error is not None:
-                        for future in pending:
-                            future.cancel()
-                        raise error
-
-                def submit_part(body: bytes) -> None:
-                    nonlocal part_number
-                    current_part_number = part_number
-                    part_number += 1
-                    pending.add(
-                        executor.submit(
-                            upload_part_body,
-                            upload_id=ensure_upload(),
-                            current_part_number=current_part_number,
-                            body=body,
-                        )
-                    )
-                    if len(pending) >= multipart_concurrency:
-                        drain_completed(return_when=FIRST_COMPLETED)
-
-                def hashing_chunks() -> Iterator[bytes]:
-                    for current in _iter_content_chunks(content):
-                        stored_hasher.update(current)
-                        yield current
-
-                chunks = _iter_chunks_after_skipping(hashing_chunks(), skip_bytes)
-                for chunk in chunks:
-                    size += len(chunk)
-                    chunk_view = memoryview(chunk)
-                    offset = 0
-                    while offset < len(chunk_view):
-                        bytes_to_copy = min(
-                            part_size - len(buffer),
-                            len(chunk_view) - offset,
-                        )
-                        buffer.extend(chunk_view[offset : offset + bytes_to_copy])
-                        offset += bytes_to_copy
-                        if len(buffer) == part_size:
-                            submit_part(bytes(buffer))
-                            buffer.clear()
-
-                if size + skip_bytes != content_length:
-                    raise ValueError("collection archive stream byte count mismatch")
-                if buffer:
-                    submit_part(bytes(buffer))
-                    buffer.clear()
-                drain_completed(return_when=FIRST_COMPLETED)
-                while pending:
-                    drain_completed(return_when=FIRST_COMPLETED)
-
-            if upload_state is None:
-                self._client.put_object(
-                    Bucket=self._bucket,
-                    Key=object_key,
-                    Body=b"",
-                    ContentLength=0,
-                    **extra_args,
-                )
-                return stored_hasher.hexdigest()
-            remote_parts = self._list_uploaded_parts(
-                object_key=object_key,
-                upload_id=upload_state.upload_id,
-            )
-            completed_parts = [
-                completed_parts_by_number[part_number]
-                for part_number in range(1, expected_part_count + 1)
-                if part_number in completed_parts_by_number
-            ]
-            if len(completed_parts) != expected_part_count:
-                raise ValueError(
-                    "collection archive multipart upload is missing parts before completion"
-                )
-            _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
-            if multipart_tracker is not None:
-                multipart_tracker.require_active(collection_id=collection_id)
-            self._client.complete_multipart_upload(
-                Bucket=self._bucket,
-                Key=object_key,
-                UploadId=upload_state.upload_id,
-                MultipartUpload={
-                    "Parts": [
-                        {"PartNumber": part.part_number, "ETag": part.etag}
-                        for part in completed_parts
-                    ]
-                },
-            )
-            if multipart_tracker is not None:
-                multipart_tracker.clear_multipart_upload(
-                    collection_id=collection_id,
-                    object_id=object_id,
-                    upload_id=upload_state.upload_id,
-                )
-            _LOG.info(
-                "completed S3 multipart upload for %s: parts=%s bytes=%s",
-                object_key,
-                len(completed_parts),
-                uploaded_bytes,
-            )
-            return stored_hasher.hexdigest()
-        except Exception:
-            if upload_state is not None:
-                if multipart_tracker is None:
-                    self._client.abort_multipart_upload(
-                        Bucket=self._bucket,
-                        Key=object_key,
-                        UploadId=upload_state.upload_id,
-                    )
-                else:
-                    _LOG.warning(
-                        "leaving incomplete S3 multipart upload for %s resumable: "
-                        "upload_id=%s uploaded_bytes=%s/%s resumed_parts=%s",
-                        object_key,
-                        upload_state.upload_id,
-                        uploaded_bytes,
-                        content_length,
-                        resumed_part_count,
-                        exc_info=True,
-                    )
-            raise
-
-    def _put_encrypted_object_multipart(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        object_key: str,
-        object: CollectionArchiveDataObject,
-        content_length: int,
-        logical_sha256: str,
-        initial_session: ResumableAgeScryptSession,
-        extra_args: dict[str, Any],
-        multipart_tracker: ArchiveMultipartUploadTracker | None,
-    ) -> str:
-        started = time.perf_counter()
-        upload_state: ArchiveMultipartUploadState | None = None
-        part_size = _multipart_part_size(
-            content_length,
-            self._config.archive_multipart_part_bytes,
-        )
-        chunks_per_part = _age_chunks_per_s3_part(part_size)
-        session = initial_session
-        plans = session.s3_part_plans(object.plaintext_bytes, chunks_per_part=chunks_per_part)
-        expected_part_count = len(plans)
-        multipart_concurrency = self._config.archive_multipart_concurrency
-        uploaded_bytes = 0
-        resumed_part_count = 0
-        completed_parts_by_number: dict[int, ArchiveMultipartUploadedPart] = {}
-        preparation_seconds = 0.0
-        upload_request_seconds = 0.0
-        checkpoint_seconds = 0.0
-        stored_hasher = hashlib.sha256()
-
-        def checkpoint(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-            nonlocal checkpoint_seconds
-            checkpoint_started = time.perf_counter()
-            try:
-                return call(*args, **kwargs)
-            finally:
-                checkpoint_seconds += time.perf_counter() - checkpoint_started
-
-        if plans[-1].ciphertext_end != content_length:
-            raise RuntimeError("encrypted archive content length plan mismatch")
-
-        if multipart_tracker is not None:
-            upload_state = checkpoint(
-                multipart_tracker.load_multipart_upload,
-                collection_id=collection_id,
-                object_id=object_id,
-                object_path=object_key,
-                part_size=part_size,
-                content_length=content_length,
-                sha256=logical_sha256,
-            )
-            if upload_state is not None:
-                if not upload_state.encryption_state_json:
-                    checkpoint(
-                        multipart_tracker.clear_multipart_upload,
-                        collection_id=collection_id,
-                        object_id=object_id,
-                        upload_id=upload_state.upload_id,
-                    )
-                    upload_state = None
-                else:
-                    session = ResumableAgeScryptSession.from_state(
-                        self._config.archive_passphrase,
-                        upload_state.encryption_state_json,
-                    )
-                    plans = session.s3_part_plans(
-                        object.plaintext_bytes,
-                        chunks_per_part=chunks_per_part,
-                    )
-                    try:
-                        resumed_parts = self._contiguous_uploaded_parts(
-                            object_key=object_key,
-                            upload_id=upload_state.upload_id,
-                            recorded_parts=upload_state.parts,
-                            part_size=part_size,
-                            content_length=content_length,
-                            expected_part_sizes=tuple(plan.ciphertext_len for plan in plans),
-                        )
-                    except Exception as exc:
-                        if not _is_missing_upload_error(exc):
-                            raise
-                        checkpoint(
-                            multipart_tracker.clear_multipart_upload,
-                            collection_id=collection_id,
-                            object_id=object_id,
-                            upload_id=upload_state.upload_id,
-                        )
-                        upload_state = None
-                        resumed_parts = []
-                    if upload_state is not None:
-                        resumed_part_count = len(resumed_parts)
-                        uploaded_bytes = sum(part.size for part in resumed_parts)
-                        completed_parts_by_number.update(
-                            (part.part_number, part) for part in resumed_parts
-                        )
-                        _LOG.info(
-                            "resuming encrypted S3 multipart upload for %s: "
-                            "upload_id=%s parts=%s/%s bytes=%s/%s",
-                            object_key,
-                            upload_state.upload_id,
-                            resumed_part_count,
-                            expected_part_count,
-                            uploaded_bytes,
-                            content_length,
-                        )
-
-        def ensure_upload() -> str:
-            nonlocal upload_state
-            if upload_state is None:
-                _LOG.info(
-                    "starting encrypted S3 multipart upload for %s: size=%s "
-                    "target_part_size=%s parts=%s chunks_per_part=%s concurrency=%s",
-                    object_key,
-                    content_length,
-                    part_size,
-                    expected_part_count,
-                    chunks_per_part,
-                    multipart_concurrency,
-                )
-                response = cast(
-                    dict[str, Any],
-                    self._client.create_multipart_upload(
-                        Bucket=self._bucket,
-                        Key=object_key,
-                        **extra_args,
-                    ),
-                )
-                upload_state = ArchiveMultipartUploadState(
-                    object_id=object_id,
-                    upload_id=str(response["UploadId"]),
-                    object_path=object_key,
-                    part_size=part_size,
-                    content_length=content_length,
-                    sha256=logical_sha256,
-                    total_parts=expected_part_count,
-                    encryption_state_json=session.export_state(
-                        plaintext_size=object.plaintext_bytes
-                    )
-                    .to_json_bytes()
-                    .decode("utf-8"),
-                )
-                if multipart_tracker is not None:
-                    checkpoint(
-                        multipart_tracker.save_multipart_upload,
-                        collection_id=collection_id,
-                        state=upload_state,
-                    )
-            return upload_state.upload_id
-
-        def record_completed_part(part: ArchiveMultipartUploadedPart) -> None:
-            nonlocal uploaded_bytes
-            if multipart_tracker is not None:
-                multipart_tracker.require_active(collection_id=collection_id)
-            completed_parts_by_number[part.part_number] = part
-            uploaded_bytes = sum(current.size for current in completed_parts_by_number.values())
-            uploaded_parts = len(completed_parts_by_number)
-            if multipart_tracker is not None and upload_state is not None:
-                checkpoint(
-                    multipart_tracker.record_multipart_upload_progress,
-                    collection_id=collection_id,
-                    state=upload_state,
-                    part=part,
-                    uploaded_bytes=uploaded_bytes,
-                    uploaded_parts=uploaded_parts,
-                    total_parts=expected_part_count,
-                )
-            if _should_log_multipart_progress(uploaded_parts, expected_part_count):
-                _LOG.info(
-                    "encrypted S3 multipart upload progress for %s: "
-                    "part=%s/%s bytes=%s/%s pct=%.2f",
-                    object_key,
-                    uploaded_parts,
-                    expected_part_count,
-                    uploaded_bytes,
-                    content_length,
-                    (uploaded_bytes / content_length * 100.0) if content_length else 100.0,
-                )
-
-        try:
-            upload_id = ensure_upload()
-            with ThreadPoolExecutor(
-                max_workers=multipart_concurrency,
-                thread_name_prefix="riverhog-s3-encrypted-archive",
-            ) as executor:
-                pending: set[Future[tuple[ArchiveMultipartUploadedPart, float]]] = set()
-
-                def upload_part_body(
-                    *,
-                    plan: Any,
-                    body: bytes,
-                ) -> tuple[ArchiveMultipartUploadedPart, float]:
-                    request_started = time.perf_counter()
-                    response = cast(
-                        dict[str, Any],
-                        self._client.upload_part(
-                            Bucket=self._bucket,
-                            Key=object_key,
-                            UploadId=upload_id,
-                            PartNumber=plan.part_number,
-                            Body=body,
-                        ),
-                    )
-                    request_seconds = time.perf_counter() - request_started
-                    return (
-                        ArchiveMultipartUploadedPart(
-                            part_number=plan.part_number,
-                            etag=str(response["ETag"]),
-                            size=len(body),
-                        ),
-                        request_seconds,
-                    )
-
-                def drain_completed(*, return_when: str) -> None:
-                    nonlocal upload_request_seconds
-                    if not pending:
-                        return
-                    done, still_pending = wait(pending, return_when=return_when)
-                    pending.clear()
-                    pending.update(still_pending)
-                    error: BaseException | None = None
-                    for future in done:
-                        try:
-                            part, request_seconds = future.result()
-                            upload_request_seconds += request_seconds
-                            record_completed_part(part)
-                        except BaseException as exc:
-                            error = exc
-                    if error is not None:
-                        for future in pending:
-                            future.cancel()
-                        raise error
-
-                for plan in plans:
-                    preparation_started = time.perf_counter()
-                    body = _encrypted_object_part_body(
-                        object=object,
-                        session=session,
-                        plan=plan,
-                    )
-                    preparation_seconds += time.perf_counter() - preparation_started
-                    stored_hasher.update(body)
-                    if plan.part_number <= resumed_part_count:
-                        continue
-                    pending.add(executor.submit(upload_part_body, plan=plan, body=body))
-                    if len(pending) >= multipart_concurrency:
-                        drain_completed(return_when=FIRST_COMPLETED)
-
-                while pending:
-                    drain_completed(return_when=FIRST_COMPLETED)
-
-            remote_parts = self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
-            completed_parts = [
-                completed_parts_by_number[part_number]
-                for part_number in range(1, expected_part_count + 1)
-                if part_number in completed_parts_by_number
-            ]
-            if len(completed_parts) != expected_part_count:
-                raise ValueError(
-                    "encrypted collection archive multipart upload is missing parts "
-                    "before completion"
-                )
-            _validate_recorded_parts_exist_remotely(completed_parts, remote_parts)
-            if multipart_tracker is not None:
-                multipart_tracker.require_active(collection_id=collection_id)
-            self._client.complete_multipart_upload(
-                Bucket=self._bucket,
-                Key=object_key,
-                UploadId=upload_id,
-                MultipartUpload={
-                    "Parts": [
-                        {"PartNumber": part.part_number, "ETag": part.etag}
-                        for part in completed_parts
-                    ]
-                },
-            )
-            if multipart_tracker is not None:
-                checkpoint(
-                    multipart_tracker.clear_multipart_upload,
-                    collection_id=collection_id,
-                    object_id=object_id,
-                    upload_id=upload_id,
-                )
-            _LOG.info(
-                "completed encrypted S3 multipart upload for %s: parts=%s bytes=%s "
-                "elapsed_seconds=%.3f preparation_seconds=%.3f "
-                "upload_request_seconds=%.3f checkpoint_seconds=%.3f",
-                object_key,
-                len(completed_parts),
-                uploaded_bytes,
-                time.perf_counter() - started,
-                preparation_seconds,
-                upload_request_seconds,
-                checkpoint_seconds,
-            )
-            if self._multipart_timing_observer is not None:
-                self._multipart_timing_observer(
-                    ArchiveMultipartTiming(
-                        object_id=object_id,
-                        stored_bytes=content_length,
-                        parts=expected_part_count,
-                        concurrency=multipart_concurrency,
-                        elapsed_seconds=time.perf_counter() - started,
-                        preparation_seconds=preparation_seconds,
-                        upload_request_seconds=upload_request_seconds,
-                        checkpoint_seconds=checkpoint_seconds,
-                    )
-                )
-            return stored_hasher.hexdigest()
-        except Exception:
-            if upload_state is not None:
-                _LOG.warning(
-                    "leaving incomplete encrypted S3 multipart upload for %s resumable: "
-                    "upload_id=%s uploaded_bytes=%s/%s resumed_parts=%s",
-                    object_key,
-                    upload_state.upload_id,
-                    uploaded_bytes,
-                    content_length,
-                    resumed_part_count,
-                    exc_info=True,
-                )
-            raise
-
-    def _list_uploaded_parts(
-        self,
-        *,
-        object_key: str,
-        upload_id: str,
-    ) -> list[dict[str, object]]:
-        parts: list[dict[str, object]] = []
-        marker = 0
-        while True:
-            request: dict[str, object] = {
-                "Bucket": self._bucket,
-                "Key": object_key,
-                "UploadId": upload_id,
-            }
-            if marker:
-                request["PartNumberMarker"] = marker
-            response = cast(
-                dict[str, Any],
-                self._client.list_parts(**request),
-            )
-            for part in response.get("Parts", []):
-                if not isinstance(part, dict):
-                    continue
-                part_number = int(part["PartNumber"])
-                parts.append(
-                    {
-                        "PartNumber": part_number,
-                        "ETag": str(part["ETag"]),
-                        "Size": int(part.get("Size", 0)),
-                    }
-                )
-                marker = part_number
-            if not response.get("IsTruncated"):
-                return sorted(parts, key=lambda current: int(str(current["PartNumber"])))
-            marker = int(str(response.get("NextPartNumberMarker", marker)))
-
-    def _contiguous_uploaded_parts(
-        self,
-        *,
-        object_key: str,
-        upload_id: str,
-        recorded_parts: tuple[ArchiveMultipartUploadedPart, ...],
-        part_size: int,
-        content_length: int,
-        expected_part_sizes: tuple[int, ...] | None = None,
-    ) -> list[ArchiveMultipartUploadedPart]:
-        expected_part_count = (content_length + part_size - 1) // part_size
-        if expected_part_sizes is not None:
-            expected_part_count = len(expected_part_sizes)
-        remote_parts_by_number = {
-            int(str(part["PartNumber"])): part
-            for part in self._list_uploaded_parts(object_key=object_key, upload_id=upload_id)
-        }
-        recorded_parts_by_number = {part.part_number: part for part in recorded_parts}
-        contiguous: list[ArchiveMultipartUploadedPart] = []
-        for part_number in range(1, expected_part_count + 1):
-            recorded = recorded_parts_by_number.get(part_number)
-            remote = remote_parts_by_number.get(part_number)
-            if recorded is None or remote is None:
-                break
-            if expected_part_sizes is not None:
-                expected_size = expected_part_sizes[part_number - 1]
-            else:
-                expected_size = (
-                    content_length - part_size * (expected_part_count - 1)
-                    if part_number == expected_part_count
-                    else part_size
-                )
-            if recorded.size != expected_size:
-                break
-            if str(remote["ETag"]) != recorded.etag or int(str(remote["Size"])) != recorded.size:
-                break
-            contiguous.append(recorded)
-        return contiguous
 
     def prepare_archive_objects_read(
         self,
@@ -2242,134 +1028,52 @@ def _combine_archive_read_statuses(
     )
 
 
+def _archive_storage_prefix(object_path: str) -> str:
+    for marker in ("/volumes/", "/objects/"):
+        if marker in object_path:
+            return object_path.split(marker, 1)[0]
+    return object_path.rsplit("/", 1)[0]
+
+
 def _bucket_recovery_readme() -> str:
     return f"""# Encrypted Riverhog Archive Recovery
 
 {ARCHIVE_DATA_LOSS_WARNING}
 
-Listing and reading these objects are safe inspection operations. Deletion,
-movement, overwriting, lifecycle expiration, storage-class changes, and object-
-version removal are mutations. Use Riverhog's guarded archive workflows for an
-authorized collection deletion or archive-copy retirement.
+Riverhog archives are recoverable with standard S3, `age`, `ots`, `sha256sum`,
+`minisign`, and `tar` tools. The `riverhog-recover` command is the maintained
+reference implementation of that process. Archive paths are intentionally opaque.
 
-This bucket or prefix stores independently encrypted archive objects. Paths are opaque
-on purpose so that bucket listings, access logs, and screenshots
-do not reveal private collection names.
+You need read access to this bucket or prefix and the archive passphrase. S3
+credentials and the archive passphrase are separate secrets. Treat every object
+as read-only unless an exact mutation has been explicitly authorized.
 
-## What You Need
+## Locate and verify an archive
 
-- S3 credentials, token, or S3 login/session that can list and read this bucket or prefix.
-- The archive passphrase.
-- Standard recovery tools: an S3 CLI such as `aws`, `age`, `sha256sum`, `minisign`,
-  `ots`, and `tar`.
-
-S3 credentials and the archive passphrase are different secrets. The `aws`
-commands below will fail until the CLI is authenticated with S3 access. Common
-options include `aws configure`, `aws sso login --profile PROFILE`, environment
-variables such as `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
-`AWS_SESSION_TOKEN`, or equivalent credentials for an S3-compatible provider.
-
-Do not put the archive passphrase directly in shell commands. The `age`
-commands below will prompt for it.
-
-## Find an archive
-
-List the opaque archive directories, then inspect each directory's independently
-encrypted collection metadata:
+List `archives/`, decrypt each candidate `metadata.json.age` to identify the
+collection, then download and decrypt `manifest.json.age`. Verify its required
+OpenTimestamps proof before recovery:
 
 ```sh
-aws s3 ls s3://BUCKET/PREFIX/archives/
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/metadata.yml.age .
-age --decrypt -o metadata.yml metadata.yml.age
-# Enter the archive passphrase when age prompts.
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.json.age .
+aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.json.ots.age .
+age --decrypt -o manifest.json manifest.json.age
+age --decrypt -o manifest.json.ots manifest.json.ots.age
+ots verify manifest.json.ots -f manifest.json
 ```
 
-`metadata.yml` identifies the collection and its current mutable metadata. The
-directory's immutable manifest maps every logical file to its encrypted objects.
-
-Replace `BUCKET` and `ARCHIVE_ID` in the examples below. `PREFIX/` is optional:
-omit it when this guidance file is stored at the bucket root.
-
-## Inspect the Manifest
-
-Manifests and timestamp proofs are normally stored in regular S3 storage, so
-they can usually be downloaded immediately:
-
-```sh
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.yml.age .
-age --decrypt -o manifest.yml manifest.yml.age
-# Enter the archive passphrase when age prompts.
-
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/manifest.yml.ots.age .
-age --decrypt -o manifest.yml.ots manifest.yml.ots.age
-# Enter the same archive passphrase when age prompts.
-```
-
-Optional timestamp proof verification:
-
-```sh
-ots verify manifest.yml.ots -f manifest.yml
-```
-
-## Verify the exact archive copy
-
-Each archive directory contains a plaintext checksum inventory signed by Riverhog's
-Minisign key. The signature has its own OpenTimestamps proof. Obtain the public key
-from an independently trusted source; the bucket-root `minisign.pub` is a convenient
-copy, not an independent trust anchor.
-
-```sh
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS .
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS.minisig .
-aws s3 cp s3://BUCKET/PREFIX/archives/ARCHIVE_ID/SHA256SUMS.minisig.ots .
-minisign -Vm SHA256SUMS -x SHA256SUMS.minisig -p /path/to/trusted-minisign.pub
-ots verify SHA256SUMS.minisig.ots -f SHA256SUMS.minisig
-```
-
-After downloading the listed ciphertext paths beneath the archive directory, run
-`sha256sum -c SHA256SUMS` from that directory. The mutable `metadata.yml.age` is
-intentionally outside this immutable inventory.
+If present, verify `SHA256SUMS` with `SHA256SUMS.minisig` and a public key
+obtained from an independent trust source, then verify
+`SHA256SUMS.minisig.ots`. The bucket-root `minisign.pub` is a convenience copy,
+not an independent trust anchor.
 
 ## Recover files
 
-The manifest maps each file to one or more `data-*` objects. Download only those
-objects from `archives/ARCHIVE_ID/objects/`. An object in S3 Glacier Deep Archive
-must be restored before it is readable:
-
-```sh
-aws s3api restore-object \\
-  --bucket BUCKET \\
-  --key PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age \\
-  --restore-request '{{"Days":7,"GlacierJobParameters":{{"Tier":"Bulk"}}}}'
-```
-
-After any required restore completes, download and independently decrypt each
-needed object. The AWS CLI requires `--force-glacier-transfer` for a restored
-Glacier-class object even after its restore status reports ready; the flag does not
-initiate restoration:
-
-```sh
-aws s3 cp \
-  s3://BUCKET/PREFIX/archives/ARCHIVE_ID/objects/data-NNNNNN.age . \
-  --force-glacier-transfer
-age --decrypt -o data-NNNNNN data-NNNNNN.age
-# Enter the same archive passphrase when age prompts.
-sha256sum data-NNNNNN
-```
-
-Compare each decrypted object's digest with its `objects` entry in the
-manifest. Then follow the file's ordered `objects` mappings:
-
-- For a `file` object, the decrypted object is the complete logical file.
-- For a `segment` object, concatenate decrypted segments in manifest order.
-- For a `pack` object, extract the mapping's `member` from the decrypted tar:
-
-```sh
-tar -xOf data-NNNNNN MEMBER > recovered-file
-```
-
-Finally compare every recovered file's size and SHA-256 digest with its manifest
-entry.
+The JSON manifest names encrypted volumes under `volumes/` and maps their
+plaintext ranges to logical files. Restore Glacier-class volumes before download.
+Decrypt `pack-*.tar.age` volumes and extract their mapped tar members; decrypt
+`segment-*.bin.age` volumes and concatenate mapped ranges in manifest order.
+Finally verify every recovered file byte count and SHA-256 against the manifest.
 """
 
 

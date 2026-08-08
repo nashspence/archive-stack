@@ -9,9 +9,7 @@ description = "Independent reference recovery for Riverhog archive copies."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = [
-  "PyYAML>=6,<7",
-]
+dependencies = []
 
 [project.scripts]
 riverhog-recover = "riverhog_recover.cli:main"

@@ -21,13 +21,7 @@ from munchy_api_client.filesystem_metadata import (
 )
 from munchy_target_support.metadata_projection import project_immich_metadata
 from munchy_target_support.uvicorn_logging import DropHealthAccessLogFilter
-from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_api_client import Conflict, NotFound
-from riverhog_core.ingress_crypto import (
-    create_ingress_encryption,
-    ingress_encryption_descriptor,
-)
-from riverhog_core.runtime_config import RuntimeConfig
 from time_formats import utc_timestamp_now
 
 SERVER_MODULES = {
@@ -1606,99 +1600,6 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
     server.routing_service.write_metadata_projection_sidecars(job, updated, groups, archive_dir)
 
     assert sidecar.read_text(encoding="utf-8") == xmp
-
-
-def test_metadata_projection_sidecar_can_follow_eager_handoff_cleanup(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    upload = server.upload_service.save_input_upload_raw(
-        {
-            "input_upload_id": "upload-1",
-            "files": [
-                {
-                    "path": "video/IMG_0001.MOV",
-                    "bytes": 5,
-                    "file_upload_id": "phone-img-1",
-                    "metadata_projection_metadata": {
-                        "capture_date": "2026-06-28T20:30:40-07:00",
-                        "capture_date_source": "exif.date_time_original",
-                        "gps": {"latitude": 37.3317, "longitude": -122.0301},
-                        "gps_source": "exif.gps_latitude+exif.gps_longitude",
-                        "device": {
-                            "make": "Apple",
-                            "model": "iPhone SE (2nd generation)",
-                        },
-                        "creators": ["Example Operator"],
-                        "tags": [],
-                    },
-                    "route_id": "iphone-video",
-                    "resolved_group_rel": "iphone/video/IMG_0001.MOV",
-                }
-            ],
-        }
-    )
-    groups = {
-        "video": {
-            "output_mode": "video",
-            "tasks": ["archive_video"],
-            "encode_profile": {"archive": {"container": "webm"}},
-            "metadata_projection": {
-                "enabled": True,
-                "device": {"make": "Apple", "model": "iPhone SE (2nd generation)"},
-                "creators": ["Example Operator"],
-            },
-        }
-    }
-    archive_dir = tmp_path / "archive"
-    output = server.routing_service.archive_output_for_upload_file(
-        upload["files"][0],
-        group_name="video",
-        group_config=groups["video"],
-        archive_dir=archive_dir,
-    )
-    output_rel = output.relative_to(archive_dir).as_posix()
-    server.state_store.save_job(
-        {
-            "job_id": "job-1",
-            "input_upload_id": "upload-1",
-            "template_id": "phone-archive",
-            "handoff": {"destination": "riverhog", "options": {}},
-            "handoff_adapter_state": {
-                "state": "open",
-                "files": {
-                    output_rel: {
-                        "path": output_rel,
-                        "bytes": 4,
-                        "uploaded_bytes": 4,
-                        "state": "deleted",
-                    }
-                },
-            },
-        }
-    )
-    stale_job = {
-        "job_id": "job-1",
-        "input_upload_id": "upload-1",
-        "template_id": "phone-archive",
-        "handoff": {"destination": "riverhog", "options": {}},
-    }
-
-    updated = server.routing_service.write_metadata_projection_sidecars(
-        stale_job, upload, groups, archive_dir
-    )
-
-    sidecar = output.with_name("IMG_0001.webm.xmp")
-    assert not output.exists()
-    assert sidecar.exists()
-    assert stale_job["handoff_adapter_state"]["files"][output_rel]["state"] == "deleted"
-    assert updated["files"][0]["metadata_projection_sidecar"] == (
-        "video/iphone/video/IMG_0001.webm.xmp"
-    )
-    assert server.state_store.load_job("job-1")["metadata_projection_result"]["sidecars"] == 1
 
 
 def test_metadata_projection_still_fails_for_missing_unhanded_output(
@@ -3892,7 +3793,10 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
                 ],
             }
 
-    with pytest.raises(server.domain_errors.HandoffFailed, match=r"missing ingress objects \(1\)"):
+    with pytest.raises(
+        server.domain_errors.HandoffFailed,
+        match=r"missing registered files \(1\); local handoff artifacts unavailable \(1\)",
+    ):
         server.riverhog.complete_riverhog_session(job, MissingApi(), tmp_path / "archive")
 
     stored = server.state_store.load_job("job-1")
@@ -4967,7 +4871,7 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
             "succeeded_at": "2026-01-01T00:01:00Z",
         },
         "handoff_metrics": {
-            "final_sweep_uploaded_files": 0,
+            "registered_files": 0,
             "session_complete_elapsed_seconds": 0.25,
         },
         "handoff_adapter_state": {
@@ -6347,8 +6251,6 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_CHUNK_BYTES", 2)
-
     archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     video = archive_dir / "camera" / "a.webm"
     sidecar = archive_dir / "camera" / "a.webm.source-artifacts.tar.zst"
@@ -6375,17 +6277,11 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     class FakeRiverhogApi:
         def __init__(self) -> None:
             self.registered: dict[str, dict[str, object]] = {}
-            self.offsets: dict[str, int] = {}
-            self.descriptors: dict[str, dict[str, object]] = {}
-            self.ciphertexts: dict[str, bytearray] = {}
-            self.completed = False
-            self._tus_client = FakeTusClient(self)
+            self.unit_content: bytes | None = None
+            self.finalized = False
 
         def close(self) -> None:
             return
-
-        def tus_client(self) -> object:
-            return self._tus_client
 
         def create_or_resume_collection_upload_session(
             self,
@@ -6404,57 +6300,19 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
-            return self.payload(state="finalized" if self.completed else "open")
+            return self.payload(state="finalized" if self.finalized else "open")
 
-        def create_or_resume_registered_collection_file_upload(
+        def register_collection_upload_session_files(
             self,
             collection_id: int,
-            file: dict[str, object],
+            files: tuple[dict[str, object], ...],
         ) -> dict[str, object]:
             assert collection_id == 42
-            path = str(file["path"])
-            self.offsets.setdefault(path, 0)
-            descriptor = self.descriptors.get(path)
-            if descriptor is None:
-                encryption = create_ingress_encryption(
-                    RuntimeConfig(),
-                    collection_id=collection_id,
-                    path=path,
-                    plaintext_bytes=int(file["bytes"]),
-                )
-                descriptor = ingress_encryption_descriptor(
-                    RuntimeConfig(),
-                    collection_id=collection_id,
-                    path=path,
-                    plaintext_bytes=int(file["bytes"]),
-                    ciphertext_bytes=encryption.ciphertext_bytes,
-                    secret_envelope=encryption.secret_envelope,
-                    state_json=encryption.state_json,
-                )
-                self.descriptors[path] = descriptor
-            self.registered[path] = dict(file)
-            uploaded = self.offsets.get(path, 0)
-            ingress_bytes = int(descriptor["ciphertext_bytes"])
-            upload_state = "uploaded" if uploaded >= ingress_bytes else "partial"
-            return {
-                **self.payload(state="open"),
-                "path": path,
-                "protocol": "tus",
-                "upload_url": f"upload://{file['path']}",
-                "offset": uploaded,
-                "length": ingress_bytes,
-                "encryption": descriptor,
-                "checksum_algorithm": "sha256",
-                "expires_at": "2026-01-01T00:00:00Z",
-                "file": {
-                    **dict(file),
-                    "upload_state": upload_state,
-                    "uploaded_bytes": int(file["bytes"]) if upload_state == "uploaded" else 0,
-                    "upload_state_expires_at": None
-                    if upload_state == "uploaded"
-                    else "2026-01-01T00:00:00Z",
-                },
-            }
+            assert [str(file["path"]) for file in files] == sorted(
+                str(file["path"]) for file in files
+            )
+            self.registered.update((str(file["path"]), dict(file)) for file in files)
+            return self.payload(state="open")
 
         def complete_collection_upload_session(
             self,
@@ -6462,54 +6320,87 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             **_kwargs: object,
         ) -> dict[str, object]:
             assert collection_id == 42
-            self.completed = True
-            return self.payload(state="archiving")
+            assert _kwargs["files_total"] == 2
+            assert len(str(_kwargs["content_etag"])) == 64
+            return self.payload(state="uploading")
+
+        def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
+            return {
+                "collection_id": 42,
+                "volumes": [
+                    {
+                        "volume_id": "pack-000000000000",
+                        "plan_sha256": "a" * 64,
+                        "units": [
+                            {
+                                "unit": 0,
+                                "payload_bytes": 9,
+                                "plaintext_bytes": 9,
+                                "sources": [
+                                    {"path": path, "offset": 0, "bytes": int(file["bytes"])}
+                                    for path, file in sorted(self.registered.items())
+                                ],
+                                "state": "pending",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+        def put_collection_upload_session_unit(
+            self,
+            collection_id: int,
+            volume_id: str,
+            unit: int,
+            *,
+            plan_sha256: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            assert plan_sha256 == "a" * 64
+            self.unit_content = content
+            self.finalized = True
+            return {"state": "committed"}
 
         def payload(self, *, state: str) -> dict[str, object]:
-            files = [
+            files: list[dict[str, object]] = [
                 {
                     **payload,
-                    "upload_state": "uploaded"
-                    if self.offsets.get(path, 0) >= int(self.descriptors[path]["ciphertext_bytes"])
-                    else "partial",
-                    "uploaded_bytes": int(payload["bytes"])
-                    if self.offsets.get(path, 0) >= int(self.descriptors[path]["ciphertext_bytes"])
-                    else 0,
+                    "upload_state": "uploaded" if self.finalized else "pending",
+                    "uploaded_bytes": int(payload["bytes"]) if self.finalized else 0,
                     "upload_state_expires_at": None,
                 }
-                for path, payload in sorted(self.registered.items())
+                for payload in self.registered.values()
             ]
             return {
                 "collection_id": 42,
+                "created_at": "2026-01-01T00:00:00Z",
+                "tags": ["camera-archive"],
+                "ingest_source": str(archive_dir),
+                "archive_store": "primary",
                 "state": state,
+                "layout": {
+                    "pack_source_bytes": 1024,
+                    "pack_files": 100,
+                    "pack_member_bytes": 1024,
+                    "pack_part_plaintext_bytes": 1024,
+                    "raw_volume_plaintext_bytes": 4096,
+                    "raw_part_plaintext_bytes": 65536,
+                },
                 "files_total": len(files),
-                "files_uploaded": sum(
-                    int(item["uploaded_bytes"]) >= int(item["bytes"]) for item in files
-                ),
+                "files_pending": 0 if self.finalized else len(files),
+                "files_partial": 0,
+                "files_uploaded": len(files) if self.finalized else 0,
                 "bytes_total": sum(int(item["bytes"]) for item in files),
                 "uploaded_bytes": sum(int(item["uploaded_bytes"]) for item in files),
-                "missing_bytes": 0,
+                "archive_phase": "complete" if self.finalized else "planning",
+                "archive_uploaded_bytes": 9 if self.finalized else 0,
+                "archive_total_bytes": 9,
+                "archive_uploaded_parts": 1 if self.finalized else 0,
+                "archive_total_parts": 1,
                 "files": files,
             }
-
-    class FakeTusClient:
-        def __init__(self, api: FakeRiverhogApi) -> None:
-            self.api = api
-
-        def patch_chunk(
-            self,
-            upload_url: str,
-            *,
-            offset: int,
-            checksum_algorithm: str,
-            content: bytes,
-        ) -> int:
-            assert checksum_algorithm == "sha256"
-            path = upload_url.removeprefix("upload://")
-            assert offset == self.api.offsets[path]
-            self.api.ciphertexts.setdefault(path, bytearray()).extend(content)
-            self.api.offsets[path] = offset + len(content)
-            return self.api.offsets[path]
 
     fake = FakeRiverhogApi()
     monkeypatch.setattr(server.riverhog, "ApiClient", lambda: fake)
@@ -6520,37 +6411,26 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
 
     assert result["destination"] == "riverhog"
     assert result["external_id"] == 42
-    assert fake.completed is True
+    assert fake.finalized is True
     assert sorted(fake.registered) == [
         "camera/a.webm",
         "camera/a.webm.source-artifacts.tar.zst",
     ]
-    assert {
-        path: b"".join(
-            iter_decrypt_age_scrypt(
-                [bytes(ciphertext)],
-                str(fake.descriptors[path]["passphrase"]),
-            )
-        )
-        for path, ciphertext in fake.ciphertexts.items()
-    } == {
-        "camera/a.webm": b"video",
-        "camera/a.webm.source-artifacts.tar.zst": b"meta",
-    }
+    assert fake.unit_content == b"videometa"
     assert not video.exists()
     assert not sidecar.exists()
     progress = server.riverhog.riverhog_handoff_progress(job)
     assert progress["files_uploaded"] == 2
     assert progress["bytes_total"] == 9
     metrics = job["handoff_metrics"]
-    assert metrics["final_sweep_processed_files"] == 2
-    assert metrics["final_sweep_uploaded_files"] == 2
-    assert metrics["final_sweep_uploaded_bytes"] == 9
-    assert metrics["final_sweep_before"] == {}
-    assert metrics["final_sweep_after"]["artifact_files_uploaded"] == 2
+    assert metrics["registration_processed_files"] == 2
+    assert metrics["registered_files"] == 2
+    assert metrics["registered_bytes"] == 9
+    assert metrics["registration_before"] == {}
+    assert metrics["registration_after"]["artifact_files_registered"] == 2
     assert metrics["session_complete_elapsed_seconds"] >= 0
     assert metrics["finished_at"]
-    assert result["metrics"]["final_sweep_uploaded_files"] == 2
+    assert result["metrics"]["registered_files"] == 2
     assert result["metrics"]["session_complete_elapsed_seconds"] >= 0
 
 
@@ -6619,458 +6499,6 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
     )
 
     assert job["handoff_expected_primary_files_total"] == 2
-
-
-def test_eager_riverhog_upload_can_be_bounded_per_tick(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-
-    archive_dir = tmp_path / "archive"
-    first = archive_dir / "camera" / "a.webm"
-    second = archive_dir / "camera" / "b.webm"
-    first.parent.mkdir(parents=True)
-    first.write_bytes(b"a")
-    second.write_bytes(b"b")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                "camera/a.mp4": {"state": "encoded", "output": str(first)},
-                "camera/b.mp4": {"state": "encoded", "output": str(second)},
-            },
-        },
-    }
-    uploaded: list[str] = []
-
-    class FakeRiverhogApi:
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", lambda: FakeRiverhogApi())
-    monkeypatch.setattr(
-        server.riverhog,
-        "ensure_riverhog_session",
-        lambda job, api, archive_dir: 42,
-    )
-
-    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
-        uploaded.append(Path(source_path).name)
-        return True
-
-    monkeypatch.setattr(server.riverhog, "riverhog_upload_artifact", fake_upload_artifact)
-
-    result = server.riverhog.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=1)
-
-    assert result["uploaded_files"] == 1
-    assert result["processed_files"] == 1
-    assert uploaded == ["a.webm"]
-
-
-def test_cached_riverhog_completion_requires_remote_ack_before_local_cleanup(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    archive_dir = tmp_path / "archive"
-    source = archive_dir / "camera" / "a.webm.xmp"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"metadata")
-    record = {
-        "path": "camera/a.webm.xmp",
-        "bytes": source.stat().st_size,
-        "sha256": server.upload_service.file_sha256(source),
-        "uploaded_bytes": source.stat().st_size,
-        "state": "uploaded",
-    }
-    job = {
-        "job_id": "job-1",
-        "handoff_adapter_state": {
-            "collection_id": 42,
-            "files": {record["path"]: record},
-        },
-    }
-
-    monkeypatch.setattr(
-        server.riverhog,
-        "ensure_riverhog_session",
-        lambda *_args: 42,
-    )
-    monkeypatch.setattr(server.riverhog, "riverhog_file_record", lambda *_args: record)
-    monkeypatch.setattr(
-        server.riverhog,
-        "confirm_riverhog_artifact_uploaded",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("remote acknowledgment pending")),
-    )
-
-    with pytest.raises(RuntimeError, match="remote acknowledgment pending"):
-        server.riverhog.riverhog_upload_artifact(job, object(), archive_dir, source)
-
-    assert source.is_file()
-    assert record["state"] == "uploaded"
-
-
-def test_stale_eager_handoff_stops_at_metadata_projection(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-
-    archive_dir = tmp_path / "archive"
-    output = archive_dir / "camera" / "a.webm"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"a")
-    server.state_store.save_job(
-        {
-            "job_id": "job-1",
-            "state": "running",
-            "phase": "metadata_projection",
-            "handoff": {"destination": "riverhog", "options": {}},
-            "handoff_adapter_state": {
-                "state": "open",
-                "collection_id": 42,
-                "files": {},
-            },
-            "eager_archive": {
-                "files": {
-                    "camera/a.mp4": {"state": "encoded", "output": str(output)},
-                },
-            },
-        }
-    )
-    stale_worker_job = {
-        "job_id": "job-1",
-        "state": "running",
-        "phase": "eager_archive:pipeline=3/3",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                "camera/a.mp4": {"state": "encoded", "output": str(output)},
-            },
-        },
-    }
-
-    def fail_api_client() -> object:
-        raise AssertionError("stale eager upload should not create a Riverhog client")
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", fail_api_client)
-
-    result = server.riverhog.upload_riverhog_artifacts(stale_worker_job, archive_dir, final=False)
-
-    assert result == {
-        "processed_files": 0,
-        "uploaded_files": 0,
-        "uploaded_bytes": 0,
-        "elapsed_seconds": 0.0,
-    }
-    assert output.exists()
-
-
-def test_metadata_projection_waits_for_inflight_eager_riverhog_upload(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-    }
-    upload_lock = server.riverhog.riverhog_upload_call_lock("job-1")
-    finished = threading.Event()
-
-    upload_lock.acquire()
-    try:
-        waiter = threading.Thread(
-            target=lambda: (
-                server.handoff_service.handoff_adapter(job).wait_until_idle(job),
-                finished.set(),
-            )
-        )
-        waiter.start()
-        assert not finished.wait(0.05)
-    finally:
-        upload_lock.release()
-    waiter.join(timeout=2)
-
-    assert finished.is_set()
-
-
-def test_eager_riverhog_upload_can_be_bounded_by_bytes(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-
-    archive_dir = tmp_path / "archive"
-    first = archive_dir / "camera" / "a.webm"
-    second = archive_dir / "camera" / "b.webm"
-    first.parent.mkdir(parents=True)
-    first.write_bytes(b"aa")
-    second.write_bytes(b"bb")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                "camera/a.mp4": {"state": "encoded", "output": str(first)},
-                "camera/b.mp4": {"state": "encoded", "output": str(second)},
-            },
-        },
-    }
-    uploaded: list[str] = []
-
-    class FakeRiverhogApi:
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", lambda: FakeRiverhogApi())
-    monkeypatch.setattr(
-        server.riverhog,
-        "ensure_riverhog_session",
-        lambda job, api, archive_dir: 42,
-    )
-
-    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
-        uploaded.append(Path(source_path).name)
-        return True
-
-    monkeypatch.setattr(server.riverhog, "riverhog_upload_artifact", fake_upload_artifact)
-
-    result = server.riverhog.upload_riverhog_artifacts(
-        job,
-        archive_dir,
-        final=False,
-        max_files=100,
-        max_bytes=2,
-    )
-
-    assert result["uploaded_files"] == 1
-    assert result["uploaded_bytes"] == 2
-    assert uploaded == ["a.webm"]
-
-
-def test_eager_riverhog_upload_uses_parallel_workers(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 2)
-
-    archive_dir = tmp_path / "archive"
-    first = archive_dir / "camera" / "a.webm"
-    second = archive_dir / "camera" / "b.webm"
-    first.parent.mkdir(parents=True)
-    first.write_bytes(b"a")
-    second.write_bytes(b"b")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                "camera/a.mp4": {"state": "encoded", "output": str(first)},
-                "camera/b.mp4": {"state": "encoded", "output": str(second)},
-            },
-        },
-    }
-
-    class FakeRiverhogApi:
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", lambda: FakeRiverhogApi())
-    monkeypatch.setattr(
-        server.riverhog,
-        "ensure_riverhog_session",
-        lambda job, api, archive_dir: 42,
-    )
-
-    barrier = threading.Barrier(2)
-    active = 0
-    max_active = 0
-    seen: list[str] = []
-    lock = threading.Lock()
-
-    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
-        nonlocal active, max_active
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-            seen.append(Path(source_path).name)
-        barrier.wait(timeout=2)
-        with lock:
-            active -= 1
-        return True
-
-    monkeypatch.setattr(server.riverhog, "riverhog_upload_artifact", fake_upload_artifact)
-
-    result = server.riverhog.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=2)
-
-    assert result["uploaded_files"] == 2
-    assert result["processed_files"] == 2
-    assert sorted(seen) == ["a.webm", "b.webm"]
-    assert max_active == 2
-
-
-def test_eager_riverhog_upload_reuses_client_per_worker_thread(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 2)
-
-    archive_dir = tmp_path / "archive"
-    outputs = [archive_dir / "camera" / f"{name}.webm" for name in ("a", "b", "c", "d")]
-    outputs[0].parent.mkdir(parents=True)
-    for output in outputs:
-        output.write_bytes(b"x")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                f"camera/{output.stem}.mp4": {"state": "encoded", "output": str(output)}
-                for output in outputs
-            },
-        },
-    }
-
-    created: list[object] = []
-    closed: list[object] = []
-
-    class FakeRiverhogApi:
-        def __init__(self) -> None:
-            created.append(self)
-
-        def close(self) -> None:
-            closed.append(self)
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", FakeRiverhogApi)
-    monkeypatch.setattr(
-        server.riverhog,
-        "ensure_riverhog_session",
-        lambda job, api, archive_dir: 42,
-    )
-
-    barrier = threading.Barrier(2)
-    started = 0
-    lock = threading.Lock()
-    api_ids_by_thread: dict[int, set[int]] = {}
-
-    def fake_upload_artifact(job, api, archive_dir, source_path, **_kwargs):  # type: ignore[no-untyped-def]
-        nonlocal started
-        thread_id = threading.get_ident()
-        with lock:
-            started += 1
-            api_ids_by_thread.setdefault(thread_id, set()).add(id(api))
-            should_wait = started <= 2
-        if should_wait:
-            barrier.wait(timeout=2)
-        return True
-
-    monkeypatch.setattr(server.riverhog, "riverhog_upload_artifact", fake_upload_artifact)
-
-    result = server.riverhog.upload_riverhog_artifacts(job, archive_dir, final=False, max_files=4)
-
-    assert result["uploaded_files"] == 4
-    assert result["processed_files"] == 4
-    assert len(created) == 2
-    assert sorted(id(client) for client in closed) == sorted(id(client) for client in created)
-    assert all(len(api_ids) == 1 for api_ids in api_ids_by_thread.values())
-
-
-def test_riverhog_upload_bounds_single_chunk_completion_concurrency(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_WORKERS", 4)
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_SINGLE_CHUNK_WORKERS", 2)
-
-    archive_dir = tmp_path / "archive"
-    outputs = [archive_dir / "camera" / f"{name}.xmp" for name in ("a", "b", "c", "d")]
-    outputs[0].parent.mkdir(parents=True)
-    for output in outputs:
-        output.write_bytes(b"x")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-    }
-
-    class FakeRiverhogApi:
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(server.riverhog, "ApiClient", FakeRiverhogApi)
-
-    active = 0
-    max_active = 0
-    first_pair_active = threading.Event()
-    lock = threading.Lock()
-
-    def fake_upload_artifact(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        nonlocal active, max_active
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-            if active == 2:
-                first_pair_active.set()
-        assert first_pair_active.wait(timeout=2)
-        with lock:
-            active -= 1
-        return True
-
-    monkeypatch.setattr(server.riverhog, "riverhog_upload_artifact", fake_upload_artifact)
-
-    result = server.riverhog.upload_riverhog_artifacts(job, archive_dir, final=True)
-
-    assert result["uploaded_files"] == 4
-    assert max_active == 2
 
 
 def test_save_job_preserves_newer_riverhog_upload_state(
@@ -7531,198 +6959,6 @@ def test_refresh_riverhog_session_uses_compacted_upload_result(
     assert archive_stage["bytes_total"] == 1024
     assert archive_stage["items_done"] == 1
     assert archive_stage["items_total"] == 4
-
-
-def test_handoff_progress_prefers_recent_burst_rate(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(
-        server.processing_service, "encode_progress_for_job", lambda job: {"files_total": 1}
-    )
-
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "last_eager_upload_at": utc_timestamp_now(),
-            "last_eager_upload_bytes": 2048,
-            "last_eager_upload_elapsed_seconds": 2.0,
-            "files": {
-                "camera/a.webm": {
-                    "path": "camera/a.webm",
-                    "bytes": 2048,
-                    "uploaded_bytes": 2048,
-                    "state": "uploaded",
-                },
-            },
-        },
-    }
-
-    progress = server.riverhog.riverhog_handoff_progress(job)
-
-    assert progress["recent_rate_bytes_per_second"] == 1024
-    assert progress["rate_bytes_per_second"] == 1024
-
-
-def test_eager_handoff_metrics_survive_newer_persisted_job_state(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
-    monkeypatch.setattr(server.riverhog, "utc_timestamp_now", lambda: "2026-01-01T00:00:03Z")
-    monkeypatch.setattr(
-        server.riverhog,
-        "upload_riverhog_artifacts",
-        lambda *args, **kwargs: {  # noqa: ARG005
-            "processed_files": 1,
-            "uploaded_files": 1,
-            "uploaded_bytes": 2048,
-            "elapsed_seconds": 2.0,
-        },
-    )
-
-    server.state_store.save_job(
-        {
-            "job_id": "job-1",
-            "state": "running",
-            "phase": "eager_archive:pipeline=3/3",
-            "handoff": {"destination": "riverhog", "options": {}},
-            "handoff_adapter_state": {
-                "state": "open",
-                "updated_at": "2026-01-01T00:00:04Z",
-                "files": {},
-            },
-        }
-    )
-    stale_worker_job = {
-        "job_id": "job-1",
-        "state": "running",
-        "phase": "eager_archive:pipeline=3/3",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "updated_at": "2026-01-01T00:00:01Z",
-            "files": {},
-        },
-    }
-
-    server.riverhog.maybe_upload_riverhog_artifacts(stale_worker_job, tmp_path / "archive")
-    stored = server.state_store.load_job("job-1")
-    state = stored["handoff_adapter_state"]
-
-    assert state["last_eager_upload_at"] == "2026-01-01T00:00:03Z"
-    assert state["last_eager_upload_files"] == 1
-    assert state["last_eager_upload_bytes"] == 2048
-    assert state["last_eager_upload_elapsed_seconds"] == 2.0
-    assert state["updated_at"] == "2026-01-01T00:00:04Z"
-
-
-def test_stale_eager_handoff_metrics_do_not_replace_newer_persisted_metrics(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-
-    server.state_store.save_job(
-        {
-            "job_id": "job-1",
-            "state": "running",
-            "handoff": {"destination": "riverhog", "options": {}},
-            "handoff_adapter_state": {
-                "state": "open",
-                "updated_at": "2026-01-01T00:00:04Z",
-                "last_eager_upload_at": "2026-01-01T00:00:04Z",
-                "last_eager_upload_files": 4,
-                "last_eager_upload_bytes": 4096,
-                "last_eager_upload_elapsed_seconds": 1.0,
-                "files": {},
-            },
-        }
-    )
-
-    server.state_store.save_job(
-        {
-            "job_id": "job-1",
-            "state": "running",
-            "handoff": {"destination": "riverhog", "options": {}},
-            "handoff_adapter_state": {
-                "state": "open",
-                "updated_at": "2026-01-01T00:00:05Z",
-                "last_eager_upload_at": "2026-01-01T00:00:02Z",
-                "last_eager_upload_files": 1,
-                "last_eager_upload_bytes": 1024,
-                "last_eager_upload_elapsed_seconds": 3.0,
-                "files": {},
-            },
-        }
-    )
-    state = server.state_store.load_job("job-1")["handoff_adapter_state"]
-
-    assert state["last_eager_upload_at"] == "2026-01-01T00:00:04Z"
-    assert state["last_eager_upload_files"] == 4
-    assert state["last_eager_upload_bytes"] == 4096
-    assert state["last_eager_upload_elapsed_seconds"] == 1.0
-
-
-def test_handoff_progress_counts_known_local_sidecars(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    server.upload_service.ensure_dirs()
-    server.persistence.initialize_persistence()
-    monkeypatch.setattr(
-        server.processing_service,
-        "encode_progress_for_job",
-        lambda job: {"files_total": 1},
-    )
-
-    video = (
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
-    )
-    sidecar = server.routing_service.source_artifact_sidecar_for_archive_output(video)
-    video.parent.mkdir(parents=True)
-    video.write_bytes(b"video")
-    sidecar.write_bytes(b"meta")
-    job = {
-        "job_id": "job-1",
-        "handoff": {"destination": "riverhog", "options": {}},
-        "handoff_adapter_state": {
-            "state": "open",
-            "collection_id": 42,
-            "files": {},
-        },
-        "eager_archive": {
-            "files": {
-                "camera/a.mp4": {
-                    "state": "encoded",
-                    "output": str(video),
-                },
-            },
-        },
-    }
-
-    progress = server.riverhog.riverhog_handoff_progress(job)
-
-    assert progress["registered_files_total"] == 0
-    assert progress["local_artifacts_total"] == 2
-    assert progress["files_total"] == 1
-    assert progress["primary_files_total"] == 1
-    assert progress["primary_files_encoded"] == 1
-    assert progress["primary_files_uploaded"] == 0
-    assert progress["artifact_files_known"] == 2
-    assert progress["artifact_files_pending_local"] == 2
 
 
 def test_cancel_riverhog_upload_session_cancels_open_session(

@@ -18,7 +18,6 @@ COPY packages/munchy-api-client packages/munchy-api-client
 COPY packages/munchy-config packages/munchy-config
 COPY packages/munchy-target-support packages/munchy-target-support
 COPY packages/munchy-workflows packages/munchy-workflows
-COPY packages/riverhog-age packages/riverhog-age
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/state-schema packages/state-schema

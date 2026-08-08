@@ -7,11 +7,6 @@ setup_test_compose_project
 configure_compose_tty
 ensure_compose_image test
 
-access_key_id="$(compose_env_value RIVERHOG_INGRESS_ACCESS_KEY_ID GK000000000000000000000002)"
-secret_access_key="$(
-  compose_env_value RIVERHOG_INGRESS_SECRET_ACCESS_KEY 2222222222222222222222222222222222222222222222222222222222222222
-)"
-ingress_bucket="$(compose_env_value RIVERHOG_INGRESS_BUCKET riverhog-ingress)"
 archive_store_names="$(compose_env_value RIVERHOG_ARCHIVE_STORES archive)"
 archive_store_default="${archive_store_names%%,*}"
 archive_store="$(compose_env_value RIVERHOG_ARCHIVE_WRITE_STORE "${archive_store_default}")"
@@ -51,25 +46,16 @@ fi
 garage_node_id="${garage_node%@*}"
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" layout assign -z local -c 1GB "${garage_node_id}"
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" layout apply --version 1
-compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${access_key_id}" "${access_key_id}" "${secret_access_key}"
-if [[ "${archive_access_key_id}" != "${access_key_id}" || "${archive_secret_access_key}" != "${secret_access_key}" ]]; then
-  compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${archive_access_key_id}" "${archive_access_key_id}" "${archive_secret_access_key}"
-fi
-if [[ "${cache_configured}" == true && "${cache_access_key_id}" != "${access_key_id}" && "${cache_access_key_id}" != "${archive_access_key_id}" ]]; then
+compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${archive_access_key_id}" "${archive_access_key_id}" "${archive_secret_access_key}"
+if [[ "${cache_configured}" == true && "${cache_access_key_id}" != "${archive_access_key_id}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${cache_access_key_id}" "${cache_access_key_id}" "${cache_secret_access_key}"
 fi
-compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${ingress_bucket}"
-if [[ "${archive_bucket}" != "${ingress_bucket}" ]]; then
-  compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${archive_bucket}"
-fi
-if [[ "${cache_configured}" == true && "${cache_bucket}" != "${ingress_bucket}" && "${cache_bucket}" != "${archive_bucket}" ]]; then
+compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${archive_bucket}"
+if [[ "${cache_configured}" == true && "${cache_bucket}" != "${archive_bucket}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${cache_bucket}"
 fi
-compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${ingress_bucket}" --key "${access_key_id}"
-if [[ "${archive_access_key_id}" != "${access_key_id}" || "${archive_bucket}" != "${ingress_bucket}" ]]; then
-  compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${archive_bucket}" --key "${archive_access_key_id}"
-fi
-if [[ "${cache_configured}" == true && ( "${cache_access_key_id}" != "${access_key_id}" || "${cache_bucket}" != "${ingress_bucket}" ) ]]; then
+compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${archive_bucket}" --key "${archive_access_key_id}"
+if [[ "${cache_configured}" == true && ( "${cache_access_key_id}" != "${archive_access_key_id}" || "${cache_bucket}" != "${archive_bucket}" ) ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${cache_bucket}" --key "${cache_access_key_id}"
 fi
 compose run --rm --entrypoint python "${COMPOSE_RUN_TTY_ARGS[@]}" test tests/harness/configure_garage.py

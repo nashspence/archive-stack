@@ -14,8 +14,8 @@ downstream.
 ## Safety
 
 - Treat configured archive stores as the durable authority.
-- Keep ingress and retrieval-cache objects encrypted whenever they leave a client or
-  Riverhog process.
+- Protect plaintext ingress with authenticated TLS. Keep final archive and retrieval-cache
+  objects encrypted whenever they leave a Riverhog process.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
 - Preserve archive recovery without Riverhog or its database using standard tools;
   `riverhog/recovery` remains an independent reference implementation.
@@ -44,8 +44,9 @@ release reference or duplicate executable contracts to `main`.
 ## Work
 
 - Read the relevant implementation, tests, and executable contracts before editing.
-- Use canonical current names without aliases, migrations, or compatibility shims unless
-  a verified supported dependency requires one.
+- Use canonical current names without aliases or compatibility shims unless a verified
+  supported dependency requires one. Before v1, revise the baseline rather than preserving
+  retired schema.
 - Keep domain behavior in services, external effects behind ports, and HTTP or CLI
   formatting in adapters.
 - Put reusable behavior in a focused package; never share code by importing across a

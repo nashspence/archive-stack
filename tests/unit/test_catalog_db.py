@@ -54,15 +54,20 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "event_context_json",
         "completed_at",
     }
-    assert {column["name"] for column in inspector.get_columns("archive_copy_object_uploads")} >= {
+    assert {column["name"] for column in inspector.get_columns("archive_copy_object_uploads")} == {
         "collection_id",
         "destination_store",
         "object_id",
+        "kind",
+        "object_path",
+        "plaintext_bytes",
+        "sha256",
         "multipart_upload_id",
+        "multipart_content_length",
         "multipart_parts_json",
-        "encryption_state_json",
-        "cache_object_path",
-        "cache_stored_sha256",
+        "uploaded_bytes",
+        "uploaded_parts",
+        "total_parts",
     }
     assert {column["name"] for column in inspector.get_columns("collection_proof_maturations")} == {
         "collection_id",
@@ -128,8 +133,29 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")
     }
-    assert upload_file_columns["ingress_secret_envelope"]["nullable"] is False
-    assert upload_file_columns["ingress_state_json"]["nullable"] is False
+    assert upload_file_columns["raw_digest_manifest_json"]["nullable"] is True
+    assert upload_file_columns["raw_part_plaintext_bytes"]["nullable"] is True
+    upload_volume_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("collection_archive_object_uploads")
+    }
+    assert upload_volume_columns["plan_json"]["nullable"] is False
+    assert upload_volume_columns["checkpoint_json"]["nullable"] is True
+    assert upload_volume_columns["sealed_receipt_json"]["nullable"] is True
+    upload_columns = {
+        column["name"]: column for column in inspector.get_columns("collection_uploads")
+    }
+    for name in (
+        "state",
+        "opened_at",
+        "last_activity_at",
+        "archive_phase",
+        "archive_phase_updated_at",
+        "archive_attempt_count",
+        "archive_storage_prefix",
+        "planner_checkpoint_json",
+    ):
+        assert upload_columns[name]["nullable"] is False
 
 
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:

@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import sqlite3
-import tarfile
 import time
 from contextlib import closing
 from pathlib import Path
@@ -156,7 +155,7 @@ def _store_manifest(
     files = payload.get("files")
     raw_tags = payload.get("tags")
     if (
-        payload.get("format") != "riverhog-collection/v2"
+        payload.get("format") != "riverhog-collection/v1"
         or not isinstance(files, list)
         or not isinstance(raw_tags, list)
     ):
@@ -361,82 +360,6 @@ def _matches(path: Path, *, byte_count: int, sha256: str) -> bool:
     return path.is_file() and path.stat().st_size == byte_count and _sha256(path) == sha256
 
 
-def _transfer_object_path(root: Path, *, collection_id: int, object_id: str) -> Path:
-    digest = hashlib.sha256(f"{collection_id}\0{object_id}".encode()).hexdigest()
-    return root / "objects" / digest
-
-
-def _extract_pack(
-    object_path: Path,
-    *,
-    placements: list[dict[str, Any]],
-    staging_root: Path,
-) -> set[tuple[int, str]]:
-    selected: dict[str, tuple[int, str, int]] = {}
-    for placement in placements:
-        collection_id = normalize_collection_id(placement["collection_id"])
-        path = normalize_relpath(str(placement["path"]))
-        raw_member = placement["member"]
-        if not isinstance(raw_member, str):
-            raise InvalidState(f"archive pack member mapping is missing: {collection_id}/{path}")
-        member = normalize_relpath(raw_member)
-        if member in selected:
-            raise InvalidState(f"duplicate archive pack member mapping: {member}")
-        selected[member] = (collection_id, path, int(placement["bytes"]))
-
-    extracted: set[tuple[int, str]] = set()
-    with tarfile.open(object_path, mode="r:*") as archive:
-        for info in archive:
-            member = normalize_relpath(info.name)
-            destination = selected.get(member)
-            if destination is None:
-                continue
-            if not info.isfile():
-                raise InvalidState(f"archive pack member is not a file: {member}")
-            collection_id, path, expected_bytes = destination
-            identity = (collection_id, path)
-            if identity in extracted:
-                raise InvalidState(f"duplicate archive pack member: {member}")
-            source = archive.extractfile(info)
-            if source is None:
-                raise InvalidState(f"archive pack member cannot be read: {member}")
-            output = _output_path(staging_root, collection_id, path)
-            output.parent.mkdir(parents=True, exist_ok=True)
-            byte_count = 0
-            with output.open("wb") as handle:
-                while chunk := source.read(8 * 1024 * 1024):
-                    handle.write(chunk)
-                    byte_count += len(chunk)
-            if byte_count != expected_bytes:
-                raise InvalidState(f"archive pack member has the wrong size: {member}")
-            extracted.add(identity)
-    expected = {(current[0], current[1]) for current in selected.values()}
-    if extracted != expected:
-        missing = sorted(path for collection_id, path in expected - extracted)
-        raise InvalidState(f"archive pack members are missing: {', '.join(missing)}")
-    return extracted
-
-
-def _place_raw_object(
-    object_path: Path,
-    *,
-    placement: dict[str, Any],
-    staging_root: Path,
-) -> tuple[int, str]:
-    collection_id = normalize_collection_id(placement["collection_id"])
-    path = normalize_relpath(str(placement["path"]))
-    expected_bytes = int(placement["bytes"])
-    if object_path.stat().st_size != expected_bytes:
-        raise InvalidState(f"archive object has the wrong placement size: {collection_id}/{path}")
-    output = _output_path(staging_root, collection_id, path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    mode = "r+b" if output.exists() else "w+b"
-    with object_path.open("rb") as source, output.open(mode) as destination:
-        destination.seek(int(placement["file_offset"]))
-        shutil.copyfileobj(source, destination, length=8 * 1024 * 1024)
-    return collection_id, path
-
-
 def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
     row = db.execute("SELECT value FROM settings WHERE key = 'catalog_cursor'").fetchone()
     after = int(row["value"]) if row is not None else 0
@@ -532,79 +455,27 @@ def _download_job(
     transfer_root = target / ".riverhog-local-transfers" / str(job["id"])
     staging_root = transfer_root / "files"
     shutil.rmtree(transfer_root, ignore_errors=True)
-    staged: set[tuple[int, str]] = set()
     try:
-        for current in job["objects"]:
-            kind = str(current["kind"])
-            if kind not in {"pack", "file", "segment"}:
-                continue
-            collection_id = normalize_collection_id(current["collection_id"])
-            placements = [
-                {**placement, "collection_id": collection_id}
-                for placement in current["placements"]
-                if (collection_id, str(placement["path"])) in expected
-            ]
-            if not placements:
-                continue
-            object_id = str(current["object_id"])
-            object_path = _transfer_object_path(
-                transfer_root,
-                collection_id=collection_id,
-                object_id=object_id,
-            )
-            object_path.parent.mkdir(parents=True, exist_ok=True)
-            api.download_retrieval_object(
-                str(job["id"]),
-                collection_id=collection_id,
-                object_id=object_id,
-                output=object_path,
-                expected_bytes=int(current["plaintext_bytes"]),
-                expected_sha256=str(current["sha256"]),
-            )
-            if not _matches(
-                object_path,
-                byte_count=int(current["plaintext_bytes"]),
-                sha256=str(current["sha256"]),
-            ):
-                raise InvalidState(
-                    f"retrieved archive object did not match its manifest: "
-                    f"{collection_id}/{object_id}"
-                )
-            if kind == "pack":
-                staged.update(
-                    _extract_pack(
-                        object_path,
-                        placements=placements,
-                        staging_root=staging_root,
-                    )
-                )
-            else:
-                if len(placements) != 1 or placements[0]["member"] is not None:
-                    raise InvalidState(
-                        f"raw archive object has invalid placement: {collection_id}/{object_id}"
-                    )
-                staged.add(
-                    _place_raw_object(
-                        object_path,
-                        placement=placements[0],
-                        staging_root=staging_root,
-                    )
-                )
-            object_path.unlink()
-
-        if staged != set(expected):
-            missing = sorted(
-                f"{collection_id}/{path}" for collection_id, path in set(expected) - staged
-            )
-            raise InvalidState(
-                f"retrieval did not materialize selected files: {', '.join(missing)}"
-            )
         for (collection_id, path), (expected_bytes, expected_sha256) in expected.items():
             staging = _output_path(staging_root, collection_id, path)
-            if not _matches(staging, byte_count=expected_bytes, sha256=expected_sha256):
+            staging.parent.mkdir(parents=True, exist_ok=True)
+            api.download_retrieval_file(
+                str(job["id"]),
+                collection_id=collection_id,
+                path=path,
+                output=staging,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+            )
+            if not _matches(
+                staging,
+                byte_count=expected_bytes,
+                sha256=expected_sha256,
+            ):
                 raise InvalidState(
-                    f"retrieved file did not match its manifest: {collection_id}/{path}"
+                    f"retrieved file did not match its catalog identity: {collection_id}/{path}"
                 )
+
         for collection_id, path in expected:
             staging = _output_path(staging_root, collection_id, path)
             output = _output_path(target, collection_id, path)

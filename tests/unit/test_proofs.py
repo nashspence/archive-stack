@@ -17,8 +17,8 @@ _COMMAND = (sys.executable, "-m", "tests.fixtures.ots_stamp_command")
 
 
 def test_command_proof_verifier_accepts_matching_manifest_proof(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.yml"
-    manifest_path.write_text("schema: unit/v1\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text('{"schema":"unit/v1"}', encoding="utf-8")
     proof_path = CommandProofStamper(_COMMAND).stamp(manifest_path)
 
     CommandProofVerifier(_COMMAND).verify(
@@ -28,13 +28,13 @@ def test_command_proof_verifier_accepts_matching_manifest_proof(tmp_path: Path) 
 
 
 def test_command_proof_verifier_rejects_mismatched_manifest_proof(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.yml"
-    manifest_path.write_text("schema: unit/v1\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text('{"schema":"unit/v1"}', encoding="utf-8")
     proof_path = CommandProofStamper(_COMMAND).stamp(manifest_path)
 
     with pytest.raises(ProofVerifyError, match="digest mismatch"):
         CommandProofVerifier(_COMMAND).verify(
-            manifest_bytes=b"schema: other/v1\n",
+            manifest_bytes=b'{"schema":"other/v1"}',
             proof_bytes=proof_path.read_bytes(),
         )
 

@@ -13,7 +13,6 @@ from time_formats import parse_duration
 
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
-DEV_INGRESS_SECRET_KEY = "riverhog-development-ingress-secret-key"
 DEV_ARCHIVE_ACCESS_KEY_IDS = frozenset(
     {
         "minioadmin",
@@ -23,8 +22,6 @@ DEV_ARCHIVE_ACCESS_KEY_IDS = frozenset(
 DEV_ARCHIVE_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "garage"})
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
-DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY = 4
-DEFAULT_ARCHIVE_OBJECT_CONCURRENCY = 4
 DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
@@ -86,25 +83,6 @@ def _parse_choice(value: str, *, name: str, allowed: set[str]) -> str:
 def _normalize_prefix(value: str) -> str:
     parts = [part for part in value.strip().strip("/").split("/") if part]
     return "/".join(parts)
-
-
-def _s3_namespaces_overlap(
-    *,
-    left_endpoint_url: str,
-    left_bucket: str,
-    left_prefix: str,
-    right_endpoint_url: str,
-    right_bucket: str,
-    right_prefix: str,
-) -> bool:
-    if left_endpoint_url.rstrip("/").casefold() != right_endpoint_url.rstrip("/").casefold():
-        return False
-    if left_bucket.casefold() != right_bucket.casefold():
-        return False
-    left_parts = tuple(part for part in left_prefix.split("/") if part)
-    right_parts = tuple(part for part in right_prefix.split("/") if part)
-    common = min(len(left_parts), len(right_parts))
-    return left_parts[:common] == right_parts[:common]
 
 
 def _normalize_archive_store_name(value: str) -> str:
@@ -172,17 +150,6 @@ class RetrievalCacheConfig:
     prefix: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class IngressStoreConfig:
-    endpoint_url: str
-    region: str
-    bucket: str
-    access_key_id: str
-    secret_access_key: str
-    force_path_style: bool = False
-    prefix: str = ""
-
-
 def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
     endpoint_host = (urlsplit(store.endpoint_url).hostname or "").casefold()
     return (
@@ -193,15 +160,8 @@ def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    tusd_base_url: str = "http://127.0.0.1:1080/files"
-    tusd_hook_secret: str = "dev-tusd-hook-secret"
     s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
-    tusd_public_base_url: str | None = None
-    tusd_append_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=60))
     database_url: str = ""
-    upload_file_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    upload_session_idle_ttl: timedelta = field(default_factory=lambda: timedelta(days=7))
-    upload_expiry_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     log_level: str = DEFAULT_LOG_LEVEL
     archive_write_store: str = "archive"
     archive_read_order: tuple[str, ...] = ("archive",)
@@ -223,24 +183,8 @@ class RuntimeConfig:
         }
     )
     archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
-    archive_multipart_concurrency: int = DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY
     archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
     archive_multipart_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=6))
-    archive_object_concurrency: int = DEFAULT_ARCHIVE_OBJECT_CONCURRENCY
-    ingress_store: IngressStoreConfig = field(
-        default_factory=lambda: IngressStoreConfig(
-            endpoint_url="http://127.0.0.1:9000",
-            region="us-east-1",
-            bucket="riverhog-ingress",
-            access_key_id="minioadmin",
-            secret_access_key="minioadmin",
-            force_path_style=True,
-        )
-    )
-    ingress_secret_key: str = DEV_INGRESS_SECRET_KEY
-    ingress_cleanup_concurrency: int = 8
-    ingress_cleanup_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
-    ingress_cleanup_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=10))
     retrieval_cache: RetrievalCacheConfig | None = None
     retrieval_cache_new_archive_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
@@ -249,7 +193,6 @@ class RuntimeConfig:
     archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
     archive_require_explicit_passphrase: bool = False
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
-    archive_upload_retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     retrieval_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
@@ -417,39 +360,6 @@ class RuntimeConfig:
             (*read_order, *[name for name in normalized_archive_stores if name not in read_order]),
         )
         object.__setattr__(self, "archive_stores", normalized_archive_stores)
-        ingress_store = replace(
-            self.ingress_store,
-            prefix=_normalize_prefix(self.ingress_store.prefix),
-        )
-        missing_ingress_fields = [
-            name
-            for name, value in {
-                "endpoint_url": ingress_store.endpoint_url,
-                "region": ingress_store.region,
-                "bucket": ingress_store.bucket,
-                "access_key_id": ingress_store.access_key_id,
-                "secret_access_key": ingress_store.secret_access_key,
-            }.items()
-            if not value.strip()
-        ]
-        if missing_ingress_fields:
-            raise ValueError(
-                "ingress staging store has blank required fields: "
-                + ", ".join(missing_ingress_fields)
-            )
-        object.__setattr__(self, "ingress_store", ingress_store)
-        if len(self.ingress_secret_key.encode("utf-8")) < 32:
-            raise ValueError("RIVERHOG_INGRESS_SECRET_KEY must contain at least 32 bytes")
-        ingress_development = (
-            (urlsplit(ingress_store.endpoint_url).hostname or "").casefold()
-            in DEV_ARCHIVE_ENDPOINT_HOSTS
-            and ingress_store.access_key_id in DEV_ARCHIVE_ACCESS_KEY_IDS
-        )
-        if not ingress_development and self.ingress_secret_key == DEV_INGRESS_SECRET_KEY:
-            raise ValueError(
-                "RIVERHOG_INGRESS_SECRET_KEY must be explicitly set for a non-development "
-                "ingress staging store"
-            )
         restore_required_stores = [
             name
             for name, store in normalized_archive_stores.items()
@@ -480,41 +390,15 @@ class RuntimeConfig:
                 raise ValueError(
                     "retrieval cache has blank required fields: " + ", ".join(missing_cache_fields)
                 )
-            if _s3_namespaces_overlap(
-                left_endpoint_url=ingress_store.endpoint_url,
-                left_bucket=ingress_store.bucket,
-                left_prefix=ingress_store.prefix,
-                right_endpoint_url=cache.endpoint_url,
-                right_bucket=cache.bucket,
-                right_prefix=cache.prefix,
-            ):
-                raise ValueError(
-                    "ingress staging store and retrieval cache must use non-overlapping "
-                    "S3 namespaces"
-                )
             object.__setattr__(self, "retrieval_cache", cache)
-        if self.tusd_append_timeout.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_TUSD_APPEND_TIMEOUT must be > 0")
         if self.s3_max_pool_connections < 1:
             raise ValueError("RIVERHOG_S3_MAX_POOL_CONNECTIONS must be >= 1")
-        if self.ingress_cleanup_concurrency < 1:
-            raise ValueError("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY must be >= 1")
-        if self.ingress_cleanup_retry_delay.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY must be > 0")
-        if self.ingress_cleanup_sweep_interval.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL must be > 0")
-        if self.upload_session_idle_ttl.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_UPLOAD_SESSION_IDLE_TTL must be > 0")
         if self.archive_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
-        if self.archive_multipart_concurrency < 1:
-            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY must be >= 1")
         if self.archive_multipart_max_age.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE must be > 0")
         if self.archive_multipart_sweep_interval.total_seconds() <= 0.0:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL must be > 0")
-        if self.archive_object_concurrency < 1:
-            raise ValueError("RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY must be >= 1")
         if self.retrieval_cache_new_archive_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE must be > 0")
         if self.retrieval_default_lease.total_seconds() <= 0:
@@ -643,45 +527,19 @@ def _parse_archive_stores(
 
 def load_runtime_config() -> RuntimeConfig:
     database_url_raw = os.getenv("RIVERHOG_DATABASE_URL", "").strip()
-    ttl_raw = os.getenv("RIVERHOG_UPLOAD_FILE_TTL", "24h")
-    session_idle_ttl_raw = os.getenv("RIVERHOG_UPLOAD_SESSION_IDLE_TTL", "168h")
-    sweep_raw = os.getenv("RIVERHOG_UPLOAD_EXPIRY_SWEEP_INTERVAL", "30s")
     log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
 
     database_url = database_url_raw or DEFAULT_DATABASE_URL
     if _database_url_driver(database_url) != "postgresql":
         raise ValueError("RIVERHOG_DATABASE_URL must use postgresql")
-    upload_file_ttl = parse_duration(ttl_raw)
-    upload_session_idle_ttl = parse_duration(session_idle_ttl_raw)
-    upload_expiry_sweep_interval = parse_duration(sweep_raw)
     s3_max_pool_connections = _parse_int(
         os.getenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", str(DEFAULT_S3_MAX_POOL_CONNECTIONS)),
         name="RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         minimum=1,
     )
-    ingress_store = IngressStoreConfig(
-        endpoint_url=os.getenv("RIVERHOG_INGRESS_ENDPOINT_URL", "http://127.0.0.1:9000")
-        .strip()
-        .rstrip("/"),
-        region=os.getenv("RIVERHOG_INGRESS_REGION", "us-east-1").strip(),
-        bucket=os.getenv("RIVERHOG_INGRESS_BUCKET", "riverhog-ingress").strip(),
-        access_key_id=os.getenv("RIVERHOG_INGRESS_ACCESS_KEY_ID", "minioadmin").strip(),
-        secret_access_key=os.getenv("RIVERHOG_INGRESS_SECRET_ACCESS_KEY", "minioadmin").strip(),
-        force_path_style=_parse_bool(os.getenv("RIVERHOG_INGRESS_FORCE_PATH_STYLE", "true")),
-        prefix=os.getenv("RIVERHOG_INGRESS_PREFIX", "").strip(),
-    )
-
     archive_multipart_part_bytes = _parse_bytes(
         os.getenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "64MiB"),
         name="RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
-        minimum=1,
-    )
-    archive_multipart_concurrency = _parse_int(
-        os.getenv(
-            "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
-            str(DEFAULT_ARCHIVE_MULTIPART_CONCURRENCY),
-        ),
-        name="RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
         minimum=1,
     )
     archive_multipart_max_age = parse_duration(
@@ -690,28 +548,8 @@ def load_runtime_config() -> RuntimeConfig:
     archive_multipart_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL", "6h")
     )
-    archive_object_concurrency = _parse_int(
-        os.getenv(
-            "RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
-            str(DEFAULT_ARCHIVE_OBJECT_CONCURRENCY),
-        ),
-        name="RIVERHOG_ARCHIVE_OBJECT_CONCURRENCY",
-        minimum=1,
-    )
-    archive_retry_delay = parse_duration(os.getenv("RIVERHOG_ARCHIVE_UPLOAD_RETRY_DELAY", "5m"))
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
-    )
-    ingress_cleanup_concurrency = _parse_int(
-        os.getenv("RIVERHOG_INGRESS_CLEANUP_CONCURRENCY", "8"),
-        name="RIVERHOG_INGRESS_CLEANUP_CONCURRENCY",
-        minimum=1,
-    )
-    ingress_cleanup_retry_delay = parse_duration(
-        os.getenv("RIVERHOG_INGRESS_CLEANUP_RETRY_DELAY", "5m")
-    )
-    ingress_cleanup_sweep_interval = parse_duration(
-        os.getenv("RIVERHOG_INGRESS_CLEANUP_SWEEP_INTERVAL", "10s")
     )
     retrieval_sweep_interval = parse_duration(os.getenv("RIVERHOG_RETRIEVAL_SWEEP_INTERVAL", "30s"))
     retrieval_estimated_latency = parse_duration(
@@ -801,32 +639,14 @@ def load_runtime_config() -> RuntimeConfig:
             os.getenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "30d")
         ),
         s3_max_pool_connections=s3_max_pool_connections,
-        ingress_store=ingress_store,
-        ingress_secret_key=os.getenv("RIVERHOG_INGRESS_SECRET_KEY", DEV_INGRESS_SECRET_KEY).strip(),
-        ingress_cleanup_concurrency=ingress_cleanup_concurrency,
-        ingress_cleanup_retry_delay=ingress_cleanup_retry_delay,
-        ingress_cleanup_sweep_interval=ingress_cleanup_sweep_interval,
-        tusd_base_url=os.getenv("RIVERHOG_TUSD_BASE_URL", "http://127.0.0.1:1080/files").rstrip(
-            "/"
-        ),
-        tusd_public_base_url=(
-            os.getenv("RIVERHOG_TUSD_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
-        ),
-        tusd_hook_secret=os.getenv("RIVERHOG_TUSD_HOOK_SECRET", "dev-tusd-hook-secret"),
-        tusd_append_timeout=parse_duration(os.getenv("RIVERHOG_TUSD_APPEND_TIMEOUT", "60s")),
         database_url=database_url,
-        upload_file_ttl=upload_file_ttl,
-        upload_session_idle_ttl=upload_session_idle_ttl,
-        upload_expiry_sweep_interval=upload_expiry_sweep_interval,
         log_level=log_level,
         archive_write_store=archive_write_store,
         archive_read_order=archive_read_order,
         archive_stores=archive_stores,
         archive_multipart_part_bytes=archive_multipart_part_bytes,
-        archive_multipart_concurrency=archive_multipart_concurrency,
         archive_multipart_max_age=archive_multipart_max_age,
         archive_multipart_sweep_interval=archive_multipart_sweep_interval,
-        archive_object_concurrency=archive_object_concurrency,
         retrieval_cache=retrieval_cache,
         retrieval_cache_new_archive_lease=parse_duration(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "30d")
@@ -839,7 +659,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_passphrase=archive_passphrase,
         archive_require_explicit_passphrase=archive_require_explicit_passphrase,
         archive_scrypt_work_factor=archive_scrypt_work_factor,
-        archive_upload_retry_delay=archive_retry_delay,
         archive_upload_sweep_interval=archive_upload_sweep_interval,
         retrieval_sweep_interval=retrieval_sweep_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from riverhog_api.schemas.archive import ArchiveCopyRetirementPlanOut
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -10,15 +11,15 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionMetadataPublicationRecord,
 )
+from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_records import apply_archive_receipt
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
-    archive_receipt,
+    add_archive_copy,
     as_archive_store,
     seed_archive_copy,
 )
@@ -26,21 +27,22 @@ from tests.unit.archive_object_fixtures import (
 FILES = {"document.txt": b"archive copy retirement\n"}
 
 
-def _service(path: Path):
+def _service(
+    path: Path,
+) -> tuple[
+    RuntimeConfig,
+    MemoryArchiveStore,
+    MemoryArchiveStore,
+    SqlAlchemyArchiveCopyRetirementService,
+]:
     config, archive = seed_archive_copy(path, FILES, store="deep")
     with session_scope(make_session_factory(config.database_url)) as session:
-        copy = CollectionArchiveCopyRecord(collection_id=COLLECTION_ID, store="b2")
-        session.add(copy)
-        session.flush()
-        apply_archive_receipt(
-            copy,
-            archive_receipt(
-                archive,
-                backend="b2",
-                storage_class="STANDARD",
-                prefix="archives/b2/opaque-docs",
-            ),
+        add_archive_copy(
+            session,
             archive,
+            store="b2",
+            backend="b2",
+            storage_class="STANDARD",
         )
     b2 = replace(
         config.archive_store("deep"),
@@ -70,8 +72,10 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
     plan = service.plan(COLLECTION_ID, store="deep")
 
     assert plan["status"] == "ready"
-    assert plan["target_copy"]["object_count"] == 3
-    assert [current["store"] for current in plan["retained_copies"]] == ["b2"]
+    target = cast(dict[str, object], plan["target_copy"])
+    retained = cast(list[dict[str, object]], plan["retained_copies"])
+    assert target["object_count"] == 3
+    assert [current["store"] for current in retained] == ["b2"]
     assert plan["retired_retrieval_job_count"] == 0
     assert plan["challenge"]
     ArchiveCopyRetirementPlanOut.model_validate(plan)
@@ -109,8 +113,8 @@ def test_retirement_verifies_a_retained_copy_then_deletes_every_target_object(
 
     assert result["status"] == "retired"
     assert result["verified_store"] == "b2"
-    assert b2_store.verified == [("data-000000", "manifest", "proof")]
-    assert deep_store.deleted == [("data-000000", "manifest", "proof")]
+    assert b2_store.verified == [("pack-000000000000", "manifest", "proof")]
+    assert deep_store.deleted == [("pack-000000000000", "manifest", "proof")]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep")) is None
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is not None

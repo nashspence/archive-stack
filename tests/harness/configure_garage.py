@@ -5,7 +5,6 @@ import json
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.stores.s3_support import (
     create_archive_s3_client,
-    create_ingress_s3_client,
     create_retrieval_cache_s3_client,
 )
 
@@ -42,18 +41,8 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
 
 
 def _lifecycle_targets(config) -> list[tuple[object, str]]:
-    ingress = config.ingress_store
-    targets: list[tuple[object, str]] = [
-        (create_ingress_s3_client(config, ingress), ingress.bucket)
-    ]
-    storage_signature = (
-        ingress.endpoint_url,
-        ingress.region,
-        ingress.bucket,
-        ingress.access_key_id,
-        ingress.force_path_style,
-    )
-    seen = {storage_signature}
+    targets: list[tuple[object, str]] = []
+    seen: set[tuple[object, ...]] = set()
     for store in config.archive_stores.values():
         archive_signature = (
             store.endpoint_url,

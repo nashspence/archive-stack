@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 from riverhog_api.schemas.collections import CollectionDeletionPlanOut
@@ -14,7 +13,6 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionRecord,
 )
-from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 
@@ -34,21 +32,12 @@ DELETER = ApplicationPrincipal(
 )
 
 
-class NoopUploadStore:
-    def cancel_upload(self, upload_url: str) -> None:
-        raise AssertionError(upload_url)
-
-    def delete_target(self, target_path: str) -> None:
-        raise AssertionError(target_path)
-
-
 def _service(path: Path):
     config, archive = seed_archive_copy(path, FILES)
     archive_store = MemoryArchiveStore(archive)
     service = SqlAlchemyCollectionDeletionService(
         config,
         ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
-        cast(UploadStore, NoopUploadStore()),
         None,
     )
     return config, archive_store, service
@@ -105,7 +94,7 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
     result = service.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
 
     assert result["status"] == "deleted"
-    assert archive_store.deleted == [("data-000000", "manifest", "proof")]
+    assert archive_store.deleted == [("pack-000000000000", "manifest", "proof")]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
+from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.auth import CatalogReader, CollectionCreator, CollectionDeleter
 from riverhog_api.deps import ContainerDep
@@ -9,24 +10,20 @@ from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
-    CollectionFileUploadSessionOut,
     CollectionSummaryOut,
-    CollectionUploadFileIn,
     CollectionUploadSessionFilesRegistrationOut,
-    CollectionUploadSessionFileUploadOut,
     CollectionUploadSessionOut,
+    CollectionUploadUnitOut,
+    CollectionUploadVolumeOut,
     CompleteCollectionUploadSessionRequest,
     CreateOrResumeCollectionUploadSessionRequest,
     DeleteCollectionRequest,
     ListCollectionsResponse,
     ListCollectionUploadSessionFilesResponse,
     ListCollectionUploadSessionsResponse,
+    ListCollectionUploadVolumesResponse,
     RegisterCollectionUploadSessionFilesRequest,
 )
-from riverhog_api.tus import (
-    tus_upload_headers,
-)
-from riverhog_api.urls import public_tusd_upload_url
 
 router = APIRouter(tags=["collections"])
 
@@ -73,7 +70,7 @@ def list_collection_upload_sessions(
     all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionsResponse:
     return ListCollectionUploadSessionsResponse.model_validate(
-        container.collections.list_upload_sessions(
+        container.collection_uploads.list(
             page=page,
             per_page=per_page,
             q=q,
@@ -93,7 +90,7 @@ def create_or_resume_collection_upload_session(
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    payload = container.collections.create_or_resume_upload_session(
+    payload = container.collection_uploads.create_or_resume(
         idempotency_key=request.idempotency_key,
         tags=request.tags,
         ingest_source=request.ingest_source,
@@ -114,8 +111,8 @@ def register_collection_upload_session_files(
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionFilesRegistrationOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.register_upload_session_files(
+    container.collection_uploads.require_access(collection_id, principal)
+    payload = container.collection_uploads.register_files(
         collection_id,
         [item.model_dump() for item in request.files],
     )
@@ -134,38 +131,14 @@ def list_collection_upload_session_files(
     per_page: int = Query(25, ge=1, le=100),
     all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionFilesResponse:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.list_upload_session_files(
+    container.collection_uploads.require_access(collection_id, principal)
+    payload = container.collection_uploads.list_files(
         collection_id,
         page=page,
         per_page=per_page,
         all_items=all_items,
     )
     return ListCollectionUploadSessionFilesResponse.model_validate(payload)
-
-
-@router.post(
-    "/collection-upload-sessions/{collection_id}/files/upload",
-    response_model=CollectionUploadSessionFileUploadOut,
-)
-def create_or_resume_registered_collection_file_upload(
-    collection_id: int,
-    request: CollectionUploadFileIn,
-    req: Request,
-    response: Response,
-    container: ContainerDep,
-    principal: CollectionCreator,
-) -> CollectionUploadSessionFileUploadOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.create_or_resume_registered_file_upload(
-        collection_id,
-        request.model_dump(),
-    )
-    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
-    response.headers.update(
-        tus_upload_headers(payload, request=req, location=str(payload["upload_url"]))
-    )
-    return CollectionUploadSessionFileUploadOut.model_validate(payload)
 
 
 @router.post(
@@ -178,8 +151,8 @@ def complete_collection_upload_session(
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.complete_upload_session(
+    container.collection_uploads.require_access(collection_id, principal)
+    payload = container.collection_uploads.complete(
         collection_id,
         files_total=request.files_total,
         content_etag=request.content_etag,
@@ -196,8 +169,8 @@ def cancel_collection_upload_session(
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.cancel_upload_session(collection_id)
+    container.collection_uploads.require_access(collection_id, principal)
+    payload = container.collection_uploads.cancel(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 
@@ -209,30 +182,92 @@ def get_collection_upload_session(
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.get_upload(collection_id)
+    container.collection_uploads.require_access(collection_id, principal)
+    payload = container.collection_uploads.get(collection_id)
     return CollectionUploadSessionOut.model_validate(payload)
 
 
-@router.post(
-    "/collection-upload-sessions/{collection_id}/files/{path:path}/upload",
-    response_model=CollectionFileUploadSessionOut,
+@router.get(
+    "/collection-upload-sessions/{collection_id}/volumes",
+    response_model=ListCollectionUploadVolumesResponse,
 )
-def create_or_resume_collection_file_upload(
+def list_collection_upload_session_volumes(
     collection_id: int,
-    path: str,
-    request: Request,
-    response: Response,
     container: ContainerDep,
     principal: CollectionCreator,
-) -> CollectionFileUploadSessionOut:
-    container.collections.require_upload_access(collection_id, principal)
-    payload = container.collections.create_or_resume_file_upload(collection_id, path)
-    payload["upload_url"] = public_tusd_upload_url(str(payload["upload_url"]))
-    response.headers.update(
-        tus_upload_headers(payload, request=request, location=str(payload["upload_url"]))
+) -> ListCollectionUploadVolumesResponse:
+    container.collection_uploads.require_access(collection_id, principal)
+    return ListCollectionUploadVolumesResponse.model_validate(
+        container.collection_uploads.list_volumes(collection_id)
     )
-    return CollectionFileUploadSessionOut.model_validate(payload)
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
+    response_model=CollectionUploadVolumeOut,
+)
+def get_collection_upload_session_volume(
+    collection_id: int,
+    volume_id: str,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> CollectionUploadVolumeOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    return CollectionUploadVolumeOut.model_validate(
+        container.collection_uploads.get_volume(collection_id, volume_id)
+    )
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
+    response_model=CollectionUploadUnitOut,
+)
+def get_collection_upload_session_unit(
+    collection_id: int,
+    volume_id: str,
+    unit: int,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> CollectionUploadUnitOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    return CollectionUploadUnitOut.model_validate(
+        container.collection_uploads.get_unit(collection_id, volume_id, unit)
+    )
+
+
+@router.put(
+    "/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
+    response_model=CollectionUploadUnitOut,
+)
+async def put_collection_upload_session_unit(
+    collection_id: int,
+    volume_id: str,
+    unit: int,
+    request: Request,
+    container: ContainerDep,
+    principal: CollectionCreator,
+    if_match: str = Header(alias="If-Match"),
+) -> CollectionUploadUnitOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    work = container.collection_uploads.get_unit(collection_id, volume_id, unit)
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdecimal():
+        raise HTTPException(status_code=411, detail="Content-Length is required")
+    expected_bytes = work.get("payload_bytes")
+    if isinstance(expected_bytes, bool) or not isinstance(expected_bytes, int):
+        raise RuntimeError("collection upload unit payload size is invalid")
+    if int(declared) != expected_bytes:
+        raise HTTPException(status_code=400, detail="Content-Length does not match the upload unit")
+    content = await request.body()
+    payload = await run_in_threadpool(
+        container.collection_uploads.upload_unit,
+        collection_id,
+        volume_id,
+        unit,
+        plan_sha256=if_match.strip('"'),
+        content=content,
+    )
+    return CollectionUploadUnitOut.model_validate(payload)
 
 
 @router.get("/collections/{collection_id}", response_model=CollectionSummaryOut)

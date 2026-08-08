@@ -3,9 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
-import io
 import json
-import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +17,7 @@ PROJECTION_NAME = "20260719T205509Z--1"
 CONTENT = b"locally materialized archive file\n"
 SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {
-    "format": "riverhog-collection/v2",
+    "format": "riverhog-collection/v1",
     "collection": COLLECTION_ID,
     "content_etag": "a" * 64,
     "metadata_revision": 1,
@@ -38,41 +36,6 @@ MANIFEST = {
     ],
 }
 JOB_FILES = [{"collection_id": COLLECTION_ID, **current} for current in MANIFEST["files"]]
-
-
-def _pack_bytes() -> bytes:
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w") as archive:
-        for path, content in (("notes/one.txt", CONTENT), ("notes/two.txt", SECOND_CONTENT)):
-            info = tarfile.TarInfo(path)
-            info.size = len(content)
-            archive.addfile(info, io.BytesIO(content))
-    return output.getvalue()
-
-
-PACK_BYTES = _pack_bytes()
-JOB_OBJECTS = [
-    {
-        "collection_id": COLLECTION_ID,
-        "source_store": "b2",
-        "object_id": "data-000000",
-        "kind": "pack",
-        "plaintext_bytes": len(PACK_BYTES),
-        "stored_bytes": len(PACK_BYTES) + 100,
-        "sha256": hashlib.sha256(PACK_BYTES).hexdigest(),
-        "read_mode": "immediate",
-        "placements": [
-            {
-                "path": current["path"],
-                "sequence": 0,
-                "file_offset": 0,
-                "bytes": current["bytes"],
-                "member": current["path"],
-            }
-            for current in MANIFEST["files"]
-        ],
-    }
-]
 
 
 def _prepare_local(target: Path) -> None:
@@ -126,7 +89,7 @@ class FakeApi:
         self.deleted = False
         self.acknowledged: list[str] = []
         self.canceled: list[str] = []
-        self.downloaded_objects: list[str] = []
+        self.downloaded_files: list[str] = []
         self.job_state = "ready"
         self.selection = [(COLLECTION_ID, "notes/one.txt")]
         self.tags = ["docs"]
@@ -203,44 +166,34 @@ class FakeApi:
             for current in JOB_FILES
             if (int(current["collection_id"]), str(current["path"])) in selected
         ]
-        objects = [
-            {
-                **JOB_OBJECTS[0],
-                "placements": [
-                    current
-                    for current in JOB_OBJECTS[0]["placements"]
-                    if (COLLECTION_ID, str(current["path"])) in selected
-                ],
-            }
-        ]
         return {
             "id": "job-1",
             "state": self.job_state,
             "files": files,
-            "objects": objects,
+            "objects": [],
         }
 
-    def download_retrieval_object(
+    def download_retrieval_file(
         self,
         job_id: str,
         *,
         collection_id: int,
-        object_id: str,
+        path: str,
         output: Path,
         expected_bytes: int,
         expected_sha256: str,
     ) -> int:
-        assert (job_id, collection_id, object_id) == (
-            "job-1",
-            COLLECTION_ID,
-            "data-000000",
-        )
-        assert expected_bytes == len(PACK_BYTES)
-        assert expected_sha256 == JOB_OBJECTS[0]["sha256"]
-        self.downloaded_objects.append(object_id)
+        assert (job_id, collection_id) == ("job-1", COLLECTION_ID)
+        content = {
+            "notes/one.txt": CONTENT,
+            "notes/two.txt": SECOND_CONTENT,
+        }[path]
+        assert expected_bytes == len(content)
+        assert expected_sha256 == hashlib.sha256(content).hexdigest()
+        self.downloaded_files.append(path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(PACK_BYTES)
-        return len(PACK_BYTES)
+        output.write_bytes(content)
+        return len(content)
 
     def acknowledge_retrieval_job(self, job_id: str) -> dict[str, object]:
         self.acknowledged.append(job_id)
@@ -269,7 +222,7 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     projection = target / "by-tag" / "docs" / PROJECTION_NAME
     assert projection.is_symlink()
     assert projection.resolve() == target / str(COLLECTION_ID)
-    assert api.downloaded_objects == ["data-000000"]
+    assert api.downloaded_files == ["notes/one.txt", "notes/two.txt"]
     assert api.acknowledged == ["job-1"]
     assert runner.invoke(local_materialization.local_app, ["audit"]).exit_code == 0
 
@@ -537,7 +490,7 @@ def test_local_list_pages_and_sorts_database_aggregates(
             local_materialization._store_manifest(
                 db,
                 {
-                    "format": "riverhog-collection/v2",
+                    "format": "riverhog-collection/v1",
                     "collection": collection_id,
                     "tags": ["docs"],
                     "files": [
@@ -608,33 +561,3 @@ def test_local_projection_refuses_an_unmanaged_root_symlink(
     assert result.exit_code == 1
     assert isinstance(result.exception, InvalidState)
     assert "projection root must not be a symlink" in str(result.exception)
-
-
-def test_local_materializer_assembles_sequential_archive_segments(tmp_path: Path) -> None:
-    staging = tmp_path / "staging"
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first.write_bytes(b"first ")
-    second.write_bytes(b"second")
-
-    common = {
-        "collection_id": COLLECTION_ID,
-        "path": "large.bin",
-        "member": None,
-    }
-    local_materialization._place_raw_object(
-        first,
-        placement={**common, "file_offset": 0, "bytes": first.stat().st_size},
-        staging_root=staging,
-    )
-    local_materialization._place_raw_object(
-        second,
-        placement={
-            **common,
-            "file_offset": first.stat().st_size,
-            "bytes": second.stat().st_size,
-        },
-        staging_root=staging,
-    )
-
-    assert (staging / str(COLLECTION_ID) / "large.bin").read_bytes() == b"first second"

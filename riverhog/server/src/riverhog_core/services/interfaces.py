@@ -18,76 +18,6 @@ JsonObject = dict[str, object]
 
 
 class CollectionService(Protocol):
-    def create_or_resume_upload_session(
-        self,
-        *,
-        idempotency_key: str,
-        tags: Sequence[str],
-        ingest_source: str | None = None,
-        archive_store: str | None = None,
-        initiator: ApplicationPrincipal | None = None,
-        event_context: dict[str, object] | None = None,
-    ) -> JsonObject: ...
-    def require_upload_access(
-        self,
-        collection_id: int,
-        principal: ApplicationPrincipal,
-    ) -> None: ...
-    def register_upload_session_files(
-        self,
-        collection_id: int,
-        files: list[dict[str, object]],
-    ) -> JsonObject: ...
-    def list_upload_session_files(
-        self,
-        collection_id: int,
-        *,
-        page: int,
-        per_page: int,
-        all_items: bool,
-    ) -> JsonObject: ...
-    def list_upload_sessions(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        q: str | None,
-        tag: str | None,
-        state: str | None,
-        sort: str,
-        order: str,
-        all_items: bool,
-        principal: ApplicationPrincipal,
-    ) -> JsonObject: ...
-    def create_or_resume_registered_file_upload(
-        self,
-        collection_id: int,
-        file: dict[str, object],
-    ) -> JsonObject: ...
-    def collection_id_for_upload_id(self, upload_id: str) -> int | None: ...
-    def sync_finished_upload_id(self, upload_id: str) -> JsonObject | None: ...
-    def complete_upload_session(
-        self,
-        collection_id: int,
-        *,
-        files_total: int,
-        content_etag: str,
-    ) -> JsonObject: ...
-    def cancel_upload_session(self, collection_id: int) -> JsonObject: ...
-    def get_upload(self, collection_id: int) -> JsonObject: ...
-    def create_or_resume_file_upload(self, collection_id: int, path: str) -> JsonObject: ...
-    def append_upload_chunk(
-        self,
-        collection_id: int,
-        path: str,
-        *,
-        offset: int,
-        checksum: str,
-        content: bytes,
-    ) -> JsonObject: ...
-    def get_file_upload(self, collection_id: int, path: str) -> JsonObject: ...
-    def cancel_file_upload(self, collection_id: int, path: str) -> None: ...
-    def expire_stale_uploads(self) -> None: ...
     def get(
         self,
         collection_id: int,
@@ -256,24 +186,6 @@ class RetrievalService(Protocol):
         path: str,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
-    def object_content_metadata(
-        self,
-        *,
-        app: str,
-        job_id: str,
-        collection_id: int,
-        object_id: str,
-        key_id: str | None = None,
-    ) -> tuple[int, str]: ...
-    def object_content(
-        self,
-        *,
-        app: str,
-        job_id: str,
-        collection_id: int,
-        object_id: str,
-        key_id: str | None = None,
-    ) -> tuple[Iterator[bytes], int, str]: ...
     def process_due(self, *, limit: int = 10) -> int: ...
     def requeue_interrupted_cache_cleanup_for_startup(self) -> int: ...
     def sweep(self, *, limit: int = 100) -> int: ...
@@ -385,19 +297,14 @@ class SearchService(Protocol):
     ) -> JsonObject: ...
 
 
-class ArchiveUploadService(Protocol):
-    def requeue_failed_uploads_for_startup(self, *, limit: int = 100) -> int: ...
-    def requeue_interrupted_ingress_cleanup_for_startup(self) -> int: ...
+class ArchiveMaintenanceService(Protocol):
     def requeue_interrupted_metadata_publications_for_startup(self) -> int: ...
-    def ingress_cleanup_status(self) -> JsonObject: ...
-    def process_due_ingress_cleanup(self, *, limit: int = 100) -> int: ...
     def process_due_metadata_publications(self, *, limit: int = 10) -> int: ...
     def abort_incomplete_multipart_uploads(
         self,
         *,
         initiated_before: datetime,
     ) -> int: ...
-    def process_due_uploads(self, *, limit: int = 1) -> int: ...
 
 
 class ArchiveCopyService(Protocol):

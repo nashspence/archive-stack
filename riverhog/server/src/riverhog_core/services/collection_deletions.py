@@ -7,7 +7,7 @@ from typing import cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ApplicationPrincipal
@@ -33,7 +33,6 @@ from riverhog_core.catalog_models import (
     RetrievalJobRecord,
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCache
-from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_BLOCKING_STATES
 from riverhog_core.services.archive_records import (
@@ -41,10 +40,7 @@ from riverhog_core.services.archive_records import (
     archive_copy_is_complete,
     archive_copy_owned_identity,
 )
-from riverhog_core.services.collections import (
-    _collection_upload_target_path,
-    _normalize_collection_id_or_raise,
-)
+from riverhog_core.services.collections import _normalize_collection_id_or_raise
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
@@ -67,11 +63,9 @@ class SqlAlchemyCollectionDeletionService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        upload_store: UploadStore,
         retrieval_cache: RetrievalCache | None,
     ) -> None:
         self._archive_stores = archive_stores
-        self._upload_store = upload_store
         self._retrieval_cache = retrieval_cache
         self._session_factory = make_session_factory(config.database_url)
         self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
@@ -159,29 +153,9 @@ class SqlAlchemyCollectionDeletionService:
                     )
                 )
 
-        self._delete_upload_remnants(normalized_id)
         self._delete_cached_objects(normalized_id)
         self._delete_archive_objects(plan)
         return self._finish(normalized_id, supplied_challenge, plan)
-
-    def _delete_upload_remnants(self, collection_id: int) -> None:
-        with session_scope(self._session_factory) as session:
-            upload = session.scalar(
-                select(CollectionUploadRecord)
-                .options(selectinload(CollectionUploadRecord.files))
-                .where(CollectionUploadRecord.collection_id == collection_id)
-            )
-            if upload is None:
-                return
-            if upload.state not in {"canceled", "expired"}:
-                raise Conflict(f"collection upload is active: {upload.state or 'unknown'}")
-            remnants = [
-                (file.tus_url, _collection_upload_target_path(file)) for file in upload.files
-            ]
-        for tus_url, target_path in remnants:
-            if tus_url:
-                self._upload_store.cancel_upload(tus_url)
-            self._upload_store.delete_target(target_path)
 
     def _delete_cached_objects(self, collection_id: int) -> None:
         with session_scope(self._session_factory) as session:

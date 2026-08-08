@@ -4,7 +4,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from riverhog_core.runtime_config import (
-    IngressStoreConfig,
     RetrievalCacheConfig,
     RuntimeConfig,
 )
@@ -33,14 +32,6 @@ class _FakeS3Client:
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     config = RuntimeConfig(
-        ingress_store=IngressStoreConfig(
-            endpoint_url="http://garage:3900",
-            region="garage",
-            bucket="riverhog-ingress",
-            access_key_id="GK000000000000000000000002",
-            secret_access_key="2" * 64,
-            force_path_style=True,
-        ),
         retrieval_cache=RetrievalCacheConfig(
             endpoint_url="http://garage:3900",
             region="garage",
@@ -49,8 +40,6 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
             secret_access_key="2" * 64,
             force_path_style=True,
         ),
-        tusd_base_url="http://example.invalid:1080/files",
-        tusd_hook_secret="hook-secret",
         database_url=sqlite_url(tmp_path / "state.sqlite3"),
     )
     archive_bucket = overrides.pop("archive_bucket", None)
@@ -63,14 +52,11 @@ def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
 
 def test_lifecycle_targets_cover_each_distinct_object_store_bucket(tmp_path: Path) -> None:
     config = _config(tmp_path, archive_bucket="riverhog-archive")
-    ingress_client = _FakeS3Client()
     archive_client = _FakeS3Client()
     cache_client = _FakeS3Client()
 
-    original_ingress = configure_garage.create_ingress_s3_client
     original_archive = configure_garage.create_archive_s3_client
     original_cache = configure_garage.create_retrieval_cache_s3_client
-    configure_garage.create_ingress_s3_client = lambda *args: ingress_client  # type: ignore[assignment]
     configure_garage.create_archive_s3_client = (  # type: ignore[assignment]
         lambda current, store: archive_client
     )
@@ -78,12 +64,10 @@ def test_lifecycle_targets_cover_each_distinct_object_store_bucket(tmp_path: Pat
     try:
         targets = configure_garage._lifecycle_targets(config)
     finally:
-        configure_garage.create_ingress_s3_client = original_ingress  # type: ignore[assignment]
         configure_garage.create_archive_s3_client = original_archive  # type: ignore[assignment]
         configure_garage.create_retrieval_cache_s3_client = original_cache  # type: ignore[assignment]
 
     assert targets == [
-        (ingress_client, "riverhog-ingress"),
         (archive_client, "riverhog-archive"),
         (cache_client, "riverhog-retrieval-cache"),
     ]

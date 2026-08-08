@@ -43,7 +43,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness c2sp-vectors postgres-concurrency compose-smoke tus-throughput archive-throughput archive-download-smoke stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -79,8 +79,6 @@ help:
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
-		'  make archive-throughput  Measure, verify, and delete an archive upload probe.' \
-		'  make archive-download-smoke  Verify signed CloudFront download and probe cleanup.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make dist              Build every Python distribution independently.' \
 		'  make dist-smoke        Install and exercise the Riverhog server and client wheels.' \
@@ -103,8 +101,6 @@ help:
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
-		'  ARCHIVE_SOURCE=/path   Existing file for make archive-throughput.' \
-		'  ARCHIVE_STORE=archive  Optional store for make archive-download-smoke.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/overrides.env' \
@@ -159,13 +155,6 @@ tus-throughput:
 		exit 2; \
 	fi
 	$(call UV_CMD,python scripts/tus_throughput.py "$(TUS_URL)" $(args))
-
-archive-throughput:
-	@test -n "$(ARCHIVE_SOURCE)" || { echo "ARCHIVE_SOURCE is required" >&2; exit 2; }
-	$(call UV_CMD,python scripts/archive_upload_throughput.py "$(ARCHIVE_SOURCE)" $(args))
-
-archive-download-smoke:
-	$(call UV_CMD,python scripts/archive_download_smoke.py $(if $(ARCHIVE_STORE),--store "$(ARCHIVE_STORE)" )$(args))
 
 stop-spec:
 	@./scripts/stop_spec.sh

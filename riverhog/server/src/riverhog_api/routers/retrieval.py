@@ -103,56 +103,6 @@ def acknowledge_retrieval_job(
     )
 
 
-@router.head(
-    "/retrieval-jobs/{job_id}/objects/{object_id}/content",
-    include_in_schema=False,
-)
-@router.get(
-    "/retrieval-jobs/{job_id}/objects/{object_id}/content",
-    response_class=StreamingResponse,
-)
-def download_retrieval_object(
-    job_id: str,
-    object_id: str,
-    principal: RetrievalManager,
-    container: ContainerDep,
-    http_request: Request,
-    collection_id: int = Query(),
-    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
-) -> Response:
-    total_bytes, sha256 = container.retrieval.object_content_metadata(
-        app=principal.app,
-        job_id=job_id,
-        collection_id=collection_id,
-        object_id=object_id,
-        key_id=principal.key_id,
-    )
-    etag = f'"{sha256}"'
-    headers = {
-        "Content-Length": str(total_bytes),
-        "ETag": etag,
-        "Content-Type": "application/octet-stream",
-    }
-    if if_none_match is not None and if_none_match.strip() == etag:
-        return Response(status_code=304, headers=headers)
-    if http_request.method == "HEAD":
-        return Response(headers=headers)
-    chunks, returned_bytes, returned_sha256 = container.retrieval.object_content(
-        app=principal.app,
-        job_id=job_id,
-        collection_id=collection_id,
-        object_id=object_id,
-        key_id=principal.key_id,
-    )
-    if returned_bytes != total_bytes or returned_sha256 != sha256:
-        raise RuntimeError("retrieval object content metadata changed")
-    return StreamingResponse(
-        chunks,
-        headers=headers,
-        media_type="application/octet-stream",
-    )
-
-
 @router.head("/retrieval-jobs/{job_id}/content", include_in_schema=False)
 @router.get(
     "/retrieval-jobs/{job_id}/content",

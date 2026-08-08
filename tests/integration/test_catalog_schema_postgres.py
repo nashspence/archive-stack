@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import NoReturn
 from uuid import uuid4
 
 import pytest
@@ -14,6 +14,8 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
+from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     catalog_state_schema,
     create_catalog_engine,
@@ -25,59 +27,19 @@ from riverhog_core.catalog_db import (
 from riverhog_core.catalog_models import TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
-from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 
+from tests.fixtures.crypto import FixtureProofStamper
+from tests.unit.archive_object_fixtures import (
+    MemoryArchiveStore,
+    as_archive_store,
+    as_ingress_store,
+)
+
 pytestmark = pytest.mark.integration
 V1_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/state/v1_0001/riverhog.postgresql.sql"
-
-
-class _UnusedUploadStore:
-    def _unexpected(self) -> NoReturn:
-        raise AssertionError("upload storage is not used while creating an empty session")
-
-    def create_upload(self, target_path: str, length: int) -> str:
-        del target_path, length
-        self._unexpected()
-
-    def get_offset(self, tus_url: str) -> int:
-        del tus_url
-        self._unexpected()
-
-    def append_upload_chunk(
-        self,
-        tus_url: str,
-        *,
-        offset: int,
-        checksum: str,
-        content: bytes,
-    ) -> tuple[int, str | None]:
-        del tus_url, offset, checksum, content
-        self._unexpected()
-
-    def read_target(self, target_path: str) -> bytes:
-        del target_path
-        self._unexpected()
-
-    def iter_target(
-        self,
-        target_path: str,
-        *,
-        offset: int = 0,
-        size: int | None = None,
-    ) -> Iterator[bytes]:
-        del target_path, offset, size
-        self._unexpected()
-        yield b""
-
-    def delete_target(self, target_path: str) -> None:
-        del target_path
-        self._unexpected()
-
-    def cancel_upload(self, tus_url: str) -> None:
-        del tus_url
-        self._unexpected()
 
 
 @pytest.fixture
@@ -131,7 +93,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     with engine.connect() as connection:
         archive_identity = connection.execute(
             text(
-                "SELECT object_path, sha256, stored_sha256 "
+                "SELECT object_path, kind, age_state_json, part_receipts_json, plan_sha256 "
                 "FROM collection_archive_objects WHERE collection_id = 1"
             )
         ).one()
@@ -149,15 +111,17 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     assert principal is not None
     assert principal.app == "fixture-client"
     assert principal.allows(CATALOG_READ)
-    assert tuple(archive_identity) == (
-        "collections/1/data-000000.age",
-        "d" * 64,
-        "e" * 64,
+    assert archive_identity.object_path == (
+        "archives/fixture-archive-id/volumes/segment-000000000000.age"
     )
+    assert archive_identity.kind == "segment"
+    assert json.loads(archive_identity.age_state_json)["format"] == "age-v1-scrypt-resumable"
+    assert len(json.loads(archive_identity.part_receipts_json)) == 1
+    assert len(archive_identity.plan_sha256) == 64
     assert tuple(lease) == (
         "fixture-job",
         "fixture-archive",
-        "data-000000",
+        "segment-000000000000",
         "2026-02-01T00:00:00.000000Z",
     )
     assert tuple(lifecycle_event) == ("riverhog-v1-event", "fixture-client", "1")
@@ -177,16 +141,26 @@ def test_postgres_upload_idempotency_is_independent_per_application(
             )
         )
     access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")})
+    memory_store = MemoryArchiveStore()
+    archive_stores = ArchiveStoreRegistry({"archive": as_archive_store(memory_store)})
+    archive_ingress_stores = ArchiveIngressStoreRegistry(
+        {"archive": as_ingress_store(memory_store)}
+    )
 
     def create(app: str, key_id: str) -> dict[str, object]:
-        service = SqlAlchemyCollectionService(
+        service = SqlAlchemyCollectionUploadService(
             RuntimeConfig(database_url=isolated_database_url),
-            _UnusedUploadStore(),
+            archive_stores,
+            archive_ingress_stores,
+            proof_stamper=FixtureProofStamper(),
         )
-        return service.create_or_resume_upload_session(
+        return service.create_or_resume(
             idempotency_key="shared-retry-key",
-            tags=["photos"],
+            tags=("photos",),
+            ingest_source="postgres-fixture",
+            archive_store=None,
             initiator=ApplicationPrincipal(app=app, key_id=key_id, access=access),
+            event_context=None,
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:

@@ -4,7 +4,6 @@ from typing import Any
 
 from riverhog_core.runtime_config import (
     ArchiveStoreConfig,
-    IngressStoreConfig,
     RetrievalCacheConfig,
     RuntimeConfig,
 )
@@ -71,17 +70,6 @@ def create_retrieval_cache_s3_client(
     )
 
 
-def create_ingress_s3_client(config: RuntimeConfig, store: IngressStoreConfig) -> Any:
-    return _create_s3_client(
-        endpoint_url=store.endpoint_url,
-        region=store.region,
-        access_key_id=store.access_key_id,
-        secret_access_key=store.secret_access_key,
-        force_path_style=store.force_path_style,
-        max_pool_connections=config.s3_max_pool_connections,
-    )
-
-
 def _bucket_missing(exc: Exception) -> bool:
     response = getattr(exc, "response", {})
     if not isinstance(response, dict):
@@ -123,13 +111,6 @@ def _ensure_bucket_exists(client: Any, *, bucket: str, region: str) -> None:
 
 def ensure_bucket_exists(config: RuntimeConfig) -> None:
     seen: set[tuple[str, str]] = set()
-    ingress = config.ingress_store
-    _ensure_bucket_exists(
-        create_ingress_s3_client(config, ingress),
-        bucket=ingress.bucket,
-        region=ingress.region,
-    )
-    seen.add((ingress.endpoint_url, ingress.bucket))
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:
@@ -152,10 +133,7 @@ def ensure_bucket_exists(config: RuntimeConfig) -> None:
 
 
 def delete_keys_with_prefixes(config: RuntimeConfig, prefixes: list[str]) -> None:
-    ingress = config.ingress_store
-    ingress_client = create_ingress_s3_client(config, ingress)
-    _delete_object_versions(ingress_client, bucket=ingress.bucket, prefixes=prefixes)
-    seen: set[tuple[str, str]] = {(ingress.endpoint_url, ingress.bucket)}
+    seen: set[tuple[str, str]] = set()
     for store in config.archive_stores.values():
         signature = (store.endpoint_url, store.bucket)
         if signature in seen:

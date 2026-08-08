@@ -16,7 +16,7 @@ ATTESTATION_FILENAMES = {
     "signature": "SHA256SUMS.minisig",
     "signature-proof": "SHA256SUMS.minisig.ots",
 }
-ATTESTED_KINDS = frozenset({"pack", "file", "segment", "manifest", "proof"})
+ATTESTED_KINDS = frozenset({"pack", "segment", "manifest", "proof"})
 TRUSTED_COMMENT = "riverhog archive-copy attestation/v1"
 
 

@@ -32,6 +32,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify SHA256SUMS with this independently trusted public key",
     )
     parser.add_argument("--age-command", default="age", help=argparse.SUPPRESS)
+    parser.add_argument("--ots-command", default="ots", help=argparse.SUPPRESS)
     parser.add_argument("--minisign-command", default="minisign", help=argparse.SUPPRESS)
     return parser
 
@@ -57,6 +58,7 @@ def main() -> None:
             args.output,
             passphrase=_passphrase(args.passphrase_file),
             age_command=args.age_command,
+            ots_command=args.ots_command,
             minisign_public_key=args.minisign_public_key,
             minisign_command=args.minisign_command,
         )

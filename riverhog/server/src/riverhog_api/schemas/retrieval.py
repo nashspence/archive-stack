@@ -26,6 +26,7 @@ class RetrievalPlanObjectPlacementOut(RiverhogModel):
     path: str
     sequence: int
     file_offset: int
+    object_offset: int
     bytes: int
     member: str | None
 
@@ -34,10 +35,11 @@ class RetrievalPlanObjectOut(RiverhogModel):
     collection_id: int
     source_store: str
     object_id: str
-    kind: Literal["pack", "file", "segment", "manifest", "proof"]
+    kind: Literal["pack", "segment"]
     plaintext_bytes: int
     stored_bytes: int
-    sha256: str
+    sha256: str | None
+    retrieval_bytes: int
     read_mode: Literal["immediate", "restore_required", "cache"]
     placements: list[RetrievalPlanObjectPlacementOut]
 

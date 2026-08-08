@@ -45,7 +45,7 @@ def test_command_signer_uses_a_private_minisign_key(tmp_path) -> None:
         check=True,
         capture_output=True,
     )
-    checksums = b"0" * 64 + b"  objects/data-000000.age\n"
+    checksums = b"0" * 64 + b"  volumes/pack-000000000000.tar.age\n"
 
     signature = CommandAttestationSigner(secret_key).sign(checksums)
 
@@ -98,9 +98,10 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
     assert service.process_due(limit=10) == 1
     checksums = store.attestation_artifacts["checksums"]
     assert checksums.decode().splitlines() == [
-        f"{archive.manifest_sha256}  manifest.yml.age",
-        f"{archive.proof_sha256}  manifest.yml.ots.age",
-        f"{archive.data_objects[0].sha256}  objects/data-000000.age",
+        f"{_sha256(archive.stored_objects['manifest.json.age'])}  manifest.json.age",
+        f"{_sha256(archive.stored_objects['manifest.json.ots.age'])}  manifest.json.ots.age",
+        f"{_sha256(archive.stored_objects['volumes/pack-000000000000.tar.age'])}  "
+        "volumes/pack-000000000000.tar.age",
     ]
     assert store.attestation_artifacts["signature"] == _Signer().sign(checksums)
 
@@ -225,3 +226,7 @@ def _mark_manifest_proof_matured(database_url: str, collection_id: int) -> None:
                 matured_at="2026-01-01T00:00:00.000000Z",
             )
         )
+
+
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()

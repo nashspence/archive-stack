@@ -72,7 +72,7 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
         (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
     )
 
-    assert config["project"]["dependencies"] == ["PyYAML>=6,<7"]
+    assert config["project"]["dependencies"] == []
     assert config["project"]["scripts"] == {"riverhog-recover": "riverhog_recover.cli:main"}
     assert "independently packaged, permissively licensed reference implementation" in architecture
     assert "recoverable without Riverhog using standard tools" in architecture

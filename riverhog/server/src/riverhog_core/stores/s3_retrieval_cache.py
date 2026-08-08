@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable, Iterator
 from typing import Any, cast
 
@@ -11,6 +12,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_retrieval_cache_s3_client
 
 _MIN_MULTIPART_BYTES = 5 * 1024 * 1024
+_CONTENT_RANGE_RE = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+|\\*)")
 
 
 class S3RetrievalCache:
@@ -186,6 +188,47 @@ class S3RetrievalCache:
                 close()
         if size != expected_bytes or digest.hexdigest() != expected_sha256:
             raise RuntimeError("retrieval cache object does not match its verified record")
+
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        if offset < 0 or size < 0:
+            raise ValueError("retrieval cache range must be non-negative")
+        if size == 0:
+            return
+        end = offset + size - 1
+        request: dict[str, object] = {
+            "Bucket": self._cache.bucket,
+            "Key": object_path,
+            "Range": f"bytes={offset}-{end}",
+        }
+        if version_id is not None:
+            request["VersionId"] = version_id
+        response = self._client.get_object(**request)
+        if int(str(response.get("ContentLength", -1))) != size:
+            raise RuntimeError("retrieval cache range length mismatch")
+        match = _CONTENT_RANGE_RE.fullmatch(str(response.get("ContentRange", "")))
+        if match is None or int(match.group(1)) != offset or int(match.group(2)) != end:
+            raise RuntimeError("retrieval cache response range mismatch")
+        body = response["Body"]
+        emitted = 0
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                emitted += len(chunk)
+                if emitted > size:
+                    raise RuntimeError("retrieval cache range contains trailing bytes")
+                yield chunk
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+        if emitted != size:
+            raise RuntimeError("retrieval cache range ended before its declared length")
 
     def delete(self, *, object_path: str, version_id: str | None) -> None:
         request: dict[str, object] = {"Bucket": self._cache.bucket, "Key": object_path}

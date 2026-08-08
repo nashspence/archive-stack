@@ -26,7 +26,7 @@ def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> Non
     service = _ArchiveUploadService()
     container = cast(
         ServiceContainer,
-        SimpleNamespace(archive_uploads=service),
+        SimpleNamespace(archive_maintenance=service),
     )
     now = datetime(2026, 7, 16, 12, tzinfo=UTC)
     monkeypatch.setattr(api_app, "utc_now", lambda: now)
@@ -45,7 +45,7 @@ def test_archive_multipart_sweep_waits_for_archive_operations() -> None:
         service = _ArchiveUploadService()
         container = cast(
             ServiceContainer,
-            SimpleNamespace(archive_uploads=service),
+            SimpleNamespace(archive_maintenance=service),
         )
         operation_lock = asyncio.Lock()
         await operation_lock.acquire()

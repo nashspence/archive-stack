@@ -34,7 +34,6 @@ from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.events import router as events_router
-from riverhog_api.routers.internal import router as internal_router
 from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
@@ -66,26 +65,14 @@ class _RiverhogAccessLogFilter(logging.Filter):
                 path = "/health/live"
             elif " /health/ready " in message:
                 path = "/health/ready"
-            elif " /internal/tusd/hooks " in message:
-                path = "/internal/tusd/hooks"
             if '" 2' in message or '" 3' in message:
                 status_code = 200
 
         if path in {"/health/live", "/health/ready"}:
             return False
         successful = status_code is not None and status_code < 400
-        if successful and path == "/internal/tusd/hooks":
-            return False
         if successful and path is not None:
-            if path.startswith("/v1/collection-upload-sessions/") and (
-                path.endswith("/files") or path.endswith("/files/upload")
-            ):
-                return False
-            if (
-                path.startswith("/v1/collection-upload-sessions/")
-                and "/files/" in path
-                and path.endswith("/upload")
-            ):
+            if path.startswith("/v1/collection-upload-sessions/") and path.endswith("/files"):
                 return False
         return True
 
@@ -105,45 +92,25 @@ def _configure_logging(level_name: str) -> None:
         access_logger.addFilter(_RiverhogAccessLogFilter())
 
 
-def _sweep_expired_uploads(container: ServiceContainer) -> None:
-    container.collections.expire_stale_uploads()
-
-
-def _process_archive_uploads(
+def _process_archive_maintenance(
     container: ServiceContainer,
     *,
-    startup_failed_retry_audit: bool = False,
+    startup_recovery: bool = False,
 ) -> None:
-    if startup_failed_retry_audit:
-        retried = container.archive_uploads.requeue_failed_uploads_for_startup(limit=100)
-        if retried:
-            _LOG.info("startup requeued failed collection archive uploads: count=%s", retried)
+    if startup_recovery:
         requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(limit=100)
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
         requeued_metadata = (
-            container.archive_uploads.requeue_interrupted_metadata_publications_for_startup()
+            container.archive_maintenance.requeue_interrupted_metadata_publications_for_startup()
         )
         if requeued_metadata:
             _LOG.info(
                 "startup requeued interrupted metadata-manifest publications: count=%s",
                 requeued_metadata,
             )
-    container.archive_uploads.process_due_uploads(limit=1)
     container.archive_copies.process_due(limit=1)
-    container.archive_uploads.process_due_metadata_publications(limit=10)
-
-
-def _process_ingress_cleanup(
-    container: ServiceContainer,
-    *,
-    startup_recovery: bool = False,
-) -> None:
-    if startup_recovery:
-        requeued = container.archive_uploads.requeue_interrupted_ingress_cleanup_for_startup()
-        if requeued:
-            _LOG.info("startup requeued interrupted ingress cleanup: count=%s", requeued)
-    container.archive_uploads.process_due_ingress_cleanup(limit=100)
+    container.archive_maintenance.process_due_metadata_publications(limit=10)
 
 
 def _process_proof_maturations(
@@ -170,33 +137,9 @@ def _abort_incomplete_archive_multipart_uploads(
     *,
     max_age: timedelta,
 ) -> int:
-    return container.archive_uploads.abort_incomplete_multipart_uploads(
+    return container.archive_maintenance.abort_incomplete_multipart_uploads(
         initiated_before=utc_now() - max_age
     )
-
-
-async def _run_upload_expiry_reaper(
-    container_provider: Callable[[], ServiceContainer | None],
-    *,
-    sweep_interval: timedelta,
-) -> None:
-    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    first_run = True
-    while True:
-        try:
-            if first_run:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(interval_seconds)
-            first_run = False
-            container = container_provider()
-            if container is None:
-                continue
-            await asyncio.to_thread(_sweep_expired_uploads, container)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("upload expiry reaper sweep failed")
 
 
 async def _run_archive_upload_reaper(
@@ -204,41 +147,6 @@ async def _run_archive_upload_reaper(
     *,
     sweep_interval: timedelta,
     operation_lock: asyncio.Lock,
-) -> None:
-    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    startup_failed_retry_audit = True
-    while True:
-        try:
-            if startup_failed_retry_audit:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(interval_seconds)
-            container = container_provider()
-            if container is None:
-                continue
-            current_startup_failed_retry_audit = startup_failed_retry_audit
-            startup_failed_retry_audit = False
-            if current_startup_failed_retry_audit:
-                _LOG.info(
-                    "startup failed archive-upload retry audit queued in background; "
-                    "API startup is not blocked"
-                )
-            async with operation_lock:
-                await asyncio.to_thread(
-                    _process_archive_uploads,
-                    container,
-                    startup_failed_retry_audit=current_startup_failed_retry_audit,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("archive upload reaper sweep failed")
-
-
-async def _run_ingress_cleanup_reaper(
-    container_provider: Callable[[], ServiceContainer | None],
-    *,
-    sweep_interval: timedelta,
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
     startup_recovery = True
@@ -253,15 +161,16 @@ async def _run_ingress_cleanup_reaper(
                 continue
             current_startup_recovery = startup_recovery
             startup_recovery = False
-            await asyncio.to_thread(
-                _process_ingress_cleanup,
-                container,
-                startup_recovery=current_startup_recovery,
-            )
+            async with operation_lock:
+                await asyncio.to_thread(
+                    _process_archive_maintenance,
+                    container,
+                    startup_recovery=current_startup_recovery,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("ingress cleanup reaper sweep failed")
+            _LOG.exception("archive maintenance reaper sweep failed")
 
 
 async def _run_archive_multipart_reaper(
@@ -362,9 +271,7 @@ def create_app(
     *,
     container: ServiceContainer | None = None,
     container_provider: Callable[[], ServiceContainer] | None = None,
-    upload_expiry_reaper_interval: float | None = None,
     archive_upload_reaper_interval: float | None = None,
-    ingress_cleanup_reaper_interval: float | None = None,
     archive_multipart_reaper_interval: float | None = None,
     retrieval_reaper_interval: float | None = None,
     proof_maturation_reaper_interval: float | None = None,
@@ -376,20 +283,10 @@ def create_app(
     _configure_logging(config.log_level)
     app_container: ServiceContainer | None = container
     app_container_lock = threading.Lock()
-    sweep_interval = (
-        timedelta(seconds=upload_expiry_reaper_interval)
-        if upload_expiry_reaper_interval is not None
-        else config.upload_expiry_sweep_interval
-    )
     archive_sweep_interval = (
         timedelta(seconds=archive_upload_reaper_interval)
         if archive_upload_reaper_interval is not None
         else config.archive_upload_sweep_interval
-    )
-    ingress_cleanup_sweep_interval = (
-        timedelta(seconds=ingress_cleanup_reaper_interval)
-        if ingress_cleanup_reaper_interval is not None
-        else config.ingress_cleanup_sweep_interval
     )
     archive_multipart_sweep_interval = (
         timedelta(seconds=archive_multipart_reaper_interval)
@@ -422,23 +319,11 @@ def create_app(
         if container_provider is None:
             get_or_create_container()
         archive_operation_lock = asyncio.Lock()
-        upload_task = asyncio.create_task(
-            _run_upload_expiry_reaper(
-                get_or_create_container,
-                sweep_interval=sweep_interval,
-            )
-        )
         archive_task = asyncio.create_task(
             _run_archive_upload_reaper(
                 get_or_create_container,
                 sweep_interval=archive_sweep_interval,
                 operation_lock=archive_operation_lock,
-            )
-        )
-        ingress_cleanup_task = asyncio.create_task(
-            _run_ingress_cleanup_reaper(
-                get_or_create_container,
-                sweep_interval=ingress_cleanup_sweep_interval,
             )
         )
         archive_multipart_task = asyncio.create_task(
@@ -464,18 +349,12 @@ def create_app(
         try:
             yield
         finally:
-            upload_task.cancel()
             archive_task.cancel()
-            ingress_cleanup_task.cancel()
             archive_multipart_task.cancel()
             retrieval_task.cancel()
             proof_maturation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await upload_task
-            with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
-            with contextlib.suppress(asyncio.CancelledError):
-                await ingress_cleanup_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_multipart_task
             with contextlib.suppress(asyncio.CancelledError):
@@ -554,12 +433,11 @@ def create_app(
     )
     async def health_ready() -> dict[str, str]:
         try:
-            get_or_create_container().archive_uploads.ingress_cleanup_status()
+            get_or_create_container()
         except Exception as exc:
             raise ServiceUnavailable("Riverhog runtime dependencies are not ready") from exc
         return {"service": "riverhog", "status": "ok"}
 
-    app.include_router(internal_router)
     app.include_router(collections_router, prefix="/v1")
     app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")

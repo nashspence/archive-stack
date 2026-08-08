@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from riverhog_core.domain.archive import CollectionArchive
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
@@ -17,8 +16,8 @@ class ArchiveObjectUploadReceipt:
     object_path: str
     plaintext_bytes: int
     stored_bytes: int
-    sha256: str
-    stored_sha256: str
+    sha256: str | None
+    stored_sha256: str | None
     backend: str
     storage_class: str
     uploaded_at: str
@@ -59,8 +58,8 @@ class ArchiveObjectIdentity:
     object_path: str
     plaintext_bytes: int
     stored_bytes: int
-    sha256: str
-    stored_sha256: str
+    sha256: str | None
+    stored_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,89 +74,11 @@ class CollectionArchiveIdentity:
 
     @property
     def data_objects(self) -> tuple[ArchiveObjectIdentity, ...]:
-        return tuple(
-            current for current in self.objects if current.kind in {"pack", "file", "segment"}
-        )
+        return tuple(current for current in self.objects if current.kind in {"pack", "segment"})
 
 
 class ArchiveVerificationError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveMultipartUploadedPart:
-    part_number: int
-    etag: str
-    size: int
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveMultipartUploadState:
-    object_id: str
-    upload_id: str
-    object_path: str
-    part_size: int
-    content_length: int
-    sha256: str
-    total_parts: int | None = None
-    encryption_state_json: str | None = None
-    parts: tuple[ArchiveMultipartUploadedPart, ...] = ()
-
-
-class ArchiveMultipartUploadTracker(Protocol):
-    def require_active(self, *, collection_id: int) -> None: ...
-
-    def load_multipart_upload(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        object_path: str,
-        part_size: int,
-        content_length: int,
-        sha256: str,
-    ) -> ArchiveMultipartUploadState | None: ...
-
-    def save_multipart_upload(
-        self,
-        *,
-        collection_id: int,
-        state: ArchiveMultipartUploadState,
-    ) -> None: ...
-
-    def record_multipart_upload_progress(
-        self,
-        *,
-        collection_id: int,
-        state: ArchiveMultipartUploadState,
-        part: ArchiveMultipartUploadedPart,
-        uploaded_bytes: int,
-        uploaded_parts: int,
-        total_parts: int,
-    ) -> None: ...
-
-    def clear_multipart_upload(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        upload_id: str,
-    ) -> None: ...
-
-    def load_retrieval_cache(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-    ) -> RetrievalCacheReceipt | None: ...
-
-    def save_retrieval_cache(
-        self,
-        *,
-        collection_id: int,
-        object_id: str,
-        receipt: RetrievalCacheReceipt,
-    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,8 +93,6 @@ class ArchiveStore(Protocol):
     def read_mode(self) -> str: ...
     def new_collection_archive_storage_prefix(self) -> str: ...
 
-    def max_plaintext_object_bytes(self) -> int: ...
-
     def abort_incomplete_multipart_uploads(
         self,
         *,
@@ -181,15 +100,6 @@ class ArchiveStore(Protocol):
     ) -> int: ...
 
     def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None: ...
-
-    def upload_collection_archive(
-        self,
-        *,
-        collection_id: int,
-        archive: CollectionArchive,
-        archive_storage_prefix: str | None = None,
-        multipart_tracker: ArchiveMultipartUploadTracker | None = None,
-    ) -> CollectionArchiveUploadReceipt: ...
 
     def verify_collection_archive(
         self,

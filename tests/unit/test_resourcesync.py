@@ -55,7 +55,7 @@ class RetrievalStub:
         assert principal == "app"
         return (
             {
-                "format": "riverhog-collection/v2",
+                "format": "riverhog-collection/v1",
                 "collection": collection_id,
                 "files": [],
             },
@@ -151,4 +151,4 @@ def test_portable_manifest_response_has_a_content_etag() -> None:
     )
 
     assert response.headers["etag"] == f'"{ETAG}"'
-    assert b"riverhog-collection/v2" in response.body
+    assert b"riverhog-collection/v1" in response.body

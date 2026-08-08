@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import cast
 
-from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import case, delete, func, select, update
@@ -15,11 +15,7 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
-from riverhog_core.archive_objects import (
-    iter_verified_file_chunks,
-    iter_verified_object_chunks,
-    load_collection_archive,
-)
+from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_events import catalog_event_projection
@@ -41,11 +37,23 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.collection_metadata import collection_record_manifest
-from riverhog_core.domain.archive import CollectionArchiveDataObject, CollectionArchiveFile
+from riverhog_core.domain.archive import StoredPartReceipt
+from riverhog_core.pack_retrieval import (
+    PackMemberRangeReader,
+    PackMemberRetrievalSource,
+    PackRangeRetrievalPolicy,
+    PackVolumeRetrievalSource,
+    plan_pack_range_retrieval,
+)
+from riverhog_core.ports.archive_range_store import ArchiveObjectRangeStore
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
-from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
+from riverhog_core.raw_retrieval import (
+    RawFileRangeReader,
+    RawVolumeRangeReader,
+    RawVolumeRetrievalSource,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.lifecycle_events import (
@@ -53,7 +61,7 @@ from riverhog_core.services.lifecycle_events import (
     event_context_json,
 )
 
-_DATA_KINDS = {"pack", "file", "segment"}
+_DATA_KINDS = {"pack", "segment"}
 
 
 class SqlAlchemyRetrievalService:
@@ -61,16 +69,15 @@ class SqlAlchemyRetrievalService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
+        archive_ingress_stores: ArchiveIngressStoreRegistry,
         retrieval_cache: RetrievalCache | None,
         download_allowance: DownloadAllowance | None = None,
-        *,
-        proof_verifier: ProofVerifier | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
+        self._archive_ingress_stores = archive_ingress_stores
         self._cache = retrieval_cache
         self._download_allowance = download_allowance
-        self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
         self._session_factory = make_session_factory(config.database_url)
         self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
@@ -263,8 +270,12 @@ class SqlAlchemyRetrievalService:
         state = "requested" if requested else "ready"
         expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
         remote_bytes = sum(
-            int(str(current["stored_bytes"]))
-            * (2 if current["read_mode"] == "restore_required" else 1)
+            int(str(current["retrieval_bytes"]))
+            + (
+                int(str(current["stored_bytes"]))
+                if current["read_mode"] == "restore_required"
+                else 0
+            )
             for current in planned_objects
         )
         if key_id is not None and self._download_allowance is not None:
@@ -445,8 +456,7 @@ class SqlAlchemyRetrievalService:
             self._expire_job_if_due(session, job)
             if job.state != "ready":
                 raise InvalidState("retrieval job is not ready")
-            selected = session.get(RetrievalJobFileRecord, (job_id, collection_id, path))
-            if selected is None:
+            if session.get(RetrievalJobFileRecord, (job_id, collection_id, path)) is None:
                 raise NotFound("file is not part of this retrieval job")
             file_record = session.get(CollectionFileRecord, (collection_id, path))
             if file_record is None:
@@ -464,66 +474,151 @@ class SqlAlchemyRetrievalService:
             )
             if not source_store:
                 raise InvalidState("retrieval job has no source archive")
-            all_files = list(
+            placements = list(
                 session.scalars(
-                    select(CollectionFileRecord)
-                    .where(CollectionFileRecord.collection_id == collection_id)
-                    .order_by(CollectionFileRecord.path)
-                )
-            )
-            object_rows = list(
-                session.scalars(
-                    select(CollectionArchiveObjectRecord)
+                    select(CollectionArchiveFileObjectRecord)
                     .where(
-                        CollectionArchiveObjectRecord.collection_id == collection_id,
-                        CollectionArchiveObjectRecord.store == source_store,
+                        CollectionArchiveFileObjectRecord.collection_id == collection_id,
+                        CollectionArchiveFileObjectRecord.store == source_store,
+                        CollectionArchiveFileObjectRecord.path == path,
                     )
-                    .order_by(CollectionArchiveObjectRecord.object_order)
+                    .order_by(CollectionArchiveFileObjectRecord.sequence)
                 )
             )
-            cache_rows = {
-                row.object_id: row
-                for row in session.scalars(
-                    select(RetrievalCacheObjectRecord).where(
-                        RetrievalCacheObjectRecord.source_store == source_store,
-                        RetrievalCacheObjectRecord.collection_id == collection_id,
-                        RetrievalCacheObjectRecord.state == "ready",
+            if not placements:
+                raise InvalidState("retrieval file has no archive placement")
+            records: list[
+                tuple[
+                    CollectionArchiveFileObjectRecord,
+                    CollectionArchiveObjectRecord,
+                    RetrievalCacheObjectRecord | None,
+                ]
+            ] = []
+            for placement in placements:
+                if (
+                    session.get(
+                        RetrievalJobObjectRecord,
+                        (job_id, collection_id, source_store, placement.object_id),
                     )
+                    is None
+                ):
+                    raise InvalidState("retrieval file object is outside the job plan")
+                object_record = session.get(
+                    CollectionArchiveObjectRecord,
+                    (collection_id, source_store, placement.object_id),
                 )
-            }
+                if object_record is None or object_record.kind not in _DATA_KINDS:
+                    raise InvalidState("retrieval archive volume is missing")
+                cached = session.get(
+                    RetrievalCacheObjectRecord,
+                    (source_store, collection_id, placement.object_id),
+                )
+                if cached is not None and cached.state != "ready":
+                    cached = None
+                records.append((placement, object_record, cached))
             attribution = _download_attribution(job)
+            expected_bytes = file_record.bytes
+            expected_sha256 = file_record.sha256
 
-        identities = {row.object_id: _object_identity(row) for row in object_rows}
-
-        def read_object(object_id: str) -> Iterable[bytes]:
-            identity = identities[object_id]
-            return self._read_archive_object(
-                source_store=source_store,
-                collection_id=collection_id,
-                identity=identity,
-                cached=cache_rows.get(object_id),
-                attribution=attribution,
+        kinds = {record.kind for _placement, record, _cached in records}
+        if kinds == {"pack"} and len(records) == 1:
+            placement, record, cached = records[0]
+            if not record.age_state_json:
+                raise InvalidState("pack volume is missing its age state")
+            source = PackVolumeRetrievalSource(
+                volume_id=record.object_id,
+                object_path=record.object_path,
+                version_id=record.version_id,
+                plaintext_bytes=record.plaintext_bytes,
+                stored_bytes=record.stored_bytes,
+                age_state_json=record.age_state_json,
             )
+            member = PackMemberRetrievalSource(
+                path=path,
+                bytes=expected_bytes,
+                sha256=expected_sha256,
+                data_offset=placement.object_offset,
+            )
+            chunks = PackMemberRangeReader(
+                self._range_store(
+                    source_store=source_store,
+                    object_record=record,
+                    cached=cached,
+                    attribution=attribution,
+                ),
+                passphrase=self._config.archive_passphrase,
+                policy=PackRangeRetrievalPolicy.from_env(
+                    os.environ,
+                    store_name=source_store,
+                ),
+            ).iter_member(source, member)
+            return chunks, expected_bytes, expected_sha256
 
-        manifest_identity = identities.get("manifest")
-        proof_identity = identities.get("proof")
-        if manifest_identity is None or proof_identity is None:
-            raise InvalidState("archive manifest artifacts are missing")
-        manifest_bytes = b"".join(read_object("manifest"))
-        proof_bytes = b"".join(read_object("proof"))
-        archive = load_collection_archive(
-            collection_id=collection_id,
-            files=[
-                CollectionArchiveFile(path=row.path, bytes=row.bytes, sha256=row.sha256)
-                for row in all_files
-            ],
-            manifest_bytes=manifest_bytes,
-            proof_bytes=proof_bytes,
-            read_object_chunks=read_object,
-            verifier=self._proof_verifier,
+        if kinds == {"segment"}:
+            sources: list[RawVolumeRetrievalSource] = []
+            range_stores: dict[str, ArchiveObjectRangeStore] = {}
+            for placement, record, cached in records:
+                if not record.age_state_json or not record.part_receipts_json:
+                    raise InvalidState("raw volume is missing its retrieval state")
+                sources.append(
+                    RawVolumeRetrievalSource(
+                        volume_id=record.object_id,
+                        object_path=record.object_path,
+                        version_id=record.version_id,
+                        source_path=path,
+                        file_offset=placement.file_offset,
+                        plaintext_bytes=placement.bytes,
+                        file_bytes=expected_bytes,
+                        file_sha256=expected_sha256,
+                        age_state_json=record.age_state_json,
+                        parts=_stored_parts(record.part_receipts_json),
+                    )
+                )
+                range_stores[record.object_path] = self._range_store(
+                    source_store=source_store,
+                    object_record=record,
+                    cached=cached,
+                    attribution=attribution,
+                )
+            chunks = RawFileRangeReader(
+                RawVolumeRangeReader(
+                    _DispatchArchiveRangeStore(range_stores),
+                    passphrase=self._config.archive_passphrase,
+                )
+            ).iter_file(sources)
+            return chunks, expected_bytes, expected_sha256
+
+        raise InvalidState("retrieval file has inconsistent archive volume kinds")
+
+    def _range_store(
+        self,
+        *,
+        source_store: str,
+        object_record: CollectionArchiveObjectRecord,
+        cached: RetrievalCacheObjectRecord | None,
+        attribution: DownloadAttribution | None,
+    ) -> ArchiveObjectRangeStore:
+        if cached is None:
+            base = self._archive_ingress_stores.require(source_store).ranges
+            tracked_store = source_store
+        else:
+            if self._cache is None:
+                raise RuntimeError("retrieval cache is unavailable")
+            base = _CachedArchiveRangeStore(
+                self._cache,
+                archive_object_path=object_record.object_path,
+                cache_object_path=cached.object_path,
+                cache_version_id=cached.version_id,
+            )
+            tracked_store = "retrieval-cache"
+        if self._download_allowance is None:
+            return base
+        return _TrackedArchiveRangeStore(
+            base,
+            allowance=self._download_allowance,
+            store_name=tracked_store,
+            attribution=attribution,
         )
-        chunks, size = iter_verified_file_chunks(archive, path=path, read_object=read_object)
-        return chunks, size, file_record.sha256
 
     def content_metadata(
         self,
@@ -545,69 +640,6 @@ class SqlAlchemyRetrievalService:
             if file_record is None:
                 raise NotFound("file is no longer present")
             return file_record.bytes, file_record.sha256
-
-    def object_content(
-        self,
-        *,
-        app: str,
-        job_id: str,
-        collection_id: int,
-        object_id: str,
-        key_id: str | None = None,
-    ) -> tuple[Iterator[bytes], int, str]:
-        with session_scope(self._session_factory) as session:
-            object_record, cache_record = self._require_job_data_object(
-                session,
-                app=app,
-                key_id=key_id,
-                job_id=job_id,
-                collection_id=collection_id,
-                object_id=object_id,
-            )
-            source_store = object_record.store
-            identity = _object_identity(object_record)
-            job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
-            attribution = _download_attribution(job)
-        current = CollectionArchiveDataObject(
-            object_id=identity.object_id,
-            kind=identity.kind,
-            plaintext_bytes=identity.plaintext_bytes,
-            sha256=identity.sha256,
-            placements=(),
-            _chunks=lambda: iter(()),
-        )
-        chunks = self._read_archive_object(
-            source_store=source_store,
-            collection_id=collection_id,
-            identity=identity,
-            cached=cache_record,
-            attribution=attribution,
-        )
-        return (
-            iter_verified_object_chunks(current, chunks),
-            identity.plaintext_bytes,
-            identity.sha256,
-        )
-
-    def object_content_metadata(
-        self,
-        *,
-        app: str,
-        job_id: str,
-        collection_id: int,
-        object_id: str,
-        key_id: str | None = None,
-    ) -> tuple[int, str]:
-        with session_scope(self._session_factory) as session:
-            object_record, _cache_record = self._require_job_data_object(
-                session,
-                app=app,
-                key_id=key_id,
-                job_id=job_id,
-                collection_id=collection_id,
-                object_id=object_id,
-            )
-            return object_record.plaintext_bytes, object_record.sha256
 
     def process_due(self, *, limit: int = 10) -> int:
         if limit < 1:
@@ -814,21 +846,16 @@ class SqlAlchemyRetrievalService:
                         "path": placement.path,
                         "sequence": placement.sequence,
                         "file_offset": placement.file_offset,
+                        "object_offset": placement.object_offset,
                         "bytes": placement.bytes,
                         "member": placement.member,
                     }
                 )
-            for object_id in ("manifest", "proof"):
-                identity = (collection_id, copy.store, object_id)
-                if identity not in object_payloads:
-                    payload = self._plan_object_payload(
-                        session,
-                        collection_id=collection_id,
-                        store=copy.store,
-                        object_id=object_id,
-                    )
-                    object_payloads[identity] = payload
-                    objects_payload.append(payload)
+        for payload in objects_payload:
+            payload["retrieval_bytes"] = self._planned_object_retrieval_bytes(
+                session,
+                payload,
+            )
         return {
             "format": "riverhog-retrieval-plan/v1",
             "lease_seconds": int(lease.total_seconds()),
@@ -851,12 +878,11 @@ class SqlAlchemyRetrievalService:
         cached = session.get(RetrievalCacheObjectRecord, (store, collection_id, object_id))
         if cached is not None and cached.state != "ready":
             cached = None
-        if cached is not None:
-            read_mode = "cache"
-        elif object_record.kind not in _DATA_KINDS:
-            read_mode = "immediate"
-        else:
-            read_mode = self._archive_stores.require(store).read_mode()
+        if object_record.kind not in _DATA_KINDS:
+            raise InvalidState("retrieval plan contains a non-data archive object")
+        read_mode = (
+            "cache" if cached is not None else self._archive_stores.require(store).read_mode()
+        )
         return {
             "collection_id": collection_id,
             "source_store": store,
@@ -865,9 +891,57 @@ class SqlAlchemyRetrievalService:
             "plaintext_bytes": object_record.plaintext_bytes,
             "stored_bytes": object_record.stored_bytes,
             "sha256": object_record.sha256,
+            "retrieval_bytes": 0,
             "read_mode": read_mode,
             "placements": [],
         }
+
+    def _planned_object_retrieval_bytes(
+        self,
+        session: Session,
+        payload: dict[str, object],
+    ) -> int:
+        collection_id = int(str(payload["collection_id"]))
+        store = str(payload["source_store"])
+        object_id = str(payload["object_id"])
+        object_record = session.get(
+            CollectionArchiveObjectRecord,
+            (collection_id, store, object_id),
+        )
+        if object_record is None:
+            raise InvalidState("archive object record is missing")
+        if object_record.kind == "segment":
+            return object_record.stored_bytes
+        if object_record.kind != "pack" or not object_record.age_state_json:
+            raise InvalidState("pack retrieval state is missing")
+        source = PackVolumeRetrievalSource(
+            volume_id=object_record.object_id,
+            object_path=object_record.object_path,
+            version_id=object_record.version_id,
+            plaintext_bytes=object_record.plaintext_bytes,
+            stored_bytes=object_record.stored_bytes,
+            age_state_json=object_record.age_state_json,
+        )
+        policy = PackRangeRetrievalPolicy.from_env(os.environ, store_name=store)
+        total = 0
+        for placement in cast(list[dict[str, object]], payload["placements"]):
+            path = str(placement["path"])
+            file_record = session.get(CollectionFileRecord, (collection_id, path))
+            if file_record is None:
+                raise InvalidState("pack retrieval file record is missing")
+            total += plan_pack_range_retrieval(
+                source,
+                (
+                    PackMemberRetrievalSource(
+                        path=path,
+                        bytes=file_record.bytes,
+                        sha256=file_record.sha256,
+                        data_offset=int(str(placement["object_offset"])),
+                    ),
+                ),
+                policy=policy,
+            ).accounted_remote_bytes
+        return total
 
     def _select_copy(self, session: Session, collection_id: int) -> CollectionArchiveCopyRecord:
         retiring_stores = set(
@@ -890,78 +964,6 @@ class SqlAlchemyRetrievalService:
             if store in copies:
                 return copies[store]
         raise InvalidState(f"collection has no readable archive copy: {collection_id}")
-
-    def _require_job_data_object(
-        self,
-        session: Session,
-        *,
-        app: str,
-        job_id: str,
-        collection_id: int,
-        object_id: str,
-        key_id: str | None = None,
-    ) -> tuple[CollectionArchiveObjectRecord, RetrievalCacheObjectRecord | None]:
-        job = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
-        self._expire_job_if_due(session, job)
-        if job.state != "ready":
-            raise InvalidState("retrieval job is not ready")
-        planned = session.scalar(
-            select(RetrievalJobObjectRecord).where(
-                RetrievalJobObjectRecord.job_id == job_id,
-                RetrievalJobObjectRecord.collection_id == collection_id,
-                RetrievalJobObjectRecord.object_id == object_id,
-            )
-        )
-        if planned is None:
-            raise NotFound("archive object is not part of this retrieval job")
-        object_record = session.get(
-            CollectionArchiveObjectRecord,
-            (collection_id, planned.source_store, object_id),
-        )
-        if object_record is None or object_record.kind not in _DATA_KINDS:
-            raise NotFound("retrieval data object is not present")
-        cached = session.get(
-            RetrievalCacheObjectRecord,
-            (planned.source_store, collection_id, object_id),
-        )
-        if cached is not None and cached.state != "ready":
-            cached = None
-        return object_record, cached
-
-    def _read_archive_object(
-        self,
-        *,
-        source_store: str,
-        collection_id: int,
-        identity: ArchiveObjectIdentity,
-        cached: RetrievalCacheObjectRecord | None,
-        attribution: DownloadAttribution | None,
-    ) -> Iterable[bytes]:
-        if cached is not None:
-            if self._cache is None:
-                raise RuntimeError("retrieval cache is unavailable")
-            encrypted = self._cache.iter_object(
-                object_path=cached.object_path,
-                version_id=cached.version_id,
-                expected_bytes=cached.stored_bytes,
-                expected_sha256=cached.stored_sha256,
-            )
-            if self._download_allowance is not None and attribution is not None:
-                encrypted = self._download_allowance.track(
-                    store="retrieval-cache",
-                    expected_bytes=cached.stored_bytes,
-                    content=encrypted,
-                    attribution=attribution,
-                )
-            return iter_decrypt_age_scrypt(
-                encrypted,
-                self._config.archive_passphrase,
-            )
-        return self._archive_stores.require(source_store).iter_archive_object(
-            collection_id=collection_id,
-            object=identity,
-            attribution=attribution,
-        )
 
     def _process_one(self, job_id: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -1250,6 +1252,124 @@ def _canonical_json(payload: object) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+class _CachedArchiveRangeStore:
+    def __init__(
+        self,
+        cache: RetrievalCache,
+        *,
+        archive_object_path: str,
+        cache_object_path: str,
+        cache_version_id: str | None,
+    ) -> None:
+        self._cache = cache
+        self._archive_object_path = archive_object_path
+        self._cache_object_path = cache_object_path
+        self._cache_version_id = cache_version_id
+
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        _ = version_id
+        if object_path != self._archive_object_path:
+            raise ValueError("retrieval cache archive object identity changed")
+        return self._cache.iter_object_range(
+            object_path=self._cache_object_path,
+            version_id=self._cache_version_id,
+            offset=offset,
+            size=size,
+        )
+
+
+class _TrackedArchiveRangeStore:
+    def __init__(
+        self,
+        store: ArchiveObjectRangeStore,
+        *,
+        allowance: DownloadAllowance,
+        store_name: str,
+        attribution: DownloadAttribution | None,
+    ) -> None:
+        self._store = store
+        self._allowance = allowance
+        self._store_name = store_name
+        self._attribution = attribution
+
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        content = self._store.iter_object_range(
+            object_path=object_path,
+            version_id=version_id,
+            offset=offset,
+            size=size,
+        )
+        return self._allowance.track(
+            store=self._store_name,
+            expected_bytes=size,
+            content=content,
+            attribution=self._attribution,
+        )
+
+
+class _DispatchArchiveRangeStore:
+    def __init__(self, stores: Mapping[str, ArchiveObjectRangeStore]) -> None:
+        self._stores = dict(stores)
+
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        try:
+            store = self._stores[object_path]
+        except KeyError as exc:
+            raise ValueError("raw retrieval object range store is missing") from exc
+        return store.iter_object_range(
+            object_path=object_path,
+            version_id=version_id,
+            offset=offset,
+            size=size,
+        )
+
+
+def _stored_parts(content: str) -> tuple[StoredPartReceipt, ...]:
+    try:
+        values = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise InvalidState("archive part receipts are not valid JSON") from exc
+    if not isinstance(values, list):
+        raise InvalidState("archive part receipts are not a list")
+    try:
+        return tuple(
+            StoredPartReceipt(
+                number=int(value["number"]),
+                plaintext_start=int(value["plaintext_start"]),
+                plaintext_bytes=int(value["plaintext_bytes"]),
+                plaintext_sha256=str(value["plaintext_sha256"]),
+                stored_bytes=int(value["stored_bytes"]),
+                stored_sha256=str(value["stored_sha256"]),
+                etag=str(value["etag"]),
+            )
+            for value in values
+            if isinstance(value, dict)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidState("archive part receipt is invalid") from exc
+
+
 def _normalize_file_refs(files: Sequence[tuple[int, str]]) -> tuple[tuple[int, str], ...]:
     normalized: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
@@ -1293,7 +1413,8 @@ def _validate_cache_receipt(
     if (
         not receipt.object_path
         or receipt.stored_bytes != identity.stored_bytes
-        or receipt.stored_sha256 != identity.stored_sha256
+        or (identity.stored_sha256 is not None and receipt.stored_sha256 != identity.stored_sha256)
+        or len(receipt.stored_sha256) != 64
         or not receipt.cached_at
         or not receipt.verified_at
     ):

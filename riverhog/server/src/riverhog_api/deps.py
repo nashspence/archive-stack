@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
+from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import validate_db
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
@@ -17,9 +18,10 @@ from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
+from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
-from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
+from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.interfaces import (
@@ -27,8 +29,8 @@ from riverhog_core.services.interfaces import (
     ArchiveAttestationService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
+    ArchiveMaintenanceService,
     ArchiveStoreService,
-    ArchiveUploadService,
     CollectionDeletionService,
     CollectionService,
     LifecycleEventService,
@@ -42,10 +44,12 @@ from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationSe
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
+from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
+from riverhog_core.stores.s3_archive_manifest_store import S3ImmutableArchiveObjectStore
+from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStore
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.stores.s3_support import ensure_bucket_exists
-from riverhog_core.stores.tusd_upload_store import TusdUploadStore
 
 
 @dataclass(slots=True)
@@ -54,9 +58,10 @@ class ServiceContainer:
     collection_access: SqlAlchemyCollectionAccessService
     tags: TagService
     collections: CollectionService
+    collection_uploads: SqlAlchemyCollectionUploadService
     collection_deletions: CollectionDeletionService
     search: SearchService
-    archive_uploads: ArchiveUploadService
+    archive_maintenance: ArchiveMaintenanceService
     archive_copies: ArchiveCopyService
     proof_maturations: ProofMaturationService
     archive_attestations: ArchiveAttestationService
@@ -85,7 +90,16 @@ def default_container() -> ServiceContainer:
             for name, store in config.archive_stores.items()
         }
     )
-    upload_store = TusdUploadStore(config)
+    archive_ingress_stores = ArchiveIngressStoreRegistry(
+        {
+            name: ArchiveIngressStore(
+                multipart=S3ArchiveMultipartObjectStore(config, store),
+                root=S3ImmutableArchiveObjectStore(config, store),
+                ranges=S3ArchiveObjectRangeStore(config, store),
+            )
+            for name, store in config.archive_stores.items()
+        }
+    )
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
@@ -93,24 +107,27 @@ def default_container() -> ServiceContainer:
         app_keys=SqlAlchemyAppKeyService(config),
         collection_access=SqlAlchemyCollectionAccessService(config),
         tags=SqlAlchemyTagService(config),
-        collections=SqlAlchemyCollectionService(config, upload_store),
+        collections=SqlAlchemyCollectionService(config),
+        collection_uploads=SqlAlchemyCollectionUploadService(
+            config,
+            archive_stores,
+            archive_ingress_stores,
+            proof_stamper=proof_stamper,
+        ),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
             archive_stores,
-            upload_store,
             retrieval_cache,
         ),
         search=SqlAlchemySearchService(config),
-        archive_uploads=SqlAlchemyArchiveUploadService(
+        archive_maintenance=SqlAlchemyArchiveMaintenanceService(
             config,
             archive_stores,
-            upload_store,
-            proof_stamper=proof_stamper,
         ),
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,
-            proof_verifier=proof_verifier,
+            archive_ingress_stores,
         ),
         proof_maturations=SqlAlchemyProofMaturationService(
             config,
@@ -136,9 +153,9 @@ def default_container() -> ServiceContainer:
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
+            archive_ingress_stores,
             retrieval_cache,
             download_allowance=download_allowance,
-            proof_verifier=proof_verifier,
         ),
         lifecycle_events=SqlAlchemyLifecycleEventService(config),
         download_quotas=download_allowance,

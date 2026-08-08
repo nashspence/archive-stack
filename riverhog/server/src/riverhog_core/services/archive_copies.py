@@ -1,51 +1,52 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 
+from riverhog_age import UploadState
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import String, cast, delete, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
-from riverhog_core.archive_objects import load_collection_archive
+from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
-    CollectionFileRecord,
+    CollectionArchiveFileObjectRecord,
+    CollectionArchiveObjectRecord,
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
     CollectionRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
-from riverhog_core.domain.archive import (
-    CollectionArchive,
-    CollectionArchiveFile,
+from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE, PACK_VOLUME_STORAGE_FORMAT
+from riverhog_core.ports.archive_ingress_store import (
+    ArchiveMultipartObjectStore,
+    MultipartPartReceipt,
+    MultipartUpload,
 )
+from riverhog_core.ports.archive_manifest_store import ImmutableArchiveObjectStore
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
+    ArchiveStore,
     CollectionArchiveIdentity,
-    CollectionArchiveUploadReceipt,
 )
-from riverhog_core.proofs import CommandProofVerifier, ProofVerifier
+from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE, RAW_VOLUME_STORAGE_FORMAT
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_states import (
     ARCHIVE_COPY_STATES,
     ARCHIVE_COPY_TRANSFER_STATES,
 )
-from riverhog_core.services.archive_records import (
-    apply_archive_receipt,
-    archive_copy_identity,
-    archive_copy_is_complete,
-    record_new_archive_cache_lease,
-)
-from riverhog_core.services.archive_upload_tracking import (
-    SqlAlchemyArchiveMultipartUploadTracker,
-)
+from riverhog_core.services.archive_records import archive_copy_identity, archive_copy_is_complete
 from riverhog_core.services.collection_mutations import require_collection_archive_idle
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
@@ -60,6 +61,16 @@ _SORT_FIELDS = {
     "state",
     "requested_at",
 }
+_COPY_OBJECT_KINDS = frozenset({"pack", "segment", "manifest", "proof"})
+
+
+@dataclass(frozen=True, slots=True)
+class _CopiedObject:
+    object_id: str
+    object_path: str
+    version_id: str | None
+    completed_at: str
+    part_receipts_json: str | None = None
 
 
 class SqlAlchemyArchiveCopyService:
@@ -67,12 +78,11 @@ class SqlAlchemyArchiveCopyService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        *,
-        proof_verifier: ProofVerifier | None = None,
+        archive_ingress_stores: ArchiveIngressStoreRegistry,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
-        self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
+        self._archive_ingress_stores = archive_ingress_stores
         self._session_factory = make_session_factory(config.database_url)
         self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
 
@@ -433,7 +443,6 @@ class SqlAlchemyArchiveCopyService:
             job.next_attempt_at = None
 
         source_store = self._archive_stores.require(source_store_name)
-        destination = self._archive_stores.require(destination_store_name)
         if read_requested_at is None:
             status = source_store.prepare_archive_objects_read(
                 collection_id=collection_id,
@@ -502,51 +511,12 @@ class SqlAlchemyArchiveCopyService:
             )
             return
 
-        source_store.verify_collection_archive(
+        copied = self._copy_immutable_objects(
             collection_id=collection_id,
-            archive=source_identity,
-        )
-        manifest_identity = source_identity.require_object("manifest")
-        proof_identity = source_identity.require_object("proof")
-        manifest_bytes = b"".join(
-            source_store.iter_archive_object(
-                collection_id=collection_id,
-                object=manifest_identity,
-            )
-        )
-        proof_bytes = b"".join(
-            source_store.iter_archive_object(
-                collection_id=collection_id,
-                object=proof_identity,
-            )
-        )
-        expected_files = self._expected_files(collection_id)
-        data_by_id = {current.object_id: current for current in data_objects}
-        archive = load_collection_archive(
-            collection_id=collection_id,
-            files=expected_files,
-            manifest_bytes=manifest_bytes,
-            proof_bytes=proof_bytes,
-            read_object_chunks=lambda object_id: source_store.iter_archive_object(
-                collection_id=collection_id,
-                object=data_by_id[object_id],
-            ),
-            verifier=self._proof_verifier,
-        )
-        self._plan_destination_upload(
-            collection_id=collection_id,
-            destination_store=destination_store,
-            archive=archive,
-        )
-        receipt = destination.upload_collection_archive(
-            collection_id=collection_id,
-            archive=archive,
-            archive_storage_prefix=destination_storage_prefix,
-            multipart_tracker=self._destination_upload_tracker(destination_store),
-        )
-        destination.verify_collection_archive(
-            collection_id=collection_id,
-            archive=_receipt_identity(receipt),
+            source_store_name=source_store_name,
+            destination_store_name=destination_store_name,
+            source_identity=source_identity,
+            destination_storage_prefix=destination_storage_prefix,
         )
         with session_scope(self._session_factory) as session:
             job = session.scalar(
@@ -561,24 +531,13 @@ class SqlAlchemyArchiveCopyService:
                 raise Conflict("archive copy job disappeared during transfer")
             if job.state != "copying":
                 raise Conflict("archive copy was canceled during transfer")
-            copy = session.get(
-                CollectionArchiveCopyRecord,
-                (collection_id, destination_store),
-            )
-            if copy is None:
-                copy = CollectionArchiveCopyRecord(
-                    collection_id=collection_id,
-                    store=destination_store,
-                )
-                session.add(copy)
-            apply_archive_receipt(copy, receipt, archive)
-            session.flush()
-            record_new_archive_cache_lease(
+            source_copy = _required_copy(session, collection_id, job.source_store)
+            self._record_completed_copy(
                 session,
-                collection_id=collection_id,
-                store=destination_store,
-                receipt=receipt,
-                lease=self._config.retrieval_cache_new_archive_lease,
+                source=source_copy,
+                destination_store=destination_store,
+                destination_storage_prefix=destination_storage_prefix,
+                copied=copied,
             )
             session.execute(
                 delete(ArchiveCopyObjectUploadRecord).where(
@@ -602,9 +561,25 @@ class SqlAlchemyArchiveCopyService:
                 CollectionProofMaturationRecord(
                     collection_id=collection_id,
                     store=destination_store,
-                    state="pending",
-                    attempt_count=0,
+                    state=(
+                        "matured"
+                        if source_copy.proof_maturation is not None
+                        and source_copy.proof_maturation.state == "matured"
+                        else "pending"
+                    ),
+                    attempt_count=(
+                        source_copy.proof_maturation.attempt_count
+                        if source_copy.proof_maturation is not None
+                        and source_copy.proof_maturation.state == "matured"
+                        else 0
+                    ),
                     next_attempt_at=format_utc_timestamp(utc_now()),
+                    matured_at=(
+                        source_copy.proof_maturation.matured_at
+                        if source_copy.proof_maturation is not None
+                        and source_copy.proof_maturation.state == "matured"
+                        else None
+                    ),
                 )
             )
             job.state = "completed"
@@ -622,26 +597,17 @@ class SqlAlchemyArchiveCopyService:
             objects=data_objects,
         )
 
-    def _expected_files(self, collection_id: int) -> tuple[CollectionArchiveFile, ...]:
-        with session_scope(self._session_factory) as session:
-            files = session.scalars(
-                select(CollectionFileRecord)
-                .where(CollectionFileRecord.collection_id == collection_id)
-                .order_by(CollectionFileRecord.path)
-            ).all()
-        return tuple(
-            CollectionArchiveFile(path=file.path, bytes=file.bytes, sha256=file.sha256)
-            for file in files
-        )
-
     def _plan_destination_upload(
         self,
         *,
         collection_id: int,
         destination_store: str,
-        archive: CollectionArchive,
+        destination_storage_prefix: str,
+        objects: Sequence[CollectionArchiveObjectRecord],
     ) -> None:
-        expected = {current.object_id: current for current in archive.data_objects}
+        expected = {
+            current.object_id: current for current in objects if current.kind in {"pack", "segment"}
+        }
         with session_scope(self._session_factory) as session:
             existing = {
                 current.object_id: current
@@ -663,9 +629,13 @@ class SqlAlchemyArchiveCopyService:
                             destination_store=destination_store,
                             object_id=object_id,
                             kind=current.kind,
-                            object_path="",
+                            object_path=_destination_object_path(
+                                source=current,
+                                destination_storage_prefix=destination_storage_prefix,
+                            ),
                             plaintext_bytes=current.plaintext_bytes,
                             sha256=current.sha256,
+                            multipart_content_length=current.stored_bytes,
                         )
                     )
                     continue
@@ -673,33 +643,343 @@ class SqlAlchemyArchiveCopyService:
                     record.kind != current.kind
                     or record.plaintext_bytes != current.plaintext_bytes
                     or record.sha256 != current.sha256
+                    or record.multipart_content_length != current.stored_bytes
                 ):
                     raise Conflict("archive copy upload checkpoint does not match its manifest")
 
-    def _destination_upload_tracker(
+    def _copy_immutable_objects(
         self,
+        *,
+        collection_id: int,
+        source_store_name: str,
+        destination_store_name: str,
+        source_identity: CollectionArchiveIdentity,
+        destination_storage_prefix: str,
+    ) -> dict[str, _CopiedObject]:
+        with session_scope(self._session_factory) as session:
+            source_records = list(
+                session.scalars(
+                    select(CollectionArchiveObjectRecord)
+                    .options(selectinload(CollectionArchiveObjectRecord.placements))
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == source_store_name,
+                        CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
+                    )
+                    .order_by(CollectionArchiveObjectRecord.object_order)
+                )
+            )
+        identities = {
+            current.object_id: current
+            for current in source_identity.objects
+            if current.kind in _COPY_OBJECT_KINDS
+        }
+        if {current.object_id for current in source_records} != set(identities):
+            raise Conflict("archive copy catalog identity changed during transfer")
+        self._plan_destination_upload(
+            collection_id=collection_id,
+            destination_store=destination_store_name,
+            destination_storage_prefix=destination_storage_prefix,
+            objects=source_records,
+        )
+        source_store = self._archive_stores.require(source_store_name)
+        destination = self._archive_ingress_stores.require(destination_store_name)
+        copied: dict[str, _CopiedObject] = {}
+        for record in source_records:
+            self._require_copy_active(collection_id, destination_store_name)
+            identity = identities[record.object_id]
+            if record.kind in {"pack", "segment"}:
+                result = self._copy_volume(
+                    collection_id=collection_id,
+                    destination_store_name=destination_store_name,
+                    destination_storage_prefix=destination_storage_prefix,
+                    source_store=source_store,
+                    destination_object_store=destination.multipart,
+                    source=record,
+                    identity=identity,
+                )
+            else:
+                result = self._copy_small_immutable_object(
+                    collection_id=collection_id,
+                    destination_storage_prefix=destination_storage_prefix,
+                    source_store=source_store,
+                    destination_store=destination.root,
+                    source=record,
+                    identity=identity,
+                )
+            copied[result.object_id] = result
+        return copied
+
+    def _copy_volume(
+        self,
+        *,
+        collection_id: int,
+        destination_store_name: str,
+        destination_storage_prefix: str,
+        source_store: ArchiveStore,
+        destination_object_store: ArchiveMultipartObjectStore,
+        source: CollectionArchiveObjectRecord,
+        identity: ArchiveObjectIdentity,
+    ) -> _CopiedObject:
+        destination_path = _destination_object_path(
+            source=source,
+            destination_storage_prefix=destination_storage_prefix,
+        )
+        part_rows = _part_rows(source.part_receipts_json)
+        metadata = _volume_metadata(source)
+        content_type = (
+            PACK_VOLUME_CONTENT_TYPE if source.kind == "pack" else RAW_VOLUME_CONTENT_TYPE
+        )
+        completed = destination_object_store.head_completed_object(
+            object_path=destination_path,
+            expected_metadata=metadata,
+        )
+        if completed is not None:
+            if completed.bytes != source.stored_bytes:
+                raise Conflict("completed archive-copy volume has a different byte count")
+            return _CopiedObject(
+                source.object_id,
+                completed.object_path,
+                completed.version_id,
+                completed.completed_at,
+                source.part_receipts_json,
+            )
+
+        with session_scope(self._session_factory) as session:
+            checkpoint = session.get(
+                ArchiveCopyObjectUploadRecord,
+                (collection_id, destination_store_name, source.object_id),
+            )
+            if checkpoint is None:
+                raise Conflict("archive copy upload checkpoint disappeared")
+            upload = (
+                MultipartUpload(destination_path, checkpoint.multipart_upload_id)
+                if checkpoint.multipart_upload_id
+                else None
+            )
+        if upload is None:
+            upload = destination_object_store.create_multipart_upload(
+                object_path=destination_path,
+                content_type=content_type,
+                metadata=metadata,
+            )
+            with session_scope(self._session_factory) as session:
+                checkpoint = session.get(
+                    ArchiveCopyObjectUploadRecord,
+                    (collection_id, destination_store_name, source.object_id),
+                )
+                if checkpoint is None:
+                    raise Conflict("archive copy upload checkpoint disappeared")
+                checkpoint.multipart_upload_id = upload.upload_id
+                checkpoint.object_path = destination_path
+
+        remote_parts = {
+            current.number: current
+            for current in destination_object_store.list_parts(upload=upload)
+        }
+        if set(remote_parts) - {_part_int(current, "number") for current in part_rows}:
+            raise Conflict("archive copy multipart upload has unexpected parts")
+        committed: list[MultipartPartReceipt] = []
+        source_chunks = source_store.iter_stored_archive_object(
+            collection_id=collection_id,
+            object=identity,
+        )
+        for row, content in zip(
+            part_rows,
+            _iter_exact_parts(source_chunks, part_rows),
+            strict=True,
+        ):
+            number = _part_int(row, "number")
+            if hashlib.sha256(content).hexdigest() != str(row["stored_sha256"]):
+                raise Conflict(f"source archive volume part {number} failed verification")
+            self._require_copy_active(collection_id, destination_store_name)
+            receipt = remote_parts.get(number)
+            if receipt is None:
+                receipt = destination_object_store.upload_part(
+                    upload=upload,
+                    number=number,
+                    content=content,
+                )
+            if receipt.bytes != len(content):
+                raise Conflict("archive copy multipart part byte count changed")
+            committed.append(receipt)
+            self._record_copy_part(
+                collection_id=collection_id,
+                destination_store=destination_store_name,
+                object_id=source.object_id,
+                parts=committed,
+                total_parts=len(part_rows),
+            )
+        completed = destination_object_store.complete_multipart_upload(
+            upload=upload,
+            parts=tuple(committed),
+            expected_bytes=source.stored_bytes,
+            expected_metadata=metadata,
+        )
+        return _CopiedObject(
+            source.object_id,
+            completed.object_path,
+            completed.version_id,
+            completed.completed_at,
+            _part_rows_json(part_rows, committed),
+        )
+
+    def _copy_small_immutable_object(
+        self,
+        *,
+        collection_id: int,
+        destination_storage_prefix: str,
+        source_store: ArchiveStore,
+        destination_store: ImmutableArchiveObjectStore,
+        source: CollectionArchiveObjectRecord,
+        identity: ArchiveObjectIdentity,
+    ) -> _CopiedObject:
+        content = b"".join(
+            source_store.iter_stored_archive_object(
+                collection_id=collection_id,
+                object=identity,
+            )
+        )
+        if len(content) != source.stored_bytes:
+            raise Conflict("source archive artifact byte count changed")
+        stored_sha256 = hashlib.sha256(content).hexdigest()
+        if source.stored_sha256 and stored_sha256 != source.stored_sha256:
+            raise Conflict("source archive artifact sha256 changed")
+        destination_path = _destination_object_path(
+            source=source,
+            destination_storage_prefix=destination_storage_prefix,
+        )
+        content_type = {
+            "manifest": "application/vnd.riverhog.collection-manifest+age",
+            "proof": "application/vnd.riverhog.collection-manifest-proof+age",
+        }[source.kind]
+        receipt = destination_store.put_immutable_object(
+            object_path=destination_path,
+            content=content,
+            content_type=content_type,
+            identity_metadata={
+                "riverhog-format": f"riverhog-collection-{source.kind}/v1",
+                "riverhog-plaintext-bytes": str(source.plaintext_bytes),
+                "riverhog-plaintext-sha256": source.sha256 or "",
+            },
+        )
+        if receipt.stored_sha256 != stored_sha256:
+            raise Conflict("destination archive artifact sha256 changed")
+        return _CopiedObject(
+            source.object_id,
+            receipt.object_path,
+            receipt.version_id,
+            receipt.completed_at,
+        )
+
+    def _record_copy_part(
+        self,
+        *,
+        collection_id: int,
         destination_store: str,
-    ) -> SqlAlchemyArchiveMultipartUploadTracker:
-        def load_record(
-            session: Session,
-            collection_id: int,
-            object_id: str,
-        ) -> ArchiveCopyObjectUploadRecord | None:
-            return session.get(
+        object_id: str,
+        parts: Sequence[MultipartPartReceipt],
+        total_parts: int,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            record = session.get(
                 ArchiveCopyObjectUploadRecord,
                 (collection_id, destination_store, object_id),
             )
+            if record is None:
+                raise Conflict("archive copy upload checkpoint disappeared")
+            record.multipart_parts_json = json.dumps(
+                [
+                    {"number": current.number, "etag": current.etag, "bytes": current.bytes}
+                    for current in parts
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            record.uploaded_bytes = sum(current.bytes for current in parts)
+            record.uploaded_parts = len(parts)
+            record.total_parts = total_parts
 
-        def require_active(session: Session, collection_id: int) -> None:
+    def _require_copy_active(self, collection_id: int, destination_store: str) -> None:
+        with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
             if job is None or job.state != "copying":
                 raise Conflict("archive copy was canceled during transfer")
 
-        return SqlAlchemyArchiveMultipartUploadTracker(
-            self._session_factory,
-            load_record=load_record,
-            require_active=require_active,
+    def _record_completed_copy(
+        self,
+        session: Session,
+        *,
+        source: CollectionArchiveCopyRecord,
+        destination_store: str,
+        destination_storage_prefix: str,
+        copied: Mapping[str, _CopiedObject],
+    ) -> None:
+        destination = session.get(
+            CollectionArchiveCopyRecord,
+            (source.collection_id, destination_store),
         )
+        if destination is None:
+            destination = CollectionArchiveCopyRecord(
+                collection_id=source.collection_id,
+                store=destination_store,
+            )
+            session.add(destination)
+        destination.objects.clear()
+        store_config = self._config.archive_store(destination_store)
+        uploaded_at: list[str] = []
+        for current in sorted(source.objects, key=lambda value: value.object_order):
+            if current.kind not in _COPY_OBJECT_KINDS:
+                continue
+            receipt = copied.get(current.object_id)
+            if receipt is None:
+                raise Conflict("archive copy result omitted an immutable object")
+            copied_record = CollectionArchiveObjectRecord(
+                collection_id=source.collection_id,
+                store=destination_store,
+                object_id=current.object_id,
+                object_order=current.object_order,
+                kind=current.kind,
+                object_path=receipt.object_path,
+                plaintext_bytes=current.plaintext_bytes,
+                stored_bytes=current.stored_bytes,
+                sha256=current.sha256,
+                stored_sha256=current.stored_sha256,
+                version_id=receipt.version_id,
+                age_state_json=current.age_state_json,
+                part_receipts_json=receipt.part_receipts_json,
+                plan_sha256=current.plan_sha256,
+                index_sha256=current.index_sha256,
+                backend=store_config.backend,
+                storage_class=store_config.storage_class,
+                uploaded_at=receipt.completed_at,
+                verified_at=receipt.completed_at,
+            )
+            for placement in current.placements:
+                copied_record.placements.append(
+                    CollectionArchiveFileObjectRecord(
+                        collection_id=source.collection_id,
+                        store=destination_store,
+                        path=placement.path,
+                        sequence=placement.sequence,
+                        object_id=current.object_id,
+                        file_offset=placement.file_offset,
+                        object_offset=placement.object_offset,
+                        bytes=placement.bytes,
+                        member=placement.member,
+                    )
+                )
+            destination.objects.append(copied_record)
+            uploaded_at.append(receipt.completed_at)
+        if not {"manifest", "proof"}.issubset(copied):
+            raise Conflict("archive copy result has no root and proof")
+        destination.state = "uploaded"
+        destination.archive_storage_prefix = destination_storage_prefix
+        destination.backend = store_config.backend
+        destination.storage_class = store_config.storage_class
+        destination.last_uploaded_at = max(uploaded_at)
+        destination.last_verified_at = max(uploaded_at)
+        destination.failure = None
 
     def _record_failure(
         self,
@@ -854,21 +1134,156 @@ def _required_copy(
     return copy
 
 
-def _receipt_identity(receipt: CollectionArchiveUploadReceipt) -> CollectionArchiveIdentity:
-    return CollectionArchiveIdentity(
-        objects=tuple(
-            ArchiveObjectIdentity(
-                object_id=current.object_id,
-                kind=current.kind,
-                object_path=current.object_path,
-                plaintext_bytes=current.plaintext_bytes,
-                stored_bytes=current.stored_bytes,
-                sha256=current.sha256,
-                stored_sha256=current.stored_sha256,
-            )
-            for current in receipt.objects
+def _destination_object_path(
+    *,
+    source: CollectionArchiveObjectRecord,
+    destination_storage_prefix: str,
+) -> str:
+    prefix = destination_storage_prefix.strip("/")
+    if not prefix:
+        raise Conflict("archive copy destination prefix is empty")
+    if source.kind == "pack":
+        relative = f"volumes/{source.object_id}.tar.age"
+    elif source.kind == "segment":
+        relative = f"volumes/{source.object_id}.bin.age"
+    elif source.kind == "manifest":
+        relative = "manifest.json.age"
+    elif source.kind == "proof":
+        relative = "manifest.json.ots.age"
+    else:
+        raise Conflict(f"archive copy object kind is not immutable: {source.kind}")
+    return f"{prefix}/{relative}"
+
+
+def _volume_metadata(source: CollectionArchiveObjectRecord) -> dict[str, str]:
+    if source.age_state_json is None:
+        raise Conflict("archive volume has no age state")
+    try:
+        state = UploadState.from_json_bytes(source.age_state_json)
+    except (TypeError, ValueError) as exc:
+        raise Conflict("archive volume age state is invalid") from exc
+    if state.plaintext_size != source.plaintext_bytes:
+        raise Conflict("archive volume age state size changed")
+    metadata = {
+        "riverhog-format": (
+            PACK_VOLUME_STORAGE_FORMAT if source.kind == "pack" else RAW_VOLUME_STORAGE_FORMAT
+        ),
+        "riverhog-object-id": source.object_id,
+        "riverhog-plaintext-bytes": str(source.plaintext_bytes),
+        "riverhog-age-state-sha256": hashlib.sha256(state.to_json_bytes()).hexdigest(),
+    }
+    if source.kind == "pack":
+        if not source.plan_sha256 or not source.index_sha256:
+            raise Conflict("archive pack has no plan or index identity")
+        metadata.update(
+            {
+                "riverhog-plan-sha256": source.plan_sha256,
+                "riverhog-index-sha256": source.index_sha256,
+            }
         )
-    )
+    else:
+        if len(source.placements) != 1:
+            raise Conflict("archive segment has no unique file placement")
+        placement = source.placements[0]
+        metadata.update(
+            {
+                "riverhog-source-path-sha256": hashlib.sha256(
+                    placement.path.encode("utf-8")
+                ).hexdigest(),
+                "riverhog-file-offset": str(placement.file_offset),
+            }
+        )
+    return metadata
+
+
+def _part_rows(value: str | None) -> list[dict[str, object]]:
+    if value is None:
+        raise Conflict("archive volume has no stored-part receipts")
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise Conflict("archive volume stored-part receipts are invalid") from exc
+    if not isinstance(raw, list) or not raw:
+        raise Conflict("archive volume stored-part receipts are empty")
+    rows: list[dict[str, object]] = []
+    expected_start = 0
+    expected_keys = {
+        "number",
+        "plaintext_start",
+        "plaintext_bytes",
+        "plaintext_sha256",
+        "stored_bytes",
+        "stored_sha256",
+        "etag",
+    }
+    for number, current in enumerate(raw, start=1):
+        if not isinstance(current, dict) or set(current) != expected_keys:
+            raise Conflict("archive volume stored-part receipt is not canonical")
+        if current.get("number") != number or current.get("plaintext_start") != expected_start:
+            raise Conflict("archive volume stored-part order changed")
+        plaintext_bytes = current.get("plaintext_bytes")
+        stored_bytes = current.get("stored_bytes")
+        if (
+            isinstance(plaintext_bytes, bool)
+            or not isinstance(plaintext_bytes, int)
+            or plaintext_bytes < 0
+            or isinstance(stored_bytes, bool)
+            or not isinstance(stored_bytes, int)
+            or stored_bytes < 1
+        ):
+            raise Conflict("archive volume stored-part byte count is invalid")
+        for key in ("plaintext_sha256", "stored_sha256"):
+            digest = current.get(key)
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise Conflict("archive volume stored-part digest is invalid")
+        expected_start += plaintext_bytes
+        rows.append(dict(current))
+    return rows
+
+
+def _iter_exact_parts(
+    chunks: Iterable[bytes],
+    parts: Sequence[Mapping[str, object]],
+) -> Iterator[bytes]:
+    source = iter(chunks)
+    buffer = bytearray()
+    for row in parts:
+        needed = _part_int(row, "stored_bytes")
+        while len(buffer) < needed:
+            try:
+                chunk = bytes(next(source))
+            except StopIteration as exc:
+                raise Conflict("source archive volume ended before its part receipts") from exc
+            if chunk:
+                buffer.extend(chunk)
+        yield bytes(buffer[:needed])
+        del buffer[:needed]
+    if buffer or any(bytes(chunk) for chunk in source):
+        raise Conflict("source archive volume has bytes beyond its part receipts")
+
+
+def _part_rows_json(
+    rows: Sequence[Mapping[str, object]],
+    receipts: Sequence[MultipartPartReceipt],
+) -> str:
+    if len(rows) != len(receipts):
+        raise Conflict("archive copy part receipts do not cover the volume")
+    payload = []
+    for row, receipt in zip(rows, receipts, strict=True):
+        if (
+            _part_int(row, "number") != receipt.number
+            or _part_int(row, "stored_bytes") != receipt.bytes
+        ):
+            raise Conflict("destination archive part identity changed")
+        payload.append({**row, "etag": receipt.etag})
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _part_int(row: Mapping[str, object], key: str) -> int:
+    value = row[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise Conflict("archive volume stored-part integer is invalid")
+    return value
 
 
 def _normalize_collection_id(value: str | int) -> int:

@@ -10,20 +10,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from itertools import chain
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from queue import Queue
 from typing import Annotated, Any, Literal, TypedDict, cast
 
 import httpx
 import typer
-from riverhog_age import plaintext_bytes_for_ciphertext_offset
 from riverhog_api_client.client import ApiClient
-from riverhog_api_client.ingress import (
-    DEFAULT_INGRESS_PART_BYTES,
-    iter_ingress_upload_parts,
-)
 from riverhog_cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
@@ -44,6 +37,7 @@ from riverhog_protocol.paths import (
     normalize_collection_id,
     normalize_tag,
 )
+from riverhog_protocol.raw_ingress import hash_raw_source
 from time_formats import parse_duration, utc_timestamp_now
 
 from riverhog_cli.local import local_app
@@ -105,10 +99,8 @@ app.add_typer(event_app, name="event")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_CHUNK_BYTES = DEFAULT_INGRESS_PART_BYTES
 UPLOAD_FILE_CONCURRENCY = 8
 UPLOAD_FILE_CONCURRENCY_MAX = 64
-UPLOAD_FILE_WINDOW_MAX = 256
 UPLOAD_REGISTRATION_BATCH_MAX = 16
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
@@ -118,23 +110,21 @@ TRANSIENT_UPLOAD_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
 UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
-UPLOAD_STORAGE_ROLLBACK_LIMIT = 3
 UPLOAD_LOG_LOCK = threading.Lock()
-UploadWaitMode = Literal["staged", "finalized"]
-UploadCompletionState = Literal["staged", "finalized", "failed", "timeout"]
+UploadCompletionState = Literal["finalized", "failed", "timeout"]
 _API_CLIENT: ApiClient | None = None
 
 
-class CollectionManifestEntry(TypedDict):
+class RawPartsPayload(TypedDict):
+    part_plaintext_bytes: int
+    sha256s: list[str]
+
+
+class CollectionManifestEntry(TypedDict, total=False):
     path: str
     bytes: int
     sha256: str
-
-
-class CollectionUploadFilePayload(CollectionManifestEntry, total=False):
-    upload_state: str
-    uploaded_bytes: int
-    upload_state_expires_at: str | None
+    raw_parts: RawPartsPayload
 
 
 def client() -> ApiClient:
@@ -768,30 +758,12 @@ def app_key_quota_list_cmd(
     emit(payload if json_mode else format_download_quotas(payload), json_mode=json_mode)
 
 
-def _response_upload_files(payload: dict[str, Any]) -> list[CollectionUploadFilePayload]:
-    files = payload.get("files")
-    if not isinstance(files, list):
-        return []
-    return cast(list[CollectionUploadFilePayload], files)
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, (str, bytes, bytearray, int, float)):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _iter_file_chunks(
     path: Path,
     *,
     offset: int = 0,
     limit: int | None = None,
-    chunk_size: int = UPLOAD_CHUNK_BYTES,
+    chunk_size: int = HASH_CHUNK_BYTES,
 ) -> Iterator[bytes]:
     remaining = limit
     with path.open("rb") as handle:
@@ -809,22 +781,9 @@ def _iter_file_chunks(
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    for chunk in _iter_file_chunks(path, chunk_size=HASH_CHUNK_BYTES):
+    for chunk in _iter_file_chunks(path):
         digest.update(chunk)
     return digest.hexdigest()
-
-
-def _upload_chunk_bytes() -> int:
-    raw_value = os.getenv("RIVERHOG_UPLOAD_CHUNK_BYTES")
-    if raw_value is None or raw_value.strip() == "":
-        return UPLOAD_CHUNK_BYTES
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer") from exc
-    if value <= 0:
-        raise typer.BadParameter("RIVERHOG_UPLOAD_CHUNK_BYTES must be a positive integer")
-    return value
 
 
 def _upload_file_concurrency() -> int:
@@ -844,28 +803,10 @@ def _upload_file_concurrency() -> int:
     return value
 
 
-def _upload_file_window(file_concurrency: int) -> int:
-    raw_value = os.getenv("RIVERHOG_UPLOAD_FILE_WINDOW")
-    if raw_value is None or raw_value.strip() == "":
-        return min(file_concurrency * 2, UPLOAD_FILE_WINDOW_MAX)
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise typer.BadParameter("RIVERHOG_UPLOAD_FILE_WINDOW must be an integer") from exc
-    if value < file_concurrency or value > UPLOAD_FILE_WINDOW_MAX:
-        raise typer.BadParameter(
-            "RIVERHOG_UPLOAD_FILE_WINDOW must be between the configured file concurrency "
-            f"and {UPLOAD_FILE_WINDOW_MAX}"
-        )
-    return value
-
-
 def _new_upload_worker_client(api: ApiClient) -> ApiClient:
     worker = ApiClient(base_url=api.base_url, token=api.token)
     worker.host_header = api.host_header
     worker.http2 = api.http2
-    worker.upload_base_url = api.upload_base_url
-    worker.upload_http2 = api.upload_http2
     return worker
 
 
@@ -913,26 +854,12 @@ def _upload_finalize_timeout_seconds() -> float | None:
         raise typer.BadParameter(
             "RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS must be a non-negative number"
         )
-    if value == 0:
-        return None
-    return value
-
-
-def _default_upload_wait_mode() -> str:
-    return os.getenv("RIVERHOG_UPLOAD_WAIT", "finalized").strip().lower() or "finalized"
-
-
-def _normalize_upload_wait_mode(value: str) -> UploadWaitMode:
-    normalized = value.strip().lower()
-    if normalized not in {"staged", "finalized"}:
-        raise typer.BadParameter("upload wait mode must be 'staged' or 'finalized'")
-    return "staged" if normalized == "staged" else "finalized"
+    return None if value == 0 else value
 
 
 def _format_bytes(value: int) -> str:
     if value < 1000:
         return f"{value} B"
-
     scaled = float(value)
     for unit in ("KB", "MB", "GB", "TB", "PB"):
         scaled /= 1000.0
@@ -949,8 +876,8 @@ def _log_upload(message: str) -> None:
 def _report_upload_status(status: Callable[[str], None] | None, message: str) -> None:
     if status is None:
         _log_upload(message)
-        return
-    status(message)
+    else:
+        status(message)
 
 
 def _is_transient_upload_error(exc: BaseException) -> bool:
@@ -958,9 +885,7 @@ def _is_transient_upload_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in TRANSIENT_UPLOAD_STATUS_CODES
-    if isinstance(exc, ServiceUnavailable):
-        return True
-    return False
+    return isinstance(exc, ServiceUnavailable)
 
 
 def _upload_error_description(exc: BaseException) -> str:
@@ -1043,27 +968,15 @@ def _complete_collection_upload_session(
     )
 
 
-def _create_or_resume_collection_file_upload(
-    api: ApiClient,
-    collection_id: int,
-    path_value: str,
-) -> dict[str, Any]:
-    return _retry_transient_upload_operation(
-        f"Upload resume check for {path_value}",
-        lambda: api.create_or_resume_collection_file_upload(collection_id, path_value),
-    )
-
-
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        stat = path.stat()
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),
-                "bytes": stat.st_size,
+                "bytes": path.stat().st_size,
                 "sha256": _file_sha256(path),
             }
         )
@@ -1078,7 +991,6 @@ def _collection_upload_dry_run_plan(
     tags: list[str],
     root: Path,
     manifest: list[CollectionManifestEntry],
-    wait_mode: UploadWaitMode,
     archive_store: str | None = None,
 ) -> dict[str, object]:
     try:
@@ -1097,7 +1009,6 @@ def _collection_upload_dry_run_plan(
         "ingest_source": str(root),
         "files_total": len(manifest),
         "bytes_total": sum(item["bytes"] for item in manifest),
-        "wait_mode": wait_mode,
         "archive_store": archive_store,
         "server_validation": "not_run",
         "created_at": utc_timestamp_now(),
@@ -1105,420 +1016,294 @@ def _collection_upload_dry_run_plan(
     }
 
 
-def _iter_local_collection_paths(root: Path) -> Iterator[Path]:
-    for path in sorted(root.rglob("*")):
-        if path.is_file():
-            yield path
+def _session_layout(payload: Mapping[str, object]) -> tuple[int, int]:
+    layout = payload.get("layout")
+    if not isinstance(layout, Mapping):
+        raise RuntimeError("open upload session is missing its immutable layout")
+    pack_member_bytes = layout.get("pack_member_bytes")
+    raw_part_plaintext_bytes = layout.get("raw_part_plaintext_bytes")
+    if (
+        isinstance(pack_member_bytes, bool)
+        or not isinstance(pack_member_bytes, int)
+        or pack_member_bytes < 1
+        or isinstance(raw_part_plaintext_bytes, bool)
+        or not isinstance(raw_part_plaintext_bytes, int)
+        or raw_part_plaintext_bytes < 1
+    ):
+        raise RuntimeError("upload session returned an invalid immutable layout")
+    return pack_member_bytes, raw_part_plaintext_bytes
 
 
-def _upload_collection_file(
-    api: ApiClient,
-    collection_id: int,
+def _hash_collection_source(
+    root: Path,
     source_path: Path,
-    file_payload: Mapping[str, object],
     *,
-    progress: Callable[[int], None] | None = None,
-    resumed: Callable[[int], None] | None = None,
-) -> None:
-    path_value = str(file_payload["path"])
-    length_value = file_payload["bytes"]
-    if not isinstance(length_value, int):
-        raise RuntimeError(f"upload length for {path_value} is not an integer")
-    plaintext_length = length_value
-    session = _create_or_resume_collection_file_upload(api, collection_id, path_value)
-    offset = int(session["offset"])
-    length = int(session["length"])
-    encryption = session.get("encryption")
-    if not isinstance(encryption, Mapping):
-        raise RuntimeError(f"upload encryption descriptor is missing for {path_value}")
-    if int(encryption.get("plaintext_bytes", -1)) != plaintext_length:
-        raise RuntimeError(f"upload plaintext length changed for {path_value}")
-    if int(encryption.get("ciphertext_bytes", -1)) != length:
-        raise RuntimeError(f"upload ciphertext length changed for {path_value}")
-    if offset > length:
-        raise RuntimeError(
-            f"upload offset for {path_value} is {offset}, past expected length {length}"
-        )
-    encryption_state = encryption.get("state")
-    if not isinstance(encryption_state, Mapping):
-        raise RuntimeError(f"upload encryption state is missing for {path_value}")
-    if resumed is not None and offset:
-        resumed(
-            plaintext_bytes_for_ciphertext_offset(
-                state=encryption_state,
-                plaintext_bytes=plaintext_length,
-                ciphertext_bytes=length,
-                ciphertext_offset=offset,
-            )
-        )
-    log_file = plaintext_length >= _upload_file_log_bytes()
-    if offset >= length:
-        if log_file:
-            _log_upload(f"Already uploaded {path_value} ({_format_bytes(plaintext_length)})")
-        return
-
-    if offset:
-        _log_upload(f"Resuming encrypted upload {path_value} at {_format_bytes(offset)}")
-    elif log_file:
-        _log_upload(f"Uploading {path_value} ({_format_bytes(plaintext_length)})")
-
-    def completed_plaintext(ciphertext_offset: int) -> int:
-        return plaintext_bytes_for_ciphertext_offset(
-            state=encryption_state,
-            plaintext_bytes=plaintext_length,
-            ciphertext_bytes=length,
-            ciphertext_offset=ciphertext_offset,
-        )
-
-    highest_confirmed_offset = offset
-    storage_rollbacks = 0
-    while offset < length:
-        restart_at_recovered_offset = False
-        for part in iter_ingress_upload_parts(
-            source_path,
-            encryption,
-            ciphertext_offset=offset,
-            target_part_bytes=_upload_chunk_bytes(),
-        ):
-            chunk = part.ciphertext
-            retry_delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
-            last_retry_log_at = 0.0
-            retry_attempt = 0
-            while offset == part.ciphertext_offset:
-                try:
-                    upload_result = api.append_upload_chunk(
-                        str(session["upload_url"]),
-                        offset=offset,
-                        checksum_algorithm=str(session["checksum_algorithm"]),
-                        content=chunk,
-                    )
-                except (
-                    httpx.TransportError,
-                    httpx.HTTPStatusError,
-                    Conflict,
-                    ServiceUnavailable,
-                ) as exc:
-                    if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
-                        raise
-                    session = _create_or_resume_collection_file_upload(
-                        api,
-                        collection_id,
-                        path_value,
-                    )
-                    recovered_offset = int(session["offset"])
-                    if recovered_offset == offset:
-                        if isinstance(exc, Conflict):
-                            raise RuntimeError(
-                                f"server rejected upload chunk for {path_value} at "
-                                f"{_format_bytes(offset)} without advancing the offset"
-                            ) from exc
-                        retry_attempt += 1
-                        now = time.monotonic()
-                        if (
-                            retry_attempt == 1
-                            or now - last_retry_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS
-                        ):
-                            _log_upload(
-                                f"Upload interrupted for {path_value} at "
-                                f"{_format_bytes(offset)}; {_upload_error_description(exc)}; "
-                                f"server offset unchanged; retrying in {retry_delay:.1f}s"
-                            )
-                            last_retry_log_at = now
-                        time.sleep(retry_delay)
-                        retry_delay = min(
-                            retry_delay * 2,
-                            UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
-                        )
-                        continue
-                    if recovered_offset > length:
-                        raise RuntimeError(
-                            f"server upload offset for {path_value} is {recovered_offset}, "
-                            f"past expected length {length}"
-                        ) from exc
-                    completed_before = completed_plaintext(offset)
-                    completed_after = completed_plaintext(recovered_offset)
-                    if progress is not None and completed_after != completed_before:
-                        progress(completed_after - completed_before)
-                    chunk_end = offset + len(chunk)
-                    previous_offset = offset
-                    offset = recovered_offset
-                    if recovered_offset == chunk_end:
-                        _log_upload(
-                            f"Server accepted chunk for {path_value} before the response "
-                            f"was lost; continuing at {_format_bytes(recovered_offset)}"
-                        )
-                    elif recovered_offset < previous_offset:
-                        storage_rollbacks += 1
-                        if storage_rollbacks >= UPLOAD_STORAGE_ROLLBACK_LIMIT:
-                            raise RuntimeError(
-                                f"upload storage repeatedly rolled {path_value} back to "
-                                f"{_format_bytes(recovered_offset)} after accepting later "
-                                "offsets; cancel this upload session and retry"
-                            ) from exc
-                        _log_upload(
-                            f"Upload storage rolled {path_value} back to its authoritative "
-                            f"offset {_format_bytes(recovered_offset)}; resending from there"
-                        )
-                        restart_at_recovered_offset = True
-                    else:
-                        _log_upload(
-                            f"Server retained part of the interrupted upload for "
-                            f"{path_value}; continuing at {_format_bytes(recovered_offset)}"
-                        )
-                        restart_at_recovered_offset = True
-                    break
-
-                next_offset = int(upload_result["offset"])
-                if next_offset != offset + len(chunk):
-                    raise RuntimeError(f"upload offset advanced unexpectedly for {path_value}")
-                completed_before = completed_plaintext(offset)
-                completed_after = completed_plaintext(next_offset)
-                if progress is not None and completed_after > completed_before:
-                    progress(completed_after - completed_before)
-                offset = next_offset
-                if next_offset > highest_confirmed_offset:
-                    highest_confirmed_offset = next_offset
-                    storage_rollbacks = 0
-            if restart_at_recovered_offset:
-                break
-        if restart_at_recovered_offset:
-            continue
-        break
-    if offset != length:
-        raise RuntimeError(f"upload for {path_value} stopped at {offset} of {length} bytes")
-    if log_file:
-        _log_upload(f"Uploaded {path_value} ({_format_bytes(plaintext_length)})")
-
-
-def _upload_collection_files(
-    api: ApiClient,
-    collection_id: int,
-    resolved_root: Path,
-    upload_files: list[CollectionUploadFilePayload],
-    *,
-    progress: Callable[[int], None],
-    file_complete: Callable[[], None] | None = None,
-    file_concurrency: int,
-    api_factory: Callable[[], ApiClient] | None = None,
-) -> None:
-    pending_files = [
-        file_payload for file_payload in upload_files if file_payload["upload_state"] != "uploaded"
-    ]
-    if file_concurrency <= 1:
-        for file_payload in pending_files:
-            _upload_collection_file(
-                api,
-                collection_id,
-                resolved_root / str(file_payload["path"]),
-                file_payload,
-                progress=progress,
-            )
-            if file_complete is not None:
-                file_complete()
-        return
-
-    _log_upload(f"Uploading up to {file_concurrency} files concurrently")
-    next_file_lock = threading.Lock()
-    stop_event = threading.Event()
-    pending_iter = iter(pending_files)
-    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
-
-    def upload_worker() -> None:
-        worker_api = worker_factory()
-        try:
-            while not stop_event.is_set():
-                with next_file_lock:
-                    if stop_event.is_set():
-                        return
-                    try:
-                        file_payload = next(pending_iter)
-                    except StopIteration:
-                        return
-                _upload_collection_file(
-                    worker_api,
-                    collection_id,
-                    resolved_root / str(file_payload["path"]),
-                    file_payload,
-                    progress=progress,
-                )
-                if file_complete is not None:
-                    file_complete()
-        finally:
-            worker_api.close()
-
-    with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
-        futures = [
-            executor.submit(upload_worker) for _ in range(min(file_concurrency, len(pending_files)))
-        ]
-        try:
-            for future in as_completed(futures):
-                future.result()
-        except BaseException:
-            stop_event.set()
-            for future in futures:
-                future.cancel()
-            raise
-
-
-def _finalized_collection_upload_payload(
-    collection_id: int,
-    manifest: list[CollectionManifestEntry] | None,
-    collection: dict[str, object],
-) -> dict[str, object]:
-    if manifest is None:
-        bytes_value = collection.get("bytes")
-        files_value = collection.get("files")
-        bytes_total = int(bytes_value) if isinstance(bytes_value, (str, int, float)) else 0
-        files_total = int(files_value) if isinstance(files_value, (str, int, float)) else 0
-        files: list[dict[str, object]] = []
-    else:
-        bytes_total = sum(item["bytes"] for item in manifest)
-        files = [
-            {
-                "path": item["path"],
-                "bytes": item["bytes"],
-                "sha256": item["sha256"],
-                "upload_state": "uploaded",
-                "uploaded_bytes": item["bytes"],
-                "upload_state_expires_at": None,
-            }
-            for item in manifest
-        ]
-        files_total = len(files)
-    archive_copies = collection.get("archive_copies")
-    archive = archive_copies[0] if isinstance(archive_copies, list) and archive_copies else None
-    archive_stored_bytes = 0
-    if isinstance(archive, dict):
-        archive_stored_bytes = int(archive.get("stored_bytes") or 0)
+    pack_member_bytes: int,
+    raw_part_plaintext_bytes: int,
+) -> CollectionManifestEntry:
+    rel_path = source_path.relative_to(root).as_posix()
+    byte_count = source_path.stat().st_size
+    if byte_count >= _upload_file_log_bytes():
+        _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
+    if byte_count < pack_member_bytes:
+        return {
+            "path": rel_path,
+            "bytes": byte_count,
+            "sha256": _file_sha256(source_path),
+        }
+    raw = hash_raw_source(
+        path=rel_path,
+        chunks=_iter_file_chunks(source_path),
+        expected_bytes=byte_count,
+        part_plaintext_bytes=raw_part_plaintext_bytes,
+    )
     return {
-        "collection_id": collection_id,
-        "ingest_source": collection.get("ingest_source"),
-        "archive_store": archive.get("store") if isinstance(archive, dict) else None,
-        "state": "finalized",
-        "files_total": files_total,
-        "files_pending": 0,
-        "files_partial": 0,
-        "files_uploaded": files_total,
-        "bytes_total": bytes_total,
-        "uploaded_bytes": bytes_total,
-        "missing_bytes": 0,
-        "upload_state_expires_at": None,
-        "latest_failure": None,
-        "archive_phase": "completed",
-        "archive_uploaded_bytes": archive_stored_bytes or bytes_total,
-        "archive_total_bytes": archive_stored_bytes or bytes_total,
-        "archive_uploaded_parts": None,
-        "archive_total_parts": None,
-        "files": files,
-        "collection": collection,
+        "path": rel_path,
+        "bytes": byte_count,
+        "sha256": raw.sha256,
+        "raw_parts": {
+            "part_plaintext_bytes": raw.part_plaintext_bytes,
+            "sha256s": list(raw.part_sha256s),
+        },
     }
 
 
-def _wait_for_collection_state(
+def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManifestEntry]:
+    payload = api.list_collection_upload_session_files(collection_id, all_items=True)
+    values = payload.get("files")
+    if not isinstance(values, list):
+        raise RuntimeError("upload session returned an invalid file list")
+    result: list[CollectionManifestEntry] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            raise RuntimeError("upload session returned an invalid file record")
+        path = value.get("path")
+        byte_count = value.get("bytes")
+        sha256 = value.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not isinstance(byte_count, int)
+            or not isinstance(sha256, str)
+        ):
+            raise RuntimeError("upload session returned an invalid file identity")
+        result.append({"path": path, "bytes": byte_count, "sha256": sha256})
+    return result
+
+
+def _manifest_identity(
+    manifest: list[CollectionManifestEntry],
+) -> list[tuple[str, int, str]]:
+    return [(item["path"], item["bytes"], item["sha256"]) for item in manifest]
+
+
+def _upload_unit_content(
+    root: Path,
+    unit: Mapping[str, object],
+) -> bytes:
+    expected = unit.get("payload_bytes")
+    sources = unit.get("sources")
+    if not isinstance(expected, int) or expected < 0 or not isinstance(sources, list):
+        raise RuntimeError("server returned an invalid upload unit")
+    content = bytearray()
+    for source in sources:
+        if not isinstance(source, Mapping):
+            raise RuntimeError("server returned an invalid upload unit source")
+        path = source.get("path")
+        offset = source.get("offset")
+        byte_count = source.get("bytes")
+        if (
+            not isinstance(path, str)
+            or not isinstance(offset, int)
+            or offset < 0
+            or not isinstance(byte_count, int)
+            or byte_count < 0
+        ):
+            raise RuntimeError("server returned an invalid upload unit source")
+        source_path = root / path
+        for chunk in _iter_file_chunks(
+            source_path,
+            offset=offset,
+            limit=byte_count,
+        ):
+            content.extend(chunk)
+    if len(content) != expected:
+        raise RuntimeError(
+            f"local sources produced {len(content)} bytes for a {expected}-byte upload unit"
+        )
+    return bytes(content)
+
+
+def _put_collection_upload_session_unit(
     api: ApiClient,
     collection_id: int,
-    manifest: list[CollectionManifestEntry] | None,
+    volume: Mapping[str, object],
+    unit: Mapping[str, object],
     *,
-    wait_mode: UploadWaitMode,
-    status: Callable[[str], None] | None = None,
-) -> tuple[dict[str, object], UploadCompletionState]:
-    poll_seconds = _upload_finalize_poll_seconds()
-    timeout_seconds = _upload_finalize_timeout_seconds()
-    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
-    last_status_log_at = 0.0
-    last_payload: dict[str, object] | None = None
-    wait_label = "archive verification" if wait_mode == "finalized" else "server handoff"
-    success_state: UploadCompletionState = "finalized" if wait_mode == "finalized" else "staged"
-
-    _report_upload_status(
-        status,
-        f"All files uploaded; waiting for {wait_label}",
-    )
+    root: Path,
+) -> int:
+    volume_id = volume.get("volume_id")
+    plan_sha256 = volume.get("plan_sha256")
+    unit_number = unit.get("unit")
+    payload_bytes = unit.get("payload_bytes")
+    if (
+        not isinstance(volume_id, str)
+        or not isinstance(plan_sha256, str)
+        or not isinstance(unit_number, int)
+        or not isinstance(payload_bytes, int)
+    ):
+        raise RuntimeError("server returned an invalid upload unit identity")
+    if unit.get("state") == "committed":
+        return 0
+    content = _upload_unit_content(root, unit)
+    delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
+    last_log_at = 0.0
     while True:
-        now = time.monotonic()
-        transient_error: BaseException | None = None
         try:
-            collection = api.get_collection(collection_id)
-            return (
-                _finalized_collection_upload_payload(collection_id, manifest, collection),
-                success_state,
+            result = api.put_collection_upload_session_unit(
+                collection_id,
+                volume_id,
+                unit_number,
+                plan_sha256=plan_sha256,
+                content=content,
             )
-        except NotFound:
-            try:
-                last_payload = api.get_collection_upload_session(collection_id)
-            except NotFound:
-                last_payload = None
-            except Exception as exc:
-                if not _is_transient_upload_error(exc):
-                    raise
-                transient_error = exc
-        except Exception as exc:
-            if not _is_transient_upload_error(exc):
+            if result.get("state") != "committed":
+                raise RuntimeError("server did not commit the complete upload unit")
+            return payload_bytes
+        except (httpx.TransportError, httpx.HTTPStatusError, Conflict, ServiceUnavailable) as exc:
+            if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
                 raise
-            transient_error = exc
+            try:
+                current = api.get_collection_upload_session_unit(
+                    collection_id, volume_id, unit_number
+                )
+            except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable):
+                current = {}
+            if current.get("state") == "committed":
+                return payload_bytes
+            if isinstance(exc, Conflict):
+                raise
+            now = time.monotonic()
+            if now - last_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS:
+                _log_upload(
+                    f"Upload unit {volume_id}/{unit_number} interrupted "
+                    f"({_upload_error_description(exc)}); retrying in {delay:.1f}s"
+                )
+                last_log_at = now
+            time.sleep(delay)
+            delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
 
-        if transient_error is not None:
-            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-                _report_upload_status(
-                    status,
-                    f"Waiting for {wait_label}: "
-                    f"{_upload_error_description(transient_error)} while polling; retrying",
-                )
-                last_status_log_at = now
-        elif last_payload is not None:
-            state = str(last_payload.get("state", "unknown"))
-            if wait_mode == "staged" and state == "archiving":
-                return last_payload, "staged"
-            if state == "failed":
-                return last_payload, "failed"
-            if state in {"canceled", "expired"}:
-                raise RuntimeError(
-                    f"collection upload became {state} before {wait_label} completed"
-                )
-            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-                archive_status = (
-                    _archive_wait_status(last_payload) if wait_mode == "finalized" else ""
-                )
-                _report_upload_status(
-                    status,
-                    f"Waiting for {wait_label}: "
-                    f"state={state}, "
-                    f"{last_payload.get('files_uploaded', 0)}/"
-                    f"{last_payload.get('files_total', 0)} files, "
-                    f"{last_payload.get('uploaded_bytes', 0)}/"
-                    f"{last_payload.get('bytes_total', 0)} bytes staged"
-                    f"{archive_status}",
-                )
-                last_status_log_at = now
-        elif now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
-            _report_upload_status(
-                status,
-                f"Waiting for {wait_label}: upload session not visible yet",
-            )
-            last_status_log_at = now
 
-        if deadline is not None and now >= deadline:
-            if last_payload is not None:
-                return last_payload, "timeout"
-            files_total = len(manifest) if manifest is not None else 0
-            bytes_total = sum(item["bytes"] for item in manifest or ())
-            return (
-                {
-                    "collection_id": collection_id,
-                    "state": "archiving" if wait_mode == "finalized" else "uploading",
-                    "files": [],
-                    "files_total": files_total,
-                    "files_uploaded": 0,
-                    "bytes_total": bytes_total,
-                    "uploaded_bytes": 0,
-                    "upload_state_expires_at": None,
-                },
-                "timeout",
-            )
-        sleep_seconds = poll_seconds
-        if deadline is not None:
-            sleep_seconds = max(0.0, min(poll_seconds, deadline - now))
-        time.sleep(sleep_seconds)
+def _volume_work(payload: Mapping[str, object]) -> list[dict[str, object]]:
+    values = payload.get("volumes")
+    if not isinstance(values, list):
+        raise RuntimeError("upload session returned an invalid volume list")
+    result: list[dict[str, object]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise RuntimeError("upload session returned an invalid volume")
+        result.append(value)
+    return result
+
+
+def _pending_volume_units(
+    volumes: list[dict[str, object]],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    work: list[tuple[dict[str, object], dict[str, object]]] = []
+    for volume in volumes:
+        units = volume.get("units")
+        if not isinstance(units, list):
+            raise RuntimeError("upload session returned an invalid volume plan")
+        for unit in units:
+            if not isinstance(unit, dict):
+                raise RuntimeError("upload session returned an invalid unit plan")
+            if unit.get("state") != "committed":
+                work.append((volume, unit))
+    return work
+
+
+def _committed_source_bytes(volumes: list[dict[str, object]]) -> int:
+    total = 0
+    for volume in volumes:
+        units = volume.get("units")
+        if not isinstance(units, list):
+            continue
+        total += sum(
+            int(unit.get("payload_bytes") or 0)
+            for unit in units
+            if isinstance(unit, Mapping) and unit.get("state") == "committed"
+        )
+    return total
+
+
+def _upload_planned_units(
+    api: ApiClient,
+    collection_id: int,
+    root: Path,
+    *,
+    concurrency: int,
+    progress: Any,
+    api_factory: Callable[[], ApiClient] | None,
+) -> None:
+    payload = api.list_collection_upload_session_volumes(collection_id)
+    volumes = _volume_work(payload)
+    progress.resumed(_committed_source_bytes(volumes))
+
+    # Establish one durable multipart checkpoint per volume before allowing
+    # parallel unit requests for that volume.
+    for volume in volumes:
+        units = volume.get("units")
+        if not isinstance(units, list):
+            raise RuntimeError("upload session returned an invalid volume plan")
+        first = next(
+            (unit for unit in units if isinstance(unit, dict) and unit.get("state") != "committed"),
+            None,
+        )
+        if first is None:
+            continue
+        accepted = _put_collection_upload_session_unit(
+            api,
+            collection_id,
+            volume,
+            first,
+            root=root,
+        )
+        progress.uploaded(accepted)
+
+    try:
+        volumes = _volume_work(api.list_collection_upload_session_volumes(collection_id))
+    except NotFound:
+        return
+    pending = _pending_volume_units(volumes)
+    if not pending:
+        return
+
+    worker_count = min(concurrency, len(pending))
+    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
+    buckets = [pending[index::worker_count] for index in range(worker_count)]
+
+    def worker(
+        items: list[tuple[dict[str, object], dict[str, object]]],
+    ) -> None:
+        worker_api = api if worker_count == 1 else worker_factory()
+        owns_api = worker_api is not api
+        try:
+            for volume, unit in items:
+                accepted = _put_collection_upload_session_unit(
+                    worker_api,
+                    collection_id,
+                    volume,
+                    unit,
+                    root=root,
+                )
+                progress.uploaded(accepted)
+        finally:
+            if owns_api:
+                worker_api.close()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(worker, bucket) for bucket in buckets]
+        for future in futures:
+            future.result()
 
 
 def _wait_for_finalized_collection(
@@ -1528,29 +1313,52 @@ def _wait_for_finalized_collection(
     *,
     status: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, object], UploadCompletionState]:
-    return _wait_for_collection_state(
-        api,
-        collection_id,
-        manifest,
-        wait_mode="finalized",
-        status=status,
-    )
+    poll_seconds = _upload_finalize_poll_seconds()
+    timeout_seconds = _upload_finalize_timeout_seconds()
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    last_status_log_at = 0.0
+    last_payload: dict[str, object] | None = None
 
+    _report_upload_status(status, "Waiting for verified archive custody")
+    while True:
+        now = time.monotonic()
+        try:
+            last_payload = api.get_collection_upload_session(collection_id)
+            state = str(last_payload.get("state", "unknown"))
+            if state == "finalized":
+                return last_payload, "finalized"
+            if state == "failed":
+                return last_payload, "failed"
+            if state == "canceled":
+                raise RuntimeError("collection upload was canceled before custody completed")
+            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+                _report_upload_status(
+                    status,
+                    f"Waiting for verified archive custody: state={state}"
+                    f"{_archive_wait_status(last_payload)}",
+                )
+                last_status_log_at = now
+        except Exception as exc:
+            if not _is_transient_upload_error(exc):
+                raise
+            if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
+                _report_upload_status(
+                    status,
+                    f"Custody status unavailable ({_upload_error_description(exc)}); retrying",
+                )
+                last_status_log_at = now
 
-def _wait_for_staged_collection(
-    api: ApiClient,
-    collection_id: int,
-    manifest: list[CollectionManifestEntry],
-    *,
-    status: Callable[[str], None] | None = None,
-) -> tuple[dict[str, object], UploadCompletionState]:
-    return _wait_for_collection_state(
-        api,
-        collection_id,
-        manifest,
-        wait_mode="staged",
-        status=status,
-    )
+        if deadline is not None and now >= deadline:
+            return last_payload or {
+                "collection_id": collection_id,
+                "state": "finalizing",
+                "files_total": len(manifest or ()),
+                "bytes_total": sum(item["bytes"] for item in manifest or ()),
+            }, "timeout"
+        sleep_seconds = poll_seconds
+        if deadline is not None:
+            sleep_seconds = max(0.0, min(poll_seconds, deadline - now))
+        time.sleep(sleep_seconds)
 
 
 def _upload_collection_via_session(
@@ -1560,19 +1368,12 @@ def _upload_collection_via_session(
     resolved_root: Path,
     *,
     ingest_source: str | None,
-    wait_mode: UploadWaitMode,
     archive_store: str | None = None,
     json_mode: bool = False,
     file_concurrency: int,
     api_factory: Callable[[], ApiClient] | None = None,
 ) -> dict[str, object]:
-    local_path_iter = _iter_local_collection_paths(resolved_root)
-    try:
-        first_source_path = next(local_path_iter)
-    except StopIteration as exc:
-        raise typer.BadParameter("collection source must contain at least one file") from exc
-
-    _log_upload(f"Opening incremental upload session for {resolved_root}")
+    _log_upload(f"Opening direct-to-archive upload session for {resolved_root}")
     session_payload = _create_or_resume_collection_upload_session(
         api,
         idempotency_key,
@@ -1581,213 +1382,91 @@ def _upload_collection_via_session(
         archive_store=archive_store,
     )
     collection_id = cast(int, session_payload["collection_id"])
-    session_state = str(session_payload.get("state") or "open")
-    if session_state == "finalized":
+    if session_payload.get("state") == "finalized":
         _log_upload(f"Collection {collection_id} already finalized for this retry key")
         return session_payload
-    if session_state != "open":
-        _log_upload(f"Upload session {collection_id} already {session_state}")
-        if wait_mode == "finalized" and session_state == "archiving":
-            final_payload, completion_state = _wait_for_finalized_collection(
-                api,
-                collection_id,
-                None,
-                status=_log_upload,
-            )
-            if completion_state == "timeout":
-                raise typer.Exit(124)
-            if completion_state == "failed":
-                raise typer.Exit(1)
-            return final_payload
-        return session_payload
-    _log_upload(f"Upload session {collection_id}: registering files incrementally")
 
-    manifest_by_path: dict[str, CollectionManifestEntry] = {}
-    total_discovered_bytes = 0
-    chunk_bytes = _upload_chunk_bytes()
-    file_window = _upload_file_window(file_concurrency)
-    registration_batch_size = min(
-        UPLOAD_REGISTRATION_BATCH_MAX,
-        max(1, file_window // file_concurrency),
-    )
-
-    upload_progress = make_collection_upload_progress(
+    pack_member_bytes, raw_part_plaintext_bytes = _session_layout(session_payload)
+    paths = [path for path in sorted(resolved_root.rglob("*")) if path.is_file()]
+    if not paths:
+        raise typer.BadParameter("collection source must contain at least one file")
+    bytes_total = sum(path.stat().st_size for path in paths)
+    progress = make_collection_upload_progress(
         collection_id=collection_id,
-        files_total=0,
-        bytes_total=0,
+        files_total=len(paths),
+        bytes_total=bytes_total,
         files_hashed=0,
         files_registered=0,
         file_concurrency=file_concurrency,
-        chunk_bytes=chunk_bytes,
-        discovery_complete=False,
+        chunk_bytes=raw_part_plaintext_bytes,
         json_mode=json_mode,
         interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
 
-    type UploadWorkItem = tuple[Path, str, int]
-    work: Queue[list[UploadWorkItem] | None] = Queue(
-        maxsize=max(1, file_window // registration_batch_size)
-    )
-    manifest_lock = threading.Lock()
-    failure_lock = threading.Lock()
-    failures: list[BaseException] = []
-    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
+    with progress:
+        progress.notice("Hashing source identities", phase="hashing")
 
-    def record_failure(exc: BaseException) -> None:
-        with failure_lock:
-            if not failures:
-                failures.append(exc)
+        def hash_one(path: Path) -> CollectionManifestEntry:
+            return _hash_collection_source(
+                resolved_root,
+                path,
+                pack_member_bytes=pack_member_bytes,
+                raw_part_plaintext_bytes=raw_part_plaintext_bytes,
+            )
 
-    def upload_worker() -> None:
-        worker_api = api if file_concurrency == 1 else worker_factory()
-        owns_api = worker_api is not api
-        try:
-            while True:
-                item = work.get()
-                try:
-                    if item is None:
-                        return
-                    if failures:
-                        continue
-                    batch: list[tuple[Path, CollectionManifestEntry]] = []
-                    for source_path, rel_path, byte_count in item:
-                        if byte_count >= _upload_file_log_bytes():
-                            _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
-                        entry: CollectionManifestEntry = {
-                            "path": rel_path,
-                            "bytes": byte_count,
-                            "sha256": _file_sha256(source_path),
-                        }
-                        batch.append((source_path, entry))
-                        upload_progress.hashed_file()
-                    registered_payload = _register_collection_upload_session_files(
-                        worker_api,
-                        collection_id,
-                        [entry for _, entry in batch],
-                    )
-                    registered_by_path = {
-                        str(current.get("path")): current
-                        for current in _response_upload_files(registered_payload)
-                        if isinstance(current, dict) and current.get("path")
-                    }
-                    for _ in batch:
-                        upload_progress.registered_file()
-                    for source_path, entry in batch:
-                        rel_path = entry["path"]
-                        file_payload = registered_by_path.get(
-                            rel_path,
-                            CollectionUploadFilePayload(
-                                path=rel_path,
-                                bytes=entry["bytes"],
-                                sha256=entry["sha256"],
-                                upload_state="pending",
-                                uploaded_bytes=0,
-                            ),
-                        )
-                        _upload_collection_file(
-                            worker_api,
-                            collection_id,
-                            source_path,
-                            file_payload,
-                            progress=upload_progress.uploaded,
-                            resumed=upload_progress.resumed,
-                        )
-                        with manifest_lock:
-                            manifest_by_path[rel_path] = entry
-                        upload_progress.complete_file()
-                except BaseException as exc:
-                    record_failure(exc)
-                finally:
-                    work.task_done()
-        finally:
-            if owns_api:
-                worker_api.close()
-
-    with upload_progress:
         with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
-            futures = [executor.submit(upload_worker) for _ in range(file_concurrency)]
-            discovery_complete = True
-            pending_batch: list[UploadWorkItem] = []
-            try:
-                for source_path in chain((first_source_path,), local_path_iter):
-                    if failures:
-                        discovery_complete = False
-                        break
-                    rel_path = source_path.relative_to(resolved_root).as_posix()
-                    byte_count = source_path.stat().st_size
-                    total_discovered_bytes += byte_count
-                    upload_progress.set_totals(
-                        files_total=upload_progress.files_total + 1,
-                        bytes_total=total_discovered_bytes,
-                    )
-                    pending_batch.append((source_path, rel_path, byte_count))
-                    if len(pending_batch) >= registration_batch_size:
-                        work.put(pending_batch)
-                        pending_batch = []
-            except BaseException as exc:
-                discovery_complete = False
-                record_failure(exc)
-            finally:
-                if pending_batch and not failures:
-                    work.put(pending_batch)
-                if discovery_complete:
-                    upload_progress.finish_discovery()
-                for _ in futures:
-                    work.put(None)
-                for future in futures:
-                    future.result()
+            manifest = []
+            for entry in executor.map(hash_one, paths):
+                manifest.append(entry)
+                progress.hashed_file()
 
-        if failures:
-            upload_progress.notice(
-                "Incremental upload interrupted; the open session remains resumable",
-                phase="failed",
-            )
-            raise failures[0]
+        state = str(session_payload.get("state") or "open")
+        if state == "open":
+            progress.notice("Registering the canonical file manifest", phase="registering")
+            for start in range(0, len(manifest), UPLOAD_REGISTRATION_BATCH_MAX):
+                batch = manifest[start : start + UPLOAD_REGISTRATION_BATCH_MAX]
+                _register_collection_upload_session_files(api, collection_id, batch)
+                for _ in batch:
+                    progress.registered_file()
+        else:
+            existing = _server_manifest(api, collection_id)
+            if _manifest_identity(existing) != _manifest_identity(manifest):
+                raise Conflict("local collection identity differs from the resumable session")
+            for _ in manifest:
+                progress.registered_file()
 
-        manifest = [manifest_by_path[path] for path in sorted(manifest_by_path)]
-        if len(manifest) != upload_progress.files_total:
-            raise RuntimeError("incremental upload workers did not return every discovered file")
-
-        upload_progress.notice("Verifying the complete discovered file set", phase="verifying")
-        complete_payload = _complete_collection_upload_session(api, collection_id, manifest)
-        upload_progress.notice(
-            "All files uploaded; collection finalization will continue in the background",
-            phase="finalizing",
+        progress.notice("Closing discovery and persisting final volume plans", phase="planning")
+        _complete_collection_upload_session(api, collection_id, manifest)
+        progress.notice("Uploading plaintext units over the authenticated API", phase="uploading")
+        _upload_planned_units(
+            api,
+            collection_id,
+            resolved_root,
+            concurrency=file_concurrency,
+            progress=progress,
+            api_factory=api_factory,
         )
-        if wait_mode == "finalized":
-            final_payload, completion_state = _wait_for_finalized_collection(
-                api,
-                collection_id,
-                manifest,
-                status=lambda message: upload_progress.notice(message, phase="finalizing"),
-            )
-            if completion_state == "timeout":
-                upload_progress.notice("Timed out waiting for finalization", phase="timeout")
-                raise typer.Exit(124)
-            if completion_state == "failed":
-                upload_progress.notice("Collection finalization failed", phase="failed")
-                raise typer.Exit(1)
-            upload_progress.notice("Collection finalized", phase="finalized")
-            return final_payload
-        upload_progress.notice("Collection staged for background finalization", phase="staged")
-        return complete_payload
+        for _ in manifest:
+            progress.complete_file()
+        final_payload, completion_state = _wait_for_finalized_collection(
+            api,
+            collection_id,
+            manifest,
+            status=lambda message: progress.notice(message, phase="finalizing"),
+        )
+        if completion_state == "timeout":
+            progress.notice("Timed out waiting for verified custody", phase="timeout")
+            raise typer.Exit(124)
+        if completion_state == "failed":
+            progress.notice("Collection finalization failed", phase="failed")
+            raise typer.Exit(1)
+        progress.notice("Collection finalized with verified archive custody", phase="finalized")
+        return final_payload
 
 
-def _archive_wait_status(payload: dict[str, object]) -> str:
+def _archive_wait_status(payload: Mapping[str, object]) -> str:
     phase = payload.get("archive_phase")
-    if not phase:
-        return ""
-    status = f", archive_phase={phase}"
-    if phase == "planning":
-        status += ", planning archive objects"
-    uploaded_bytes = payload.get("archive_uploaded_bytes")
-    total_bytes = payload.get("archive_total_bytes")
-    if isinstance(uploaded_bytes, int) and isinstance(total_bytes, int) and total_bytes > 0:
-        percent = uploaded_bytes / total_bytes * 100.0
-        status += (
-            f", archive={_format_bytes(uploaded_bytes)} / {_format_bytes(total_bytes)} "
-            f"({percent:.1f}%)"
-        )
+    status = f", archive_phase={phase}" if phase else ""
     uploaded_parts = payload.get("archive_uploaded_parts")
     total_parts = payload.get("archive_total_parts")
     if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
@@ -1905,13 +1584,6 @@ def upload_cmd(
         str | None,
         typer.Option("--archive-store", help="Named archive store destination"),
     ] = None,
-    wait: Annotated[
-        str,
-        typer.Option(
-            "--wait",
-            help="Wait until 'finalized' safe-to-delete archival or only 'staged' server handoff",
-        ),
-    ] = _default_upload_wait_mode(),
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
     dry_run: Annotated[
         bool,
@@ -1923,7 +1595,6 @@ def upload_cmd(
 ) -> None:
     """Upload a local directory as a collection."""
 
-    wait_mode = _normalize_upload_wait_mode(wait)
     resolved_idempotency_key = idempotency_key or uuid.uuid4().hex
     resolved_tags = tags or []
     resolved_root = root.expanduser().resolve()
@@ -1945,7 +1616,6 @@ def upload_cmd(
             tags=resolved_tags,
             root=resolved_root,
             manifest=manifest,
-            wait_mode=wait_mode,
             archive_store=archive_store,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
@@ -1960,7 +1630,6 @@ def upload_cmd(
         resolved_root,
         ingest_source=str(resolved_root),
         archive_store=archive_store,
-        wait_mode=wait_mode,
         json_mode=json_mode,
         file_concurrency=file_concurrency,
     )

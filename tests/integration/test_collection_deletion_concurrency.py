@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     STATE_VERSION_TABLE,
@@ -36,18 +37,17 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     MutableManifestReceipt,
 )
-from riverhog_core.ports.upload_store import UploadStore
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_uploads import SqlAlchemyArchiveUploadService
+from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import Conflict
 from sqlalchemy import select, text
 
-from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
+from tests.unit.archive_object_fixtures import MemoryArchiveStore, as_ingress_store
 
 pytestmark = pytest.mark.integration
 
@@ -98,7 +98,7 @@ class BlockingArchiveStore:
             raise RuntimeError("timed out waiting to finish metadata publication")
         self.published_metadata.append(manifest)
         return MutableManifestReceipt(
-            object_path=f"{archive_storage_prefix}/metadata.yml.age",
+            object_path=f"{archive_storage_prefix}/metadata.json.age",
             version_id="metadata-version",
             stored_bytes=len(manifest),
             stored_sha256=hashlib.sha256(manifest).hexdigest(),
@@ -113,14 +113,6 @@ class BlockingArchiveStore:
     ) -> None:
         assert collection_id == COLLECTION_ID
         assert archive.objects
-
-
-class UnusedUploadStore:
-    def cancel_upload(self, tus_url: str) -> None:
-        raise AssertionError(tus_url)
-
-    def delete_target(self, target_path: str) -> None:
-        raise AssertionError(target_path)
 
 
 @pytest.fixture
@@ -192,8 +184,12 @@ def _seed(database_url: str) -> None:
             last_verified_at="2026-07-18T00:00:00.000000Z",
         )
         session.add(copy)
-        for order, (object_id, kind, stored_bytes) in enumerate(
-            (("data-000000", "file", 100), ("manifest", "manifest", 20), ("proof", "proof", 10))
+        for order, (object_id, kind, relative_path, stored_bytes) in enumerate(
+            (
+                ("segment-000000000000", "segment", "volumes/segment-000000000000.bin.age", 100),
+                ("manifest", "manifest", "manifest.json.age", 20),
+                ("proof", "proof", "manifest.json.ots.age", 10),
+            )
         ):
             copy.objects.append(
                 CollectionArchiveObjectRecord(
@@ -202,7 +198,7 @@ def _seed(database_url: str) -> None:
                     object_id=object_id,
                     object_order=order,
                     kind=kind,
-                    object_path=f"archives/opaque-docs/{object_id}.age",
+                    object_path=f"archives/opaque-docs/{relative_path}",
                     plaintext_bytes=stored_bytes - 1,
                     stored_bytes=stored_bytes,
                     sha256=chr(ord("a") + order) * 64,
@@ -219,7 +215,7 @@ def _seed(database_url: str) -> None:
                 store="deep",
                 path=FILE_PATH,
                 sequence=0,
-                object_id="data-000000",
+                object_id="segment-000000000000",
                 file_offset=0,
                 bytes=len(CONTENT),
             )
@@ -243,18 +239,18 @@ def _services(
     )
     store = BlockingArchiveStore()
     stores = ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)})
+    ingress = ArchiveIngressStoreRegistry({"deep": as_ingress_store(MemoryArchiveStore())})
     return (
         SqlAlchemyCollectionDeletionService(
             config,
             stores,
-            cast(UploadStore, UnusedUploadStore()),
             None,
         ),
         SqlAlchemyRetrievalService(
             config,
             stores,
+            ingress,
             None,
-            proof_verifier=FixtureProofVerifier(),
         ),
         store,
     )
@@ -358,7 +354,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
 
     assert not thread.is_alive()
     assert failures == []
-    assert store.deleted == [("data-000000", "manifest", "proof")]
+    assert store.deleted == [("segment-000000000000", "manifest", "proof")]
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None
@@ -383,10 +379,9 @@ def test_metadata_publication_and_deletion_cannot_cross_collection_archive_opera
                 next_attempt_at="2026-01-01T00:00:00.000000Z",
             )
         )
-    publisher = SqlAlchemyArchiveUploadService(
+    publisher = SqlAlchemyArchiveMaintenanceService(
         RuntimeConfig(database_url=database_url),
         ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)}),
-        proof_stamper=FixtureProofStamper(),
     )
     deletion_plan = deletion.plan(COLLECTION_ID)
     failures: list[BaseException] = []
@@ -433,10 +428,9 @@ def test_deletion_marker_prevents_a_due_metadata_publication_claim(
                 next_attempt_at="2026-01-01T00:00:00.000000Z",
             )
         )
-    publisher = SqlAlchemyArchiveUploadService(
+    publisher = SqlAlchemyArchiveMaintenanceService(
         RuntimeConfig(database_url=database_url),
         ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)}),
-        proof_stamper=FixtureProofStamper(),
     )
     challenge = str(deletion.plan(COLLECTION_ID)["challenge"])
     failures: list[BaseException] = []
@@ -493,8 +487,13 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     retrieval = SqlAlchemyRetrievalService(
         config,
         stores,
+        ArchiveIngressStoreRegistry(
+            {
+                "deep": as_ingress_store(MemoryArchiveStore()),
+                "b2": as_ingress_store(MemoryArchiveStore()),
+            }
+        ),
         None,
-        proof_verifier=FixtureProofVerifier(),
     )
     files = [(COLLECTION_ID, FILE_PATH)]
     stale_plan = retrieval.plan(files)

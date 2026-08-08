@@ -99,7 +99,7 @@ def _seed(path: Path) -> None:
                 state="published",
                 attempt_count=1,
                 next_attempt_at="2026-01-01T00:00:00.000000Z",
-                object_path="collections/1/metadata.yml.age",
+                object_path="collections/1/metadata.json.age",
                 stored_bytes=7,
                 stored_sha256="d" * 64,
                 published_at="2026-01-01T00:00:00.000000Z",
