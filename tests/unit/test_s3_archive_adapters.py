@@ -34,10 +34,12 @@ class _Body(BytesIO):
 
 
 class _FakeClient:
-    def __init__(self) -> None:
+    def __init__(self, *, conditional_put_supported: bool = True) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
         self.next_upload = 1
+        self.conditional_put_supported = conditional_put_supported
+        self.put_attempts = 0
 
     def create_multipart_upload(self, **request: Any) -> dict[str, str]:
         upload_id = f"upload-{self.next_upload}"
@@ -83,9 +85,12 @@ class _FakeClient:
         self.uploads.pop(str(request["UploadId"]), None)
 
     def put_object(self, **request: Any) -> dict[str, object]:
+        self.put_attempts += 1
         key = str(request["Key"])
         if request.get("IfNoneMatch") != "*":
             raise AssertionError("immutable put must be create-only")
+        if not self.conditional_put_supported:
+            raise _client_error("NotImplemented", 501, "PutObject")
         if key in self.objects:
             raise _client_error("PreconditionFailed", 412, "PutObject")
         body = bytes(request["Body"])
@@ -229,6 +234,37 @@ def test_immutable_adapter_is_idempotent_by_logical_identity(
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
     )
 
+    assert second == first
+    assert client.objects[first.object_path]["Body"] == b"ciphertext"
+    assert first.stored_sha256 == hashlib.sha256(b"ciphertext").hexdigest()
+
+
+def test_immutable_adapter_uses_conditional_multipart_when_put_condition_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient(conditional_put_supported=False)
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_manifest_store.create_archive_s3_client",
+        lambda *_args, **_kwargs: client,
+    )
+    config = _config(tmp_path)
+    store = S3ImmutableArchiveObjectStore(config, config.archive_store("primary"))
+
+    first = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+    second = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"different randomized ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+
+    assert client.put_attempts == 1
     assert second == first
     assert client.objects[first.object_path]["Body"] == b"ciphertext"
     assert first.stored_sha256 == hashlib.sha256(b"ciphertext").hexdigest()

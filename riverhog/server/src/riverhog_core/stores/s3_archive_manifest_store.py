@@ -16,7 +16,13 @@ _STORED_SHA256_METADATA = "riverhog-stored-sha256"
 
 
 class S3ImmutableArchiveObjectStore:
-    """Create-only S3 objects with logical-identity based retry recovery."""
+    """Create-only S3 objects with logical-identity based retry recovery.
+
+    Some S3-compatible stores, including Backblaze B2, reject conditional
+    ``PutObject`` while accepting the same create-only condition on multipart
+    completion. Small immutable objects use a one-part multipart upload on
+    those stores so the archive contract remains create-only.
+    """
 
     def __init__(
         self,
@@ -32,6 +38,7 @@ class S3ImmutableArchiveObjectStore:
             store,
             tuning=transport_tuning,
         )
+        self._conditional_put_supported: bool | None = None
 
     def put_immutable_object(
         self,
@@ -67,12 +74,15 @@ class S3ImmutableArchiveObjectStore:
         if self._storage_class:
             request["StorageClass"] = self._storage_class
         try:
-            response = cast(dict[str, Any], self._client.put_object(**request))
+            response = self._put_create_only(request)
         except ClientError as exc:
             status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
             code = str(exc.response.get("Error", {}).get("Code", ""))
             if status == 501 or code in {"NotImplemented", "UnsupportedHeader"}:
-                raise RuntimeError("archive store must support If-None-Match on PutObject") from exc
+                raise RuntimeError(
+                    "archive store must support conditional create through PutObject "
+                    "or CompleteMultipartUpload"
+                ) from exc
             if status not in {409, 412} and code not in {
                 "ConditionalRequestConflict",
                 "PreconditionFailed",
@@ -105,6 +115,72 @@ class S3ImmutableArchiveObjectStore:
                 completed_at=receipt.completed_at,
             )
         return receipt
+
+    def _put_create_only(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self._conditional_put_supported is False:
+            return self._put_create_only_multipart(request)
+        try:
+            response = cast(dict[str, Any], self._client.put_object(**request))
+        except ClientError as exc:
+            status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status != 501 and code not in {"NotImplemented", "UnsupportedHeader"}:
+                raise
+            self._conditional_put_supported = False
+            return self._put_create_only_multipart(request)
+        self._conditional_put_supported = True
+        return response
+
+    def _put_create_only_multipart(self, request: dict[str, Any]) -> dict[str, Any]:
+        create_request = {
+            key: request[key]
+            for key in ("Bucket", "Key", "ContentType", "Metadata", "StorageClass")
+            if key in request
+        }
+        created = cast(
+            dict[str, Any],
+            self._client.create_multipart_upload(**create_request),
+        )
+        upload_id = str(created.get("UploadId", ""))
+        if not upload_id:
+            raise RuntimeError("S3 did not return a multipart upload id")
+        upload_request = {
+            "Bucket": request["Bucket"],
+            "Key": request["Key"],
+            "UploadId": upload_id,
+        }
+        try:
+            part = cast(
+                dict[str, Any],
+                self._client.upload_part(
+                    **upload_request,
+                    PartNumber=1,
+                    Body=request["Body"],
+                    ContentLength=request["ContentLength"],
+                ),
+            )
+            etag = str(part.get("ETag", ""))
+            if not etag:
+                raise RuntimeError("S3 did not return a multipart part ETag")
+            return cast(
+                dict[str, Any],
+                self._client.complete_multipart_upload(
+                    **upload_request,
+                    MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": etag}]},
+                    IfNoneMatch="*",
+                ),
+            )
+        except Exception:
+            try:
+                self._client.abort_multipart_upload(**upload_request)
+            except ClientError as abort_exc:
+                status = int(
+                    abort_exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                )
+                code = str(abort_exc.response.get("Error", {}).get("Code", ""))
+                if status != 404 and code not in {"NoSuchUpload", "NotFound"}:
+                    raise
+            raise
 
     def _head_matching(
         self,
