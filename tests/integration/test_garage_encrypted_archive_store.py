@@ -8,19 +8,17 @@ from typing import Any
 
 import pytest
 from riverhog_age import encrypt_age_scrypt
+from riverhog_core.archive_formats import (
+    RAW_VOLUME_STORAGE_FORMAT,
+    ROOT_MANIFEST_STORAGE_FORMAT,
+)
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
 from riverhog_core.stores.s3_archive_manifest_store import S3ImmutableArchiveObjectStore
 from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStore
 from riverhog_core.stores.s3_archive_store import (
-    AGE_SCRYPT_ENCRYPTION,
-    COLLECTION_BYTES_METADATA,
-    COLLECTION_SHA256_METADATA,
-    ENCRYPTION_METADATA,
     PLAINTEXT_BYTES_METADATA,
-    PLAINTEXT_SHA256_METADATA,
-    STORED_SHA256_METADATA,
     S3ArchiveStore,
 )
 from riverhog_core.stores.s3_client import create_archive_s3_client
@@ -85,16 +83,11 @@ def test_canonical_archive_adapters_against_garage() -> None:
     stored_sha256 = hashlib.sha256(ciphertext).hexdigest()
     volume_path = f"{archive_prefix}/volumes/segment-000000000000.bin.age"
     metadata = {
-        "riverhog-backend": store_config.backend,
-        "riverhog-storage-class": "STANDARD",
-        "riverhog-object-kind": "collection-segment",
-        "riverhog-object-id": "segment-000000000000",
-        ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
+        "riverhog-format": RAW_VOLUME_STORAGE_FORMAT,
+        "riverhog-source-path-sha256": hashlib.sha256(b"source.bin").hexdigest(),
+        "riverhog-file-offset": "0",
         PLAINTEXT_BYTES_METADATA: str(len(plaintext)),
-        PLAINTEXT_SHA256_METADATA: plaintext_sha256,
-        COLLECTION_BYTES_METADATA: str(len(plaintext)),
-        COLLECTION_SHA256_METADATA: plaintext_sha256,
-        STORED_SHA256_METADATA: stored_sha256,
+        "riverhog-file-sha256": plaintext_sha256,
     }
 
     try:
@@ -112,8 +105,10 @@ def test_canonical_archive_adapters_against_garage() -> None:
         )
         assert completed.object_path == volume_path
 
+        manifest_plaintext = b'{"schema":"collection-archive-manifest/v1"}'
+        manifest_sha256 = hashlib.sha256(manifest_plaintext).hexdigest()
         manifest_content = encrypt_age_scrypt(
-            b'{"schema":"collection-archive-manifest/v1"}',
+            manifest_plaintext,
             passphrase,
             log_n=config.archive_scrypt_work_factor,
         )
@@ -121,14 +116,22 @@ def test_canonical_archive_adapters_against_garage() -> None:
             object_path=f"{archive_prefix}/manifest.json.age",
             content=manifest_content,
             content_type="application/vnd.riverhog.collection-manifest+age",
-            identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+            identity_metadata={
+                "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
+                "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
+                "riverhog-plaintext-sha256": manifest_sha256,
+            },
         )
         assert (
             immutable.put_immutable_object(
                 object_path=root.object_path,
                 content=b"randomized retry ciphertext",
                 content_type="application/vnd.riverhog.collection-manifest+age",
-                identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+                identity_metadata={
+                    "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
+                    "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
+                    "riverhog-plaintext-sha256": manifest_sha256,
+                },
             )
             == root
         )
@@ -151,7 +154,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
             object_path=volume_path,
             plaintext_bytes=len(plaintext),
             stored_bytes=len(ciphertext),
-            sha256=plaintext_sha256,
+            sha256=None,
             stored_sha256=stored_sha256,
         )
         assert b"".join(archive.iter_archive_object(collection_id=1, object=identity)) == plaintext

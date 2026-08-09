@@ -18,6 +18,7 @@ from riverhog_age import (
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
+from riverhog_core.archive_formats import PACK_VOLUME_STORAGE_FORMAT
 from riverhog_core.domain.archive import (
     PackUploadUnitPlan,
     PackVolumePlan,
@@ -52,7 +53,6 @@ from riverhog_core.throughput import (
 )
 
 PACK_UPLOAD_CHECKPOINT_SCHEMA = "pack-upload-checkpoint/v1"
-PACK_VOLUME_STORAGE_FORMAT = "riverhog-pack-volume/v1"
 PACK_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.pack+age"
 _PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
 TransferTimingObserver = Callable[[TransferTiming], None]

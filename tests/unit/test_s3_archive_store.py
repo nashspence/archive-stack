@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from riverhog_age import decrypt_age_scrypt, encrypt_age_scrypt
+from riverhog_core.archive_formats import archive_object_storage_format
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveVerificationError,
@@ -16,10 +17,6 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_archive_store import (
-    AGE_SCRYPT_ENCRYPTION,
-    COLLECTION_BYTES_METADATA,
-    COLLECTION_SHA256_METADATA,
-    ENCRYPTION_METADATA,
     PLAINTEXT_BYTES_METADATA,
     PLAINTEXT_SHA256_METADATA,
     STORED_SHA256_METADATA,
@@ -212,23 +209,19 @@ def _seed_encrypted_object(
     ciphertext = encrypt_age_scrypt(content, "test-archive-passphrase", log_n=2)
     plaintext_sha256 = hashlib.sha256(content).hexdigest()
     stored_sha256 = hashlib.sha256(ciphertext).hexdigest()
+    metadata = {
+        "riverhog-format": archive_object_storage_format(kind),
+        PLAINTEXT_BYTES_METADATA: str(len(content)),
+    }
+    if kind in {"manifest", "proof"}:
+        metadata[PLAINTEXT_SHA256_METADATA] = plaintext_sha256
+        metadata[STORED_SHA256_METADATA] = stored_sha256
     client.objects[path] = {
         "Body": ciphertext,
         "ContentLength": len(ciphertext),
         "LastModified": datetime(2026, 1, 1, tzinfo=UTC),
         "StorageClass": storage_class,
-        "Metadata": {
-            "riverhog-backend": "s3",
-            "riverhog-storage-class": storage_class,
-            "riverhog-object-kind": f"collection-{kind}",
-            "riverhog-object-id": kind,
-            ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
-            PLAINTEXT_BYTES_METADATA: str(len(content)),
-            PLAINTEXT_SHA256_METADATA: plaintext_sha256,
-            COLLECTION_BYTES_METADATA: str(len(content)),
-            COLLECTION_SHA256_METADATA: plaintext_sha256,
-            STORED_SHA256_METADATA: stored_sha256,
-        },
+        "Metadata": metadata,
     }
     return ArchiveObjectIdentity(
         object_id=kind,
@@ -236,7 +229,7 @@ def _seed_encrypted_object(
         object_path=path,
         plaintext_bytes=len(content),
         stored_bytes=len(ciphertext),
-        sha256=plaintext_sha256,
+        sha256=plaintext_sha256 if kind in {"manifest", "proof"} else None,
         stored_sha256=stored_sha256,
     )
 
@@ -263,6 +256,9 @@ def test_proof_replacement_uses_the_canonical_encrypted_path(
             "test-archive-passphrase",
         )
         == b"new-proof"
+    )
+    assert client.objects[proof_path]["Metadata"]["riverhog-format"] == (
+        archive_object_storage_format("proof")
     )
 
 
@@ -318,6 +314,9 @@ def test_archive_object_verification_read_and_deletion_cover_the_identity_set(
         b"pack-plaintext"
     )
     assert (
+        store.read_archive_artifact(collection_id=COLLECTION_ID, object=manifest).content == b"{}"
+    )
+    assert (
         store.stored_archive_object_sha256(
             collection_id=COLLECTION_ID,
             object=pack,
@@ -325,10 +324,12 @@ def test_archive_object_verification_read_and_deletion_cover_the_identity_set(
         == pack.stored_sha256
     )
 
-    client.objects[pack.object_path]["Metadata"][PLAINTEXT_SHA256_METADATA] = "0" * 64
+    client.objects[pack.object_path]["Metadata"]["riverhog-format"] = "invalid"
     with pytest.raises(ArchiveVerificationError):
         store.verify_collection_archive(collection_id=COLLECTION_ID, archive=identity)
-    client.objects[pack.object_path]["Metadata"][PLAINTEXT_SHA256_METADATA] = pack.sha256
+    client.objects[pack.object_path]["Metadata"]["riverhog-format"] = archive_object_storage_format(
+        "pack"
+    )
 
     store.delete_collection_archive(collection_id=COLLECTION_ID, objects=identity.objects)
     assert pack.object_path not in client.objects
@@ -377,6 +378,9 @@ def test_attestation_artifacts_are_plaintext_and_replaceable(
         proof_bytes=b"mature-proof",
     )
     assert cast(bytes, client.objects[replaced.object_path]["Body"]) == b"mature-proof"
+    assert client.objects[replaced.object_path]["Metadata"]["riverhog-format"] == (
+        archive_object_storage_format("signature-proof")
+    )
 
 
 def test_incomplete_multipart_sweep_and_prefix_discard_are_exact(

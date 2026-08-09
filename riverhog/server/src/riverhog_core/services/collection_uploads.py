@@ -25,6 +25,7 @@ from time_formats import utc_timestamp_now
 
 from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
 from riverhog_core.archive_catalog import build_archive_catalog_projection
+from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_root import ArchiveRootPublisher, SealedArchiveRoot
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -891,7 +892,7 @@ class SqlAlchemyCollectionUploadService:
             content=proof_ciphertext,
             content_type=_PROOF_CONTENT_TYPE,
             identity_metadata={
-                "riverhog-format": "riverhog-collection-root-proof/v1",
+                "riverhog-format": ROOT_PROOF_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(proof_bytes)),
                 "riverhog-plaintext-sha256": hashlib.sha256(proof_bytes).hexdigest(),
                 "riverhog-manifest-sha256": root.plaintext_sha256,

@@ -7,7 +7,12 @@ from typing import Any
 import httpx
 import pytest
 from riverhog_api_client.client import ApiClient
-from riverhog_protocol.errors import DownloadAllowanceExceeded, Forbidden, Unauthorized
+from riverhog_protocol.errors import (
+    DownloadAllowanceExceeded,
+    Forbidden,
+    ServiceUnavailable,
+    Unauthorized,
+)
 
 
 class RecordingClient(ApiClient):
@@ -40,6 +45,19 @@ def test_client_preserves_actionable_api_error_types(
     )
 
     with pytest.raises(error_type, match="action denied"):
+        client._raise_for_error(response)
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+def test_client_maps_transient_http_statuses_to_retryable_service_unavailable(status: int) -> None:
+    client = ApiClient(base_url="http://example.invalid")
+    response = httpx.Response(
+        status,
+        json={"error": {"code": "internal_error", "message": "retry later"}},
+        request=httpx.Request("PUT", "http://example.invalid/v1/collection-upload-sessions/1"),
+    )
+
+    with pytest.raises(ServiceUnavailable, match="retry later"):
         client._raise_for_error(response)
 
 

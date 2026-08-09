@@ -24,6 +24,11 @@ from riverhog_core.archive_attestations import (
     ATTESTATION_FILENAMES,
     ATTESTATION_OBJECT_KINDS,
 )
+from riverhog_core.archive_formats import (
+    ARCHIVE_OBJECT_STORAGE_FORMATS,
+    ROOT_PROOF_STORAGE_FORMAT,
+    archive_object_storage_format,
+)
 from riverhog_core.archive_object_paths import archive_store_object_path
 from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING, archive_agents_guidance
 from riverhog_core.ports.archive_store import (
@@ -45,8 +50,6 @@ from riverhog_core.stores.s3_support import (
     delete_object_versions_with_prefix,
 )
 
-COLLECTION_BYTES_METADATA = "riverhog-collection-bytes"
-COLLECTION_SHA256_METADATA = "riverhog-collection-sha256"
 ENCRYPTION_METADATA = "riverhog-encryption"
 PLAINTEXT_BYTES_METADATA = "riverhog-plaintext-bytes"
 PLAINTEXT_SHA256_METADATA = "riverhog-plaintext-sha256"
@@ -232,9 +235,10 @@ class S3ArchiveStore:
         uploaded_at: str | None = None,
         retrieval_cache: RetrievalCacheReceipt | None = None,
     ) -> ArchiveObjectUploadReceipt:
-        _validate_uploaded_collection_metadata(
+        _validate_uploaded_archive_metadata(
             object_key=object_key,
             head=head,
+            kind=kind,
             expected_bytes=expected_bytes,
             expected_sha256=expected_sha256,
         )
@@ -391,11 +395,11 @@ class S3ArchiveStore:
             raise RuntimeError(f"Archive object is missing: {object.object_path}")
         metadata = _head_metadata(head)
         try:
-            plaintext_bytes = int(metadata[COLLECTION_BYTES_METADATA])
-            plaintext_sha256 = metadata[COLLECTION_SHA256_METADATA]
+            plaintext_bytes = int(metadata[PLAINTEXT_BYTES_METADATA])
+            plaintext_sha256 = metadata[PLAINTEXT_SHA256_METADATA]
         except (KeyError, ValueError) as exc:
             raise RuntimeError(
-                f"Archive object has invalid collection validation metadata: {object.object_path}"
+                f"Archive object has invalid v1 validation metadata: {object.object_path}"
             ) from exc
         storage_class = _normalized_s3_storage_class(head) or "STANDARD"
         receipt = self._collection_receipt_from_head(
@@ -494,23 +498,22 @@ class S3ArchiveStore:
         )
         stored_sha256 = hashlib.sha256(ciphertext).hexdigest()
         uploaded_at = utc_timestamp_now()
+        metadata = {
+            "riverhog-format": ROOT_PROOF_STORAGE_FORMAT,
+            PLAINTEXT_BYTES_METADATA: str(len(proof_bytes)),
+            PLAINTEXT_SHA256_METADATA: proof_sha256,
+            STORED_SHA256_METADATA: stored_sha256,
+        }
+        if existing is not None and (
+            manifest_sha256 := _head_metadata(existing).get("riverhog-manifest-sha256")
+        ):
+            metadata["riverhog-manifest-sha256"] = manifest_sha256
         self._client.put_object(
             Bucket=self._bucket,
             Key=object.object_path,
             Body=ciphertext,
             ContentLength=len(ciphertext),
-            Metadata={
-                "riverhog-backend": self._store.backend,
-                "riverhog-storage-class": "STANDARD",
-                "riverhog-object-kind": "collection-proof",
-                "riverhog-object-id": "proof",
-                ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
-                PLAINTEXT_BYTES_METADATA: str(len(proof_bytes)),
-                PLAINTEXT_SHA256_METADATA: proof_sha256,
-                COLLECTION_BYTES_METADATA: str(len(proof_bytes)),
-                COLLECTION_SHA256_METADATA: proof_sha256,
-                STORED_SHA256_METADATA: stored_sha256,
-            },
+            Metadata=metadata,
         )
         head = cast(
             dict[str, Any],
@@ -642,14 +645,9 @@ class S3ArchiveStore:
             Body=content,
             ContentLength=len(content),
             Metadata={
-                "riverhog-backend": self._store.backend,
-                "riverhog-storage-class": "STANDARD",
-                "riverhog-object-kind": f"collection-{object_id}",
-                "riverhog-object-id": object_id,
+                "riverhog-format": archive_object_storage_format(object_id),
                 PLAINTEXT_BYTES_METADATA: str(len(content)),
                 PLAINTEXT_SHA256_METADATA: sha256,
-                COLLECTION_BYTES_METADATA: str(len(content)),
-                COLLECTION_SHA256_METADATA: sha256,
                 STORED_SHA256_METADATA: sha256,
             },
         )
@@ -737,13 +735,13 @@ class S3ArchiveStore:
         _ = collection_id
         statuses = [
             self._request_collection_object_restore(
-                object_path=current_object_path,
+                object=current,
                 retrieval_tier=retrieval_tier,
                 hold_days=hold_days,
                 requested_at=requested_at,
                 estimated_ready_at=estimated_ready_at,
             )
-            for current_object_path in (current.object_path for current in objects)
+            for current in objects
         ]
         if not statuses:
             return ArchiveReadStatus(state="ready", ready_at=requested_at)
@@ -752,16 +750,23 @@ class S3ArchiveStore:
     def _request_collection_object_restore(
         self,
         *,
-        object_path: str,
+        object: ArchiveObjectIdentity,
         retrieval_tier: str,
         hold_days: int,
         requested_at: str,
         estimated_ready_at: str,
     ) -> ArchiveReadStatus:
+        object_path = object.object_path
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
-        _validate_uploaded_collection_metadata(object_key=object_path, head=head)
+        _validate_uploaded_archive_metadata(
+            object_key=object_path,
+            head=head,
+            kind=object.kind,
+            expected_bytes=object.plaintext_bytes,
+            expected_sha256=object.sha256,
+        )
         if _is_immediately_readable_storage_class(head):
             return ArchiveReadStatus(
                 state="ready",
@@ -792,7 +797,7 @@ class S3ArchiveStore:
             if restore_error != "RestoreAlreadyInProgress":
                 raise
         return self._collection_object_restore_status(
-            object_path=object_path,
+            object=object,
             requested_at=requested_at,
             estimated_ready_at=estimated_ready_at,
             estimated_expires_at=None,
@@ -810,12 +815,12 @@ class S3ArchiveStore:
         _ = collection_id
         statuses = [
             self._collection_object_restore_status(
-                object_path=current_object_path,
+                object=current,
                 requested_at=requested_at,
                 estimated_ready_at=estimated_ready_at,
                 estimated_expires_at=estimated_expires_at,
             )
-            for current_object_path in (current.object_path for current in objects)
+            for current in objects
         ]
         if not statuses:
             return ArchiveReadStatus(state="ready", ready_at=requested_at)
@@ -824,15 +829,22 @@ class S3ArchiveStore:
     def _collection_object_restore_status(
         self,
         *,
-        object_path: str,
+        object: ArchiveObjectIdentity,
         requested_at: str,
         estimated_ready_at: str | None,
         estimated_expires_at: str | None,
     ) -> ArchiveReadStatus:
+        object_path = object.object_path
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
-        _validate_uploaded_collection_metadata(object_key=object_path, head=head)
+        _validate_uploaded_archive_metadata(
+            object_key=object_path,
+            head=head,
+            kind=object.kind,
+            expected_bytes=object.plaintext_bytes,
+            expected_sha256=object.sha256,
+        )
         restore = _parse_restore_header(head.get("Restore"))
         if restore is None:
             if _is_immediately_readable_storage_class(head):
@@ -892,7 +904,13 @@ class S3ArchiveStore:
         head = self._head_object(object_key=object_path)
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
-        _validate_uploaded_collection_metadata(object_key=object_path, head=head)
+        _validate_uploaded_archive_metadata(
+            object_key=object_path,
+            head=head,
+            kind=object.kind,
+            expected_bytes=object.plaintext_bytes,
+            expected_sha256=object.sha256,
+        )
         status = self.get_archive_objects_read_status(
             collection_id=collection_id,
             objects=(object,),
@@ -1098,30 +1116,39 @@ def _head_metadata(head: dict[str, Any]) -> dict[str, str]:
     return {str(key).lower(): str(value) for key, value in metadata.items()}
 
 
-def _validate_uploaded_collection_metadata(
+def _validate_uploaded_archive_metadata(
     *,
     object_key: str,
     head: dict[str, Any],
+    kind: str | None = None,
     expected_bytes: int | None = None,
     expected_sha256: str | None = None,
 ) -> None:
     metadata = _head_metadata(head)
-    metadata_bytes = metadata.get(COLLECTION_BYTES_METADATA)
-    metadata_sha256 = metadata.get(COLLECTION_SHA256_METADATA)
-    if metadata_bytes is None or metadata_sha256 is None:
-        raise RuntimeError(
-            f"Archive object is missing collection validation metadata: {object_key}"
-        )
+    storage_format = metadata.get("riverhog-format")
+    expected_format = archive_object_storage_format(kind) if kind is not None else None
+    if storage_format is None or (
+        expected_format is not None and storage_format != expected_format
+    ):
+        raise RuntimeError(f"Archive object has invalid v1 storage format metadata: {object_key}")
+    if kind is None and storage_format not in ARCHIVE_OBJECT_STORAGE_FORMATS.values():
+        raise RuntimeError(f"Archive object has unknown v1 storage format metadata: {object_key}")
+    metadata_bytes = metadata.get(PLAINTEXT_BYTES_METADATA)
+    if metadata_bytes is None:
+        raise RuntimeError(f"Archive object is missing plaintext byte metadata: {object_key}")
     try:
-        collection_bytes = int(metadata_bytes)
+        plaintext_bytes = int(metadata_bytes)
     except ValueError as exc:
         raise RuntimeError(
-            f"Archive object has invalid collection byte metadata: {object_key}"
+            f"Archive object has invalid plaintext byte metadata: {object_key}"
         ) from exc
-    if expected_bytes is not None and collection_bytes != expected_bytes:
+    if plaintext_bytes < 0:
+        raise RuntimeError(f"Archive object has invalid plaintext byte metadata: {object_key}")
+    if expected_bytes is not None and plaintext_bytes != expected_bytes:
         raise RuntimeError(f"Archive object plaintext size does not match its record: {object_key}")
-    if not _SHA256_RE.fullmatch(metadata_sha256):
-        raise RuntimeError(f"Archive object has invalid collection sha256 metadata: {object_key}")
+    metadata_sha256 = metadata.get(PLAINTEXT_SHA256_METADATA)
+    if metadata_sha256 is not None and not _SHA256_RE.fullmatch(metadata_sha256):
+        raise RuntimeError(f"Archive object has invalid plaintext sha256 metadata: {object_key}")
     if expected_sha256 is not None and metadata_sha256 != expected_sha256:
         raise RuntimeError(f"Archive object sha256 does not match its record: {object_key}")
 
@@ -1139,18 +1166,21 @@ def _verify_remote_collection_object(
         raise RuntimeError(f"Archive object has invalid stored byte count: {object_key}") from exc
     if stored_bytes != expected.stored_bytes:
         raise RuntimeError(f"Archive object stored byte count changed: {object_key}")
-    _validate_uploaded_collection_metadata(
+    _validate_uploaded_archive_metadata(
         object_key=object_key,
         head=head,
+        kind=kind,
+        expected_bytes=expected.plaintext_bytes,
         expected_sha256=expected.sha256,
     )
     metadata = _head_metadata(head)
-    if metadata.get(PLAINTEXT_SHA256_METADATA) != expected.sha256:
-        raise RuntimeError(f"Archive object plaintext sha256 changed: {object_key}")
-    if metadata.get(ENCRYPTION_METADATA) != AGE_SCRYPT_ENCRYPTION:
-        raise RuntimeError(f"Archive object encryption metadata changed: {object_key}")
-    if metadata.get("riverhog-object-kind") != f"collection-{kind}":
-        raise RuntimeError(f"Archive object kind metadata changed: {object_key}")
+    metadata_stored_sha256 = metadata.get(STORED_SHA256_METADATA)
+    if (
+        metadata_stored_sha256 is not None
+        and expected.stored_sha256 is not None
+        and metadata_stored_sha256 != expected.stored_sha256
+    ):
+        raise RuntimeError(f"Archive object stored sha256 metadata changed: {object_key}")
 
 
 def _verify_remote_plaintext_attestation(
@@ -1166,9 +1196,10 @@ def _verify_remote_plaintext_attestation(
         raise RuntimeError(f"Archive object has invalid stored byte count: {object_key}") from exc
     if stored_bytes != expected.stored_bytes or stored_bytes != expected.plaintext_bytes:
         raise RuntimeError(f"Archive attestation artifact byte count changed: {object_key}")
-    _validate_uploaded_collection_metadata(
+    _validate_uploaded_archive_metadata(
         object_key=object_key,
         head=head,
+        kind=kind,
         expected_bytes=expected.plaintext_bytes,
         expected_sha256=expected.sha256,
     )
@@ -1177,8 +1208,6 @@ def _verify_remote_plaintext_attestation(
         raise RuntimeError(f"Archive attestation artifact sha256 changed: {object_key}")
     if metadata.get(STORED_SHA256_METADATA) != expected.stored_sha256:
         raise RuntimeError(f"Archive attestation stored sha256 changed: {object_key}")
-    if metadata.get("riverhog-object-kind") != f"collection-{kind}":
-        raise RuntimeError(f"Archive object kind metadata changed: {object_key}")
 
 
 def _format_s3_timestamp(value: object, *, fallback: str) -> str:

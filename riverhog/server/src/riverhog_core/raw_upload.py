@@ -12,6 +12,7 @@ from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan, Uplo
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
+from riverhog_core.archive_formats import RAW_VOLUME_STORAGE_FORMAT
 from riverhog_core.domain.archive import (
     RawVolumePlan,
     SealedRawVolume,
@@ -45,7 +46,6 @@ from riverhog_core.throughput import (
 )
 
 RAW_UPLOAD_CHECKPOINT_SCHEMA = "raw-upload-checkpoint/v1"
-RAW_VOLUME_STORAGE_FORMAT = "riverhog-raw-volume/v1"
 RAW_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.raw-segment+age"
 _SEGMENT_ID_RE = re.compile(r"segment-[0-9]{12}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")

@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
+from riverhog_core.archive_formats import (
+    PACK_VOLUME_STORAGE_FORMAT,
+    RAW_VOLUME_STORAGE_FORMAT,
+)
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -28,7 +32,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
-from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE, PACK_VOLUME_STORAGE_FORMAT
+from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE
 from riverhog_core.ports.archive_ingress_store import (
     ArchiveMultipartObjectStore,
     MultipartPartReceipt,
@@ -40,7 +44,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveStore,
     CollectionArchiveIdentity,
 )
-from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE, RAW_VOLUME_STORAGE_FORMAT
+from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_states import (
     ARCHIVE_COPY_STATES,

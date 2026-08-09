@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from riverhog_age import encrypt_age_scrypt
 from riverhog_protocol.paths import normalize_relpath
 
+from riverhog_core.archive_formats import ROOT_MANIFEST_STORAGE_FORMAT
 from riverhog_core.archive_manifest import (
     build_collection_archive_manifest,
     collection_tree_identity,
@@ -23,7 +24,6 @@ from riverhog_core.ports.archive_manifest_store import ImmutableArchiveObjectSto
 
 ROOT_MANIFEST_RELATIVE_PATH = "manifest.json.age"
 ROOT_MANIFEST_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest+age"
-ROOT_MANIFEST_STORAGE_FORMAT = "riverhog-collection-root/v1"
 
 
 @dataclass(frozen=True, slots=True)
