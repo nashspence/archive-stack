@@ -192,9 +192,12 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
 
         def create_or_resume_collection_upload_session(
             self,
-            *_args: object,
+            idempotency_key: str,
+            tags: list[str],
             **_kwargs: object,
         ) -> dict[str, object]:
+            assert idempotency_key == "test-upload"
+            assert tags == []
             return {
                 "collection_id": COLLECTION_ID,
                 "state": "open",
@@ -285,7 +288,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
     payload = riverhog_main._upload_collection_via_session(
         Api(),  # type: ignore[arg-type]
         "test-upload",
-        ["collection"],
+        [],
         root,
         ingest_source=str(root),
         file_concurrency=1,

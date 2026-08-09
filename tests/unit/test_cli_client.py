@@ -93,7 +93,7 @@ def test_search_uses_current_collection_filters() -> None:
 def test_collection_upload_selects_archive_store_without_materialization_policy() -> None:
     client = RecordingClient()
 
-    client.create_or_resume_collection_upload_session("upload-one", ["docs"], archive_store="b2")
+    client.create_or_resume_collection_upload_session("upload-one", [], archive_store="b2")
     client.register_collection_upload_session_files(
         1,
         [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
@@ -102,7 +102,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
-        "tags": ["docs"],
+        "tags": [],
         "archive_store": "b2",
     }
     assert client.calls[1][2]["json"] == {

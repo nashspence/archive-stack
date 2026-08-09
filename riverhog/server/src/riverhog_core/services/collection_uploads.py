@@ -1186,8 +1186,8 @@ def _normalize_idempotency_key(value: str) -> str:
 
 def _normalize_tags(values: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(sorted(value.strip().casefold() for value in values))
-    if not normalized or any(not value for value in normalized):
-        raise BadRequest("collection upload requires non-empty tags")
+    if any(not value for value in normalized):
+        raise BadRequest("collection tags must not be empty")
     if len(set(normalized)) != len(normalized):
         raise BadRequest("collection tags must not contain duplicates")
     return normalized

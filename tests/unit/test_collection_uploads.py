@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     COLLECTIONS_CREATE,
@@ -64,8 +65,12 @@ def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, Runtime
     )
 
 
+@pytest.mark.parametrize(
+    "tags",
+    [pytest.param(("docs",), id="tagged"), pytest.param((), id="untagged")],
+)
 def test_small_collection_moves_directly_from_source_unit_to_final_custody(
-    tmp_path: Path,
+    tmp_path: Path, tags: tuple[str, ...]
 ) -> None:
     service, config = _service(tmp_path)
     content = b"direct final archive\n"
@@ -73,12 +78,13 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
 
     opened = service.create_or_resume(
         idempotency_key="upload-1",
-        tags=("docs",),
+        tags=tags,
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
         event_context=None,
     )
+    assert opened["tags"] == list(tags)
     collection_id = int(opened["collection_id"])
     registered = service.register_files(
         collection_id,
@@ -114,6 +120,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert committed["state"] == "committed"
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
+    assert finalized["tags"] == list(tags)
     assert finalized["uploaded_bytes"] == len(content)
 
     with session_scope(make_session_factory(config.database_url)) as session:
