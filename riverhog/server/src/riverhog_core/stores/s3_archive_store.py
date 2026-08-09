@@ -210,11 +210,19 @@ class S3ArchiveStore:
             prefix=object_prefix,
         )
 
-    def _head_object(self, *, object_key: str) -> dict[str, Any] | None:
+    def _head_object(
+        self,
+        *,
+        object_key: str,
+        version_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        request: dict[str, Any] = {"Bucket": self._bucket, "Key": object_key}
+        if version_id is not None:
+            request["VersionId"] = version_id
         try:
             return cast(
                 dict[str, Any],
-                self._client.head_object(Bucket=self._bucket, Key=object_key),
+                self._client.head_object(**request),
             )
         except Exception as exc:
             if _is_missing_object_error(exc):
@@ -263,6 +271,7 @@ class S3ArchiveStore:
             stored_bytes=stored_bytes,
             sha256=expected_sha256,
             stored_sha256=expected_stored_sha256,
+            version_id=(str(head["VersionId"]) if head.get("VersionId") is not None else None),
             backend=self._store.backend,
             storage_class=_configured_s3_storage_class(expected_storage_class),
             uploaded_at=uploaded_at
@@ -286,7 +295,10 @@ class S3ArchiveStore:
                 archive_storage_class=self._store.storage_class,
                 kind=expected.kind,
             )
-            head = self._head_object(object_key=expected.object_path)
+            head = self._head_object(
+                object_key=expected.object_path,
+                version_id=expected.version_id,
+            )
             if head is None:
                 raise ArchiveVerificationError(
                     f"remote collection {expected.kind} object is missing"
@@ -352,6 +364,32 @@ class S3ArchiveStore:
     ) -> MutableManifestReceipt:
         self._put_archive_root_guidance()
         object_key = f"{archive_storage_prefix.strip('/')}/metadata.json.age"
+        manifest_sha256 = hashlib.sha256(manifest).hexdigest()
+        existing = self._head_object(object_key=object_key)
+        if existing is not None:
+            metadata = _head_metadata(existing)
+            if (
+                metadata.get("collection-metadata-format") == "riverhog-collection-metadata/v1"
+                and metadata.get("riverhog-collection-id") == str(collection_id)
+                and metadata.get(ENCRYPTION_METADATA) == AGE_SCRYPT_ENCRYPTION
+                and metadata.get(PLAINTEXT_BYTES_METADATA) == str(len(manifest))
+                and metadata.get(PLAINTEXT_SHA256_METADATA) == manifest_sha256
+            ):
+                stored = b"".join(self._iter_s3_stored_object(object_key))
+                return MutableManifestReceipt(
+                    object_path=object_key,
+                    version_id=(
+                        str(existing["VersionId"])
+                        if existing.get("VersionId") is not None
+                        else None
+                    ),
+                    stored_bytes=len(stored),
+                    stored_sha256=hashlib.sha256(stored).hexdigest(),
+                    published_at=_format_s3_timestamp(
+                        existing.get("LastModified"),
+                        fallback=utc_timestamp_now(),
+                    ),
+                )
         ciphertext = encrypt_age_scrypt(
             manifest,
             self._config.archive_passphrase,
@@ -367,17 +405,30 @@ class S3ArchiveStore:
                 "riverhog-collection-id": str(collection_id),
                 ENCRYPTION_METADATA: AGE_SCRYPT_ENCRYPTION,
                 PLAINTEXT_BYTES_METADATA: str(len(manifest)),
-                PLAINTEXT_SHA256_METADATA: hashlib.sha256(manifest).hexdigest(),
+                PLAINTEXT_SHA256_METADATA: manifest_sha256,
+                STORED_SHA256_METADATA: hashlib.sha256(ciphertext).hexdigest(),
             },
         )
+        response_version_id = (
+            str(response["VersionId"]) if response.get("VersionId") is not None else None
+        )
+        persisted = self._head_object(
+            object_key=object_key,
+            version_id=response_version_id,
+        )
+        if persisted is None:
+            raise RuntimeError("persisted collection metadata is missing")
         return MutableManifestReceipt(
             object_path=object_key,
             version_id=(
-                str(response["VersionId"]) if response.get("VersionId") is not None else None
+                str(persisted["VersionId"]) if persisted.get("VersionId") is not None else None
             ),
             stored_bytes=len(ciphertext),
             stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
-            published_at=utc_timestamp_now(),
+            published_at=_format_s3_timestamp(
+                persisted.get("LastModified"),
+                fallback=utc_timestamp_now(),
+            ),
         )
 
     def read_archive_artifact(
@@ -390,7 +441,10 @@ class S3ArchiveStore:
             raise ValueError("only collection manifests and proofs are archive artifacts")
         if object.stored_sha256 is None:
             raise ValueError("archive artifact is missing its stored sha256")
-        head = self._head_object(object_key=object.object_path)
+        head = self._head_object(
+            object_key=object.object_path,
+            version_id=object.version_id,
+        )
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object.object_path}")
         metadata = _head_metadata(head)
@@ -420,6 +474,7 @@ class S3ArchiveStore:
             stored_bytes=receipt.stored_bytes,
             sha256=receipt.sha256,
             stored_sha256=receipt.stored_sha256,
+            version_id=receipt.version_id,
         )
         _verify_remote_collection_object(
             object_key=object.object_path,
@@ -461,7 +516,10 @@ class S3ArchiveStore:
 
         proof_sha256 = hashlib.sha256(proof_bytes).hexdigest()
         existing = self._head_object(object_key=object.object_path)
-        if existing is not None and object.stored_sha256 is not None:
+        existing_stored_sha256 = (
+            _head_metadata(existing).get(STORED_SHA256_METADATA) if existing is not None else None
+        )
+        if existing is not None and existing_stored_sha256 is not None:
             try:
                 receipt = self._collection_receipt_from_head(
                     object_id="proof",
@@ -470,7 +528,7 @@ class S3ArchiveStore:
                     head=existing,
                     expected_bytes=len(proof_bytes),
                     expected_sha256=proof_sha256,
-                    expected_stored_sha256=object.stored_sha256,
+                    expected_stored_sha256=existing_stored_sha256,
                     expected_storage_class="STANDARD",
                 )
                 _verify_remote_collection_object(
@@ -485,6 +543,7 @@ class S3ArchiveStore:
                         stored_bytes=receipt.stored_bytes,
                         sha256=receipt.sha256,
                         stored_sha256=receipt.stored_sha256,
+                        version_id=receipt.version_id,
                     ),
                 )
                 return receipt
@@ -508,17 +567,21 @@ class S3ArchiveStore:
             manifest_sha256 := _head_metadata(existing).get("riverhog-manifest-sha256")
         ):
             metadata["riverhog-manifest-sha256"] = manifest_sha256
-        self._client.put_object(
+        response = self._client.put_object(
             Bucket=self._bucket,
             Key=object.object_path,
             Body=ciphertext,
             ContentLength=len(ciphertext),
             Metadata=metadata,
         )
-        head = cast(
-            dict[str, Any],
-            self._client.head_object(Bucket=self._bucket, Key=object.object_path),
+        head = self._head_object(
+            object_key=object.object_path,
+            version_id=(
+                str(response["VersionId"]) if response.get("VersionId") is not None else None
+            ),
         )
+        if head is None:
+            raise RuntimeError("persisted archive proof is missing")
         return self._collection_receipt_from_head(
             object_id="proof",
             kind="proof",
@@ -573,7 +636,10 @@ class S3ArchiveStore:
         expected_filename = ATTESTATION_FILENAMES[object.object_id]
         if not object.object_path.endswith(f"/{expected_filename}"):
             raise ValueError("archive attestation artifact path is not canonical")
-        head = self._head_object(object_key=object.object_path)
+        head = self._head_object(
+            object_key=object.object_path,
+            version_id=object.version_id,
+        )
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object.object_path}")
         _verify_remote_plaintext_attestation(
@@ -582,7 +648,12 @@ class S3ArchiveStore:
             kind=object.kind,
             expected=object,
         )
-        content = b"".join(self._iter_s3_stored_object(object.object_path))
+        content = b"".join(
+            self._iter_s3_stored_object(
+                object.object_path,
+                version_id=object.version_id,
+            )
+        )
         if len(content) != object.stored_bytes:
             raise RuntimeError("archive attestation artifact byte count changed")
         if hashlib.sha256(content).hexdigest() != object.stored_sha256:
@@ -628,18 +699,19 @@ class S3ArchiveStore:
     ) -> ArchiveObjectUploadReceipt:
         sha256 = hashlib.sha256(content).hexdigest()
         existing = self._head_object(object_key=object_key)
-        if existing is not None and not replace:
+        if existing is not None:
             existing_content = b"".join(self._iter_s3_stored_object(object_key))
-            if not accept_existing and existing_content != content:
+            if existing_content == content or (accept_existing and not replace):
+                return self._plaintext_attestation_receipt(
+                    object_id=object_id,
+                    object_key=object_key,
+                    content=existing_content,
+                    head=existing,
+                )
+            if not replace:
                 raise RuntimeError("archive attestation artifact differs from its durable copy")
-            return self._plaintext_attestation_receipt(
-                object_id=object_id,
-                object_key=object_key,
-                content=existing_content,
-                head=existing,
-            )
         uploaded_at = utc_timestamp_now()
-        self._client.put_object(
+        response = self._client.put_object(
             Bucket=self._bucket,
             Key=object_key,
             Body=content,
@@ -651,10 +723,14 @@ class S3ArchiveStore:
                 STORED_SHA256_METADATA: sha256,
             },
         )
-        head = cast(
-            dict[str, Any],
-            self._client.head_object(Bucket=self._bucket, Key=object_key),
+        head = self._head_object(
+            object_key=object_key,
+            version_id=(
+                str(response["VersionId"]) if response.get("VersionId") is not None else None
+            ),
         )
+        if head is None:
+            raise RuntimeError("persisted archive attestation artifact is missing")
         receipt = self._plaintext_attestation_receipt(
             object_id=object_id,
             object_key=object_key,
@@ -714,9 +790,17 @@ class S3ArchiveStore:
                 )
             )
         for filename, content, format_name in artifacts:
+            object_key = archive_store_object_path(self._store.prefix, filename)
+            existing = self._head_object(object_key=object_key)
+            if (
+                existing is not None
+                and _head_metadata(existing).get("archive-guidance-format") == format_name
+                and b"".join(self._iter_s3_stored_object(object_key)) == content
+            ):
+                continue
             self._client.put_object(
                 Bucket=self._bucket,
-                Key=archive_store_object_path(self._store.prefix, filename),
+                Key=object_key,
                 Body=content,
                 ContentLength=len(content),
                 Metadata={"archive-guidance-format": format_name},
@@ -757,7 +841,10 @@ class S3ArchiveStore:
         estimated_ready_at: str,
     ) -> ArchiveReadStatus:
         object_path = object.object_path
-        head = self._head_object(object_key=object_path)
+        head = self._head_object(
+            object_key=object_path,
+            version_id=object.version_id,
+        )
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_archive_metadata(
@@ -777,14 +864,19 @@ class S3ArchiveStore:
             raise RuntimeError(
                 "archive object read preparation requires an AWS archive store backend"
             )
+        restore_request: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Key": object_path,
+            "RestoreRequest": {
+                "Days": hold_days,
+                "GlacierJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
+            },
+        }
+        if object.version_id is not None:
+            restore_request["VersionId"] = object.version_id
         try:
             self._client.restore_object(
-                Bucket=self._bucket,
-                Key=object_path,
-                RestoreRequest={
-                    "Days": hold_days,
-                    "GlacierJobParameters": {"Tier": _aws_restore_tier(retrieval_tier)},
-                },
+                **restore_request,
             )
         except Exception as exc:
             restore_error = _restore_request_error_code(exc)
@@ -835,7 +927,10 @@ class S3ArchiveStore:
         estimated_expires_at: str | None,
     ) -> ArchiveReadStatus:
         object_path = object.object_path
-        head = self._head_object(object_key=object_path)
+        head = self._head_object(
+            object_key=object_path,
+            version_id=object.version_id,
+        )
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_archive_metadata(
@@ -901,7 +996,10 @@ class S3ArchiveStore:
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
         object_path = object.object_path
-        head = self._head_object(object_key=object_path)
+        head = self._head_object(
+            object_key=object_path,
+            version_id=object.version_id,
+        )
         if head is None:
             raise RuntimeError(f"Archive object is missing: {object_path}")
         _validate_uploaded_archive_metadata(
@@ -921,7 +1019,10 @@ class S3ArchiveStore:
         if status.state != "ready":
             raise RuntimeError(f"Archive object is not readable yet: {object_path}")
         if self._cloudfront_client is None or self._cloudfront_signer is None:
-            content = self._iter_s3_stored_object(object_path)
+            content = self._iter_s3_stored_object(
+                object_path,
+                version_id=object.version_id,
+            )
         else:
             content = self._iter_cloudfront_stored_object(object)
         if self._download_allowance is None:
@@ -966,8 +1067,16 @@ class S3ArchiveStore:
             raise RuntimeError(f"Archive ciphertext byte count mismatch: {object.object_path}")
         return digest.hexdigest()
 
-    def _iter_s3_stored_object(self, object_path: str) -> Iterator[bytes]:
-        response = self._client.get_object(Bucket=self._bucket, Key=object_path)
+    def _iter_s3_stored_object(
+        self,
+        object_path: str,
+        *,
+        version_id: str | None = None,
+    ) -> Iterator[bytes]:
+        request: dict[str, Any] = {"Bucket": self._bucket, "Key": object_path}
+        if version_id is not None:
+            request["VersionId"] = version_id
+        response = self._client.get_object(**request)
         body = response["Body"]
         try:
             yield from body.iter_chunks(chunk_size=1024 * 1024)
@@ -986,6 +1095,8 @@ class S3ArchiveStore:
         if client is None or signer is None or base_url is None:
             raise RuntimeError("CloudFront download configuration is incomplete")
         object_url = f"{base_url}/{quote(object.object_path, safe='/')}"
+        if object.version_id is not None:
+            object_url = f"{object_url}?versionId={quote(object.version_id, safe='')}"
         signed_url = signer.generate_presigned_url(
             object_url,
             date_less_than=datetime.now(UTC) + _CLOUDFRONT_URL_TTL,

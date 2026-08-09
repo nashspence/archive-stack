@@ -18,6 +18,7 @@ class ArchiveObjectUploadReceipt:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
+    version_id: str | None
     backend: str
     storage_class: str
     uploaded_at: str
@@ -60,6 +61,7 @@ class ArchiveObjectIdentity:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
+    version_id: str | None
 
 
 @dataclass(frozen=True, slots=True)

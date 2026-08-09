@@ -124,15 +124,24 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
         assert record is not None
         assert record.state == "matured"
         assert record.matured_at is not None
-        objects = session.query(CollectionArchiveObjectRecord).filter_by(
-            collection_id=archive.collection_id,
-            store="deep",
+        objects = (
+            session.query(CollectionArchiveObjectRecord)
+            .filter_by(
+                collection_id=archive.collection_id,
+                store="deep",
+            )
+            .all()
         )
         assert {current.object_id for current in objects} >= {
             "checksums",
             "signature",
             "signature-proof",
         }
+        assert all(
+            current.version_id is not None
+            for current in objects
+            if current.object_id in {"checksums", "signature", "signature-proof"}
+        )
 
 
 def test_waits_without_replacing_an_incomplete_attestation_proof(tmp_path) -> None:

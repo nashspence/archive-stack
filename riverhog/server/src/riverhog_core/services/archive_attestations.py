@@ -541,6 +541,7 @@ def _identity_from_record(record: CollectionArchiveObjectRecord) -> ArchiveObjec
         stored_bytes=record.stored_bytes,
         sha256=record.sha256,
         stored_sha256=record.stored_sha256,
+        version_id=record.version_id,
     )
 
 
@@ -553,6 +554,7 @@ def _identity_from_receipt(receipt: ArchiveObjectUploadReceipt) -> ArchiveObject
         stored_bytes=receipt.stored_bytes,
         sha256=receipt.sha256,
         stored_sha256=receipt.stored_sha256,
+        version_id=receipt.version_id,
     )
 
 
@@ -566,6 +568,7 @@ def _apply_receipt(
     record.stored_bytes = receipt.stored_bytes
     record.sha256 = receipt.sha256
     record.stored_sha256 = receipt.stored_sha256
+    record.version_id = receipt.version_id
     record.backend = receipt.backend
     record.storage_class = receipt.storage_class
     record.uploaded_at = receipt.uploaded_at

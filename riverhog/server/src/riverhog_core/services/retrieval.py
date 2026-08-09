@@ -1403,6 +1403,7 @@ def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentit
         stored_bytes=row.stored_bytes,
         sha256=row.sha256,
         stored_sha256=row.stored_sha256,
+        version_id=row.version_id,
     )
 
 

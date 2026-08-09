@@ -184,6 +184,7 @@ def archive_receipt(
             ),
             sha256=None,
             stored_sha256=None,
+            version_id=f"fixture-{archive.pack_plan.volume_id}-version",
             backend=backend,
             storage_class=storage_class,
             uploaded_at=UPLOADED_AT,
@@ -202,6 +203,7 @@ def archive_receipt(
                 stored_sha256=hashlib.sha256(
                     archive.stored_objects["manifest.json.age"]
                 ).hexdigest(),
+                version_id="fixture-manifest-version",
                 backend=backend,
                 storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
@@ -217,6 +219,7 @@ def archive_receipt(
                 stored_sha256=hashlib.sha256(
                     archive.stored_objects["manifest.json.ots.age"]
                 ).hexdigest(),
+                version_id="fixture-proof-version",
                 backend=backend,
                 storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
@@ -627,6 +630,7 @@ class MemoryArchiveStore:
             stored_bytes=len(stored),
             sha256=hashlib.sha256(content).hexdigest(),
             stored_sha256=hashlib.sha256(stored).hexdigest(),
+            version_id=object.version_id,
             backend=self.backend,
             storage_class=self.storage_class,
             uploaded_at=UPLOADED_AT,
@@ -664,6 +668,7 @@ class MemoryArchiveStore:
             stored_bytes=len(ciphertext),
             sha256=hashlib.sha256(proof_bytes).hexdigest(),
             stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
+            version_id=self._version(ciphertext),
             backend=self.backend,
             storage_class=self.storage_class,
             uploaded_at=UPLOADED_AT,
@@ -713,6 +718,7 @@ class MemoryArchiveStore:
                     object_path=f"{archive_storage_prefix}/{filenames[object_id]}",
                     content=content,
                     backend=self.backend,
+                    version_id=self._version(content),
                 )
                 for object_id, content in content_by_id.items()
             )
@@ -732,6 +738,7 @@ class MemoryArchiveStore:
                 object_path=object.object_path,
                 content=content,
                 backend=self.backend,
+                version_id=object.version_id,
             ),
             content=content,
         )
@@ -751,6 +758,7 @@ class MemoryArchiveStore:
             object_path=object.object_path,
             content=proof_bytes,
             backend=self.backend,
+            version_id=self._version(proof_bytes),
         )
 
     def prepare_archive_objects_read(
@@ -849,6 +857,7 @@ def _plaintext_receipt(
     object_path: str,
     content: bytes,
     backend: str,
+    version_id: str | None,
 ) -> ArchiveObjectUploadReceipt:
     digest = hashlib.sha256(content).hexdigest()
     return ArchiveObjectUploadReceipt(
@@ -859,6 +868,7 @@ def _plaintext_receipt(
         stored_bytes=len(content),
         sha256=digest,
         stored_sha256=digest,
+        version_id=version_id,
         backend=backend,
         storage_class="STANDARD",
         uploaded_at=UPLOADED_AT,

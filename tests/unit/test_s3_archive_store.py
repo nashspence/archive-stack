@@ -46,35 +46,100 @@ class _FakeBody:
         return
 
 
+class _FakeCloudFrontResponse:
+    is_success = True
+    status_code = 200
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+        self.headers = {"content-length": str(len(content))}
+
+    def __enter__(self) -> _FakeCloudFrontResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return
+
+    def iter_bytes(self, *, chunk_size: int) -> Iterator[bytes]:
+        for offset in range(0, len(self._content), chunk_size):
+            yield self._content[offset : offset + chunk_size]
+
+
+class _FakeCloudFrontClient:
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+        self.requests: list[str] = []
+
+    def stream(self, method: str, url: str, *, headers: dict[str, str]):  # type: ignore[no-untyped-def]
+        assert method == "GET"
+        assert headers == {"Accept-Encoding": "identity"}
+        self.requests.append(url)
+        return _FakeCloudFrontResponse(self._content)
+
+
+class _FakeCloudFrontSigner:
+    def generate_presigned_url(self, url: str, *, date_less_than: datetime) -> str:
+        assert date_less_than > datetime.now(UTC)
+        return f"{url}&Signature=test"
+
+
 class _FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
         self.versions: dict[str, set[str]] = {}
-        self.restore_requests: list[tuple[str, object]] = []
+        self.version_objects: dict[tuple[str, str], dict[str, Any]] = {}
+        self.version_sequence = 0
+        self.restore_requests: list[tuple[str, str | None, object]] = []
         self.aborted_uploads: list[tuple[str, str]] = []
         self.multipart_page_size: int | None = None
 
-    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+    def head_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        VersionId: str | None = None,
+    ) -> dict[str, Any]:
         del Bucket
-        if Key not in self.objects:
+        current = (
+            self.version_objects.get((Key, VersionId))
+            if VersionId is not None
+            else self.objects.get(Key)
+        )
+        if current is None:
             raise _MissingObjectError
-        return {key: value for key, value in self.objects[Key].items() if key != "Body"}
+        return {key: value for key, value in current.items() if key != "Body"}
 
     def put_object(self, *, Bucket: str, Key: str, Body: object, **kwargs: Any) -> dict[str, str]:
         del Bucket
         body = bytes(Body) if isinstance(Body, (bytes, bytearray)) else b"".join(Body)  # type: ignore[arg-type]
-        self.objects[Key] = {
+        self.version_sequence += 1
+        version_id = f"version-{self.version_sequence}"
+        current = {
             "Body": body,
             "ContentLength": len(body),
             "LastModified": datetime(2026, 1, 1, tzinfo=UTC),
+            "VersionId": version_id,
             **kwargs,
         }
-        return {}
+        self.objects[Key] = current
+        self.versions.setdefault(Key, set()).add(version_id)
+        self.version_objects[(Key, version_id)] = current
+        return {"VersionId": version_id}
 
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+    def get_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        VersionId: str | None = None,
+    ) -> dict[str, object]:
         del Bucket
-        return {"Body": _FakeBody(cast(bytes, self.objects[Key]["Body"]))}
+        current = (
+            self.version_objects[(Key, VersionId)] if VersionId is not None else self.objects[Key]
+        )
+        return {"Body": _FakeBody(cast(bytes, current["Body"]))}
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:
         del Bucket
@@ -119,6 +184,9 @@ class _FakeS3Client:
                 self.objects.pop(key, None)
             else:
                 self.versions.get(key, set()).discard(version_id)
+                self.version_objects.pop((key, version_id), None)
+                if self.objects.get(key, {}).get("VersionId") == version_id:
+                    self.objects.pop(key, None)
 
     def list_multipart_uploads(
         self,
@@ -161,10 +229,20 @@ class _FakeS3Client:
         self.aborted_uploads.append((Key, UploadId))
         self.uploads.pop(UploadId, None)
 
-    def restore_object(self, *, Bucket: str, Key: str, RestoreRequest: object) -> None:
+    def restore_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        RestoreRequest: object,
+        VersionId: str | None = None,
+    ) -> None:
         del Bucket
-        self.restore_requests.append((Key, RestoreRequest))
-        self.objects[Key]["Restore"] = 'ongoing-request="true"'
+        self.restore_requests.append((Key, VersionId, RestoreRequest))
+        current = (
+            self.version_objects[(Key, VersionId)] if VersionId is not None else self.objects[Key]
+        )
+        current["Restore"] = 'ongoing-request="true"'
 
 
 def _config(tmp_path: Path, **store_overrides: object) -> RuntimeConfig:
@@ -216,13 +294,19 @@ def _seed_encrypted_object(
     if kind in {"manifest", "proof"}:
         metadata[PLAINTEXT_SHA256_METADATA] = plaintext_sha256
         metadata[STORED_SHA256_METADATA] = stored_sha256
-    client.objects[path] = {
+    client.version_sequence += 1
+    version_id = f"seed-{kind}-version-{client.version_sequence}"
+    current = {
         "Body": ciphertext,
         "ContentLength": len(ciphertext),
         "LastModified": datetime(2026, 1, 1, tzinfo=UTC),
+        "VersionId": version_id,
         "StorageClass": storage_class,
         "Metadata": metadata,
     }
+    client.objects[path] = current
+    client.versions.setdefault(path, set()).add(version_id)
+    client.version_objects[(path, version_id)] = current
     return ArchiveObjectIdentity(
         object_id=kind,
         kind=kind,
@@ -231,6 +315,7 @@ def _seed_encrypted_object(
         stored_bytes=len(ciphertext),
         sha256=plaintext_sha256 if kind in {"manifest", "proof"} else None,
         stored_sha256=stored_sha256,
+        version_id=version_id,
     )
 
 
@@ -260,6 +345,17 @@ def test_proof_replacement_uses_the_canonical_encrypted_path(
     assert client.objects[proof_path]["Metadata"]["riverhog-format"] == (
         archive_object_storage_format("proof")
     )
+    assert receipt.version_id == client.objects[proof_path]["VersionId"]
+    versions_after_replace = set(client.versions[proof_path])
+
+    retry = store.replace_archive_proof(
+        collection_id=COLLECTION_ID,
+        object=old,
+        proof_bytes=b"new-proof",
+    )
+
+    assert retry.version_id == receipt.version_id
+    assert client.versions[proof_path] == versions_after_replace
 
 
 def test_collection_metadata_and_recovery_guidance_are_published(
@@ -287,6 +383,76 @@ def test_collection_metadata_and_recovery_guidance_are_published(
     assert "riverhog-recover" in readme
     assert "manifest.json.age" in readme
     assert "archive/AGENTS.md" in client.objects
+
+    repeated = store.publish_collection_metadata(
+        collection_id=COLLECTION_ID,
+        archive_storage_prefix=ARCHIVE_PREFIX,
+        manifest=b'{"collection":1,"format":"riverhog-collection-metadata/v1"}',
+    )
+
+    assert repeated == receipt
+    for path in ("archive/README.md", "archive/AGENTS.md"):
+        assert len(client.versions[path]) == 1
+    assert len(client.versions[receipt.object_path]) == 1
+
+
+def test_archive_artifact_reads_the_cataloged_provider_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    path = f"{ARCHIVE_PREFIX}/manifest.json.age"
+    old = _seed_encrypted_object(
+        client,
+        path=path,
+        kind="manifest",
+        content=b"old-manifest",
+    )
+    _seed_encrypted_object(
+        client,
+        path=path,
+        kind="manifest",
+        content=b"new-manifest",
+    )
+
+    artifact = store.read_archive_artifact(
+        collection_id=COLLECTION_ID,
+        object=old,
+    )
+
+    assert artifact.content == b"old-manifest"
+    assert artifact.receipt.version_id == old.version_id
+
+
+def test_cloudfront_read_requests_the_cataloged_provider_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeS3Client()
+    store = _store(monkeypatch, tmp_path, client)
+    archived = _seed_encrypted_object(
+        client,
+        path=f"{ARCHIVE_PREFIX}/volumes/pack-000000000000.tar.age",
+        kind="pack",
+        content=b"archive-content",
+    )
+    archived = replace(archived, version_id="provider/version+id=")
+    stored = cast(bytes, client.objects[archived.object_path]["Body"])
+    cloudfront = _FakeCloudFrontClient(stored)
+    unsafe_store = cast(Any, store)
+    unsafe_store._store = replace(
+        unsafe_store._store,
+        cloudfront_base_url="https://archive.example.test",
+    )
+    unsafe_store._cloudfront_client = cloudfront
+    unsafe_store._cloudfront_signer = _FakeCloudFrontSigner()
+
+    assert b"".join(store._iter_cloudfront_stored_object(archived)) == stored
+    assert cloudfront.requests == [
+        "https://archive.example.test/"
+        f"{archived.object_path}?versionId=provider%2Fversion%2Bid%3D&Signature=test"
+    ]
 
 
 def test_archive_object_verification_read_and_deletion_cover_the_identity_set(
@@ -361,6 +527,7 @@ def test_attestation_artifacts_are_plaintext_and_replaceable(
             stored_bytes=proof.stored_bytes,
             sha256=proof.sha256,
             stored_sha256=proof.stored_sha256,
+            version_id=proof.version_id,
         ),
     )
     assert artifact.content == b"proof"
@@ -374,6 +541,7 @@ def test_attestation_artifacts_are_plaintext_and_replaceable(
             stored_bytes=proof.stored_bytes,
             sha256=proof.sha256,
             stored_sha256=proof.stored_sha256,
+            version_id=proof.version_id,
         ),
         proof_bytes=b"mature-proof",
     )
@@ -381,6 +549,27 @@ def test_attestation_artifacts_are_plaintext_and_replaceable(
     assert client.objects[replaced.object_path]["Metadata"]["riverhog-format"] == (
         archive_object_storage_format("signature-proof")
     )
+    assert proof.version_id is not None
+    assert replaced.version_id == client.objects[replaced.object_path]["VersionId"]
+    versions_after_replace = set(client.versions[replaced.object_path])
+
+    retry = store.replace_archive_attestation_proof(
+        collection_id=COLLECTION_ID,
+        object=ArchiveObjectIdentity(
+            object_id=proof.object_id,
+            kind=proof.kind,
+            object_path=proof.object_path,
+            plaintext_bytes=proof.plaintext_bytes,
+            stored_bytes=proof.stored_bytes,
+            sha256=proof.sha256,
+            stored_sha256=proof.stored_sha256,
+            version_id=proof.version_id,
+        ),
+        proof_bytes=b"mature-proof",
+    )
+
+    assert retry.version_id == replaced.version_id
+    assert client.versions[replaced.object_path] == versions_after_replace
 
 
 def test_incomplete_multipart_sweep_and_prefix_discard_are_exact(
@@ -444,6 +633,7 @@ def test_aws_deep_objects_are_restored_and_report_current_status(
     assert client.restore_requests == [
         (
             deep.object_path,
+            deep.version_id,
             {"Days": 7, "GlacierJobParameters": {"Tier": "Bulk"}},
         )
     ]

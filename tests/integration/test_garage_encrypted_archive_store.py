@@ -156,6 +156,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
             stored_bytes=len(ciphertext),
             sha256=None,
             stored_sha256=stored_sha256,
+            version_id=completed.version_id,
         )
         assert b"".join(archive.iter_archive_object(collection_id=1, object=identity)) == plaintext
     finally:

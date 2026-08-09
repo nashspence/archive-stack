@@ -71,6 +71,8 @@ def test_matures_and_reverifies_an_archive_proof(tmp_path) -> None:
         assert proof is not None
         assert proof.sha256 == hashlib.sha256(store.replaced_proofs[0]).hexdigest()
         assert proof.plaintext_bytes == len(store.replaced_proofs[0])
+        assert proof.version_id is not None
+        assert proof.version_id != "fixture-proof-version"
 
     assert service.process_due(limit=10) == 0
 

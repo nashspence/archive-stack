@@ -297,6 +297,7 @@ class SqlAlchemyProofMaturationService:
             proof.stored_bytes = receipt.stored_bytes
             proof.sha256 = receipt.sha256
             proof.stored_sha256 = receipt.stored_sha256
+            proof.version_id = receipt.version_id
             proof.backend = receipt.backend
             proof.storage_class = receipt.storage_class
             proof.uploaded_at = receipt.uploaded_at
@@ -320,6 +321,7 @@ def _identity_from_record(record: CollectionArchiveObjectRecord) -> ArchiveObjec
         stored_bytes=record.stored_bytes,
         sha256=record.sha256,
         stored_sha256=record.stored_sha256,
+        version_id=record.version_id,
     )
 
 
@@ -332,6 +334,7 @@ def _identity_from_receipt(receipt: ArchiveObjectUploadReceipt) -> ArchiveObject
         stored_bytes=receipt.stored_bytes,
         sha256=receipt.sha256,
         stored_sha256=receipt.stored_sha256,
+        version_id=receipt.version_id,
     )
 
 
@@ -347,6 +350,7 @@ def _receipt_matches_identity(
         and receipt.stored_bytes == identity.stored_bytes
         and receipt.sha256 == identity.sha256
         and receipt.stored_sha256 == identity.stored_sha256
+        and receipt.version_id == identity.version_id
     )
 
 

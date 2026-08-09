@@ -38,6 +38,7 @@ def archive_copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiv
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
                 stored_sha256=current.stored_sha256,
+                version_id=current.version_id,
             )
             for current in sorted(copy.objects, key=lambda item: item.object_order)
         )
@@ -60,6 +61,7 @@ def archive_copy_owned_identity(copy: CollectionArchiveCopyRecord) -> Collection
                 stored_bytes=publication.stored_bytes or 0,
                 sha256=publication.stored_sha256 or "0" * 64,
                 stored_sha256=publication.stored_sha256 or "0" * 64,
+                version_id=publication.version_id,
             ),
         )
     )
