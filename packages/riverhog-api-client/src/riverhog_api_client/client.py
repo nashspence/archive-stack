@@ -155,11 +155,13 @@ class _HttpApiClient:
             "service_unavailable": ServiceUnavailable,
             "download_allowance_exceeded": DownloadAllowanceExceeded,
         }
-        error_type = (
-            ServiceUnavailable
-            if response.status_code in _TRANSIENT_HTTP_STATUS_CODES
-            else exc_map.get(code, RiverhogError)
-        )
+        error_type = exc_map.get(code)
+        if error_type is None:
+            error_type = (
+                ServiceUnavailable
+                if response.status_code in _TRANSIENT_HTTP_STATUS_CODES
+                else RiverhogError
+            )
         raise error_type(
             str(message),
             code=str(code),

@@ -26,20 +26,21 @@ class RecordingClient(ApiClient):
 
 
 @pytest.mark.parametrize(
-    ("code", "error_type"),
+    ("code", "error_type", "status"),
     [
-        ("unauthorized", Unauthorized),
-        ("forbidden", Forbidden),
-        ("download_allowance_exceeded", DownloadAllowanceExceeded),
+        ("unauthorized", Unauthorized, 400),
+        ("forbidden", Forbidden, 400),
+        ("download_allowance_exceeded", DownloadAllowanceExceeded, 429),
     ],
 )
 def test_client_preserves_actionable_api_error_types(
     code: str,
     error_type: type[Exception],
+    status: int,
 ) -> None:
     client = ApiClient(base_url="http://example.invalid")
     response = httpx.Response(
-        400,
+        status,
         json={"error": {"code": code, "message": "action denied"}},
         request=httpx.Request("GET", "http://example.invalid/v1/test"),
     )
