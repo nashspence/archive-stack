@@ -45,3 +45,30 @@ def test_server_compose_upgrades_state_before_startup() -> None:
     assert compose["services"]["munchy-server"]["depends_on"]["munchy-state"] == {
         "condition": "service_completed_successfully"
     }
+
+
+def test_server_and_lan_gateway_share_the_tusd_signing_contract() -> None:
+    compose = yaml.safe_load(
+        (REPO_ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
+    )
+    server_environment = compose["services"]["munchy-server"]["environment"]
+    gateway_environment = compose["services"]["munchy-server-lan-gateway"]["environment"]
+    nginx = (REPO_ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
+        encoding="utf-8"
+    )
+
+    signing_setting = (
+        "${MUNCHY_TUSD_PUBLIC_SIGNING_SECRET:?MUNCHY_TUSD_PUBLIC_SIGNING_SECRET is required}"
+    )
+    assert server_environment["MUNCHY_TUSD_PUBLIC_SIGNING_SECRET"] == signing_setting
+    assert gateway_environment["MUNCHY_TUSD_PUBLIC_SIGNING_SECRET"] == signing_setting
+    assert server_environment["MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS"] == (
+        "${MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS:-86400}"
+    )
+    assert nginx.count("secure_link $arg_md5,$arg_expires;") == 1
+    assert (
+        nginx.count(
+            'secure_link_md5 "$secure_link_expires$uri ${MUNCHY_TUSD_PUBLIC_SIGNING_SECRET}";'
+        )
+        == 1
+    )

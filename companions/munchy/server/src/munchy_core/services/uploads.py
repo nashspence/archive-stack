@@ -13,7 +13,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 from munchy_target_support.source_artifact_bridge import (
@@ -513,6 +513,39 @@ def normalize_public_tusd_url(location: str) -> str:
             public.netloc,
             normalized_path,
             parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def current_unix_timestamp() -> int:
+    return int(datetime.now(UTC).timestamp())
+
+
+def public_tusd_upload_url(upload_url: str) -> str:
+    secret = runtime_config.TUSD_PUBLIC_SIGNING_SECRET
+    if not secret:
+        return upload_url
+    parsed = urlsplit(upload_url)
+    expires = current_unix_timestamp() + runtime_config.TUSD_PUBLIC_URL_TTL_SECONDS
+    nginx_uri = unquote(parsed.path)
+    digest = hashlib.md5(  # noqa: S324 - nginx secure_link requires MD5.
+        f"{expires}{nginx_uri} {secret}".encode(),
+        usedforsecurity=False,
+    ).digest()
+    signature = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in {"expires", "md5"}
+    ]
+    query.extend((("md5", signature), ("expires", str(expires))))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
             parsed.fragment,
         )
     )

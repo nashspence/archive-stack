@@ -818,9 +818,12 @@ def input_file_upload_response(
     length: int,
     status: dict[str, Any],
 ) -> dict[str, Any]:
+    public_upload_url = (
+        upload_service.public_tusd_upload_url(str(upload_url)) if upload_url else upload_url
+    )
     return {
         "protocol": "tus",
-        "upload_url": str(upload_url) if upload_url else upload_url,
+        "upload_url": public_upload_url,
         "offset": offset,
         "length": length,
         "checksum_algorithm": "sha256",

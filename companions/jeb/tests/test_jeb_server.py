@@ -14,6 +14,8 @@ from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.domain.models import (
     EligibleFile,
+    TransientJebError,
+    UnrecoverableJebError,
     parse_duration,
     parse_size,
 )
@@ -93,6 +95,22 @@ class CompleteAdapter(MunchyTargetAdapter):
     def advance(self, services: JebServices, attempt_id: str) -> None:
         self.calls += 1
         services.store.set_attempt_state(attempt_id, "target_complete")
+
+
+@dataclass
+class FailingRemoteAdapter(MunchyTargetAdapter):
+    cancel_calls: int = 0
+    cancel_error: Exception | None = None
+
+    def advance(self, services: JebServices, attempt_id: str) -> None:
+        services.store.set_attempt_state(attempt_id, "target_submitted")
+        raise UnrecoverableJebError("target rejected upload")
+
+    def cancel(self, services: JebServices, attempt_id: str) -> None:
+        assert services.store.load_attempt(attempt_id)["state"] == "target_submitted"
+        self.cancel_calls += 1
+        if self.cancel_error is not None:
+            raise self.cancel_error
 
 
 @pytest.fixture(autouse=True)
@@ -690,6 +708,48 @@ def test_jeb_failed_attempt_reports_retained_source_as_error(tmp_path: Path) -> 
     event = services.event_log.page(after=None, limit=100).events[0]
     assert event.data["severity"] == "error"
     assert source_path.is_file()
+
+
+def test_unrecoverable_remote_failure_cancels_target_before_failing_attempt(
+    tmp_path: Path,
+) -> None:
+    adapter = FailingRemoteAdapter()
+    services = services_from_env(
+        env_for(tmp_path, sources="camera"),
+        target_adapters={"munchy": adapter},
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
+    attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+
+    services.attempts.process_attempt(attempt_id)
+
+    attempt = services.store.get_attempt(attempt_id)
+    assert adapter.cancel_calls == 1
+    assert attempt["state"] == "failed"
+    assert attempt["last_error"] == "target rejected upload"
+
+
+def test_unrecoverable_remote_failure_remains_active_until_cleanup_is_accepted(
+    tmp_path: Path,
+) -> None:
+    adapter = FailingRemoteAdapter(cancel_error=TransientJebError("target unavailable"))
+    services = services_from_env(
+        env_for(tmp_path, sources="camera"),
+        target_adapters={"munchy": adapter},
+    )
+    write_stable_file(tmp_path / "landing" / "camera" / "clip.txt")
+    attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+
+    services.attempts.process_attempt(attempt_id)
+
+    attempt = services.store.get_attempt(attempt_id)
+    assert adapter.cancel_calls == 1
+    assert attempt["state"] == "target_submitted"
+    assert attempt["last_error"] == (
+        "target rejected upload; remote cleanup pending: target unavailable"
+    )
 
 
 def test_jeb_target_preflight_events_and_status_use_source_context(tmp_path: Path) -> None:

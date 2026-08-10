@@ -813,6 +813,7 @@ def test_input_file_upload_response_preserves_the_public_tusd_location(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", raising=False)
     server = load_server(tmp_path, monkeypatch)
 
     response = server.job_service.input_file_upload_response(
@@ -831,6 +832,79 @@ def test_input_file_upload_response_preserves_the_public_tusd_location(
         "headers": {"Tus-Resumable": "1.0.0"},
         "file": {"upload_state": "partial"},
     }
+
+
+def test_input_file_upload_response_signs_the_nginx_normalized_uri(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "test-secret")
+    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS", "900")
+    server = load_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.upload_service, "current_unix_timestamp", lambda: 1_700_000_000)
+
+    response = server.job_service.input_file_upload_response(
+        upload_url="http://server.test/files/.munchy-server%2Fuploads%2Fabc",
+        offset=3,
+        length=8,
+        status={"upload_state": "partial"},
+    )
+
+    assert response["upload_url"] == (
+        "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
+        "?md5=fYqOQxDZCG96TbcwLCKLnw&expires=1700000900"
+    )
+
+
+def test_resumed_input_upload_refreshes_signature_while_storing_unsigned_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "test-secret")
+    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS", "900")
+    server = load_server(tmp_path, monkeypatch)
+    upload_id = "upload-1"
+    rel_path = "camera/a.mp4"
+    upload_url = "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
+    server.state_store.write_state(
+        "input-upload",
+        upload_id,
+        {
+            "input_upload_id": upload_id,
+            "state": "uploading",
+            "created_at": utc_timestamp_now(),
+            "files": [
+                {
+                    "path": rel_path,
+                    "bytes": 10,
+                    "sha256": None,
+                    "provenance": omitted_test_provenance(),
+                    "target_path": "camera/a.mp4",
+                    "input_upload_id": upload_id,
+                    "file_upload_id": ".munchy-server/uploads/abc",
+                    "upload_url": upload_url,
+                }
+            ],
+            "storage_hint": {"source_bytes": 10},
+            "tusd_creation_url": "http://server.test/files",
+        },
+    )
+    timestamps = iter((1_700_000_000, 1_700_000_100))
+    monkeypatch.setattr(
+        server.upload_service,
+        "current_unix_timestamp",
+        lambda: next(timestamps),
+    )
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: 4)
+
+    first = server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
+    second = server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
+    stored = server.state_store.read_state("input-upload", upload_id)
+
+    assert first["upload_url"] == (f"{upload_url}?md5=fYqOQxDZCG96TbcwLCKLnw&expires=1700000900")
+    assert second["upload_url"] == (f"{upload_url}?md5=uBarAK-MbmMqSCQazDS3Mw&expires=1700001000")
+    assert stored is not None
+    assert stored["files"][0]["upload_url"] == upload_url
 
 
 def test_structured_input_upload_accepts_source_prefixed_paths(

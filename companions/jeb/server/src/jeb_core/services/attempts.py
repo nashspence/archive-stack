@@ -599,7 +599,7 @@ class JebAttemptService:
             self.mark_unrecoverable(attempt_id, str(exc), component="preflight")
         except UnrecoverableJebError as exc:
             LOG.exception("attempt %s has unrecoverable error", attempt_id)
-            self.mark_unrecoverable(attempt_id, str(exc), component="target")
+            self.mark_target_unrecoverable_after_remote_cleanup(attempt_id, adapter, str(exc))
         except TransientJebError as exc:
             LOG.warning("attempt %s hit transient issue; will retry: %s", attempt_id, exc)
             self.store.set_attempt_fields(attempt_id, last_error=str(exc))
@@ -611,7 +611,28 @@ class JebAttemptService:
                 self.store.set_attempt_fields(attempt_id, last_error=str(exc))
                 return
             LOG.exception("attempt %s failed with unrecoverable target error", attempt_id)
-            self.mark_unrecoverable(attempt_id, str(exc), component="target")
+            self.mark_target_unrecoverable_after_remote_cleanup(attempt_id, adapter, str(exc))
+
+    def mark_target_unrecoverable_after_remote_cleanup(
+        self,
+        attempt_id: str,
+        adapter: TargetAdapter | None,
+        message: str,
+    ) -> None:
+        if adapter is not None:
+            try:
+                adapter.cancel(self.target_context(), attempt_id)
+            except Exception as exc:
+                LOG.exception(
+                    "attempt %s remote cleanup failed; retaining active state for retry",
+                    attempt_id,
+                )
+                self.store.set_attempt_fields(
+                    attempt_id,
+                    last_error=f"{message}; remote cleanup pending: {exc}",
+                )
+                return
+        self.mark_unrecoverable(attempt_id, message, component="target")
 
     def stage_attempt_files(self, attempt_id: str) -> None:
         for row in self.store.attempt_files(attempt_id):
