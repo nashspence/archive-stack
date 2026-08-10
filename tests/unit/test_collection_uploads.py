@@ -13,7 +13,13 @@ from riverhog_core.app_permissions import (
 from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionArchiveObjectRecord, TagRecord
+from riverhog_core.catalog_models import (
+    CollectionArchiveObjectRecord,
+    CollectionArchiveObjectUploadRecord,
+    CollectionUploadRecord,
+    TagRecord,
+)
+from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol.manifest import collection_content_etag
@@ -36,7 +42,22 @@ class _UnusedRangeStore:
         raise AssertionError("ingress does not read archive ranges")
 
 
-def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
+class _FailOnceProofStamper:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def stamp(self, manifest_path: Path) -> Path:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("temporary proof service failure")
+        return FixtureProofStamper().stamp(manifest_path)
+
+
+def _service(
+    tmp_path: Path,
+    *,
+    proof_stamper: ProofStamper | None = None,
+) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     config = RuntimeConfig(database_url=database_url, archive_scrypt_work_factor=1)
     initialize_db(database_url)
@@ -59,7 +80,7 @@ def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, Runtime
             config,
             ArchiveStoreRegistry({"archive": as_archive_store(archive_store)}),
             ArchiveIngressStoreRegistry({"archive": ingress}),
-            proof_stamper=FixtureProofStamper(),
+            proof_stamper=proof_stamper or FixtureProofStamper(),
         ),
         config,
     )
@@ -118,6 +139,10 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         content=content,
     )
     assert committed["state"] == "committed"
+    queued = service.get(collection_id)
+    assert queued["state"] == "finalizing"
+    assert queued["archive_phase"] == "retry_wait"
+    assert service.process_due_finalizations() == 1
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
     assert finalized["tags"] == list(tags)
@@ -137,3 +162,108 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert objects[0].object_path.endswith("/volumes/pack-000000000000.tar.age")
     assert objects[1].object_path.endswith("/manifest.json.age")
     assert objects[2].object_path.endswith("/manifest.json.ots.age")
+
+
+def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint(
+    tmp_path: Path,
+) -> None:
+    service, config = _service(tmp_path)
+    content = b"restart-safe direct final archive\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="restart-upload",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    service.complete(
+        collection_id,
+        files_total=1,
+        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+    )
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    service.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        0,
+        plan_sha256=str(volume["plan_sha256"]),
+        content=content,
+    )
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        stored_volume = session.get(
+            CollectionArchiveObjectUploadRecord,
+            (collection_id, str(volume["volume_id"])),
+        )
+        assert upload is not None
+        assert stored_volume is not None
+        assert stored_volume.checkpoint_json is not None
+        stored_volume.sealed_receipt_json = None
+        upload.state = "finalizing"
+        upload.archive_phase = "finalizing"
+        upload.archive_next_attempt_at = None
+
+    assert service.requeue_interrupted_finalizations_for_startup() == 1
+    recovered = service.get(collection_id)
+    assert recovered["state"] == "finalizing"
+    assert recovered["archive_phase"] == "retry_wait"
+    assert recovered["latest_failure"] == "archive finalization interrupted before completion"
+    assert service.process_due_finalizations() == 1
+    assert service.get(collection_id)["state"] == "finalized"
+
+
+def test_due_finalization_retries_a_temporary_publication_failure(tmp_path: Path) -> None:
+    proof_stamper = _FailOnceProofStamper()
+    service, config = _service(tmp_path, proof_stamper=proof_stamper)
+    content = b"retryable direct final archive\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="retry-upload",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    service.complete(
+        collection_id,
+        files_total=1,
+        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+    )
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    service.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        0,
+        plan_sha256=str(volume["plan_sha256"]),
+        content=content,
+    )
+
+    assert service.process_due_finalizations() == 1
+    retry_wait = service.get(collection_id)
+    assert retry_wait["state"] == "finalizing"
+    assert retry_wait["archive_phase"] == "retry_wait"
+    assert retry_wait["latest_failure"] == ("RuntimeError: temporary proof service failure")
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert upload.archive_attempt_count == 1
+        assert upload.archive_next_attempt_at is not None
+        upload.archive_next_attempt_at = upload.archive_phase_updated_at
+
+    assert service.process_due_finalizations() == 1
+    assert service.get(collection_id)["state"] == "finalized"
+    assert proof_stamper.attempts == 2

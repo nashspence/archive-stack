@@ -17,6 +17,11 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 import httpx
 import typer
 from riverhog_api_client.client import ApiClient
+from riverhog_api_client.uploads import (
+    configured_upload_concurrency,
+    put_collection_upload_unit,
+    upload_collection_units,
+)
 from riverhog_cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
@@ -30,7 +35,7 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
 )
-from riverhog_protocol.errors import Conflict, NotFound, RiverhogError, ServiceUnavailable
+from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -99,8 +104,6 @@ app.add_typer(event_app, name="event")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_FILE_CONCURRENCY = 8
-UPLOAD_FILE_CONCURRENCY_MAX = 64
 UPLOAD_REGISTRATION_BATCH_MAX = 16
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
@@ -787,27 +790,10 @@ def _file_sha256(path: Path) -> str:
 
 
 def _upload_file_concurrency() -> int:
-    raw_value = os.getenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY")
-    if raw_value is None or raw_value.strip() == "":
-        return UPLOAD_FILE_CONCURRENCY
     try:
-        value = int(raw_value)
+        return configured_upload_concurrency()
     except ValueError as exc:
-        raise typer.BadParameter(
-            "RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer"
-        ) from exc
-    if value <= 0 or value > UPLOAD_FILE_CONCURRENCY_MAX:
-        raise typer.BadParameter(
-            f"RIVERHOG_UPLOAD_FILE_CONCURRENCY must be between 1 and {UPLOAD_FILE_CONCURRENCY_MAX}"
-        )
-    return value
-
-
-def _new_upload_worker_client(api: ApiClient) -> ApiClient:
-    worker = ApiClient(base_url=api.base_url, token=api.token)
-    worker.host_header = api.host_header
-    worker.http2 = api.http2
-    return worker
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _upload_file_log_bytes() -> int:
@@ -1141,98 +1127,16 @@ def _put_collection_upload_session_unit(
     *,
     root: Path,
 ) -> int:
-    volume_id = volume.get("volume_id")
-    plan_sha256 = volume.get("plan_sha256")
-    unit_number = unit.get("unit")
-    payload_bytes = unit.get("payload_bytes")
-    if (
-        not isinstance(volume_id, str)
-        or not isinstance(plan_sha256, str)
-        or not isinstance(unit_number, int)
-        or not isinstance(payload_bytes, int)
-    ):
-        raise RuntimeError("server returned an invalid upload unit identity")
-    if unit.get("state") == "committed":
-        return 0
-    content = _upload_unit_content(root, unit)
-    delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
-    last_log_at = 0.0
-    while True:
-        try:
-            result = api.put_collection_upload_session_unit(
-                collection_id,
-                volume_id,
-                unit_number,
-                plan_sha256=plan_sha256,
-                content=content,
-            )
-            if result.get("state") != "committed":
-                raise RuntimeError("server did not commit the complete upload unit")
-            return payload_bytes
-        except (httpx.TransportError, httpx.HTTPStatusError, Conflict, ServiceUnavailable) as exc:
-            if not isinstance(exc, Conflict) and not _is_transient_upload_error(exc):
-                raise
-            try:
-                current = api.get_collection_upload_session_unit(
-                    collection_id, volume_id, unit_number
-                )
-            except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable):
-                current = {}
-            if current.get("state") == "committed":
-                return payload_bytes
-            if isinstance(exc, Conflict):
-                raise
-            now = time.monotonic()
-            if now - last_log_at >= UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS:
-                _log_upload(
-                    f"Upload unit {volume_id}/{unit_number} interrupted "
-                    f"({_upload_error_description(exc)}); retrying in {delay:.1f}s"
-                )
-                last_log_at = now
-            time.sleep(delay)
-            delay = min(delay * 2, UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS)
-
-
-def _volume_work(payload: Mapping[str, object]) -> list[dict[str, object]]:
-    values = payload.get("volumes")
-    if not isinstance(values, list):
-        raise RuntimeError("upload session returned an invalid volume list")
-    result: list[dict[str, object]] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise RuntimeError("upload session returned an invalid volume")
-        result.append(value)
-    return result
-
-
-def _pending_volume_units(
-    volumes: list[dict[str, object]],
-) -> list[tuple[dict[str, object], dict[str, object]]]:
-    work: list[tuple[dict[str, object], dict[str, object]]] = []
-    for volume in volumes:
-        units = volume.get("units")
-        if not isinstance(units, list):
-            raise RuntimeError("upload session returned an invalid volume plan")
-        for unit in units:
-            if not isinstance(unit, dict):
-                raise RuntimeError("upload session returned an invalid unit plan")
-            if unit.get("state") != "committed":
-                work.append((volume, unit))
-    return work
-
-
-def _committed_source_bytes(volumes: list[dict[str, object]]) -> int:
-    total = 0
-    for volume in volumes:
-        units = volume.get("units")
-        if not isinstance(units, list):
-            continue
-        total += sum(
-            int(unit.get("payload_bytes") or 0)
-            for unit in units
-            if isinstance(unit, Mapping) and unit.get("state") == "committed"
-        )
-    return total
+    return put_collection_upload_unit(
+        api,
+        collection_id,
+        volume,
+        unit,
+        content_for_unit=lambda current: _upload_unit_content(root, current),
+        retry_notice=_log_upload,
+        retry_initial_delay_seconds=UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS,
+        retry_max_delay_seconds=UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
+    )
 
 
 def _upload_planned_units(
@@ -1244,66 +1148,16 @@ def _upload_planned_units(
     progress: Any,
     api_factory: Callable[[], ApiClient] | None,
 ) -> None:
-    payload = api.list_collection_upload_session_volumes(collection_id)
-    volumes = _volume_work(payload)
-    progress.resumed(_committed_source_bytes(volumes))
-
-    # Establish one durable multipart checkpoint per volume before allowing
-    # parallel unit requests for that volume.
-    for volume in volumes:
-        units = volume.get("units")
-        if not isinstance(units, list):
-            raise RuntimeError("upload session returned an invalid volume plan")
-        first = next(
-            (unit for unit in units if isinstance(unit, dict) and unit.get("state") != "committed"),
-            None,
-        )
-        if first is None:
-            continue
-        accepted = _put_collection_upload_session_unit(
-            api,
-            collection_id,
-            volume,
-            first,
-            root=root,
-        )
-        progress.uploaded(accepted)
-
-    try:
-        volumes = _volume_work(api.list_collection_upload_session_volumes(collection_id))
-    except NotFound:
-        return
-    pending = _pending_volume_units(volumes)
-    if not pending:
-        return
-
-    worker_count = min(concurrency, len(pending))
-    worker_factory = api_factory or (lambda: _new_upload_worker_client(api))
-    buckets = [pending[index::worker_count] for index in range(worker_count)]
-
-    def worker(
-        items: list[tuple[dict[str, object], dict[str, object]]],
-    ) -> None:
-        worker_api = api if worker_count == 1 else worker_factory()
-        owns_api = worker_api is not api
-        try:
-            for volume, unit in items:
-                accepted = _put_collection_upload_session_unit(
-                    worker_api,
-                    collection_id,
-                    volume,
-                    unit,
-                    root=root,
-                )
-                progress.uploaded(accepted)
-        finally:
-            if owns_api:
-                worker_api.close()
-
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(worker, bucket) for bucket in buckets]
-        for future in futures:
-            future.result()
+    upload_collection_units(
+        api,
+        collection_id,
+        content_for_unit=lambda unit: _upload_unit_content(root, unit),
+        concurrency=concurrency,
+        client_factory=api_factory,
+        on_committed=progress.uploaded,
+        on_resumed=progress.resumed,
+        retry_notice=_log_upload,
+    )
 
 
 def _wait_for_finalized_collection(

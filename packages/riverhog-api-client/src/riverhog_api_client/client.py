@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 import httpx
 from file_download import verified_download
-from http_api_contracts import parse_error_payload
+from http_api_contracts import parse_error_payload, safe_http_base_url
 from lifecycle_events import EventPage
 from riverhog_protocol.errors import (
     BadRequest,
@@ -27,6 +27,7 @@ from riverhog_protocol.errors import (
 )
 
 _HTTP_TIMEOUT_SECONDS = 300.0
+_UPLOAD_TIMEOUT_SECONDS = 1800.0
 _CANCEL_TIMEOUT_SECONDS = 1800.0
 _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -73,9 +74,14 @@ class _HttpApiClient:
         *,
         token_env: str,
     ) -> None:
-        self.base_url = (
-            base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000"
-        ).rstrip("/")
+        try:
+            self.base_url = safe_http_base_url(
+                base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000",
+                setting="RIVERHOG_BASE_URL",
+                allow_insecure_http=_bool_env("RIVERHOG_ALLOW_INSECURE_HTTP", False),
+            )
+        except ValueError as exc:
+            raise BadRequest(str(exc)) from exc
         self.token = token or os.getenv(token_env)
         self.host_header = os.getenv("RIVERHOG_HOST_HEADER", "").strip() or None
         self.http2 = _bool_env("RIVERHOG_HTTP2", True)
@@ -238,6 +244,18 @@ class _HttpApiClient:
 class ApiClient(_HttpApiClient):
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
+        self.upload_timeout_seconds = _timeout_seconds(
+            "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
+            _UPLOAD_TIMEOUT_SECONDS,
+        )
+
+    def spawn(self) -> ApiClient:
+        worker = ApiClient(base_url=self.base_url, token=self.token)
+        worker.host_header = self.host_header
+        worker.http2 = self.http2
+        worker.timeout_seconds = self.timeout_seconds
+        worker.upload_timeout_seconds = self.upload_timeout_seconds
+        return worker
 
     def list_lifecycle_events(
         self,
@@ -497,6 +515,7 @@ class ApiClient(_HttpApiClient):
                 "If-Match": f'"{plan_sha256}"',
             },
             content=content,
+            timeout=self.upload_timeout_seconds,
         )
 
     def search(

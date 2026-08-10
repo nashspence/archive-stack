@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from http import HTTPStatus
+from ipaddress import ip_address
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +70,36 @@ _ERROR_CODE_BY_STATUS: dict[int, str] = {
 PUBLIC_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
     status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 500, 503)
 }
+
+
+def safe_http_base_url(
+    value: str,
+    *,
+    setting: str = "base URL",
+    allow_insecure_http: bool = False,
+) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise ValueError(f"{setting} must be an absolute HTTP or HTTPS URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{setting} must not contain credentials")
+    if parsed.scheme == "https" or allow_insecure_http or _is_loopback_host(parsed.hostname):
+        return normalized
+    raise ValueError(
+        f"{setting} must use HTTPS unless it targets a loopback host "
+        "or insecure HTTP is explicitly enabled"
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    candidate = host.rstrip(".").casefold()
+    if candidate == "localhost":
+        return True
+    try:
+        return ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def error_code_for_status(status: int) -> str:
@@ -148,5 +180,6 @@ __all__ = [
     "error_code_for_status",
     "error_payload",
     "parse_error_payload",
+    "safe_http_base_url",
     "status_for_error_code",
 ]

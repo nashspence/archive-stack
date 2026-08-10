@@ -266,6 +266,7 @@ def _seed_collection(
                 plan_sha256=str(volume["plan_sha256"]),
                 content=payload,
             )
+    assert uploads.process_due_finalizations(limit=1) == 1
 
     retrieval = SqlAlchemyRetrievalService(
         config,

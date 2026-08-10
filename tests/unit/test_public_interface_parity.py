@@ -5,12 +5,17 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI
+from http_api_contracts import safe_http_base_url
 from jeb_api.app import create_app as create_jeb_app
 from jeb_api_client import JebApiClient
 from munchy_api.app import app as munchy_app
 from munchy_api_client.client import MunchyAdminClient, MunchyClient
+from munchy_core.adapters import riverhog as munchy_riverhog
 from riverhog_api.app import create_app as create_riverhog_app
+from riverhog_api_client import configured_upload_concurrency, upload_collection_units
 from riverhog_api_client.client import ApiClient
+from riverhog_cli import main as riverhog_cli
+from riverhog_protocol.errors import BadRequest
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
 PUBLIC_ERROR_STATUSES = {"400", "401", "403", "404", "409", "500", "503"}
@@ -168,3 +173,83 @@ def test_official_clients_share_transport_configuration(
         assert client.timeout_seconds == 17
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "https://api.example.test",
+        "http://localhost:8000",
+        "http://127.42.0.1:8000",
+        "http://[::1]:8000",
+    ),
+)
+def test_shared_transport_contract_accepts_https_and_loopback_http(base_url: str) -> None:
+    assert safe_http_base_url(base_url) == base_url
+
+
+def test_shared_transport_contract_accepts_explicit_remote_cleartext_opt_in() -> None:
+    assert (
+        safe_http_base_url(
+            "http://api.example.test",
+            allow_insecure_http=True,
+        )
+        == "http://api.example.test"
+    )
+
+
+@pytest.mark.parametrize(
+    ("client_type", "error_type"),
+    (
+        (ApiClient, BadRequest),
+        (MunchyClient, ValueError),
+        (JebApiClient, ValueError),
+    ),
+)
+def test_official_clients_reject_remote_cleartext_transport(
+    client_type: type[Any],
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match="must use HTTPS unless it targets a loopback host"):
+        client_type(base_url="http://api.example.test")
+
+
+@pytest.mark.parametrize(
+    ("client_type", "prefix"),
+    (
+        (ApiClient, "RIVERHOG"),
+        (MunchyClient, "MUNCHY"),
+        (JebApiClient, "JEB"),
+    ),
+)
+def test_official_clients_allow_explicit_remote_cleartext_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    client_type: type[Any],
+    prefix: str,
+) -> None:
+    monkeypatch.setenv(f"{prefix}_ALLOW_INSECURE_HTTP", "true")
+    client = client_type(base_url="http://api.example.test")
+    try:
+        assert client.base_url == "http://api.example.test"
+    finally:
+        client.close()
+
+
+def test_official_direct_ingress_callers_share_the_upload_runner() -> None:
+    assert riverhog_cli.upload_collection_units is upload_collection_units
+    assert munchy_riverhog.upload_collection_units is upload_collection_units
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    (
+        ({}, 8),
+        ({"RIVERHOG_UPLOAD_FILE_CONCURRENCY": "1"}, 1),
+        ({"RIVERHOG_UPLOAD_FILE_CONCURRENCY": "64"}, 64),
+    ),
+)
+def test_shared_direct_ingress_concurrency_contract(
+    environment: dict[str, str],
+    expected: int,
+) -> None:
+    assert configured_upload_concurrency(environment) == expected

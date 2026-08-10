@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -21,7 +23,7 @@ from riverhog_protocol.paths import (
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest, raw_volume_part_sha256s
 from sqlalchemy import asc, desc, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
-from time_formats import utc_timestamp_now
+from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
 from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
 from riverhog_core.archive_catalog import build_archive_catalog_projection
@@ -89,6 +91,7 @@ from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferRes
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PROOF_RELATIVE_PATH = "manifest.json.ots.age"
 _PROOF_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest-proof+age"
+_LOG = logging.getLogger("riverhog_core.collection_uploads")
 
 
 class _RegisteredFile(TypedDict):
@@ -357,6 +360,8 @@ class SqlAlchemyCollectionUploadService:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
             if upload.state not in {"open", "uploading", "finalizing", "failed"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
+            if upload.state == "finalizing":
+                return _upload_payload(session, upload)
             rows = list(
                 session.scalars(
                     select(CollectionUploadFileRecord)
@@ -381,8 +386,10 @@ class SqlAlchemyCollectionUploadService:
             upload.last_activity_at = upload.closed_at
             upload.archive_phase = "uploading"
             upload.archive_phase_updated_at = upload.closed_at
+            upload.archive_next_attempt_at = None
+            upload.archive_failure = None
             session.flush()
-        self._finalize_if_ready(normalized_id)
+        self._schedule_finalization_if_ready(normalized_id)
         return self.get(normalized_id)
 
     def list_files(
@@ -551,7 +558,7 @@ class SqlAlchemyCollectionUploadService:
         if receipt is not None:
             self._record_sealed_volume(normalized_id, receipt)
         payload = self.get_unit(normalized_id, volume_id, unit)
-        self._finalize_if_ready(normalized_id)
+        self._schedule_finalization_if_ready(normalized_id)
         return payload
 
     def get_unit(self, collection_id: int, volume_id: str, unit: int) -> dict[str, object]:
@@ -790,37 +797,181 @@ class SqlAlchemyCollectionUploadService:
                 upload.last_activity_at = now
                 upload.archive_phase_updated_at = now
 
-    def _finalize_if_ready(self, collection_id: int) -> None:
+    def requeue_interrupted_finalizations_for_startup(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        now = utc_timestamp_now()
+        requeued = 0
+        with session_scope(self._session_factory) as session:
+            uploads = list(
+                session.scalars(
+                    select(CollectionUploadRecord)
+                    .where(CollectionUploadRecord.state.in_(("uploading", "finalizing", "failed")))
+                    .order_by(
+                        CollectionUploadRecord.archive_phase_updated_at,
+                        CollectionUploadRecord.collection_id,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(limit)
+                )
+            )
+            for upload in uploads:
+                interrupted = upload.state == "finalizing" and upload.archive_phase == "finalizing"
+                if not interrupted and not _ready_for_finalization(upload):
+                    continue
+                upload.state = "finalizing"
+                upload.archive_phase = "retry_wait"
+                upload.archive_next_attempt_at = now
+                upload.archive_phase_updated_at = now
+                if interrupted:
+                    upload.archive_failure = "archive finalization interrupted before completion"
+                requeued += 1
+        return requeued
+
+    def process_due_finalizations(self, *, limit: int = 1) -> int:
+        if limit < 1:
+            return 0
+        self._schedule_ready_finalizations(limit=max(100, limit))
+        processed = 0
+        for _ in range(limit):
+            collection_id = self._claim_due_finalization()
+            if collection_id is None:
+                break
+            try:
+                self._reconcile_sealed_volume_receipts(collection_id)
+                self._finalize(collection_id)
+            except Exception as exc:
+                self._record_finalization_retry(collection_id, exc)
+                _LOG.exception(
+                    "collection archive finalization failed; retry scheduled: collection_id=%s",
+                    collection_id,
+                )
+            processed += 1
+        return processed
+
+    def _schedule_ready_finalizations(self, *, limit: int) -> int:
+        now = utc_timestamp_now()
+        scheduled = 0
+        with session_scope(self._session_factory) as session:
+            uploads = list(
+                session.scalars(
+                    select(CollectionUploadRecord)
+                    .where(CollectionUploadRecord.state.in_(("uploading", "failed")))
+                    .order_by(
+                        CollectionUploadRecord.archive_phase_updated_at,
+                        CollectionUploadRecord.collection_id,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(limit)
+                )
+            )
+            for upload in uploads:
+                if not _ready_for_finalization(upload):
+                    continue
+                _mark_finalization_ready(upload, now=now)
+                scheduled += 1
+        return scheduled
+
+    def _claim_due_finalization(self) -> int | None:
+        now = utc_timestamp_now()
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(
+                    CollectionUploadRecord.state == "finalizing",
+                    CollectionUploadRecord.archive_phase == "retry_wait",
+                    CollectionUploadRecord.archive_next_attempt_at.is_not(None),
+                    CollectionUploadRecord.archive_next_attempt_at <= now,
+                )
+                .order_by(
+                    CollectionUploadRecord.archive_next_attempt_at,
+                    CollectionUploadRecord.collection_id,
+                )
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if upload is None:
+                return None
+            if not _ready_for_finalization(upload):
+                upload.state = "uploading"
+                upload.archive_phase = "uploading"
+                upload.archive_next_attempt_at = None
+                upload.archive_phase_updated_at = now
+                return None
+            upload.state = "finalizing"
+            upload.archive_phase = "finalizing"
+            upload.archive_phase_updated_at = now
+            upload.archive_last_attempt_at = now
+            upload.archive_next_attempt_at = None
+            upload.archive_attempt_count += 1
+            upload.archive_failure = None
+            return upload.collection_id
+
+    def _schedule_finalization_if_ready(self, collection_id: int) -> None:
+        now = utc_timestamp_now()
         with session_scope(self._session_factory) as session:
             upload = session.scalar(
                 select(CollectionUploadRecord)
                 .where(CollectionUploadRecord.collection_id == collection_id)
                 .with_for_update()
             )
+            if upload is None or not _ready_for_finalization(upload):
+                return
+            _mark_finalization_ready(upload, now=now)
+
+    def _reconcile_sealed_volume_receipts(self, collection_id: int) -> None:
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
             if upload is None:
                 return
-            if upload.state == "finalizing":
-                return
-            checkpoint = _planner_checkpoint(upload)
-            if not checkpoint.closed or not upload.archive_objects:
-                return
-            if any(current.state != "sealed" for current in upload.archive_objects):
-                return
-            upload.state = "finalizing"
-            upload.archive_phase = "finalizing"
-            upload.archive_phase_updated_at = utc_timestamp_now()
+            store_name = upload.archive_store
+            pending = [
+                (
+                    current.object_id,
+                    current.kind,
+                    current.plan_json,
+                    current.checkpoint_json,
+                )
+                for current in upload.archive_objects
+                if current.state == "sealed" and current.sealed_receipt_json is None
+            ]
+        store = self._ingress_stores.require(store_name)
+        for volume_id, kind, plan_json, checkpoint_json in pending:
+            if checkpoint_json is None:
+                raise RuntimeError(f"sealed archive volume has no checkpoint: {volume_id}")
+            if kind == "pack":
+                checkpoint = PackUploadCheckpoint.from_json(checkpoint_json)
+                if checkpoint.completed is None:
+                    raise RuntimeError(f"sealed pack volume is incomplete: {volume_id}")
+                receipt: SealedPackVolume | SealedRawVolume = self._pack_uploader(
+                    store.multipart
+                ).sealed_receipt(
+                    plan=parse_pack_volume_plan(plan_json),
+                    checkpoint=checkpoint,
+                )
+            elif kind == "segment":
+                raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
+                if not raw_checkpoint.completed:
+                    raise RuntimeError(f"sealed raw volume is incomplete: {volume_id}")
+                receipt = self._raw_uploader(store.multipart).sealed_receipt(raw_checkpoint)
+            else:
+                raise RuntimeError(f"unsupported archive volume kind: {kind}")
+            self._record_sealed_volume(collection_id, receipt)
 
-        try:
-            self._finalize(collection_id)
-        except Exception as exc:
-            with session_scope(self._session_factory) as session:
-                upload = session.get(CollectionUploadRecord, collection_id)
-                if upload is not None:
-                    upload.state = "failed"
-                    upload.archive_phase = "failed"
-                    upload.archive_failure = f"{type(exc).__name__}: {exc}"
-                    upload.archive_phase_updated_at = utc_timestamp_now()
-            raise
+    def _record_finalization_retry(self, collection_id: int, exc: Exception) -> None:
+        now = utc_timestamp_now()
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is None:
+                return
+            delay = min(3600, 2 ** min(upload.archive_attempt_count, 10))
+            upload.state = "finalizing"
+            upload.archive_phase = "retry_wait"
+            upload.archive_phase_updated_at = now
+            upload.archive_next_attempt_at = format_utc_timestamp(
+                utc_now() + timedelta(seconds=delay)
+            )
+            upload.archive_failure = f"{type(exc).__name__}: {exc}"[:1000]
 
     def _finalize(self, collection_id: int) -> None:
         with session_scope(self._session_factory) as session:
@@ -1320,6 +1471,22 @@ def _persist_plan_batch(session: Session, *, upload: CollectionUploadRecord, bat
 
 def _upload_tags(upload: CollectionUploadRecord) -> tuple[str, ...]:
     return tuple(sorted(current.tag_id for current in upload.tags))
+
+
+def _ready_for_finalization(upload: CollectionUploadRecord) -> bool:
+    checkpoint = _planner_checkpoint(upload)
+    return bool(
+        checkpoint.closed
+        and upload.archive_objects
+        and all(current.state == "sealed" for current in upload.archive_objects)
+    )
+
+
+def _mark_finalization_ready(upload: CollectionUploadRecord, *, now: str) -> None:
+    upload.state = "finalizing"
+    upload.archive_phase = "retry_wait"
+    upload.archive_phase_updated_at = now
+    upload.archive_next_attempt_at = now
 
 
 def _layout_payload(policy: CollectionVolumePolicy) -> dict[str, int]:

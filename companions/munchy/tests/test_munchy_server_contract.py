@@ -6341,7 +6341,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
                                     {"path": path, "offset": 0, "bytes": int(file["bytes"])}
                                     for path, file in sorted(self.registered.items())
                                 ],
-                                "state": "pending",
+                                "state": "committed" if self.finalized else "pending",
                             }
                         ],
                     }

@@ -26,7 +26,7 @@ def test_munchy_help() -> None:
 def test_munchy_event_list_has_human_and_json_output(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_lifecycle_events(self, *, after: str | None, limit: int) -> EventPage:
             assert after == "12"
@@ -52,7 +52,7 @@ def test_munchy_event_list_has_human_and_json_output(monkeypatch) -> None:  # ty
             "event",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--after",
             "12",
             "--limit",
@@ -65,7 +65,7 @@ def test_munchy_event_list_has_human_and_json_output(monkeypatch) -> None:  # ty
             "event",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--after",
             "12",
             "--limit",
@@ -88,7 +88,7 @@ def test_munchy_json_mode_emits_the_public_error_document(monkeypatch) -> None: 
         def list_lifecycle_events(self, **_kwargs: object) -> EventPage:
             raise MunchyHttpError(
                 "GET",
-                "http://munchy.test/v1/events",
+                "https://munchy.test/v1/events",
                 403,
                 b'{"error":{"code":"forbidden","message":"events denied"}}',
             )
@@ -97,7 +97,7 @@ def test_munchy_json_mode_emits_the_public_error_document(monkeypatch) -> None: 
 
     result = runner.invoke(
         app,
-        ["event", "list", "--server-url", "http://munchy.test", "--json"],
+        ["event", "list", "--server-url", "https://munchy.test", "--json"],
     )
 
     assert result.exit_code == 1
@@ -124,7 +124,7 @@ def test_munchy_watch_json_emits_unsuccessful_final_document(monkeypatch) -> Non
             "watch",
             "job-1",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--interval",
             "0.5",
             "--json",
@@ -145,7 +145,7 @@ def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: 
 
     class FakeAdminClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def get_scheduler_status(self) -> dict[str, object]:
             calls.append("status")
@@ -171,11 +171,11 @@ def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: 
 
     paused = runner.invoke(
         app,
-        ["scheduler", "pause", "--server-url", "http://munchy.test"],
+        ["scheduler", "pause", "--server-url", "https://munchy.test"],
     )
     resumed = runner.invoke(
         app,
-        ["scheduler", "resume", "--server-url", "http://munchy.test", "--json"],
+        ["scheduler", "resume", "--server-url", "https://munchy.test", "--json"],
     )
 
     assert paused.exit_code == 0
@@ -308,7 +308,7 @@ profiles:
 def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_jobs(
             self,
@@ -365,7 +365,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             "job",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--page",
             "2",
             "--per-page",
@@ -399,7 +399,7 @@ def test_munchy_job_list(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 def test_munchy_job_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_jobs(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["all_items"] is True
@@ -409,7 +409,7 @@ def test_munchy_job_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: igno
 
     result = runner.invoke(
         app,
-        ["job", "list", "--server-url", "http://munchy.test", "--all", "--ids"],
+        ["job", "list", "--server-url", "https://munchy.test", "--all", "--ids"],
     )
 
     assert result.exit_code == 0
@@ -419,7 +419,7 @@ def test_munchy_job_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: igno
 def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_job_templates(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["all_items"] is True
@@ -439,7 +439,7 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
             "template",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--disabled",
             "--all",
             "--ids",
@@ -453,7 +453,7 @@ def test_munchy_template_list_all_ids_is_pipeable(monkeypatch) -> None:  # type:
 def test_munchy_template_remove_has_human_and_json_receipts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def get_job_template(self, template_id: str) -> dict[str, object]:
             assert template_id == "review"
@@ -473,7 +473,7 @@ def test_munchy_template_remove_has_human_and_json_receipts(monkeypatch) -> None
 
     human = runner.invoke(
         app,
-        ["template", "remove", "review", "--server-url", "http://munchy.test"],
+        ["template", "remove", "review", "--server-url", "https://munchy.test"],
     )
     structured = runner.invoke(
         app,
@@ -482,7 +482,7 @@ def test_munchy_template_remove_has_human_and_json_receipts(monkeypatch) -> None
             "remove",
             "review",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--json",
         ],
     )
@@ -496,7 +496,7 @@ def test_munchy_template_remove_has_human_and_json_receipts(monkeypatch) -> None
 def test_munchy_application_list_all_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_apps(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["all_items"] is True
@@ -511,7 +511,7 @@ def test_munchy_application_list_all_ids_is_pipeable(monkeypatch) -> None:  # ty
             "app",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--active",
             "--all",
             "--ids",
@@ -537,7 +537,7 @@ def test_munchy_closes_the_server_client(monkeypatch) -> None:  # type: ignore[n
 
     monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
 
-    result = runner.invoke(app, ["job", "list", "--server-url", "http://munchy.test"])
+    result = runner.invoke(app, ["job", "list", "--server-url", "https://munchy.test"])
 
     assert result.exit_code == 0
     assert closed == [True]
@@ -564,7 +564,7 @@ def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-d
 
     monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
 
-    result = runner.invoke(app, ["job", "list", "--server-url", "http://munchy.test", "--json"])
+    result = runner.invoke(app, ["job", "list", "--server-url", "https://munchy.test", "--json"])
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {
@@ -584,7 +584,7 @@ def test_munchy_job_list_json(monkeypatch) -> None:  # type: ignore[no-untyped-d
 def test_munchy_job_diagnostic_list_matches_list_conventions(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def list_job_diagnostics(self, **kwargs: object) -> dict[str, object]:
             assert kwargs == {
@@ -623,7 +623,7 @@ def test_munchy_job_diagnostic_list_matches_list_conventions(monkeypatch) -> Non
             "diagnostic",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--page",
             "2",
             "--per-page",
@@ -661,7 +661,7 @@ def test_munchy_job_diagnostic_list_ids_is_pipeable(monkeypatch) -> None:  # typ
             "diagnostic",
             "list",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--all",
             "--ids",
         ],
@@ -693,7 +693,7 @@ def test_munchy_job_diagnostic_download_requires_explicit_output_and_forwards_ov
 
     missing = runner.invoke(
         app,
-        ["job", "diagnostic", "download", "job-1", "--server-url", "http://munchy.test"],
+        ["job", "diagnostic", "download", "job-1", "--server-url", "https://munchy.test"],
     )
     result = runner.invoke(
         app,
@@ -706,7 +706,7 @@ def test_munchy_job_diagnostic_download_requires_explicit_output_and_forwards_ov
             str(tmp_path / "case.tar.gz"),
             "--overwrite",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--json",
         ],
     )
@@ -742,12 +742,12 @@ def test_munchy_removes_diagnostics_and_terminal_jobs_by_explicit_ids(monkeypatc
             "job-1",
             "job-2",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
         ],
     )
     jobs = runner.invoke(
         app,
-        ["job", "remove", "job-3", "job-4", "--server-url", "http://munchy.test"],
+        ["job", "remove", "job-3", "job-4", "--server-url", "https://munchy.test"],
     )
 
     assert diagnostics.exit_code == 0
@@ -794,11 +794,11 @@ def test_munchy_retention_is_a_plan_until_apply_is_explicit(monkeypatch) -> None
 
     plan = runner.invoke(
         app,
-        ["maintenance", "retention", "--server-url", "http://munchy.test"],
+        ["maintenance", "retention", "--server-url", "https://munchy.test"],
     )
     apply = runner.invoke(
         app,
-        ["maintenance", "retention", "--server-url", "http://munchy.test", "--apply"],
+        ["maintenance", "retention", "--server-url", "https://munchy.test", "--apply"],
     )
 
     assert plan.exit_code == 0
@@ -818,7 +818,7 @@ def test_munchy_job_list_reports_server_errors_without_traceback(monkeypatch) ->
 
     monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
 
-    result = runner.invoke(app, ["job", "list", "--server-url", "http://munchy.test"])
+    result = runner.invoke(app, ["job", "list", "--server-url", "https://munchy.test"])
 
     assert result.exit_code == 1
     assert "munchy: connection refused" in result.stderr
@@ -828,7 +828,7 @@ def test_munchy_job_list_reports_server_errors_without_traceback(monkeypatch) ->
 def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def get_job(self, job_id: str, *, compact: bool = False) -> dict[str, object]:
             assert job_id == "job-1"
@@ -845,7 +845,7 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 
     result = runner.invoke(
         app,
-        ["job", "show", "job-1", "--server-url", "http://munchy.test", "--compact"],
+        ["job", "show", "job-1", "--server-url", "https://munchy.test", "--compact"],
     )
 
     assert result.exit_code == 0
@@ -857,7 +857,7 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def cancel_job(self, job_id: str, *, cleanup: bool = False) -> dict[str, object]:
             assert job_id == "job-1"
@@ -866,7 +866,7 @@ def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  
 
     monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
 
-    result = runner.invoke(app, ["job", "cancel", "job-1", "--server-url", "http://munchy.test"])
+    result = runner.invoke(app, ["job", "cancel", "job-1", "--server-url", "https://munchy.test"])
 
     assert result.exit_code == 0
     assert "canceled" in result.stdout
@@ -882,7 +882,7 @@ def test_munchy_job_cleanup_accepts_cleaned_terminal_failure(monkeypatch) -> Non
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def cancel_job(self, job_id: str, *, cleanup: bool = False) -> dict[str, object]:
             assert job_id == "job-1"
@@ -897,7 +897,7 @@ def test_munchy_job_cleanup_accepts_cleaned_terminal_failure(monkeypatch) -> Non
 
     result = runner.invoke(
         app,
-        ["job", "cancel", "job-1", "--server-url", "http://munchy.test", "--cleanup"],
+        ["job", "cancel", "job-1", "--server-url", "https://munchy.test", "--cleanup"],
     )
 
     assert result.exit_code == 0
@@ -917,7 +917,7 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def preflight_submission(self, request):  # type: ignore[no-untyped-def]
             seen["request"] = request
@@ -967,7 +967,7 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             "--input",
             "route=camera-main",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--run-id",
             "20260621T120000.123456Z",
             "--no-hash-cache",
@@ -1002,7 +1002,7 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
-            assert base_url == "http://munchy.test"
+            assert base_url == "https://munchy.test"
 
         def preflight_submission(self, request):  # type: ignore[no-untyped-def]
             seen["request"] = request
@@ -1028,7 +1028,7 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
             "--template",
             "phone-review",
             "--server-url",
-            "http://munchy.test",
+            "https://munchy.test",
             "--no-hash-cache",
             "--dry-run",
             "--json",

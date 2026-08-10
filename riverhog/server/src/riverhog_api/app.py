@@ -98,6 +98,14 @@ def _process_archive_maintenance(
     startup_recovery: bool = False,
 ) -> None:
     if startup_recovery:
+        requeued_finalizations = (
+            container.collection_uploads.requeue_interrupted_finalizations_for_startup(limit=100)
+        )
+        if requeued_finalizations:
+            _LOG.info(
+                "startup requeued interrupted collection finalizations: count=%s",
+                requeued_finalizations,
+            )
         requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(limit=100)
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
@@ -109,6 +117,7 @@ def _process_archive_maintenance(
                 "startup requeued interrupted metadata-manifest publications: count=%s",
                 requeued_metadata,
             )
+    container.collection_uploads.process_due_finalizations(limit=1)
     container.archive_copies.process_due(limit=1)
     container.archive_maintenance.process_due_metadata_publications(limit=10)
 

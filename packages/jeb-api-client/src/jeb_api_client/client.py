@@ -7,7 +7,7 @@ from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import parse_error_payload
+from http_api_contracts import parse_error_payload, safe_http_base_url
 from jeb_protocol import attempt_state, attempt_watch_finished
 from lifecycle_events import EventPage
 
@@ -54,8 +54,10 @@ def _timeout() -> float:
 
 class JebApiClient:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        self.base_url = (base_url or os.getenv("JEB_BASE_URL") or "http://127.0.0.1:8081").rstrip(
-            "/"
+        self.base_url = safe_http_base_url(
+            base_url or os.getenv("JEB_BASE_URL") or "http://127.0.0.1:8081",
+            setting="JEB_BASE_URL",
+            allow_insecure_http=_bool_env("JEB_ALLOW_INSECURE_HTTP", False),
         )
         self.token = token or os.getenv("JEB_TOKEN")
         self.http2 = _bool_env("JEB_HTTP2", True)

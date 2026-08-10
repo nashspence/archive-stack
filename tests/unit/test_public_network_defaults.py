@@ -63,3 +63,14 @@ def test_public_munchy_host_network_services_default_to_loopback() -> None:
     )
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8092;" in nginx
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8093;" in nginx
+
+
+def test_public_munchy_uses_the_shared_direct_ingress_transfer_defaults() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
+    )
+    environment = compose["services"]["munchy-server"]["environment"]
+
+    assert _defaults(environment["RIVERHOG_UPLOAD_FILE_CONCURRENCY"]) == "8"
+    assert _defaults(environment["RIVERHOG_UPLOAD_TIMEOUT_SECONDS"]) == "1800"
+    assert _defaults(environment["RIVERHOG_ALLOW_INSECURE_HTTP"]) == "false"

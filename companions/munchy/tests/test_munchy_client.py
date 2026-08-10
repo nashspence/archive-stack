@@ -58,7 +58,7 @@ def test_admin_client_streams_and_verifies_job_diagnostic(tmp_path: Path) -> Non
         )
 
     output = tmp_path / "case.tar.gz"
-    with MunchyAdminClient("http://munchy.test", token="admin-token") as client:
+    with MunchyAdminClient("https://munchy.test", token="admin-token") as client:
         client._http = httpx.Client(transport=httpx.MockTransport(handle))
         receipt = client.download_job_diagnostic("job-1", output=output)
 
@@ -84,7 +84,7 @@ def test_server_client_injects_bearer_token() -> None:
         return httpx.Response(200, json={})
 
     with MunchyClient(
-        "http://munchy.test",
+        "https://munchy.test",
         token="munchy-token",
         transport=httpx.MockTransport(handle),
     ) as client:
@@ -717,7 +717,7 @@ def test_compact_job_failure_falls_back_to_state_and_phase() -> None:
 
 
 def test_server_client_list_jobs_validates_response() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         assert method == "GET"
@@ -759,7 +759,7 @@ def test_server_client_list_jobs_validates_response() -> None:
 
 
 def test_wait_for_job_polls_compact_status() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     calls: list[bool] = []
 
     def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
@@ -778,7 +778,7 @@ def test_wait_for_job_polls_compact_status() -> None:
 
 
 def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     responses: list[dict[str, object]] = [
         {
             "job_id": "job-1",
@@ -830,7 +830,7 @@ def test_job_finished_cleanly_requires_safe_handoff() -> None:
 
 
 def test_cancel_job_cleanup_uses_long_timeout() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     seen: dict[str, object] = {}
 
     def fake_json(
@@ -857,7 +857,7 @@ def test_cancel_job_cleanup_uses_long_timeout() -> None:
 
 
 def test_submission_preflight_failure_uses_submission_scoped_endpoint() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     seen: dict[str, object] = {}
     payload = {
         "submission_id": "submission-1",
@@ -882,7 +882,7 @@ def test_submission_preflight_failure_uses_submission_scoped_endpoint() -> None:
 
 
 def test_admin_client_controls_scheduler_through_admin_endpoints() -> None:
-    client = MunchyAdminClient("http://munchy.test", token="admin-token")
+    client = MunchyAdminClient("https://munchy.test", token="admin-token")
     seen: list[tuple[str, str]] = []
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
@@ -902,7 +902,7 @@ def test_admin_client_controls_scheduler_through_admin_endpoints() -> None:
 
 
 def test_resume_job_posts_server_resume_endpoint() -> None:
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     seen: dict[str, object] = {}
 
     def fake_json(
@@ -930,7 +930,7 @@ def test_resume_job_posts_server_resume_endpoint() -> None:
 def test_munchy_http_error_formats_insufficient_storage_concisely() -> None:
     error = MunchyHttpError(
         "POST",
-        "http://munchy.test/v1/submissions",
+        "https://munchy.test/v1/submissions",
         507,
         b"""
         {
@@ -964,7 +964,7 @@ def test_upload_file_retries_transient_error_and_refreshes_offset(tmp_path: Path
         sha256="0" * 64,
     )
 
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     json_calls = 0
     patch_calls = 0
 
@@ -1008,7 +1008,7 @@ def test_upload_file_retries_temporary_insufficient_storage(tmp_path: Path) -> N
         sha256="0" * 64,
     )
 
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     json_calls = 0
     patch_calls = 0
 
@@ -1051,7 +1051,7 @@ def test_upload_file_retries_tusd_interrupted_request(tmp_path: Path) -> None:
         sha256="0" * 64,
     )
 
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     json_calls = 0
     patch_calls = 0
 
@@ -1099,7 +1099,7 @@ def test_upload_file_reports_canceled_job_after_tusd_cleanup(tmp_path: Path) -> 
         sha256="0" * 64,
     )
     stop_event = Event()
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         if method == "POST":
@@ -1151,7 +1151,7 @@ def test_upload_file_does_not_retry_non_transient_http_error(tmp_path: Path) -> 
         bytes=source.stat().st_size,
         sha256="0" * 64,
     )
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
         return {
@@ -1181,7 +1181,7 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
         bytes=source.stat().st_size,
         sha256="0" * 64,
     )
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     offsets: list[int] = []
 
     def fake_json(method: str, path: str, **_kwargs: object) -> dict[str, object]:
@@ -1230,7 +1230,7 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
         upload_workers=3,
         upload_chunk_mib=9,
     )
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     uploaded: list[str] = []
     submission_gets = 0
 
@@ -1288,7 +1288,7 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
         upload_workers=1,
         upload_chunk_mib=9,
     )
-    client = MunchyClient("http://munchy.test")
+    client = MunchyClient("https://munchy.test")
     uploaded: list[str] = []
     submission_gets = 0
 

@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from file_download import DownloadProgress, verified_download
-from http_api_contracts import parse_error_payload
+from http_api_contracts import parse_error_payload, safe_http_base_url
 from lifecycle_events import EventPage
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusHttpError, TusTransport
 
@@ -90,7 +90,11 @@ UploadRequest = SubmissionUploadRequest
 
 
 def server_url_setting(server_url: str | None = None) -> str:
-    return (server_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL).rstrip("/")
+    return safe_http_base_url(
+        server_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL,
+        setting=BASE_URL_ENV,
+        allow_insecure_http=_bool_env("MUNCHY_ALLOW_INSECURE_HTTP", False),
+    )
 
 
 def token_setting(token: str | None = None) -> str:

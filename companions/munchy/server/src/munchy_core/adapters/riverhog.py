@@ -21,6 +21,7 @@ from munchy_api_client.routing import (
 from pydantic import BaseModel, ConfigDict, field_validator
 from riverhog_api_client import Conflict, NotFound
 from riverhog_api_client.client import ApiClient
+from riverhog_api_client.uploads import configured_upload_concurrency, upload_collection_units
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.raw_ingress import hash_raw_source
 from time_formats import format_utc_timestamp, utc_timestamp_now
@@ -868,41 +869,14 @@ def _upload_riverhog_units(
 ) -> dict[str, Any]:
     collection_id = int(payload["collection_id"])
     if str(payload.get("state") or "") not in {"finalizing", "finalized"}:
-        volume_page = api.list_collection_upload_session_volumes(collection_id)
-        volumes = volume_page.get("volumes")
-        if not isinstance(volumes, list):
-            raise RuntimeError("riverhog returned an invalid upload volume plan")
-        for volume in volumes:
-            if not isinstance(volume, Mapping):
-                raise RuntimeError("riverhog returned an invalid upload volume")
-            volume_id = volume.get("volume_id")
-            plan_sha256 = volume.get("plan_sha256")
-            units = volume.get("units")
-            if (
-                not isinstance(volume_id, str)
-                or not isinstance(plan_sha256, str)
-                or not isinstance(units, list)
-            ):
-                raise RuntimeError("riverhog returned an invalid upload volume identity")
-            for unit in units:
-                if not isinstance(unit, Mapping):
-                    raise RuntimeError("riverhog returned an invalid upload unit")
-                if unit.get("state") == "committed":
-                    continue
-                state_store.raise_if_job_canceled(str(job["job_id"]))
-                unit_number = unit.get("unit")
-                if not isinstance(unit_number, int):
-                    raise RuntimeError("riverhog returned an invalid upload unit identity")
-                content = _riverhog_unit_content(archive_dir, unit)
-                result = api.put_collection_upload_session_unit(
-                    collection_id,
-                    volume_id,
-                    unit_number,
-                    plan_sha256=plan_sha256,
-                    content=content,
-                )
-                if result.get("state") != "committed":
-                    raise RuntimeError("riverhog did not commit the complete upload unit")
+        upload_collection_units(
+            api,
+            collection_id,
+            content_for_unit=lambda unit: _riverhog_unit_content(archive_dir, unit),
+            concurrency=configured_upload_concurrency(),
+            cancel_check=lambda: state_store.raise_if_job_canceled(str(job["job_id"])),
+            retry_notice=log.warning,
+        )
         payload = api.get_collection_upload_session(collection_id)
         update_remote_state_from_payload(job, payload)
     with riverhog_upload_lock(str(job.get("job_id") or "")):

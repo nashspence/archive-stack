@@ -17,7 +17,7 @@ from riverhog_protocol.errors import (
 
 class RecordingClient(ApiClient):
     def __init__(self) -> None:
-        super().__init__(base_url="http://example.invalid")
+        super().__init__(base_url="https://example.invalid")
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
@@ -38,11 +38,11 @@ def test_client_preserves_actionable_api_error_types(
     error_type: type[Exception],
     status: int,
 ) -> None:
-    client = ApiClient(base_url="http://example.invalid")
+    client = ApiClient(base_url="https://example.invalid")
     response = httpx.Response(
         status,
         json={"error": {"code": code, "message": "action denied"}},
-        request=httpx.Request("GET", "http://example.invalid/v1/test"),
+        request=httpx.Request("GET", "https://example.invalid/v1/test"),
     )
 
     with pytest.raises(error_type, match="action denied"):
@@ -51,11 +51,11 @@ def test_client_preserves_actionable_api_error_types(
 
 @pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
 def test_client_maps_transient_http_statuses_to_retryable_service_unavailable(status: int) -> None:
-    client = ApiClient(base_url="http://example.invalid")
+    client = ApiClient(base_url="https://example.invalid")
     response = httpx.Response(
         status,
         json={"error": {"code": "internal_error", "message": "retry later"}},
-        request=httpx.Request("PUT", "http://example.invalid/v1/collection-upload-sessions/1"),
+        request=httpx.Request("PUT", "https://example.invalid/v1/collection-upload-sessions/1"),
     )
 
     with pytest.raises(ServiceUnavailable, match="retry later"):
@@ -182,7 +182,7 @@ def test_retrieval_file_download_uses_the_logical_file_endpoint(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    client = ApiClient(base_url="http://example.invalid")
+    client = ApiClient(base_url="https://example.invalid")
     calls: list[tuple[str, Path]] = []
     output = tmp_path / "document.txt"
 
@@ -230,7 +230,7 @@ def test_retrieval_file_download_streams_and_verifies_catalog_identity(
         )
 
     output = tmp_path / "document.txt"
-    client = ApiClient(base_url="http://riverhog.test")
+    client = ApiClient(base_url="https://riverhog.test")
     client._download_client = httpx.Client(
         base_url=client.base_url,
         transport=httpx.MockTransport(handle),
@@ -373,6 +373,30 @@ def test_collection_upload_unit_uses_the_canonical_content_contract() -> None:
                     "If-Match": '"' + "a" * 64 + '"',
                 },
                 "content": b"source bytes",
+                "timeout": 1800.0,
             },
         )
     ]
+
+
+def test_collection_upload_unit_uses_its_dedicated_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_TIMEOUT_SECONDS", "47")
+    client = RecordingClient()
+
+    client.put_collection_upload_session_unit(
+        42,
+        "pack-000000000000",
+        0,
+        plan_sha256="a" * 64,
+        content=b"source bytes",
+    )
+
+    assert client.calls[0][2]["timeout"] == 47
+    worker = client.spawn()
+    try:
+        assert worker.upload_timeout_seconds == 47
+        assert worker.timeout_seconds == client.timeout_seconds
+    finally:
+        worker.close()

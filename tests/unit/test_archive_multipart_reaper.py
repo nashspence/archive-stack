@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import Mock
 
 from riverhog_api import app as api_app
 from riverhog_api.deps import ServiceContainer
@@ -20,6 +21,36 @@ class _ArchiveUploadService:
     ) -> int:
         self.initiated_before = initiated_before
         return 2
+
+
+def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizations() -> None:
+    collection_uploads = SimpleNamespace(
+        requeue_interrupted_finalizations_for_startup=Mock(return_value=2),
+        process_due_finalizations=Mock(return_value=1),
+    )
+    archive_copies = SimpleNamespace(
+        requeue_interrupted_copies_for_startup=Mock(return_value=0),
+        process_due=Mock(return_value=0),
+    )
+    archive_maintenance = SimpleNamespace(
+        requeue_interrupted_metadata_publications_for_startup=Mock(return_value=0),
+        process_due_metadata_publications=Mock(return_value=0),
+    )
+    container = cast(
+        ServiceContainer,
+        SimpleNamespace(
+            collection_uploads=collection_uploads,
+            archive_copies=archive_copies,
+            archive_maintenance=archive_maintenance,
+        ),
+    )
+
+    api_app._process_archive_maintenance(container, startup_recovery=True)
+
+    collection_uploads.requeue_interrupted_finalizations_for_startup.assert_called_once_with(
+        limit=100
+    )
+    collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
 
 
 def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> None:
