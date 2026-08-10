@@ -104,6 +104,9 @@ def test_agents_requires_post_push_github_validation() -> None:
 
     assert "watch the pushed commit's GitHub Actions checks through completion" in agents
     assert "Required GitHub checks are part of complete validation" in agents
+    assert "`release.toml` owns the release-governance policy" in agents
+    assert "deliver `release/v1` only by a current, fully green pull request" in agents
+    assert "never moves a v1 tag" in agents
 
 
 def test_architecture_is_scoped_to_quick_context() -> None:

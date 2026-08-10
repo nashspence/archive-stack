@@ -9,6 +9,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
+QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-qualification.yml"
 MISE_LOCK = REPO_ROOT / "mise.lock"
 
 
@@ -18,8 +19,17 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
 
     assert workflow["on"] == {
         "pull_request": "",
-        "push": {"branches": ["main"]},
+        "push": {"branches": ["main", "release/v1"]},
         "workflow_dispatch": "",
+        "workflow_call": {
+            "inputs": {
+                "ref": {
+                    "description": "Exact commit to check out and validate.",
+                    "required": "false",
+                    "type": "string",
+                }
+            }
+        },
     }
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "true"
@@ -62,7 +72,20 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         if "uses" in step
     ]
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in action_steps)
-    assert steps[0]["with"]["persist-credentials"] == "false"
+    checkout_steps = [
+        step
+        for workflow_job in workflow["jobs"].values()
+        for step in workflow_job["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert all(
+        step["with"]
+        == {
+            "persist-credentials": "false",
+            "ref": "${{ inputs.ref || github.sha }}",
+        }
+        for step in checkout_steps
+    )
     assert steps[2]["if"] == "matrix.docker"
     assert steps[2]["with"]["version"] == "v29.3.1"
     assert json.loads(steps[2]["with"]["daemon-config"]) == {
@@ -93,6 +116,73 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "packages/riverhog-provenance/tests/test_platform_live.py"
     ]
     assert "secrets." not in text
+
+
+def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries() -> None:
+    text = QUALIFICATION_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+
+    assert workflow["on"]["schedule"] == [{"cron": "17 7 1,15 * *"}]
+    assert workflow["permissions"] == {
+        "actions": "read",
+        "checks": "read",
+        "contents": "read",
+        "deployments": "read",
+    }
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    assert set(workflow["jobs"]) == {"resolve", "ci", "release-audit"}
+    assert workflow["jobs"]["ci"] == {
+        "name": "required checks",
+        "needs": "resolve",
+        "uses": "./.github/workflows/ci.yml",
+        "with": {"ref": "${{ needs.resolve.outputs.sha }}"},
+        "permissions": {"contents": "read"},
+    }
+    audit = workflow["jobs"]["release-audit"]
+    assert "environment" not in audit
+    assert audit["needs"] == ["resolve", "ci"]
+    assert audit["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.sha }}"
+    assert audit["env"]["SOURCE_REF"] == "${{ needs.resolve.outputs.ref }}"
+    assert audit["env"]["RIVERHOG_RELEASE_GHA_CACHE"] == "true"
+    assert all(
+        re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"])
+        for step in workflow["jobs"]["resolve"]["steps"] + audit["steps"]
+        if "uses" in step
+    )
+    upload = next(step for step in audit["steps"] if step["name"] == "Upload SHA-bound summaries")
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["path"] == "release-qualification/*.json"
+    assert "published == false" in text
+    assert "riverhog-release-qualification/v1" in text
+    assert "Analyze (actions)" in text and "Analyze (python)" in text
+    assert "release/v1" in text
+    assert "v1\\.[0-9]+\\.[0-9]+" in text
+
+
+def test_release_required_check_names_are_derived_from_stable_job_names() -> None:
+    workflow = yaml.load(CI_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
+    repository = workflow["jobs"]["repository"]
+    images = workflow["jobs"]["images"]
+    observers = workflow["jobs"]["provenance-observers"]
+    actual = {
+        *(
+            repository["name"].replace("${{ matrix.target }}", entry["target"])
+            for entry in repository["strategy"]["matrix"]["include"]
+        ),
+        *(
+            images["name"].replace("${{ matrix.target }}", target)
+            for target in images["strategy"]["matrix"]["target"]
+        ),
+        *(
+            observers["name"].replace("${{ matrix.os }}", os_name)
+            for os_name in observers["strategy"]["matrix"]["os"]
+        ),
+        "Analyze (actions)",
+        "Analyze (python)",
+    }
+
+    assert release["governance"]["required_checks"] == sorted(actual)
 
 
 def test_provenance_observer_toolchain_is_locked_for_every_matrix_os() -> None:

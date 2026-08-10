@@ -67,6 +67,32 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert "outside the repository, GitHub, CI logs" in signing["secret_key"]
     assert "signed by both old and new keys" in signing["rotation"]
     assert "without moving an existing tag" in signing["compromise"]
+    governance = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))[
+        "governance"
+    ]
+    assert governance["workflow_source_branch"] == "main"
+    assert governance["required_check_integration_id"] == 15368
+    assert governance["release"]["required_approvals"] == 0
+    assert governance["tags"]["release_candidate"] == "v{version}-rc.{candidate}"
+    assert governance["tags"]["final"] == "v{version}"
+    assert governance["environments"] == {
+        "release": "release-publication",
+        "pages": "github-pages",
+    }
+
+
+def test_dry_run_can_write_the_same_sha_bound_summary_it_prints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = load_script()
+    payload = {"source_sha": "1" * 40, "published": False}
+    monkeypatch.setattr(module, "dry_run", lambda _root, _version: payload)
+    summary = tmp_path / "qualification" / "release.json"
+
+    assert module.main(["dry-run", "--version", "1.0.0", "--summary", str(summary)]) == 0
+
+    assert module.json.loads(summary.read_text(encoding="utf-8")) == payload
+    assert module.json.loads(capsys.readouterr().out) == payload
 
 
 def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:

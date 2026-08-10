@@ -79,6 +79,35 @@ SIGNING_POLICY_KEYS = {
     "compromise",
     "github_oidc",
 }
+GOVERNANCE_KEYS = {
+    "repository",
+    "maintainer",
+    "workflow_source_branch",
+    "required_check_integration_id",
+    "required_checks",
+    "main",
+    "release",
+    "tags",
+    "authority",
+    "environments",
+}
+GOVERNANCE_SECTION_KEYS = {
+    "main": {"delivery", "protection"},
+    "release": {
+        "delivery",
+        "required_approvals",
+        "review_policy",
+        "contents",
+        "selection",
+        "provenance",
+        "conflicts",
+        "return_to_main",
+        "support",
+    },
+    "tags": {"release_candidate", "final", "immutability", "failed_publication"},
+    "authority": {"branches", "tags", "github_releases", "registries", "pages"},
+    "environments": {"release", "pages"},
+}
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 PROJECT_VERSION_RE = re.compile(r'(?m)^version = "(?P<version>[^"]+)"$')
 
@@ -234,6 +263,35 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release tags must use v{version}")
     if config.get("version_policy") != "coordinated":
         raise ReleaseError("Riverhog requires one coordinated product version")
+    governance = config.get("governance")
+    if not isinstance(governance, dict) or set(governance) != GOVERNANCE_KEYS:
+        raise ReleaseError("release.toml lacks the complete GitHub governance contract")
+    if governance["repository"] != "nashspence/riverhog":
+        raise ReleaseError("release governance must target the canonical repository")
+    if governance["maintainer"] != "nashspence" or governance["workflow_source_branch"] != "main":
+        raise ReleaseError("release governance lacks its maintainer or workflow authority")
+    required_checks = governance["required_checks"]
+    if (
+        not isinstance(required_checks, list)
+        or not required_checks
+        or any(not isinstance(item, str) or not item.strip() for item in required_checks)
+        or len(required_checks) != len(set(required_checks))
+    ):
+        raise ReleaseError("release governance required checks must be unique names")
+    if governance["required_check_integration_id"] != 15368:
+        raise ReleaseError("release checks must be bound to the GitHub Actions application")
+    for section, expected_keys in GOVERNANCE_SECTION_KEYS.items():
+        values = governance.get(section)
+        if not isinstance(values, dict) or set(values) != expected_keys:
+            raise ReleaseError(f"release governance lacks the complete {section} policy")
+        if any(isinstance(value, str) and not value.strip() for value in values.values()):
+            raise ReleaseError(f"release governance {section} policy must be visible")
+    if governance["release"]["required_approvals"] != 0:
+        raise ReleaseError("the single-maintainer release rail must not require self-review")
+    if governance["tags"]["release_candidate"] != "v{version}-rc.{candidate}":
+        raise ReleaseError("release-candidate tags must use v{version}-rc.{candidate}")
+    if governance["tags"]["final"] != config["tag_template"]:
+        raise ReleaseError("final tag governance differs from the release tag template")
 
     workspace = {
         path.parent.relative_to(root).as_posix(): path for path in _workspace_pyprojects(root)
@@ -816,6 +874,7 @@ def _build_release_images(
     project_versions = {project.name: project.version for project in projects}
     project_names = set(project_versions)
     bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    github_cache = os.environ.get("RIVERHOG_RELEASE_GHA_CACHE") == "true"
     records: list[dict[str, Any]] = []
     for target, image in config["images"]["runtime"].items():
         distribution = _normalize_name(str(image["distribution"]))
@@ -827,26 +886,36 @@ def _build_release_images(
         ):
             raise ReleaseError(f"temporary release image tag already exists: {local_repository}")
         cleanup_tags.extend((local_version_tag, local_sha_tag))
+        build_command = [
+            "docker",
+            "buildx",
+            "bake",
+            "--file",
+            "docker-bake.hcl",
+            "--load",
+            "--set",
+            f"{target}.tags={local_version_tag}",
+            "--set",
+            f"{target}.args.SOURCE_REVISION={source_sha}",
+            "--set",
+            f"{target}.args.BUILD_CREATED={created}",
+            "--set",
+            f"{target}.args.SOURCE_DATE_EPOCH={source_epoch}",
+            "--set",
+            f"{target}.args.RELEASE_VERSION={version}",
+        ]
+        if github_cache:
+            build_command.extend(
+                [
+                    "--set",
+                    f"{target}.cache-from=type=gha,scope={target}",
+                    "--set",
+                    f"{target}.cache-to=type=gha,scope={target},mode=min,ignore-error=true",
+                ]
+            )
+        build_command.append(target)
         _run(
-            [
-                "docker",
-                "buildx",
-                "bake",
-                "--file",
-                "docker-bake.hcl",
-                "--load",
-                "--set",
-                f"{target}.tags={local_version_tag}",
-                "--set",
-                f"{target}.args.SOURCE_REVISION={source_sha}",
-                "--set",
-                f"{target}.args.BUILD_CREATED={created}",
-                "--set",
-                f"{target}.args.SOURCE_DATE_EPOCH={source_epoch}",
-                "--set",
-                f"{target}.args.RELEASE_VERSION={version}",
-                target,
-            ],
+            build_command,
             cwd=root,
             env={"SOURCE_DATE_EPOCH": str(source_epoch)},
         )
@@ -1550,6 +1619,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Build and verify exact-SHA release evidence with an ephemeral key; publish nothing.",
     )
     dry.add_argument("--version", required=True)
+    dry.add_argument("--summary", type=Path)
 
     evidence = subparsers.add_parser(
         "evidence",
@@ -1594,7 +1664,11 @@ def main(argv: list[str] | None = None) -> int:
             apply_command(ROOT, args.version, allow_dirty=args.allow_dirty)
         elif args.command == "dry-run":
             payload = dry_run(ROOT, args.version)
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            if args.summary is not None:
+                args.summary.parent.mkdir(parents=True, exist_ok=True)
+                args.summary.write_text(rendered, encoding="utf-8")
+            print(rendered, end="")
         elif args.command == "evidence":
             payload = build_release_evidence(
                 ROOT,

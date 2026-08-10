@@ -1,0 +1,165 @@
+name: Release qualification
+
+on:
+  schedule:
+    - cron: "17 7 1,15 * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: main, release/v1, or an exact v1 release tag
+        default: main
+        required: true
+        type: string
+      version:
+        description: Coordinated 1.x.y version to exercise
+        default: 1.0.0
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  deployments: read
+
+concurrency:
+  group: release-qualification-${{ github.event_name }}-${{ inputs.ref || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: resolve exact source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.source.outputs.ref }}
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Check out workflow authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the selected ref once
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          ref="$REQUESTED_REF"
+          version="$REQUESTED_VERSION"
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            ref=main
+            version=1.0.0
+            if git ls-remote --exit-code --heads origin release/v1 >/dev/null; then
+              ref=release/v1
+            fi
+          fi
+          if [[ ! "$ref" =~ ^(main|release/v1|v1\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]]; then
+            printf 'Unsupported qualification ref: %s\n' "$ref" >&2
+            exit 2
+          fi
+          if [[ ! "$version" =~ ^1\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'Unsupported qualification version: %s\n' "$version" >&2
+            exit 2
+          fi
+          git fetch --force --no-tags origin "$ref"
+          sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+          printf 'ref=%s\nsha=%s\nversion=%s\n' "$ref" "$sha" "$version" >> "$GITHUB_OUTPUT"
+      - name: Verify exact-source CodeQL checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          checks="$(gh api "repos/${{ github.repository }}/commits/$SOURCE_SHA/check-runs?per_page=100")"
+          for context in 'Analyze (actions)' 'Analyze (python)'; do
+            jq --exit-status --arg context "$context" \
+              '[.check_runs[] | select(.name == $context and .app.id == 15368 and .conclusion == "success")] | length == 1' \
+              <<< "$checks"
+          done
+
+  ci:
+    name: required checks
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+    permissions:
+      contents: read
+
+  release-audit:
+    name: exact-SHA nonpublishing release audit
+    needs:
+      - resolve
+      - ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SUMMARY: release-qualification/release.json
+      GOVERNANCE_SUMMARY: release-qualification/governance.json
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      SOURCE_REF: ${{ needs.resolve.outputs.ref }}
+      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      RIVERHOG_RELEASE_GHA_CACHE: "true"
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Install repository toolchain
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      - name: Configure Docker engine
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: v29.3.1
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.0
+      - name: Verify live release governance
+        run: make release-governance-check RELEASE_SUMMARY="$GOVERNANCE_SUMMARY"
+      - name: Build and verify release evidence
+        run: >-
+          make release-dry-run
+          RELEASE_VERSION="$RELEASE_VERSION"
+          RELEASE_SUMMARY="$RELEASE_SUMMARY"
+      - name: Verify exact-SHA nonpublication summary
+        run: |
+          jq --exit-status --arg sha "$SOURCE_SHA" \
+            '.source_sha == $sha and .published == false and .signature_verified == true' \
+            "$RELEASE_SUMMARY"
+          jq --exit-status --arg sha "$SOURCE_SHA" \
+            '.source_sha == $sha' "$GOVERNANCE_SUMMARY"
+      - name: Record the completed qualification
+        run: |
+          jq --null-input \
+            --arg ref "$SOURCE_REF" \
+            --arg sha "$SOURCE_SHA" \
+            --arg version "$RELEASE_VERSION" \
+            '{
+              schema: "riverhog-release-qualification/v1",
+              ref: $ref,
+              source_sha: $sha,
+              version: $version,
+              required_checks: "passed",
+              github_governance: "passed",
+              release_evidence: "passed",
+              published: false
+            }' > release-qualification/qualification.json
+      - name: Upload SHA-bound summaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-qualification-${{ needs.resolve.outputs.sha }}
+          path: release-qualification/*.json
+          if-no-files-found: error
+          retention-days: 30

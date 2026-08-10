@@ -383,6 +383,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "python scripts/release.py dry-run --version 1.0.0",
         ),
         (
+            "release-governance-check",
+            ("RELEASE_SUMMARY=/tmp/governance.json",),
+            "python scripts/github_governance.py check --summary /tmp/governance.json",
+        ),
+        (
             "release-evidence",
             (
                 "RELEASE_VERSION=1.0.0",

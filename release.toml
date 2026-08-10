@@ -7,6 +7,65 @@ python_distribution_channel = "github-release"
 source_url = "https://github.com/nashspence/riverhog"
 documentation_url = "https://nashspence.github.io/riverhog/v1/"
 
+[governance]
+repository = "nashspence/riverhog"
+maintainer = "nashspence"
+workflow_source_branch = "main"
+required_check_integration_id = 15368
+required_checks = [
+  "Analyze (actions)",
+  "Analyze (python)",
+  "build jeb",
+  "build mango-fish",
+  "build munchy-av1-nvenc",
+  "build munchy-server",
+  "build riverhog",
+  "build test",
+  "make c2sp-vectors",
+  "make compile",
+  "make compose-smoke",
+  "make dist-smoke",
+  "make lint",
+  "make postgres-concurrency",
+  "make spec",
+  "make unit",
+  "provenance observer (macos-15)",
+  "provenance observer (ubuntu-24.04)",
+  "provenance observer (windows-2025)",
+]
+
+[governance.main]
+delivery = "authorized direct fast-forward push followed by exact-SHA GitHub check validation"
+protection = "Enforced administrators, linear history, and no force-push or deletion; no pull-request or pre-push status gate."
+
+[governance.release]
+delivery = "Pull requests into release/v1 with every required check passing against the current head."
+required_approvals = 0
+review_policy = "The sole maintainer must inspect the diff and check result; add approval requirements when another maintainer can provide meaningful review."
+contents = "Stabilization and deliberate v1 backports only; main remains the development line."
+selection = "Backport only fixes needed for supported v1 security, archive recovery, data integrity, or documented v1 behavior."
+provenance = "Prefer git cherry-pick -x from main; otherwise record the originating commit or issue in the pull request."
+conflicts = "Resolve for the current v1 design, rerun every required check, and never preserve retired behavior solely to simplify a backport."
+return_to_main = "Fix on main first when affected; if an emergency release fix lands first, forward-port it to main before publication completes."
+support = "Maintain eligible v1 fixes until v2.0.0, then critical security, archive-recovery, and data-integrity fixes for twelve months."
+
+[governance.tags]
+release_candidate = "v{version}-rc.{candidate}"
+final = "v{version}"
+immutability = "Published v1 tags are never moved or deleted."
+failed_publication = "Resume only for the same tag and source SHA when safe; otherwise publish the next release candidate or patch version."
+
+[governance.authority]
+branches = "The Riverhog release maintainer creates release branches after their tracker gate is clean."
+tags = "The Riverhog release maintainer alone creates release-candidate and final tags."
+github_releases = "The Riverhog release maintainer approves the protected release-publication environment."
+registries = "The Riverhog release maintainer approves the protected release-publication environment."
+pages = "The Riverhog release maintainer approves the protected github-pages environment."
+
+[governance.environments]
+release = "release-publication"
+pages = "github-pages"
+
 [compatibility]
 components = "A supported deployment runs components from one coordinated product version."
 http_api = "Published v1 HTTP and CloudEvents contracts remain backward compatible throughout v1."

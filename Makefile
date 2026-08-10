@@ -10,6 +10,7 @@ PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
 RELEASE_VERSION ?= 1.0.0
 RELEASE_OUTPUT ?=
+RELEASE_SUMMARY ?=
 RELEASE_SIGNING_KEY ?=
 RELEASE_PUBLIC_KEY ?=
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
@@ -50,7 +51,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -90,6 +91,7 @@ help:
 		'  make release-check     Validate the coordinated release-unit contract.' \
 		'  make release-plan      Print the exact-SHA v1 release inventory as JSON.' \
 		'  make release-dry-run   Version and smoke-test an exact-SHA copy without publishing.' \
+		'  make release-governance-check Verify live GitHub controls against release.toml.' \
 		'  make release-evidence  Build signed exact-SHA evidence with external release keys.' \
 		'  make release-verify    Verify a generated release evidence directory.' \
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
@@ -119,6 +121,7 @@ help:
 		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
 		'  RELEASE_VERSION=1.0.0 Coordinated version for release-plan and release-dry-run.' \
 		'  RELEASE_OUTPUT=/path   Output/evidence directory for release-evidence or release-verify.' \
+		'  RELEASE_SUMMARY=/path  Write a JSON dry-run or governance summary.' \
 		'  RELEASE_SIGNING_KEY=/path Offline minisign secret key for release-evidence.' \
 		'  RELEASE_PUBLIC_KEY=/path Minisign public key for release-evidence or release-verify.' \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
@@ -168,7 +171,10 @@ release-plan:
 	$(call UV_CMD,python scripts/release.py plan --version "$(RELEASE_VERSION)" $(args))
 
 release-dry-run:
-	$(call UV_CMD,python scripts/release.py dry-run --version "$(RELEASE_VERSION)")
+	$(call UV_CMD,python scripts/release.py dry-run --version "$(RELEASE_VERSION)" $(if $(RELEASE_SUMMARY),--summary "$(RELEASE_SUMMARY)"))
+
+release-governance-check:
+	$(call UV_CMD,python scripts/github_governance.py check $(if $(RELEASE_SUMMARY),--summary "$(RELEASE_SUMMARY)"))
 
 release-evidence:
 	@if [[ -z "$(RELEASE_OUTPUT)" || -z "$(RELEASE_SIGNING_KEY)" || -z "$(RELEASE_PUBLIC_KEY)" ]]; then \

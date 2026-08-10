@@ -5,7 +5,14 @@ on:
   push:
     branches:
       - main
+      - release/v1
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to check out and validate.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +45,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
       - name: Configure Docker engine
@@ -77,6 +85,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
@@ -108,6 +117,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
       - name: Configure Docker engine
         uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
         with:
@@ -135,7 +145,7 @@ jobs:
           targets: ${{ matrix.target }}
           load: true
           set: |
-            *.args.SOURCE_REVISION=${{ github.sha }}
+            *.args.SOURCE_REVISION=${{ inputs.ref || github.sha }}
             *.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}
             *.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}
             *.args.RELEASE_VERSION=development

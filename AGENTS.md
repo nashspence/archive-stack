@@ -75,3 +75,6 @@ make build
 
 After pushing, watch the pushed commit's GitHub Actions checks through completion. Required
 GitHub checks are part of complete validation; fix any failure before handing work back.
+`release.toml` owns the release-governance policy. Deliver `main` by authorized fast-forward
+push plus that post-push validation; deliver `release/v1` only by a current, fully green pull
+request. Publication requires its protected GitHub environment and never moves a v1 tag.

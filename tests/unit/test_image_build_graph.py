@@ -266,7 +266,7 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
             "targets": "${{ matrix.target }}",
             "load": True,
             "set": (
-                "*.args.SOURCE_REVISION=${{ github.sha }}\n"
+                "*.args.SOURCE_REVISION=${{ inputs.ref || github.sha }}\n"
                 "*.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}\n"
                 "*.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}\n"
                 "*.args.RELEASE_VERSION=development\n"
