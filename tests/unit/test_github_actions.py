@@ -144,10 +144,13 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert audit["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.sha }}"
     assert audit["env"]["SOURCE_REF"] == "${{ needs.resolve.outputs.ref }}"
     assert audit["env"]["RIVERHOG_RELEASE_GHA_CACHE"] == "true"
-    qualification_dir = "${{ runner.temp }}/release-qualification"
-    assert audit["env"]["QUALIFICATION_DIR"] == qualification_dir
-    assert audit["env"]["RELEASE_SUMMARY"] == f"{qualification_dir}/release.json"
-    assert audit["env"]["GOVERNANCE_SUMMARY"] == f"{qualification_dir}/governance.json"
+    locate_evidence = next(
+        step
+        for step in audit["steps"]
+        if step["name"] == "Locate qualification evidence outside the source tree"
+    )
+    assert 'qualification_dir="$RUNNER_TEMP/release-qualification"' in locate_evidence["run"]
+    assert '>> "$GITHUB_ENV"' in locate_evidence["run"]
     resolve_source = next(
         step
         for step in workflow["jobs"]["resolve"]["steps"]
@@ -181,7 +184,7 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     )
     assert '> "$QUALIFICATION_DIR/qualification.json"' in record["run"]
     assert upload["uses"].startswith("actions/upload-artifact@")
-    assert upload["with"]["path"] == f"{qualification_dir}/*.json"
+    assert upload["with"]["path"] == "${{ runner.temp }}/release-qualification/*.json"
     assert "published == false" in text
     assert "riverhog-release-qualification/v1" in text
     assert "Analyze (actions)" in text and "Analyze (python)" in text
