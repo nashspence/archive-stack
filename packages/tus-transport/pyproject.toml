@@ -9,6 +9,15 @@ description = "Persistent HTTP transport for TUS uploads."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "httpx[http2]>=0.27,<1.0",
 ]

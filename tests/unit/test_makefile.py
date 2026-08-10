@@ -367,6 +367,17 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("SPEC_TESTS=tests/harness/test_spec_harness.py", "args=-k garage"),
             "python -m pytest -q tests/harness/test_spec_harness.py -k garage",
         ),
+        ("release-check", (), "python scripts/release.py check"),
+        (
+            "release-plan",
+            ("RELEASE_VERSION=1.0.0", "args=--format markdown"),
+            "python scripts/release.py plan --version 1.0.0 --format markdown",
+        ),
+        (
+            "release-dry-run",
+            ("RELEASE_VERSION=1.0.0",),
+            "python scripts/release.py dry-run --version 1.0.0",
+        ),
         (
             "tus-throughput",
             ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),

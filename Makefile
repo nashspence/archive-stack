@@ -8,6 +8,7 @@ SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py
 PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
+RELEASE_VERSION ?= 1.0.0
 UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
@@ -40,11 +41,12 @@ MYPY_SOURCES = \
 	riverhog/client/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
+	scripts/release.py \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -76,6 +78,9 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
+		'  make release-check     Validate the coordinated release-unit contract.' \
+		'  make release-plan      Print the exact-SHA v1 release inventory as JSON.' \
+		'  make release-dry-run   Version and smoke-test an exact-SHA copy without publishing.' \
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
@@ -101,6 +106,7 @@ help:
 		"  TESTS='...'            Narrow the unit test lane to specific tests." \
 		"  SPEC_TESTS='...'       Narrow the spec lane to specific tests." \
 		"  POSTGRES_TESTS='...'   Select disposable Postgres test files." \
+		'  RELEASE_VERSION=1.0.0 Coordinated version for release-plan and release-dry-run.' \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
@@ -140,6 +146,15 @@ spec:
 
 dependency-readiness:
 	$(call UV_CMD,python scripts/check_dependency_readiness.py $(args))
+
+release-check:
+	$(call UV_CMD,python scripts/release.py check)
+
+release-plan:
+	$(call UV_CMD,python scripts/release.py plan --version "$(RELEASE_VERSION)" $(args))
+
+release-dry-run:
+	$(call UV_CMD,python scripts/release.py dry-run --version "$(RELEASE_VERSION)")
 
 c2sp-vectors:
 	@MISE_BIN="$(MISE_BIN)" ./scripts/test_c2sp_vectors.sh

@@ -9,6 +9,15 @@ description = "Shared typed HTTP error, health, and OpenAPI contracts."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "pydantic>=2.7,<3.0",
 ]
