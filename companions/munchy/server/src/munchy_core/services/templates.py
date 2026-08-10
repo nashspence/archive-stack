@@ -39,7 +39,7 @@ def validated_job_template_definition(
         validation_payload["input_upload_id"] = "template-validation"
         domain_models.CreateJobRequest.model_validate(validation_payload)
     except (JobTemplateError, ValidationError) as exc:
-        raise ServiceError(status_code=422, detail=str(exc)) from exc
+        raise ServiceError(status_code=400, detail=str(exc)) from exc
     return normalized, defaults, job_template_digest(normalized)
 
 

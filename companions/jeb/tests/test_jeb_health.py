@@ -706,7 +706,11 @@ def test_jeb_running_app_publishes_its_openapi_contract(tmp_path: Path) -> None:
         assert operation_ids
         assert len(operation_ids) == len(set(operation_ids))
         assert all(operation["security"] == [{"JebBearer": []}] for operation in public_operations)
-        assert all("422" not in operation["responses"] for operation in public_operations)
+        assert all(
+            {status for status in operation["responses"] if status.isdigit() and int(status) >= 400}
+            == {"400", "401", "403", "404", "409", "500", "503"}
+            for operation in public_operations
+        )
         assert all(
             operation["responses"]["400"]["content"]["application/json"]["schema"]
             == {"$ref": "#/components/schemas/ErrorResponse"}

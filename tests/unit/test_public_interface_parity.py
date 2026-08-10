@@ -21,6 +21,16 @@ from riverhog_protocol.errors import BadRequest
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
 PUBLIC_ERROR_STATUSES = {"400", "401", "403", "404", "409", "500", "503"}
+OPERATION_ERROR_STATUSES = {
+    "riverhog": {
+        "create_retrieval_job": {"429"},
+        "download_retrieval_file": {"429"},
+    },
+    "munchy": {
+        "create_submission": {"429", "507"},
+        "preflight_submission": {"429", "507"},
+    },
+}
 
 
 def public_operations(app: FastAPI) -> list[tuple[str, str]]:
@@ -107,11 +117,15 @@ def test_public_http_health_and_error_schemas_are_conventional(
     assert operations
     for route, operation in operations.items():
         responses = operation["responses"]
-        assert "422" not in responses, f"{application} exposes obsolete validation status: {route}"
-        assert PUBLIC_ERROR_STATUSES <= responses.keys(), (
-            f"{application} is missing conventional error responses: {route}"
+        operation_id = str(operation["operationId"])
+        expected = PUBLIC_ERROR_STATUSES | OPERATION_ERROR_STATUSES.get(application, {}).get(
+            operation_id, set()
         )
-        for status in PUBLIC_ERROR_STATUSES:
+        actual = {status for status in responses if status.isdigit() and int(status) >= 400}
+        assert actual == expected, (
+            f"{application} error responses do not match the implementing operation: {route}"
+        )
+        for status in expected:
             assert responses[status]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"
             }

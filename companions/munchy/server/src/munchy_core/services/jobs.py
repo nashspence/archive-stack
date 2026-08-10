@@ -68,7 +68,7 @@ def resolved_submission(
             req.inputs,
         )
     except JobTemplateError as exc:
-        raise ServiceError(status_code=422, detail=str(exc)) from exc
+        raise ServiceError(status_code=400, detail=str(exc)) from exc
     handoff = state_store.dict_or_empty(raw_job.get("handoff"))
     handoff["on_failure"] = req.handoff_on_failure
     raw_job["handoff"] = handoff
@@ -80,12 +80,12 @@ def resolved_submission(
     try:
         job_request = domain_models.CreateJobRequest.model_validate(raw_job)
     except ValidationError as exc:
-        raise ServiceError(status_code=422, detail=str(exc)) from exc
+        raise ServiceError(status_code=400, detail=str(exc)) from exc
     storage_hint = admission_service.storage_hint_for_job_request(job_request)
     try:
         domain_models.CreateInputUploadRequest(files=req.files, storage_hint=storage_hint)
     except ValidationError as exc:
-        raise ServiceError(status_code=422, detail=str(exc)) from exc
+        raise ServiceError(status_code=400, detail=str(exc)) from exc
     return template, job_request, storage_hint
 
 

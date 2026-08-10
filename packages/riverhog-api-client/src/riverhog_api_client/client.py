@@ -21,7 +21,6 @@ from riverhog_protocol.errors import (
     InvalidPath,
     InvalidState,
     NotFound,
-    NotYetImplemented,
     RiverhogError,
     ServiceUnavailable,
     Unauthorized,
@@ -158,7 +157,6 @@ class _HttpApiClient:
             "conflict": Conflict,
             "invalid_state": InvalidState,
             "hash_mismatch": HashMismatch,
-            "not_implemented": NotYetImplemented,
             "service_unavailable": ServiceUnavailable,
             "download_allowance_exceeded": DownloadAllowanceExceeded,
         }

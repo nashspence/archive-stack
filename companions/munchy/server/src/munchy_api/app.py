@@ -44,6 +44,7 @@ from http_api_contracts import (
     apply_openapi_error_contract,
     error_code_for_status,
     error_payload,
+    error_responses,
     status_for_error_code,
 )
 from lifecycle_events import cloud_event, normalize_event_context
@@ -553,7 +554,10 @@ def delete_job_template(template_id: str, expected_revision: int) -> dict[str, A
     )
 
 
-@app.post("/v1/submissions/preflight")
+@app.post(
+    "/v1/submissions/preflight",
+    responses=error_responses(429, 507),
+)
 def preflight_submission(req: domain_models.SubmissionSpec) -> dict[str, Any]:
     provisional_id = f"preflight-{uuid.uuid4().hex}"
     template, job_request, storage_hint = job_service.resolved_submission(
@@ -574,7 +578,11 @@ def preflight_submission(req: domain_models.SubmissionSpec) -> dict[str, Any]:
     }
 
 
-@app.post("/v1/submissions", status_code=202)
+@app.post(
+    "/v1/submissions",
+    status_code=202,
+    responses=error_responses(429, 507),
+)
 def create_submission(
     req: domain_models.CreateSubmissionRequest,
     background_tasks: BackgroundTasks,

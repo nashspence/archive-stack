@@ -47,7 +47,6 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
     "too_many_active_input_uploads": 429,
     "ingress_failed": 500,
     "internal_error": 500,
-    "not_implemented": 501,
     "service_unavailable": 503,
     "insufficient_storage": 507,
 }
@@ -59,13 +58,16 @@ _ERROR_CODE_BY_STATUS: dict[int, str] = {
     404: "not_found",
     405: "method_not_allowed",
     409: "conflict",
-    422: "bad_request",
     429: "too_many_active_input_uploads",
     500: "internal_error",
-    501: "not_implemented",
     503: "service_unavailable",
     507: "insufficient_storage",
 }
+
+
+def error_responses(*statuses: int) -> dict[int | str, dict[str, Any]]:
+    return {status: {"model": ErrorResponse} for status in statuses}
+
 
 PUBLIC_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
     status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 500, 503)
@@ -179,6 +181,7 @@ __all__ = [
     "apply_openapi_error_contract",
     "error_code_for_status",
     "error_payload",
+    "error_responses",
     "parse_error_payload",
     "safe_http_base_url",
     "status_for_error_code",

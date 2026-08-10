@@ -53,10 +53,6 @@ class HashMismatch(RiverhogError):
     code = "hash_mismatch"
 
 
-class NotYetImplemented(RiverhogError):
-    code = "not_implemented"
-
-
 class ServiceUnavailable(RiverhogError):
     code = "service_unavailable"
 

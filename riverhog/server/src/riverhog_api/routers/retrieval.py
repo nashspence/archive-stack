@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from http_api_contracts import error_responses
 from riverhog_protocol.errors import BadRequest
 
 from riverhog_api.auth import RetrievalManager
@@ -40,7 +41,11 @@ def plan_retrieval(
     return RetrievalPlanOut.model_validate(payload)
 
 
-@router.post("/retrieval-jobs", response_model=RetrievalJobOut)
+@router.post(
+    "/retrieval-jobs",
+    response_model=RetrievalJobOut,
+    responses=error_responses(429),
+)
 def create_retrieval_job(
     request: CreateRetrievalJobRequest,
     principal: RetrievalManager,
@@ -107,6 +112,7 @@ def acknowledge_retrieval_job(
 @router.get(
     "/retrieval-jobs/{job_id}/content",
     response_class=StreamingResponse,
+    responses=error_responses(429),
 )
 def download_retrieval_file(
     job_id: str,

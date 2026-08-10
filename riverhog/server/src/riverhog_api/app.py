@@ -396,16 +396,6 @@ def create_app(
             headers={"WWW-Authenticate": "Bearer"} if exc.code == "unauthorized" else None,
         )
 
-    @app.exception_handler(NotImplementedError)
-    async def handle_builtin_not_implemented(_: Request, exc: NotImplementedError) -> JSONResponse:
-        return JSONResponse(
-            status_code=501,
-            content=error_payload(
-                code="not_implemented",
-                message=str(exc) or "not implemented",
-            ),
-        )
-
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         first = exc.errors()[0]
