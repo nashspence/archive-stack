@@ -23,6 +23,7 @@ from riverhog_provenance import (
     FileProvenanceBinding,
     ProvenanceValidationError,
     build_provenance_archive,
+    provenance_journal_filename,
     validate_journal,
 )
 from time_formats import utc_timestamp_now
@@ -68,19 +69,23 @@ def safe_local_id(value: str) -> str:
 
 
 def shared_input_upload_root(upload_id: str) -> Path:
-    return runtime_config.GPU_RUNTIME_DIR / "input-uploads" / safe_local_id(upload_id)
+    root = (runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
+    candidate = (root / safe_local_id(upload_id)).resolve()
+    if candidate.parent != root:
+        raise RuntimeError("input upload path escaped its configured root")
+    return candidate
 
 
 def input_provenance_journal_path(upload_id: str, journal_id: str) -> Path:
-    if not journal_id.startswith("urn:uuid:") or "/" in journal_id or "\\" in journal_id:
-        raise ServiceError(status_code=400, detail="invalid provenance journal id")
-    return (
-        shared_input_upload_root(upload_id)
-        / ".riverhog"
-        / "provenance"
-        / "journals"
-        / (journal_id + ".json-seq")
-    )
+    try:
+        filename = provenance_journal_filename(journal_id)
+    except ValueError as exc:
+        raise ServiceError(status_code=400, detail="invalid provenance journal id") from exc
+    root = (shared_input_upload_root(upload_id) / ".riverhog" / "provenance" / "journals").resolve()
+    candidate = (root / filename).resolve()
+    if candidate.parent != root:
+        raise ServiceError(status_code=400, detail="invalid provenance journal path")
+    return candidate
 
 
 def put_input_provenance_journal(

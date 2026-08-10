@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from .common import canonical_json
+from .common import canonical_json, provenance_journal_filename
 from .journal import (
     JournalSummary,
     ProvenanceValidationError,
@@ -212,7 +212,7 @@ def build_portable_provenance_set(
         "journals": [
             {
                 "journal_id": journal_id,
-                "path": f"journals/{journal_id}.json-seq",
+                "path": _journal_member(journal_id),
                 "bytes": len(journals[journal_id]),
                 "sha256": summaries[journal_id].journal_sha256,
             }
@@ -239,7 +239,7 @@ def validate_portable_provenance_set(
         if set(row) != {"journal_id", "path", "bytes", "sha256"}:
             raise ProvenanceValidationError("portable journal descriptor is invalid")
         journal_id = _journal_id(row.get("journal_id"))
-        if row.get("path") != f"journals/{journal_id}.json-seq":
+        if row.get("path") != _journal_member(journal_id):
             raise ProvenanceValidationError("portable journal path is not canonical")
         content = journals.get(journal_id)
         if (
@@ -475,7 +475,7 @@ def _journal_id(value: object) -> str:
 
 
 def _journal_member(journal_id: str) -> str:
-    return f"journals/{_journal_id(journal_id)}.json-seq"
+    return f"journals/{provenance_journal_filename(_journal_id(journal_id))}"
 
 
 def _journal_id_from_member(member: str) -> str:

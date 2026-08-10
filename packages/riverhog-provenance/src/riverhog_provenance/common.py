@@ -63,7 +63,14 @@ def require_urn_uuid(value: str, field: str) -> str:
     canonical = f"urn:uuid:{parsed}"
     if value != canonical:
         raise ValueError(f"{field} must use canonical lowercase UUID URN syntax")
-    return value
+    return canonical
+
+
+def provenance_journal_filename(journal_id: str) -> str:
+    """Return the canonical single-segment filename for a provenance journal."""
+
+    canonical = require_urn_uuid(journal_id, "journal_id")
+    return f"{canonical}.json-seq"
 
 
 def utc_now() -> str:

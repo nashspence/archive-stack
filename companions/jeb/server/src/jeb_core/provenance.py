@@ -16,6 +16,7 @@ from riverhog_provenance import (
     append_observation,
     build_portable_provenance_set,
     load_or_create_installation_id,
+    provenance_journal_filename,
     validate_journal,
     validate_portable_provenance_set,
 )
@@ -50,7 +51,7 @@ def put_ingress_journal(
         raise ProvenanceValidationError("provenance journal digest does not match its header")
     root = _upload_root(config, upload_id)
     _bind_source(root, source_id)
-    destination = root / "journals" / f"{journal_id}.json-seq"
+    destination = root / "journals" / provenance_journal_filename(journal_id)
     _write_exact_idempotent(destination, content)
     return {"journal_id": journal_id, "bytes": len(content), "sha256": digest}
 
@@ -285,7 +286,9 @@ def _write_set(root: Path, *, index_bytes: bytes, journals: Mapping[str, bytes])
     temporary = root.with_name(f".{root.name}.{uuid.uuid4().hex}.part")
     try:
         for journal_id, content in sorted(journals.items()):
-            _write_exact_idempotent(temporary / "journals" / f"{journal_id}.json-seq", content)
+            _write_exact_idempotent(
+                temporary / "journals" / provenance_journal_filename(journal_id), content
+            )
         _write_exact_idempotent(temporary / "index.json", index_bytes)
         root.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temporary, root)

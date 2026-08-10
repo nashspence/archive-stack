@@ -118,6 +118,22 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
     assert access_filter.filter(api) is True
 
 
+def test_external_submission_identity_maps_to_confined_provenance_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000042"
+
+    upload_root = server.upload_service.shared_input_upload_root("../../outside")
+    journal_path = server.upload_service.input_provenance_journal_path("../../outside", journal_id)
+
+    configured_root = (server.runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
+    assert upload_root.parent == configured_root
+    assert journal_path.parent == upload_root / ".riverhog" / "provenance" / "journals"
+    assert journal_path.name == f"{journal_id}.json-seq"
+
+
 def test_munchy_state_commands_report_and_verify_the_current_revision(
     tmp_path: Path,
     capsys,

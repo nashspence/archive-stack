@@ -34,6 +34,7 @@ from riverhog_provenance import (
     build_provenance_archive,
     create_derivative_journal,
     load_or_create_installation_id,
+    provenance_journal_filename,
     validate_journal,
 )
 from time_formats import format_utc_timestamp, utc_timestamp_now
@@ -721,7 +722,7 @@ def _load_munchy_output_provenance(
         return None, bindings, {}
     root = _munchy_output_provenance_root(job)
     journals = {
-        str(journal_id): (root / f"{str(journal_id)}.json-seq").read_bytes()
+        str(journal_id): (root / provenance_journal_filename(str(journal_id))).read_bytes()
         for journal_id in state.get("journals", {})
     }
     archive = build_provenance_archive(bindings=bindings, journals=journals)
@@ -892,7 +893,7 @@ def munchy_output_provenance(
     root.mkdir(parents=True, exist_ok=True)
     journal_descriptors: dict[str, dict[str, object]] = {}
     for journal_id, content in journals.items():
-        (root / f"{journal_id}.json-seq").write_bytes(content)
+        (root / provenance_journal_filename(journal_id)).write_bytes(content)
         journal_descriptors[journal_id] = {
             "bytes": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),

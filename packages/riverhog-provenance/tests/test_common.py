@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import uuid
+from pathlib import Path
 
 import pytest
+from riverhog_provenance import provenance_journal_filename
 from riverhog_provenance.common import (
     format_utc_ns,
     locator_from_path,
@@ -23,6 +25,29 @@ def test_uuid7_urn_is_canonical() -> None:
     parsed = uuid.UUID(value.removeprefix("urn:uuid:"))
     assert parsed.version == 7
     assert str(parsed) == value.removeprefix("urn:uuid:")
+
+
+def test_provenance_journal_filename_is_one_canonical_path_segment() -> None:
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000042"
+
+    filename = provenance_journal_filename(journal_id)
+
+    assert filename == f"{journal_id}.json-seq"
+    assert filename == Path(filename).name
+
+
+@pytest.mark.parametrize(
+    "journal_id",
+    (
+        "00000000-0000-4000-8000-000000000042",
+        "urn:uuid:00000000-0000-4000-8000-000000000042/../../outside",
+        "urn:uuid:00000000-0000-4000-8000-000000000042\\outside",
+        "urn:uuid:00000000-0000-4000-8000-000000000042-extra",
+    ),
+)
+def test_provenance_journal_filename_requires_canonical_uuid_urn(journal_id: str) -> None:
+    with pytest.raises(ValueError):
+        provenance_journal_filename(journal_id)
 
 
 def test_format_utc_ns_preserves_nanoseconds() -> None:

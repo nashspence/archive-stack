@@ -10,6 +10,7 @@ from .archive import (
     validate_portable_provenance_set,
     validate_provenance_archive,
 )
+from .common import provenance_journal_filename
 from .constants import DEFAULT_OBSERVER_AGENT_ID, PROVENANCE_ENTRY_SCHEMA, PROVENANCE_PROFILE
 from .errors import (
     NativeObservationError,
@@ -107,6 +108,7 @@ __all__ = [
     "load_or_create_installation_id",
     "parse_journal",
     "prepare_file_provenance",
+    "provenance_journal_filename",
     "software_agent_id",
     "user_installation_id",
     "validate_entry_document",
