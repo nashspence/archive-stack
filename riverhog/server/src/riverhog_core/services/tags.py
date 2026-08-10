@@ -406,6 +406,8 @@ class SqlAlchemyTagService:
             _, collection.record_etag = collection_record_manifest(
                 collection_id=collection_id,
                 content_etag=collection.content_etag,
+                provenance_mode=collection.provenance_mode,
+                provenance_etag=collection.provenance_etag,
                 metadata_revision=collection.metadata_revision,
                 tags=normalized_tags,
                 files=files,

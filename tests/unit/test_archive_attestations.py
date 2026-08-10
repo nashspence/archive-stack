@@ -24,6 +24,7 @@ from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     as_archive_store,
+    make_captured_provenance_archive,
     seed_archive_copy,
 )
 
@@ -82,7 +83,13 @@ class _WaitingUpgrader:
 
 
 def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path) -> None:
-    config, archive = seed_archive_copy(tmp_path / "state.sqlite3", {"docs/readme.txt": b"hi"})
+    files = {"docs/readme.txt": b"hi"}
+    archive = make_captured_provenance_archive(files, tmp_path / "source")
+    config, archive = seed_archive_copy(
+        tmp_path / "state.sqlite3",
+        files,
+        archive=archive,
+    )
     _mark_manifest_proof_matured(config.database_url, archive.collection_id)
     store = MemoryArchiveStore(archive)
     service = SqlAlchemyArchiveAttestationService(
@@ -98,10 +105,8 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
     assert service.process_due(limit=10) == 1
     checksums = store.attestation_artifacts["checksums"]
     assert checksums.decode().splitlines() == [
-        f"{_sha256(archive.stored_objects['manifest.json.age'])}  manifest.json.age",
-        f"{_sha256(archive.stored_objects['manifest.json.ots.age'])}  manifest.json.ots.age",
-        f"{_sha256(archive.stored_objects['volumes/pack-000000000000.tar.age'])}  "
-        "volumes/pack-000000000000.tar.age",
+        f"{_sha256(content)}  {relative_path}"
+        for relative_path, content in sorted(archive.stored_objects.items())
     ]
     assert store.attestation_artifacts["signature"] == _Signer().sign(checksums)
 

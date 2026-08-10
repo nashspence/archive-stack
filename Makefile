@@ -33,6 +33,7 @@ MYPY_SOURCES = \
 	packages/riverhog-api-client/src \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
+	packages/riverhog-provenance/src \
 	packages/state-schema/src \
 	packages/time-formats/src \
 	packages/tus-transport/src \

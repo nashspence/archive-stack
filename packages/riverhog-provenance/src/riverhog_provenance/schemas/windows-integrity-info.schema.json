@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-integrity-info.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checksum_algorithm",
+    "flags",
+    "checksum_chunk_size",
+    "cluster_size"
+  ],
+  "properties": {
+    "checksum_algorithm": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "flags": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "checksum_chunk_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cluster_size": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

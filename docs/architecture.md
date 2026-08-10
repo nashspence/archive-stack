@@ -16,6 +16,10 @@ executable contracts; this document records only the ownership and authority mod
 - Ingress writes server-encrypted units directly to immutable final archive keys. A
   retrieval cache contains leased, exact archive ciphertext and is rebuildable from archive
   stores.
+- Per-file provenance is append-only custody history. Existing journals remain exact prefixes
+  across in-repo handoffs; clients capture or continue them by default, and every omission has
+  an explicit reason. The immutable collection index and journal bundles are authoritative;
+  relational provenance rows are a rebuildable query projection.
 - A collection is an immutable logical namespace and deletion unit. Tags are mutable
   catalog metadata. Applications own desired state and materializations derived through
   public APIs.

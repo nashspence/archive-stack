@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Self
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from http_api_contracts import parse_error_payload, safe_http_base_url
 from jeb_protocol import attempt_state, attempt_watch_finished
 from lifecycle_events import EventPage
+from riverhog_provenance import FileProvenanceBinding, build_portable_provenance_set
+from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusTransport
 
 QueryValue = str | int | float | bool | None
+DEFAULT_INGRESS_URL = "http://127.0.0.1:1081"
 
 
 class JebApiError(RuntimeError):
@@ -367,4 +372,170 @@ class JebApiClient:
         )
 
 
-__all__ = ["JebApiClient", "JebApiError"]
+class JebIngressClient:
+    """Official Jeb file-ingress client with separately verified provenance."""
+
+    def __init__(
+        self,
+        *,
+        source: str,
+        password: str,
+        base_url: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        if not source.strip() or source != source.strip():
+            raise ValueError("Jeb ingress source must be a non-empty canonical value")
+        if not password:
+            raise ValueError("Jeb ingress password is required")
+        self.base_url = safe_http_base_url(
+            base_url or os.getenv("JEB_INGRESS_URL") or DEFAULT_INGRESS_URL,
+            setting="JEB_INGRESS_URL",
+            allow_insecure_http=_bool_env("JEB_ALLOW_INSECURE_HTTP", False),
+        )
+        self.source = source
+        self._http = httpx.Client(
+            auth=httpx.BasicAuth(source, password),
+            transport=transport,
+            timeout=_timeout(),
+            http2=_bool_env("JEB_HTTP2", True),
+        )
+        self._tus = TusTransport(client=self._http)
+
+    def close(self) -> None:
+        self._tus.close()
+        self._http.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def upload_file(
+        self,
+        path: Path,
+        *,
+        relative_path: str,
+        binding: Mapping[str, object],
+        journals: Mapping[str, bytes],
+        chunk_mib: int = DEFAULT_TUS_UPLOAD_CHUNK_MIB,
+    ) -> dict[str, Any]:
+        if chunk_mib <= 0:
+            raise ValueError("Jeb upload chunk size must be positive")
+        size = path.stat().st_size
+        normalized_binding = _provenance_binding(binding)
+        if normalized_binding.bytes != size:
+            raise ValueError("Jeb provenance binding size does not match the payload")
+        provenance = build_portable_provenance_set(
+            bindings=(normalized_binding,),
+            journals=journals,
+        )
+        upload_url = self._tus.create_upload(
+            urljoin(self.base_url.rstrip("/") + "/", "files/"),
+            length=size,
+            metadata={
+                "path": relative_path,
+                "sha256": normalized_binding.sha256,
+                "provenance_sha256": hashlib.sha256(provenance).hexdigest(),
+            },
+        )
+        upload_id = Path(urlparse(upload_url).path.rstrip("/")).name
+        if not upload_id:
+            raise RuntimeError("Jeb TUS upload returned an invalid identity")
+        for journal_id, content in sorted(journals.items()):
+            response = self._http.put(
+                self._provenance_url(upload_id, f"journals/{quote(journal_id, safe='')}"),
+                content=content,
+                headers={
+                    "Content-Type": "application/json-seq",
+                    "X-Riverhog-Provenance-SHA256": hashlib.sha256(content).hexdigest(),
+                },
+            )
+            self._raise_ingress_error(response)
+        response = self._http.put(
+            self._provenance_url(upload_id, "binding"),
+            json=dict(binding),
+        )
+        self._raise_ingress_error(response)
+
+        chunk_bytes = chunk_mib * 1024 * 1024
+        offset = self._tus.head_offset(upload_url)
+        if offset < 0 or offset > size:
+            raise RuntimeError("Jeb TUS upload disappeared or reported an invalid offset")
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            while offset < size:
+                content = stream.read(min(chunk_bytes, size - offset))
+                if not content:
+                    raise RuntimeError("Jeb upload source ended before its declared size")
+                try:
+                    offset = self._tus.patch_chunk(
+                        upload_url,
+                        offset=offset,
+                        content=content,
+                        checksum_algorithm="sha256",
+                    )
+                except httpx.TransportError:
+                    resumed = self._tus.head_offset(upload_url)
+                    if resumed < offset or resumed > offset + len(content):
+                        raise RuntimeError("Jeb TUS retry returned an invalid offset") from None
+                    offset = resumed
+                    stream.seek(offset)
+        return {
+            "status": "uploaded",
+            "upload_id": upload_id,
+            "path": relative_path,
+            "bytes": size,
+            "provenance": dict(binding),
+        }
+
+    def _provenance_url(self, upload_id: str, suffix: str) -> str:
+        return urljoin(
+            self.base_url.rstrip("/") + "/",
+            f"provenance/{quote(upload_id, safe='')}/{suffix}",
+        )
+
+    @staticmethod
+    def _raise_ingress_error(response: httpx.Response) -> None:
+        if response.status_code < 400:
+            return
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            _code, message, _details = parse_error_payload(
+                payload,
+                fallback_message=f"Jeb ingress returned HTTP {response.status_code}",
+            )
+        else:
+            message = f"Jeb ingress returned HTTP {response.status_code}"
+        raise JebApiError(message, status=response.status_code)
+
+
+def _provenance_binding(value: Mapping[str, object]) -> FileProvenanceBinding:
+    status = str(value.get("status") or "")
+    path = str(value.get("path") or "")
+    byte_count = int(str(value.get("bytes") or "0"))
+    sha256 = str(value.get("sha256") or "")
+    if status == "captured":
+        return FileProvenanceBinding(
+            path=path,
+            bytes=byte_count,
+            sha256=sha256,
+            status="captured",
+            journal_id=str(value.get("journal_id") or ""),
+            current_state_id=str(value.get("current_state_id") or ""),
+        )
+    if status == "omitted":
+        return FileProvenanceBinding(
+            path=path,
+            bytes=byte_count,
+            sha256=sha256,
+            status="omitted",
+            omission_reason=str(value.get("omission_reason") or ""),
+        )
+    raise ValueError("Jeb provenance binding status is invalid")
+
+
+__all__ = ["JebApiClient", "JebApiError", "JebIngressClient"]

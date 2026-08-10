@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-file-stat.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "volume_serial_number",
+    "file_id_hex",
+    "file_id_bits",
+    "file_id_scheme",
+    "file_index_64",
+    "creation_time_ticks",
+    "last_access_time_ticks",
+    "last_write_time_ticks",
+    "change_time_ticks",
+    "file_attributes",
+    "reparse_tag",
+    "allocation_size",
+    "end_of_file",
+    "number_of_links",
+    "delete_pending",
+    "storage"
+  ],
+  "properties": {
+    "volume_serial_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "file_id_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]+$"
+    },
+    "file_id_bits": {
+      "type": "integer",
+      "enum": [
+        64,
+        128
+      ]
+    },
+    "file_id_scheme": {
+      "enum": [
+        "windows-file-id-128",
+        "windows-file-index-64"
+      ]
+    },
+    "file_index_64": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "creation_time_ticks": {
+      "type": "integer"
+    },
+    "last_access_time_ticks": {
+      "type": "integer"
+    },
+    "last_write_time_ticks": {
+      "type": "integer"
+    },
+    "change_time_ticks": {
+      "type": "integer"
+    },
+    "file_attributes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reparse_tag": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "allocation_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "end_of_file": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "number_of_links": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "delete_pending": {
+      "type": "boolean"
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logical_bytes_per_sector": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "physical_bytes_per_sector_for_atomicity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "physical_bytes_per_sector_for_performance": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filesystem_effective_physical_bytes_per_sector_for_atomicity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "flags": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byte_offset_for_sector_alignment": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byte_offset_for_partition_alignment": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

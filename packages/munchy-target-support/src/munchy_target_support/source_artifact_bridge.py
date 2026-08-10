@@ -241,14 +241,8 @@ def build_strict_source_artifacts(
     archive_mkv: pathlib.Path,
     encode_command: Sequence[str],
     encode_profile: Mapping[str, Any] | None,
-    source_filesystem_metadata: Mapping[str, Any] | None = None,
-    allow_missing_filesystem_metadata: bool = False,
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not source_filesystem_metadata and not allow_missing_filesystem_metadata:
-        raise RuntimeError(
-            f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
-        )
     profile = dict(encode_profile or {})
     drop_policy = source_artifacts.SourceArtifactDropPolicy(_artifact_drop_reason_map(profile))
     allow_conversion_only_container = _allow_conversion_only_container(profile)
@@ -369,8 +363,6 @@ def build_strict_source_artifacts(
             encode_cmd=list(encode_command),
             selected_output_path=archive_mkv,
             encode_output_path=archive_mkv,
-            source_filesystem_metadata=source_filesystem_metadata,
-            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             extra_artifacts=_source_sidecar_artifacts(source_sidecars),
         )
 
@@ -415,18 +407,12 @@ def build_preserve_source_artifacts(
     *,
     source: pathlib.Path,
     output: pathlib.Path,
-    source_filesystem_metadata: Mapping[str, Any] | None,
-    allow_missing_filesystem_metadata: bool = False,
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not source_filesystem_metadata and not allow_missing_filesystem_metadata:
-        raise RuntimeError(
-            f"unresumable: source filesystem metadata sidecar is missing for {source.name}"
-        )
-    if not source_filesystem_metadata and not source_sidecars:
+    if not source_sidecars:
         return {
             "omitted": True,
-            "reason": "origin filesystem metadata is unavailable",
+            "reason": "no independently retained source artifacts were produced",
         }
     work_dir = output.parent / f".{output.name}.source-artifacts-work"
     bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(output)))
@@ -454,8 +440,6 @@ def build_preserve_source_artifacts(
             encode_cmd=[],
             selected_output_path=output,
             encode_output_path=output,
-            source_filesystem_metadata=source_filesystem_metadata,
-            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             extra_artifacts=_source_sidecar_artifacts(source_sidecars),
         )
         created = source_artifacts._build_source_artifacts_bundle(

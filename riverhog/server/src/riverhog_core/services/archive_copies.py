@@ -17,6 +17,7 @@ from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_formats import (
     PACK_VOLUME_STORAGE_FORMAT,
     RAW_VOLUME_STORAGE_FORMAT,
+    archive_object_storage_format,
 )
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -65,7 +66,9 @@ _SORT_FIELDS = {
     "state",
     "requested_at",
 }
-_COPY_OBJECT_KINDS = frozenset({"pack", "segment", "manifest", "proof"})
+_COPY_OBJECT_KINDS = frozenset(
+    {"pack", "segment", "provenance-bundle", "provenance-index", "manifest", "proof"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,7 +441,9 @@ class SqlAlchemyArchiveCopyService:
             source_identity = archive_copy_identity(source_copy)
             source_store_name = job.source_store
             destination_store_name = job.destination_store
-            data_objects = source_identity.data_objects
+            data_objects = tuple(
+                current for current in source_identity.objects if current.kind in _COPY_OBJECT_KINDS
+            )
             read_requested_at = job.read_requested_at
             ready_at = job.ready_at
             expires_at = job.expires_at
@@ -856,13 +861,15 @@ class SqlAlchemyArchiveCopyService:
         content_type = {
             "manifest": "application/vnd.riverhog.collection-manifest+age",
             "proof": "application/vnd.riverhog.collection-manifest-proof+age",
+            "provenance-index": "application/vnd.riverhog.provenance-index+age",
+            "provenance-bundle": "application/vnd.riverhog.provenance-bundle+age",
         }[source.kind]
         receipt = destination_store.put_immutable_object(
             object_path=destination_path,
             content=content,
             content_type=content_type,
             identity_metadata={
-                "riverhog-format": f"riverhog-collection-{source.kind}/v1",
+                "riverhog-format": archive_object_storage_format(source.kind),
                 "riverhog-plaintext-bytes": str(source.plaintext_bytes),
                 "riverhog-plaintext-sha256": source.sha256 or "",
             },
@@ -1019,7 +1026,11 @@ class SqlAlchemyArchiveCopyService:
             if source_copy is None or not archive_copy_is_complete(source_copy):
                 return
             source_store_name = job.source_store
-            data_objects = archive_copy_identity(source_copy).data_objects
+            data_objects = tuple(
+                current
+                for current in archive_copy_identity(source_copy).objects
+                if current.kind in _COPY_OBJECT_KINDS
+            )
         source_store = self._archive_stores.require(source_store_name)
         try:
             source_store.cleanup_archive_objects_read(
@@ -1154,6 +1165,10 @@ def _destination_object_path(
         relative = "manifest.json.age"
     elif source.kind == "proof":
         relative = "manifest.json.ots.age"
+    elif source.kind == "provenance-index":
+        relative = "provenance/index.json.age"
+    elif source.kind == "provenance-bundle":
+        relative = f"provenance/{source.object_id}.tar.age"
     else:
         raise Conflict(f"archive copy object kind is not immutable: {source.kind}")
     return f"{prefix}/{relative}"

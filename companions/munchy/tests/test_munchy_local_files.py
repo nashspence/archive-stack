@@ -8,6 +8,7 @@ from munchy_api_client.local_files import (
     LocalFileCandidate,
     hash_local_file_candidates,
 )
+from riverhog_provenance import validate_journal
 
 
 def test_hash_local_file_candidates_reuses_cached_hash(tmp_path: Path) -> None:
@@ -44,7 +45,7 @@ def test_hash_local_file_candidates_reuses_cached_hash(tmp_path: Path) -> None:
         )
 
 
-def test_hash_local_file_candidates_captures_filesystem_metadata(tmp_path: Path) -> None:
+def test_hash_local_file_candidates_captures_canonical_provenance(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
     stat = source.stat()
@@ -57,22 +58,16 @@ def test_hash_local_file_candidates_captures_filesystem_metadata(tmp_path: Path)
 
     discovery = hash_local_file_candidates([candidate], cache=None)
 
-    metadata = discovery.files[0].filesystem_metadata
-    assert metadata["kind"] == "munchy.source-filesystem-metadata"
-    assert metadata["captured_from"] == str(source)
-    stat_metadata = metadata["stat"]
-    raw_stat = stat_metadata["raw_stat"]
-    assert stat_metadata["size"] == stat.st_size
-    assert stat_metadata["mode"] == stat.st_mode
-    assert stat_metadata["mtime_ns"] == stat.st_mtime_ns
-    assert stat_metadata["atime_ns"] == stat.st_atime_ns
-    assert raw_stat["st_size"] == stat.st_size
-    if hasattr(stat, "st_birthtime"):
-        assert "birthtime" in stat_metadata
-        assert "st_birthtime" in raw_stat
-    if hasattr(stat, "st_birthtime_ns"):
-        assert stat_metadata["birthtime_ns"] == stat.st_birthtime_ns
-        assert raw_stat["st_birthtime_ns"] == stat.st_birthtime_ns
+    prepared = discovery.files[0]
+    journal_id = str(prepared.provenance["journal_id"])
+    summary = validate_journal(prepared.provenance_journals[journal_id])
+    assert prepared.provenance == {
+        "status": "captured",
+        "journal_id": summary.journal_id,
+        "current_state_id": summary.current_state_id,
+    }
+    assert summary.current_path == "camera/clip.mp4"
+    assert summary.current_bytes == stat.st_size
 
 
 def test_hash_local_file_candidates_reports_local_hash_progress(tmp_path: Path) -> None:

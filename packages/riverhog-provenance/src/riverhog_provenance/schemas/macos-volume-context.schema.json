@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/macos-volume-context.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["filesystem_type", "mount_point", "mounted_from", "fsid", "mount_flags", "filesystem_subtype", "io_size", "block_size"],
+  "properties": {
+    "filesystem_type": {"type": "string", "minLength": 1},
+    "mount_point": {"type": "string"},
+    "mounted_from": {"type": "string"},
+    "fsid": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}], "items": false},
+    "mount_flags": {"type": "integer", "minimum": 0},
+    "filesystem_subtype": {"type": "integer", "minimum": 0},
+    "io_size": {"type": "integer", "minimum": 0},
+    "block_size": {"type": "integer", "minimum": 0},
+    "volume_uuid": {"type": "string", "format": "uuid"},
+    "capabilities": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+    "valid_capabilities": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+  }
+}

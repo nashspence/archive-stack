@@ -66,7 +66,8 @@ def main() -> None:
         print(f"riverhog-recover: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     print(
-        f"Recovered {summary.files} files ({summary.bytes} bytes) to {summary.output}",
+        f"Recovered {summary.files} files ({summary.bytes} bytes) to {summary.output}; "
+        f"provenance={summary.provenance_mode} journals={summary.provenance_journals}",
         flush=True,
     )
 

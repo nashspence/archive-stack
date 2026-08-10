@@ -16,6 +16,8 @@ from riverhog_core.app_permissions import (
     COLLECTIONS_DELETE,
     EVENTS_READ,
     KEYS_MANAGE,
+    PROVENANCE_EXPORT,
+    PROVENANCE_READ,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
     TAGS_CREATE,
@@ -137,6 +139,14 @@ EventsReader = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(EVENTS_READ))),
 ]
+ProvenanceReader = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(PROVENANCE_READ))),
+]
+ProvenanceExporter = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(PROVENANCE_EXPORT))),
+]
 
 
 __all__ = [
@@ -150,6 +160,8 @@ __all__ = [
     "EventsReader",
     "KeyManager",
     "QuotaManager",
+    "ProvenanceExporter",
+    "ProvenanceReader",
     "RetrievalManager",
     "TagCreator",
     "TagDeleter",

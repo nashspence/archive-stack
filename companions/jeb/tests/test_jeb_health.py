@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -17,6 +18,8 @@ from jeb_api.app import JebServiceState, create_app, start_jeb_service_server
 from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.persistence.schema import upgrade_state
+from jeb_core.provenance import put_ingress_binding
+from riverhog_provenance import FileProvenanceBinding, build_portable_provenance_set
 
 API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
@@ -328,6 +331,28 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         with urllib.request.urlopen(auth_request, timeout=5) as response:
             assert response.status == 204
 
+        payload_sha256 = hashlib.sha256(b"notes").hexdigest()
+        binding = {
+            "path": "notes/note.txt",
+            "bytes": 5,
+            "sha256": payload_sha256,
+            "status": "omitted",
+            "omission_reason": "fixture explicitly omits source observation",
+        }
+        provenance_sha256 = hashlib.sha256(
+            build_portable_provenance_set(
+                bindings=(
+                    FileProvenanceBinding(
+                        path="notes/note.txt",
+                        bytes=5,
+                        sha256=payload_sha256,
+                        status="omitted",
+                        omission_reason="fixture explicitly omits source observation",
+                    ),
+                ),
+                journals={},
+            )
+        ).hexdigest()
         status, prepared = post_json(
             f"http://{host}:{port}/internal/ingress/tus/hooks",
             {
@@ -336,7 +361,11 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
                     "Upload": {
                         "Size": 5,
                         "Offset": 0,
-                        "MetaData": {"filename": "notes/note.txt"},
+                        "MetaData": {
+                            "filename": "notes/note.txt",
+                            "sha256": payload_sha256,
+                            "provenance_sha256": provenance_sha256,
+                        },
                     }
                 },
             },
@@ -348,9 +377,18 @@ def test_jeb_tus_ingress_authenticates_and_publishes_completed_file(tmp_path: Pa
         upload_id = str(change["ID"])
         metadata = change["MetaData"]
         assert isinstance(metadata, dict)
+        assert metadata["jeb_payload_sha256"] == payload_sha256
+        assert metadata["jeb_provenance_sha256"] == provenance_sha256
+
+        put_ingress_binding(
+            services.config.ingress,
+            upload_id=upload_id,
+            source_id="phone",
+            payload=binding,
+        )
 
         staging = services.config.ingress.tus_staging_dir
-        staging.mkdir(parents=True)
+        staging.mkdir(parents=True, exist_ok=True)
         source = staging / upload_id
         info = staging / f"{upload_id}.info"
         source.write_bytes(b"notes")

@@ -23,6 +23,8 @@ from jeb_core.persistence.source_registry import SourceRegistry
 TUS_SOURCE_METADATA = "jeb_source"
 TUS_PATH_METADATA = "jeb_path"
 TUS_SIGNATURE_METADATA = "jeb_signature"
+TUS_PAYLOAD_SHA256_METADATA = "jeb_payload_sha256"
+TUS_PROVENANCE_SHA256_METADATA = "jeb_provenance_sha256"
 TUS_VERSION = "1.0.0"
 
 
@@ -55,14 +57,31 @@ class PreparedTusUpload:
     source: str
     relative_path: str
     size: int
+    payload_sha256: str
+    provenance_sha256: str
     signature: str
 
     def hook_metadata(self) -> dict[str, str]:
         return {
             TUS_SOURCE_METADATA: self.source,
             TUS_PATH_METADATA: self.relative_path,
+            TUS_PAYLOAD_SHA256_METADATA: self.payload_sha256,
+            TUS_PROVENANCE_SHA256_METADATA: self.provenance_sha256,
             TUS_SIGNATURE_METADATA: self.signature,
         }
+
+
+@dataclass(frozen=True)
+class ValidatedTusUpload:
+    upload_id: str
+    source_id: str
+    relative_path: str
+    size: int
+    payload_sha256: str
+    provenance_sha256: str
+    source: Path
+    info: Path
+    destination: Path
 
 
 @dataclass(frozen=True)
@@ -115,6 +134,10 @@ def scan_incomplete_tus_uploads(
                 raise ValueError("upload record has no metadata")
             source_id = str(metadata.get(TUS_SOURCE_METADATA) or "")
             relative_path = normalize_landing_path(metadata.get(TUS_PATH_METADATA))
+            payload_sha256 = _sha256_metadata(metadata.get(TUS_PAYLOAD_SHA256_METADATA), "payload")
+            provenance_sha256 = _sha256_metadata(
+                metadata.get(TUS_PROVENANCE_SHA256_METADATA), "provenance"
+            )
             signature = str(metadata.get(TUS_SIGNATURE_METADATA) or "")
             expected_signature = _upload_signature(
                 signing_key=registry.signing_key(source_id),
@@ -122,6 +145,8 @@ def scan_incomplete_tus_uploads(
                 source=source_id,
                 relative_path=relative_path,
                 size=size,
+                payload_sha256=payload_sha256,
+                provenance_sha256=provenance_sha256,
             )
             if not signature or not secrets.compare_digest(signature, expected_signature):
                 raise ValueError("upload record is not authentic")
@@ -253,18 +278,24 @@ def prepare_tus_upload(
     source = authenticate_tus_source(registry, authorization)
     parsed_size = _upload_size(size)
     relative_path = normalize_landing_path(metadata.get("path") or metadata.get("filename"))
+    payload_sha256 = _sha256_metadata(metadata.get("sha256"), "payload")
+    provenance_sha256 = _sha256_metadata(metadata.get("provenance_sha256"), "provenance")
     upload_id = uuid.uuid4().hex
     return PreparedTusUpload(
         upload_id=upload_id,
         source=source,
         relative_path=relative_path,
         size=parsed_size,
+        payload_sha256=payload_sha256,
+        provenance_sha256=provenance_sha256,
         signature=_upload_signature(
             signing_key=registry.signing_key(source),
             upload_id=upload_id,
             source=source,
             relative_path=relative_path,
             size=parsed_size,
+            payload_sha256=payload_sha256,
+            provenance_sha256=provenance_sha256,
         ),
     )
 
@@ -275,6 +306,16 @@ def publish_tus_upload(
     *,
     upload: Mapping[str, object],
 ) -> Path:
+    validated = validate_tus_upload(config, registry, upload=upload)
+    return publish_validated_tus_upload(config, validated)
+
+
+def validate_tus_upload(
+    config: JebIngressConfig,
+    registry: SourceRegistry,
+    *,
+    upload: Mapping[str, object],
+) -> ValidatedTusUpload:
     upload_id = normalize_tus_upload_id(upload.get("ID"))
     size = _upload_size(upload.get("Size"))
     if _upload_size(upload.get("Offset")) != size:
@@ -285,6 +326,8 @@ def publish_tus_upload(
         raise JebIngressError("Jeb TUS upload metadata is missing")
     source_id = str(metadata.get(TUS_SOURCE_METADATA) or "")
     relative_path = normalize_landing_path(metadata.get(TUS_PATH_METADATA))
+    payload_sha256 = _sha256_metadata(metadata.get(TUS_PAYLOAD_SHA256_METADATA), "payload")
+    provenance_sha256 = _sha256_metadata(metadata.get(TUS_PROVENANCE_SHA256_METADATA), "provenance")
     signature = str(metadata.get(TUS_SIGNATURE_METADATA) or "")
     expected_signature = _upload_signature(
         signing_key=registry.signing_key(source_id),
@@ -292,6 +335,8 @@ def publish_tus_upload(
         source=source_id,
         relative_path=relative_path,
         size=size,
+        payload_sha256=payload_sha256,
+        provenance_sha256=provenance_sha256,
     )
     if not signature or not secrets.compare_digest(signature, expected_signature):
         raise JebIngressAuthenticationError("Jeb TUS upload metadata is not authentic")
@@ -312,12 +357,29 @@ def publish_tus_upload(
         source=source_id,
         relative_path=relative_path,
     )
-    return JebLandingPublisher(config).publish(
+    return ValidatedTusUpload(
         upload_id=upload_id,
+        source_id=source_id,
+        relative_path=relative_path,
+        size=size,
+        payload_sha256=payload_sha256,
+        provenance_sha256=provenance_sha256,
         source=expected_source,
         info=expected_info,
         destination=destination,
-        size=size,
+    )
+
+
+def publish_validated_tus_upload(
+    config: JebIngressConfig,
+    upload: ValidatedTusUpload,
+) -> Path:
+    return JebLandingPublisher(config).publish(
+        upload_id=upload.upload_id,
+        source=upload.source,
+        info=upload.info,
+        destination=upload.destination,
+        size=upload.size,
     )
 
 
@@ -516,6 +578,24 @@ def _upload_signature(
     source: str,
     relative_path: str,
     size: int,
+    payload_sha256: str,
+    provenance_sha256: str,
 ) -> str:
-    message = "\0".join((upload_id, source, relative_path, str(size))).encode("utf-8")
+    message = "\0".join(
+        (
+            upload_id,
+            source,
+            relative_path,
+            str(size),
+            payload_sha256,
+            provenance_sha256,
+        )
+    ).encode("utf-8")
     return hmac.new(signing_key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _sha256_metadata(value: object, label: str) -> str:
+    text = str(value or "")
+    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+        raise JebIngressError(f"Jeb TUS {label} SHA-256 is invalid")
+    return text

@@ -26,7 +26,6 @@ from typing import Any, BinaryIO, Literal, cast
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from munchy_api_client.filesystem_metadata import load_filesystem_metadata_map
 from munchy_target_support.metadata_projection import (
     ProjectionMetadata,
     ffmpeg_container_metadata_args,
@@ -173,7 +172,6 @@ class JobRequest(BaseModel):
     review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     container_metadata_required: bool = True
-    allow_missing_filesystem_metadata: bool = False
     source_artifacts_sidecars: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     dry_run: bool = False
 
@@ -1228,8 +1226,6 @@ def run_encode_item(
     dry_run: bool,
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
-    source_filesystem_metadata: dict[str, Any] | None = None,
-    allow_missing_filesystem_metadata: bool = False,
     source_artifacts_sidecars: list[dict[str, Any]] | None = None,
     on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
@@ -1266,8 +1262,6 @@ def run_encode_item(
             archive_mkv=output_path,
             encode_command=result["command"],
             encode_profile=source_artifacts_profile,
-            source_filesystem_metadata=source_filesystem_metadata,
-            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             source_sidecars=source_artifacts_sidecars,
         )
     payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
@@ -1309,26 +1303,11 @@ def run_batch(
     source_artifacts: bool = False,
     source_artifacts_profile: dict[str, Any] | None = None,
     source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
-    allow_missing_filesystem_metadata: bool = False,
     container_metadata: Mapping[str, dict[str, Any]] | None = None,
     container_metadata_required: bool = True,
     max_parallel_encodes: int | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    filesystem_metadata = load_filesystem_metadata_map(input_root)
-    if source_artifacts and not allow_missing_filesystem_metadata:
-        missing_metadata: list[str] = []
-        for source in sources:
-            rel_path = source.relative_to(input_root).as_posix()
-            if not filesystem_metadata.get(rel_path):
-                missing_metadata.append(rel_path)
-        if missing_metadata:
-            sample = ", ".join(missing_metadata[:5])
-            if len(missing_metadata) > 5:
-                sample += f", ... ({len(missing_metadata)} total)"
-            raise RuntimeError(
-                f"unresumable: source filesystem metadata sidecar is missing entries for {sample}"
-            )
     worker_count = resolve_max_parallel_encodes(max_parallel_encodes)
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = {}
@@ -1355,8 +1334,6 @@ def run_batch(
                         if source_artifacts_sidecars
                         else []
                     ),
-                    source_filesystem_metadata=filesystem_metadata.get(rel_path),
-                    allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
                 )
             ] = source
         for future in as_completed(futures):
@@ -1819,7 +1796,6 @@ def run_job(job_id: str, req: JobRequest) -> None:
                 source_artifacts=True,
                 source_artifacts_profile=encode_profile_dump,
                 source_artifacts_sidecars=req.source_artifacts_sidecars,
-                allow_missing_filesystem_metadata=req.allow_missing_filesystem_metadata,
                 container_metadata=req.container_metadata,
                 container_metadata_required=req.container_metadata_required,
                 max_parallel_encodes=max_parallel_encodes,

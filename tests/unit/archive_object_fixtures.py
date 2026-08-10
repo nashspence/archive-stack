@@ -30,6 +30,7 @@ from riverhog_core.domain.archive import (
     ArchiveFile,
     PackVolumePlan,
     SealedPackVolume,
+    SealedProvenanceObject,
     StoredPartReceipt,
 )
 from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
@@ -52,6 +53,13 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import DEV_ARCHIVE_PASSPHRASE, RuntimeConfig
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    ProvenanceArchive,
+    build_provenance_archive,
+    create_observation_journal,
+    validate_journal,
+)
 from sqlalchemy.orm import Session
 
 from tests.unit.db_helpers import sqlite_url
@@ -75,12 +83,14 @@ class FixtureArchive:
     pack_parts_json: str
     pack_plan_sha256: str
     pack_index_sha256: str
+    provenance: ProvenanceArchive | None = None
 
 
 def make_archive(
     files: dict[str, bytes],
     *,
     collection_id: int = COLLECTION_ID,
+    provenance: ProvenanceArchive | None = None,
 ) -> FixtureArchive:
     archive_files = tuple(
         ArchiveFile(path=path, bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
@@ -93,14 +103,14 @@ def make_archive(
         log_n=1,
         plaintext_size=len(plaintext),
     )
-    ciphertext = age_session.encrypt_plaintext(plaintext)
+    pack_ciphertext = age_session.encrypt_plaintext(plaintext)
     part = StoredPartReceipt(
         number=1,
         plaintext_start=0,
         plaintext_bytes=len(plaintext),
         plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
-        stored_bytes=len(ciphertext),
-        stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
+        stored_bytes=len(pack_ciphertext),
+        stored_sha256=hashlib.sha256(pack_ciphertext).hexdigest(),
         etag="fixture-pack-etag",
     )
     state_json = (
@@ -120,9 +130,46 @@ def make_archive(
         version_id="fixture-pack-version",
         completed_at=UPLOADED_AT,
     )
+    sealed_provenance: list[SealedProvenanceObject] = []
+    provenance_ciphertexts: dict[str, bytes] = {}
+    if provenance is not None:
+        for object_id, kind, relative_path, content in (
+            *(
+                (
+                    bundle.bundle_id,
+                    "provenance-bundle",
+                    bundle.relative_path,
+                    bundle.content,
+                )
+                for bundle in provenance.bundles
+            ),
+            (
+                "provenance-index",
+                "provenance-index",
+                "provenance/index.json.age",
+                provenance.index_bytes,
+            ),
+        ):
+            provenance_ciphertext = encrypt_age_scrypt(content, DEV_ARCHIVE_PASSPHRASE, log_n=1)
+            provenance_ciphertexts[relative_path] = provenance_ciphertext
+            sealed_provenance.append(
+                SealedProvenanceObject(
+                    object_id=object_id,
+                    kind=kind,
+                    relative_path=relative_path,
+                    plaintext_bytes=len(content),
+                    plaintext_sha256=hashlib.sha256(content).hexdigest(),
+                    stored_bytes=len(provenance_ciphertext),
+                    stored_sha256=hashlib.sha256(provenance_ciphertext).hexdigest(),
+                    version_id=f"fixture-{object_id}-version",
+                    completed_at=UPLOADED_AT,
+                )
+            )
     manifest = build_collection_archive_manifest(
         files=archive_files,
         packs=((plan, sealed),),
+        provenance_identity=provenance.identity if provenance is not None else None,
+        provenance_objects=sealed_provenance,
     )
     proof = (
         "OpenTimestamps test proof v1\n"
@@ -155,7 +202,8 @@ def make_archive(
         proof_bytes=proof,
         proof_sha256=hashlib.sha256(proof).hexdigest(),
         stored_objects={
-            f"volumes/{plan.volume_id}.tar.age": ciphertext,
+            f"volumes/{plan.volume_id}.tar.age": pack_ciphertext,
+            **provenance_ciphertexts,
             "manifest.json.age": manifest_ciphertext,
             "manifest.json.ots.age": proof_ciphertext,
         },
@@ -163,6 +211,45 @@ def make_archive(
         pack_parts_json=parts_json,
         pack_plan_sha256=plan.plan_sha256,
         pack_index_sha256=plan.index_sha256,
+        provenance=provenance,
+    )
+
+
+def make_captured_provenance_archive(
+    files: dict[str, bytes],
+    root: Path,
+    *,
+    collection_id: int = COLLECTION_ID,
+) -> FixtureArchive:
+    bindings: list[FileProvenanceBinding] = []
+    journals: dict[str, bytes] = {}
+    for relative_path, content in sorted(files.items()):
+        payload = root / relative_path
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_bytes(content)
+        journal = create_observation_journal(
+            payload,
+            relative_path=relative_path,
+            host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
+            agent_name="riverhog-archive-fixture",
+            agent_version="1.0.0",
+        )
+        summary = validate_journal(journal)
+        bindings.append(
+            FileProvenanceBinding(
+                path=relative_path,
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                status="captured",
+                journal_id=summary.journal_id,
+                current_state_id=summary.current_state_id,
+            )
+        )
+        journals[summary.journal_id] = journal
+    return make_archive(
+        files,
+        collection_id=collection_id,
+        provenance=build_provenance_archive(bindings=bindings, journals=journals),
     )
 
 
@@ -191,6 +278,41 @@ def archive_receipt(
             verified_at=UPLOADED_AT,
         )
     ]
+    if archive.provenance is not None:
+        for object_id, kind, relative_path, plaintext in (
+            *(
+                (
+                    bundle.bundle_id,
+                    "provenance-bundle",
+                    bundle.relative_path,
+                    bundle.content,
+                )
+                for bundle in archive.provenance.bundles
+            ),
+            (
+                "provenance-index",
+                "provenance-index",
+                "provenance/index.json.age",
+                archive.provenance.index_bytes,
+            ),
+        ):
+            stored = archive.stored_objects[relative_path]
+            rows.append(
+                ArchiveObjectUploadReceipt(
+                    object_id=object_id,
+                    kind=kind,
+                    object_path=f"{prefix}/{relative_path}",
+                    plaintext_bytes=len(plaintext),
+                    stored_bytes=len(stored),
+                    sha256=hashlib.sha256(plaintext).hexdigest(),
+                    stored_sha256=hashlib.sha256(stored).hexdigest(),
+                    version_id=f"fixture-{object_id}-version",
+                    backend=backend,
+                    storage_class=storage_class,
+                    uploaded_at=UPLOADED_AT,
+                    verified_at=UPLOADED_AT,
+                )
+            )
     rows.extend(
         (
             ArchiveObjectUploadReceipt(
@@ -291,7 +413,14 @@ def add_archive_copy(
             )
         )
     copy.objects.append(pack_record)
-    for order, object_id in enumerate(("manifest", "proof"), start=1):
+    provenance_artifacts = (
+        [(bundle.bundle_id, "provenance-bundle") for bundle in archive.provenance.bundles]
+        + [("provenance-index", "provenance-index")]
+        if archive.provenance is not None
+        else []
+    )
+    artifacts = [*provenance_artifacts, ("manifest", "manifest"), ("proof", "proof")]
+    for order, (object_id, kind) in enumerate(artifacts, start=1):
         object_receipt = receipt.require_object(object_id)
         copy.objects.append(
             CollectionArchiveObjectRecord(
@@ -299,7 +428,7 @@ def add_archive_copy(
                 store=store,
                 object_id=object_id,
                 object_order=order,
-                kind=object_id,
+                kind=kind,
                 object_path=object_receipt.object_path,
                 plaintext_bytes=object_receipt.plaintext_bytes,
                 stored_bytes=object_receipt.stored_bytes,
@@ -331,9 +460,13 @@ def seed_archive_copy(
     with session_scope(factory) as session:
         file_rows = [(file.path, file.bytes, file.sha256) for file in current.files]
         content_etag = collection_content_etag(file_rows)
+        provenance_mode = _provenance_mode(current.provenance)
+        provenance_etag = current.provenance.identity if current.provenance is not None else None
         _manifest, record_etag = collection_record_manifest(
             collection_id=current.collection_id,
             content_etag=content_etag,
+            provenance_mode=provenance_mode,
+            provenance_etag=provenance_etag,
             metadata_revision=1,
             tags=("docs",),
             files=file_rows,
@@ -349,6 +482,8 @@ def seed_archive_copy(
             id=current.collection_id,
             creation_idempotency_key="fixture-docs",
             content_etag=content_etag,
+            provenance_mode=provenance_mode,
+            provenance_etag=provenance_etag,
             record_etag=record_etag,
             metadata_revision=1,
             metadata_updated_at=UPLOADED_AT,
@@ -403,6 +538,22 @@ def seed_archive_copy(
 def _pack_member_offset(archive: FixtureArchive, path: str) -> int:
     with tarfile.open(fileobj=BytesIO(archive.pack_plaintext), mode="r:") as pack:
         return pack.getmember(path).offset_data
+
+
+def _provenance_mode(provenance: ProvenanceArchive | None) -> str:
+    if provenance is None:
+        return "omitted"
+    index = json.loads(provenance.index_bytes)
+    return (
+        "mixed" if any(current["status"] == "omitted" for current in index["files"]) else "captured"
+    )
+
+
+def _archive_relative_path(object_path: str) -> str:
+    for prefix in ("volumes/", "provenance/"):
+        if prefix in object_path:
+            return object_path[object_path.index(prefix) :]
+    return object_path.rsplit("/", 1)[-1]
 
 
 class MemoryArchiveStore:
@@ -567,11 +718,7 @@ class MemoryArchiveStore:
         if content is None:
             if self.archive is None:
                 raise KeyError(object_path)
-            relative_path = (
-                object_path[object_path.index("volumes/") :]
-                if "volumes/" in object_path
-                else object_path.rsplit("/", 1)[-1]
-            )
+            relative_path = _archive_relative_path(object_path)
             content = self.archive.stored_objects[relative_path]
         yield content[offset : offset + size]
 
@@ -817,11 +964,7 @@ class MemoryArchiveStore:
             return exact
         if self.archive is None:
             raise KeyError(object.object_path)
-        relative_path = (
-            object.object_path[object.object_path.index("volumes/") :]
-            if "volumes/" in object.object_path
-            else object.object_path.rsplit("/", 1)[-1]
-        )
+        relative_path = _archive_relative_path(object.object_path)
         return self.archive.stored_objects[relative_path]
 
     @staticmethod

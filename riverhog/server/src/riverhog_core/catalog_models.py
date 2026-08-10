@@ -7,6 +7,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -39,6 +40,8 @@ class CollectionRecord(Base):
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     creation_idempotency_key: Mapped[str] = mapped_column(String)
     content_etag: Mapped[str] = mapped_column(String(64))
+    provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
+    provenance_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
     record_etag: Mapped[str] = mapped_column(String(64))
     metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
     metadata_updated_at: Mapped[str] = mapped_column(String)
@@ -57,6 +60,11 @@ class CollectionRecord(Base):
         passive_deletes=True,
     )
     tags: Mapped[list[CollectionTagRecord]] = relationship(
+        back_populates="collection",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    provenance_journals: Mapped[list[CollectionProvenanceJournalRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -134,6 +142,83 @@ class CollectionFileRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="files")
+
+
+class CollectionProvenanceJournalRecord(Base):
+    __tablename__ = "collection_provenance_journals"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    current_state_id: Mapped[str] = mapped_column(String)
+    current_path: Mapped[str] = mapped_column(String)
+    current_bytes: Mapped[int] = mapped_column(BigInteger)
+    current_sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        Index("ix_collection_provenance_journals_sha256", "sha256", "collection_id"),
+    )
+
+    collection: Mapped[CollectionRecord] = relationship(back_populates="provenance_journals")
+
+
+class CollectionFileProvenanceRecord(Base):
+    __tablename__ = "collection_file_provenance"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    status: Mapped[str] = mapped_column(String)
+    journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "path"],
+            ["collection_files.collection_id", "collection_files.path"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index("ix_collection_file_provenance_journal", "collection_id", "journal_id"),
+    )
+
+
+class CollectionProvenanceEntityRecord(Base):
+    __tablename__ = "collection_provenance_entities"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String)
+    document_json: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_provenance_entities_type",
+            "collection_id",
+            "entity_type",
+            "entity_id",
+        ),
+    )
 
 
 class CollectionArchiveCopyRecord(Base):
@@ -705,6 +790,9 @@ class CollectionUploadRecord(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_mode: Mapped[str] = mapped_column(String)
+    provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -734,6 +822,10 @@ class CollectionUploadRecord(Base):
         passive_deletes=True,
     )
     archive_objects: Mapped[list[CollectionArchiveObjectUploadRecord]] = relationship(
+        back_populates="upload",
+        cascade="all, delete-orphan",
+    )
+    provenance_journals: Mapped[list[CollectionUploadProvenanceJournalRecord]] = relationship(
         back_populates="upload",
         cascade="all, delete-orphan",
     )
@@ -777,6 +869,10 @@ class CollectionUploadFileRecord(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     raw_part_plaintext_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     raw_digest_manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance_status: Mapped[str] = mapped_column(String)
+    provenance_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_current_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -794,6 +890,30 @@ class CollectionUploadFileRecord(Base):
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
+
+
+class CollectionUploadProvenanceJournalRecord(Base):
+    __tablename__ = "collection_upload_provenance_journals"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    current_state_id: Mapped[str] = mapped_column(String)
+    current_path: Mapped[str] = mapped_column(String)
+    current_bytes: Mapped[int] = mapped_column(BigInteger)
+    current_sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_uploads.collection_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    upload: Mapped[CollectionUploadRecord] = relationship(back_populates="provenance_journals")
 
 
 class CollectionArchiveObjectUploadRecord(Base):

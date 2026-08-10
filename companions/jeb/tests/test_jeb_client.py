@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+from pathlib import Path
+
 import httpx
 import pytest
-from jeb_api_client.client import JebApiClient, JebApiError
+from jeb_api_client.client import JebApiClient, JebApiError, JebIngressClient
+from riverhog_provenance import create_observation_journal, validate_journal
 
 
 def test_jeb_client_uses_its_own_persistent_authenticated_api() -> None:
@@ -170,3 +175,78 @@ def test_jeb_client_watch_retries_transport_and_stops_on_owned_failure(
     assert final["state"] == "failed"
     assert calls == 2
     assert sleeps == [1.0]
+
+
+def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
+    tmp_path: Path,
+) -> None:
+    payload = tmp_path / "movie.mov"
+    payload.write_bytes(b"source movie")
+    relative_path = "camera/movie.mov"
+    journal = create_observation_journal(
+        payload,
+        relative_path=relative_path,
+        host_id="urn:uuid:00000000-0000-0000-0000-000000000001",
+        agent_name="jeb-client-test",
+        agent_version="0.1.0",
+    )
+    summary = validate_journal(journal)
+    binding = {
+        "path": relative_path,
+        "bytes": payload.stat().st_size,
+        "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+        "status": "captured",
+        "journal_id": summary.journal_id,
+        "current_state_id": summary.current_state_id,
+    }
+    upload_id = "a" * 32
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST" and request.url.path == "/files/":
+            return httpx.Response(201, headers={"Location": f"/files/{upload_id}"})
+        if request.method == "PUT" and request.url.path.startswith("/provenance/"):
+            return httpx.Response(200, json={"status": "accepted"})
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"Upload-Offset": "0"})
+        if request.method == "PATCH":
+            return httpx.Response(
+                204,
+                headers={"Upload-Offset": str(payload.stat().st_size)},
+            )
+        return httpx.Response(404)
+
+    client = JebIngressClient(
+        source="phone",
+        password="secret",
+        base_url="https://jeb.example.test",
+        transport=httpx.MockTransport(handle),
+    )
+    try:
+        result = client.upload_file(
+            payload,
+            relative_path=relative_path,
+            binding=binding,
+            journals={summary.journal_id: journal},
+        )
+    finally:
+        client.close()
+
+    assert result["upload_id"] == upload_id
+    create = requests[0]
+    metadata = {
+        key: base64.b64decode(value).decode("utf-8")
+        for item in create.headers["Upload-Metadata"].split(",")
+        for key, value in [item.split(" ", 1)]
+    }
+    assert metadata["path"] == relative_path
+    assert metadata["sha256"] == binding["sha256"]
+    assert len(metadata["provenance_sha256"]) == 64
+    journal_request = next(request for request in requests if "/journals/" in request.url.path)
+    assert journal_request.content == journal
+    assert (
+        journal_request.headers["X-Riverhog-Provenance-SHA256"]
+        == hashlib.sha256(journal).hexdigest()
+    )
+    assert [request.method for request in requests] == ["POST", "PUT", "PUT", "HEAD", "PATCH"]

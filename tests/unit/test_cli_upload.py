@@ -99,19 +99,19 @@ def test_large_source_hash_includes_server_layout_part_digests(tmp_path: Path) -
         raw_part_plaintext_bytes=65_536,
     )
 
-    assert entry == {
-        "path": "large.bin",
-        "bytes": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "raw_parts": {
-            "part_plaintext_bytes": 65_536,
-            "sha256s": [
-                hashlib.sha256(b"a" * 65_536).hexdigest(),
-                hashlib.sha256(b"b" * 65_536).hexdigest(),
-                hashlib.sha256(b"tail").hexdigest(),
-            ],
-        },
+    assert entry["path"] == "large.bin"
+    assert entry["bytes"] == len(content)
+    assert entry["sha256"] == hashlib.sha256(content).hexdigest()
+    assert entry["raw_parts"] == {
+        "part_plaintext_bytes": 65_536,
+        "sha256s": [
+            hashlib.sha256(b"a" * 65_536).hexdigest(),
+            hashlib.sha256(b"b" * 65_536).hexdigest(),
+            hashlib.sha256(b"tail").hexdigest(),
+        ],
     }
+    assert entry["provenance"]["status"] == "captured"  # type: ignore[index]
+    assert len(entry["provenance_journals"]) == 1
 
 
 def test_upload_unit_content_concatenates_planned_source_ranges(tmp_path: Path) -> None:
@@ -219,11 +219,26 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             *,
             files_total: int,
             content_etag: str,
+            provenance_etag: str | None,
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             assert files_total == 2
             assert len(content_etag) == 64
+            assert provenance_etag is not None and len(provenance_etag) == 64
             return {"collection_id": collection_id, "state": "uploading"}
+
+        def put_collection_upload_session_provenance_journal(
+            self,
+            collection_id: int,
+            journal_id: str,
+            *,
+            content: bytes,
+            sha256: str,
+        ) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            assert hashlib.sha256(content).hexdigest() == sha256
+            assert journal_id.startswith("urn:uuid:")
+            return {"journal_id": journal_id, "sha256": sha256}
 
         def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
@@ -297,6 +312,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
 
     assert payload["state"] == "finalized"
     assert [item["path"] for item in registered] == ["a.txt", "b.txt"]
+    assert all(item["provenance"]["status"] == "captured" for item in registered)  # type: ignore[index]
     assert bytes(uploaded) == b"alphabravo"
 
 

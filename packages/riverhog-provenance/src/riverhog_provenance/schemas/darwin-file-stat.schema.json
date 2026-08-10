@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/darwin-file-stat.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["device", "inode", "mode", "nlink", "uid", "gid", "size"],
+  "properties": {
+    "device": {"type": "integer", "minimum": 0},
+    "inode": {"type": "integer", "minimum": 0},
+    "mode": {"type": "string", "pattern": "^[0-7]+$"},
+    "nlink": {"type": "integer", "minimum": 0},
+    "uid": {"type": "integer", "minimum": 0},
+    "gid": {"type": "integer", "minimum": 0},
+    "size": {"type": "integer", "minimum": 0},
+    "blocks_512_bytes": {"type": "integer", "minimum": 0},
+    "preferred_io_block_size": {"type": "integer", "minimum": 0},
+    "flags": {"type": "integer", "minimum": 0},
+    "generation": {"type": "integer", "minimum": 0},
+    "rdev": {"type": "integer", "minimum": 0}
+  }
+}

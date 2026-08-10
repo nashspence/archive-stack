@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/linux-fs-flags.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["raw", "set_names"],
+  "properties": {
+    "raw": {"type": "integer", "minimum": 0},
+    "set_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  }
+}

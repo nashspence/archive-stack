@@ -30,9 +30,17 @@ from jeb_core.ingress import (
     JebIngressError,
     authenticate_tus_source,
     prepare_tus_upload,
-    publish_tus_upload,
+    publish_validated_tus_upload,
+    validate_tus_upload,
+)
+from jeb_core.provenance import (
+    finalize_ingress_provenance,
+    publish_ingress_provenance,
+    put_ingress_binding,
+    put_ingress_journal,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
+from riverhog_provenance import ProvenanceValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jeb_api.composition import JebServices, config_from_env, create_services
@@ -232,6 +240,17 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
     async def handle_value_error(_request: object, exc: ValueError) -> JSONResponse:
         return _error_response(HTTPStatus.BAD_REQUEST, code="bad_request", message=str(exc))
 
+    @app.exception_handler(ProvenanceValidationError)
+    async def handle_provenance_error(
+        _request: object,
+        exc: ProvenanceValidationError,
+    ) -> JSONResponse:
+        return _error_response(
+            HTTPStatus.BAD_REQUEST,
+            code="invalid_provenance",
+            message=str(exc),
+        )
+
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
         _request: object,
@@ -313,6 +332,46 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
             )
         return Response(status_code=HTTPStatus.NO_CONTENT)
 
+    @internal.put(
+        "/ingress/tus/provenance/{upload_id}/journals/{journal_id}",
+        operation_id="put_tus_ingress_provenance_journal",
+    )
+    def put_tus_ingress_provenance_journal(
+        upload_id: str,
+        journal_id: str,
+        content: Annotated[bytes, Body(media_type="application/json-seq")],
+        authorization: Annotated[str | None, Header()] = None,
+        x_riverhog_provenance_sha256: Annotated[str, Header()] = "",
+    ) -> dict[str, object]:
+        services.runtime.initialize()
+        source_id = authenticate_tus_source(services.source_registry, authorization)
+        return put_ingress_journal(
+            services.config.ingress,
+            upload_id=upload_id,
+            source_id=source_id,
+            journal_id=journal_id,
+            content=content,
+            expected_sha256=x_riverhog_provenance_sha256,
+        )
+
+    @internal.put(
+        "/ingress/tus/provenance/{upload_id}/binding",
+        operation_id="put_tus_ingress_provenance_binding",
+    )
+    def put_tus_ingress_provenance_binding(
+        upload_id: str,
+        payload: Annotated[dict[str, object], Body()],
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, object]:
+        services.runtime.initialize()
+        source_id = authenticate_tus_source(services.source_registry, authorization)
+        return put_ingress_binding(
+            services.config.ingress,
+            upload_id=upload_id,
+            source_id=source_id,
+            payload=payload,
+        )
+
     @internal.post(
         "/ingress/tus/hooks",
         operation_id="handle_tus_hook",
@@ -355,11 +414,23 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
                 }
             }
         if hook_type == "post-finish":
-            publish_tus_upload(
+            validated = validate_tus_upload(
                 services.config.ingress,
                 services.source_registry,
                 upload=upload,
             )
+            provenance = finalize_ingress_provenance(
+                services.config.ingress,
+                upload_id=validated.upload_id,
+                source_id=validated.source_id,
+                source=validated.source,
+                target_path=f"{validated.source_id}/{validated.relative_path}",
+                expected_provenance_sha256=validated.provenance_sha256,
+            )
+            if provenance.binding.sha256 != validated.payload_sha256:
+                raise JebIngressError("Jeb TUS payload identity changed before publication")
+            publish_ingress_provenance(validated.destination, provenance)
+            publish_validated_tus_upload(services.config.ingress, validated)
         return {}
 
     management = APIRouter(

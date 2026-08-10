@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/linux-statx-attributes.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attributes", "attributes_mask", "set_names", "supported_names"],
+  "properties": {
+    "attributes": {"type": "integer", "minimum": 0},
+    "attributes_mask": {"type": "integer", "minimum": 0},
+    "set_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "supported_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  }
+}

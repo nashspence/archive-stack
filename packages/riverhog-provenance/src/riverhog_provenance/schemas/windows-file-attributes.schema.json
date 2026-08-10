@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-file-attributes.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bitmask",
+    "hex",
+    "names",
+    "reparse_tag"
+  ],
+  "properties": {
+    "bitmask": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hex": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{8}$"
+    },
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "reparse_tag": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

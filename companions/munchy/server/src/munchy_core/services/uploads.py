@@ -16,12 +16,14 @@ from typing import Any, cast
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
-from munchy_api_client.filesystem_metadata import (
-    load_filesystem_metadata_map,
-    write_filesystem_metadata_map,
-)
 from munchy_target_support.source_artifact_bridge import (
     build_preserve_source_artifacts,
+)
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    ProvenanceValidationError,
+    build_provenance_archive,
+    validate_journal,
 )
 from time_formats import utc_timestamp_now
 
@@ -67,6 +69,112 @@ def safe_local_id(value: str) -> str:
 
 def shared_input_upload_root(upload_id: str) -> Path:
     return runtime_config.GPU_RUNTIME_DIR / "input-uploads" / safe_local_id(upload_id)
+
+
+def input_provenance_journal_path(upload_id: str, journal_id: str) -> Path:
+    if not journal_id.startswith("urn:uuid:") or "/" in journal_id or "\\" in journal_id:
+        raise ServiceError(status_code=400, detail="invalid provenance journal id")
+    return (
+        shared_input_upload_root(upload_id)
+        / ".riverhog"
+        / "provenance"
+        / "journals"
+        / (journal_id + ".json-seq")
+    )
+
+
+def put_input_provenance_journal(
+    upload_id: str,
+    journal_id: str,
+    *,
+    content: bytes,
+    sha256: str,
+) -> dict[str, object]:
+    if len(content) > 64 * 1024 * 1024:
+        raise ServiceError(status_code=400, detail="provenance journal exceeds 64 MiB")
+    if hashlib.sha256(content).hexdigest() != sha256:
+        raise ServiceError(status_code=400, detail="provenance journal SHA-256 mismatch")
+    try:
+        summary = validate_journal(content)
+    except ProvenanceValidationError as exc:
+        raise ServiceError(status_code=400, detail=str(exc)) from exc
+    if summary.journal_id != journal_id:
+        raise ServiceError(status_code=400, detail="provenance journal id mismatch")
+    with execution_runtime.input_upload_state_lock(upload_id):
+        upload = load_input_upload_raw(upload_id)
+        path = input_provenance_journal_path(upload_id, journal_id)
+        if path.exists():
+            if path.read_bytes() != content:
+                raise ServiceError(
+                    status_code=409,
+                    detail="provenance journal already has different exact bytes",
+                )
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        descriptors = dict(upload.get("provenance_journals") or {})
+        descriptor = {"bytes": len(content), "sha256": sha256}
+        if journal_id in descriptors and descriptors[journal_id] != descriptor:
+            raise ServiceError(status_code=409, detail="provenance journal identity changed")
+        descriptors[journal_id] = descriptor
+        upload["provenance_journals"] = descriptors
+        save_input_upload_raw(upload)
+    return {"journal_id": journal_id, **descriptor}
+
+
+def input_provenance_journals(upload: Mapping[str, Any]) -> dict[str, bytes]:
+    upload_id = str(upload["input_upload_id"])
+    result: dict[str, bytes] = {}
+    for journal_id, descriptor in dict(upload.get("provenance_journals") or {}).items():
+        content = input_provenance_journal_path(upload_id, str(journal_id)).read_bytes()
+        if (
+            not isinstance(descriptor, Mapping)
+            or descriptor.get("bytes") != len(content)
+            or descriptor.get("sha256") != hashlib.sha256(content).hexdigest()
+        ):
+            raise RuntimeError("stored provenance journal identity is inconsistent")
+        result[str(journal_id)] = content
+    return result
+
+
+def validate_input_provenance(upload: Mapping[str, Any]) -> bool:
+    journals = input_provenance_journals(upload)
+    bindings: list[FileProvenanceBinding] = []
+    captured_ids: set[str] = set()
+    for item in upload.get("files", []):
+        if not isinstance(item, Mapping) or not isinstance(item.get("provenance"), Mapping):
+            raise RuntimeError("input upload file has no provenance accounting")
+        provenance = cast(Mapping[str, Any], item["provenance"])
+        status = str(provenance.get("status", ""))
+        journal_id = str(provenance.get("journal_id")) if status == "captured" else None
+        if journal_id is not None:
+            captured_ids.add(journal_id)
+        bindings.append(
+            FileProvenanceBinding(
+                path=str(item["path"]),
+                bytes=int(item["bytes"]),
+                sha256=str(item["sha256"]),
+                status=cast(Any, status),
+                journal_id=journal_id,
+                current_state_id=(
+                    str(provenance.get("current_state_id")) if status == "captured" else None
+                ),
+                omission_reason=(
+                    str(provenance.get("omission_reason")) if status == "omitted" else None
+                ),
+            )
+        )
+    if not captured_ids:
+        return not journals
+    if not captured_ids.issubset(journals):
+        return False
+    try:
+        build_provenance_archive(bindings=bindings, journals=journals)
+    except ProvenanceValidationError as exc:
+        if "unresolved ancestor" in str(exc):
+            return False
+        raise RuntimeError(f"stored input provenance is invalid: {exc}") from exc
+    return True
 
 
 def shared_review_plan_path(upload_id: str, group_name: str, task_name: str) -> Path:
@@ -248,7 +356,10 @@ def refresh_input_upload(upload: dict[str, Any]) -> dict[str, Any]:
     out["files_uploaded"] = sum(1 for item in files if item["complete"])
     out["bytes_total"] = sum(int(item["bytes"]) for item in files)
     out["uploaded_bytes"] = sum(int(item["uploaded_bytes"]) for item in files)
-    out["state"] = "uploaded" if out["files_uploaded"] == out["files_total"] else "uploading"
+    payload_complete = out["files_uploaded"] == out["files_total"]
+    provenance_complete = validate_input_provenance(out)
+    out["provenance_complete"] = provenance_complete
+    out["state"] = "uploaded" if payload_complete and provenance_complete else "uploading"
     return out
 
 
@@ -528,31 +639,15 @@ def build_preserve_group_source_artifacts(
     group_name: str,
     source_root: Path,
     output_root: Path,
-    allow_missing_filesystem_metadata: bool = False,
 ) -> dict[str, Any]:
-    filesystem_metadata = load_filesystem_metadata_map(source_root)
-    if not filesystem_metadata and not allow_missing_filesystem_metadata:
-        raise RuntimeError(
-            "unresumable: source filesystem metadata sidecar is missing for preserve group"
-        )
     items: list[dict[str, Any]] = []
     for file_state in primary_upload_files_for_groups(upload, {group_name}):
         rel_path = upload_file_group_rel_for_state(file_state, group_name)
         source = source_root / rel_path
         output = output_root / rel_path
-        metadata = filesystem_metadata.get(rel_path.as_posix())
-        if (not isinstance(metadata, Mapping) or not metadata) and not (
-            allow_missing_filesystem_metadata
-        ):
-            raise RuntimeError(
-                "unresumable: source filesystem metadata sidecar is missing entries for "
-                f"{rel_path.as_posix()}"
-            )
         artifacts = build_preserve_source_artifacts(
             source=source,
             output=output,
-            source_filesystem_metadata=metadata,
-            allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
             source_sidecars=source_artifacts_sidecar_entries(
                 upload,
                 [file_state],
@@ -843,21 +938,6 @@ def materialize_upload_groups(
         materialize_upload_file(file_state, dest_root)
 
 
-def write_group_filesystem_metadata(
-    root: Path,
-    group_name: str,
-    file_states: list[dict[str, Any]],
-) -> None:
-    records: dict[str, dict[str, Any]] = {}
-    for file_state in file_states:
-        metadata = file_state.get("filesystem_metadata")
-        if not isinstance(metadata, dict):
-            continue
-        rel_path = upload_file_group_rel_for_state(file_state, group_name).as_posix()
-        records[rel_path] = metadata
-    write_filesystem_metadata_map(root / group_name, records, created_at=utc_timestamp_now())
-
-
 def sync_shared_input_tree(
     upload: dict[str, Any],
     group_names: set[str] | None = None,
@@ -891,9 +971,6 @@ def sync_shared_input_tree(
                 job["phase"] = f"preparing_input:{progress['input_tree_files_ready']}/{len(files)}"
                 job["upload_progress"] = upload_group_progress(upload, selected_groups)
                 state_store.save_job(job)
-        for group_name in selected_groups:
-            group_files = upload_files_for_groups(upload, {group_name})
-            write_group_filesystem_metadata(root, group_name, group_files)
         return {"linked": linked, "skipped": skipped, "files": len(files)}
 
 
@@ -1091,7 +1168,6 @@ def group_dump(group: domain_models.GroupConfig) -> dict[str, Any]:
         "tasks": group.tasks,
         "profile": profile_name_for(encode_profile),
         "encode_profile": encode_profile,
-        "allow_missing_filesystem_metadata": group.allow_missing_filesystem_metadata,
         "metadata_projection": metadata_projection,
     }
     if group.max_parallel_encodes is not None:
@@ -1106,5 +1182,4 @@ def default_group_config(req: domain_models.CreateJobRequest) -> domain_models.G
         output_mode=req.output_mode,
         tasks=req.tasks,
         encode_profile=req.encode_profile,
-        allow_missing_filesystem_metadata=req.allow_missing_filesystem_metadata,
     )

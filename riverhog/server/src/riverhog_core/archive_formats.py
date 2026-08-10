@@ -4,6 +4,8 @@ PACK_VOLUME_STORAGE_FORMAT = "riverhog-pack-volume/v1"
 RAW_VOLUME_STORAGE_FORMAT = "riverhog-raw-volume/v1"
 ROOT_MANIFEST_STORAGE_FORMAT = "riverhog-collection-root/v1"
 ROOT_PROOF_STORAGE_FORMAT = "riverhog-collection-root-proof/v1"
+PROVENANCE_INDEX_STORAGE_FORMAT = "riverhog-provenance-index/v1+age"
+PROVENANCE_BUNDLE_STORAGE_FORMAT = "riverhog-provenance-bundle/v1+age"
 ATTESTATION_CHECKSUMS_STORAGE_FORMAT = "riverhog-archive-checksums/v1"
 ATTESTATION_SIGNATURE_STORAGE_FORMAT = "riverhog-archive-signature/v1"
 ATTESTATION_SIGNATURE_PROOF_STORAGE_FORMAT = "riverhog-archive-signature-proof/v1"
@@ -13,6 +15,8 @@ ARCHIVE_OBJECT_STORAGE_FORMATS = {
     "segment": RAW_VOLUME_STORAGE_FORMAT,
     "manifest": ROOT_MANIFEST_STORAGE_FORMAT,
     "proof": ROOT_PROOF_STORAGE_FORMAT,
+    "provenance-index": PROVENANCE_INDEX_STORAGE_FORMAT,
+    "provenance-bundle": PROVENANCE_BUNDLE_STORAGE_FORMAT,
     "checksums": ATTESTATION_CHECKSUMS_STORAGE_FORMAT,
     "signature": ATTESTATION_SIGNATURE_STORAGE_FORMAT,
     "signature-proof": ATTESTATION_SIGNATURE_PROOF_STORAGE_FORMAT,
@@ -33,6 +37,8 @@ __all__ = [
     "ATTESTATION_SIGNATURE_STORAGE_FORMAT",
     "PACK_VOLUME_STORAGE_FORMAT",
     "RAW_VOLUME_STORAGE_FORMAT",
+    "PROVENANCE_BUNDLE_STORAGE_FORMAT",
+    "PROVENANCE_INDEX_STORAGE_FORMAT",
     "ROOT_MANIFEST_STORAGE_FORMAT",
     "ROOT_PROOF_STORAGE_FORMAT",
     "archive_object_storage_format",

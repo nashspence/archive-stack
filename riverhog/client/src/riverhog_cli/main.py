@@ -11,6 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, cast
 
@@ -43,6 +44,13 @@ from riverhog_protocol.paths import (
     normalize_tag,
 )
 from riverhog_protocol.raw_ingress import hash_raw_source
+from riverhog_provenance import (
+    SIDECAR_SUFFIX,
+    FileProvenanceBinding,
+    build_provenance_archive,
+    prepare_file_provenance,
+    user_installation_id,
+)
 from time_formats import parse_duration, utc_timestamp_now
 
 from riverhog_cli.local import local_app
@@ -67,8 +75,12 @@ from riverhog_cli.output import (
     format_collections,
     format_download_quota,
     format_download_quotas,
+    format_file_provenance,
     format_file_selectors,
     format_find,
+    format_provenance_files,
+    format_provenance_trace,
+    format_provenance_verification,
     format_tag,
     format_tag_deletion_plan,
     format_tag_deletion_result,
@@ -80,6 +92,7 @@ app = typer.Typer(help="Riverhog archive platform CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
 collection_tag_app = typer.Typer(help="Collection tag assignments.")
 collection_upload_app = typer.Typer(help="Collection upload sessions.")
+collection_provenance_app = typer.Typer(help="Collection file provenance.")
 archive_app = typer.Typer(help="Archive-store operations.")
 archive_store_app = typer.Typer(help="Configured archive stores.")
 archive_copy_app = typer.Typer(help="Archive-copy jobs.")
@@ -95,6 +108,7 @@ application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
 collection_app.add_typer(collection_tag_app, name="tag")
 collection_app.add_typer(collection_upload_app, name="upload")
+collection_app.add_typer(collection_provenance_app, name="provenance")
 app.add_typer(archive_app, name="archive")
 archive_app.add_typer(archive_store_app, name="store")
 archive_app.add_typer(archive_copy_app, name="copy")
@@ -128,6 +142,8 @@ class CollectionManifestEntry(TypedDict, total=False):
     bytes: int
     sha256: str
     raw_parts: RawPartsPayload
+    provenance: dict[str, object]
+    provenance_journals: dict[str, bytes]
 
 
 def client() -> ApiClient:
@@ -914,6 +930,8 @@ def _create_or_resume_collection_upload_session(
     *,
     ingest_source: str | None,
     archive_store: str | None = None,
+    provenance_mode: str,
+    provenance_omission_reason: str | None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session open/resume",
@@ -922,6 +940,8 @@ def _create_or_resume_collection_upload_session(
             tags,
             ingest_source=ingest_source,
             archive_store=archive_store,
+            provenance_mode=provenance_mode,
+            provenance_omission_reason=provenance_omission_reason,
         ),
     )
 
@@ -933,7 +953,13 @@ def _register_collection_upload_session_files(
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         f"Upload session register {len(file_payloads)} file(s)",
-        lambda: api.register_collection_upload_session_files(collection_id, file_payloads),
+        lambda: api.register_collection_upload_session_files(
+            collection_id,
+            [
+                {key: value for key, value in item.items() if key != "provenance_journals"}
+                for item in file_payloads
+            ],
+        ),
     )
 
 
@@ -950,6 +976,7 @@ def _complete_collection_upload_session(
             content_etag=collection_content_etag(
                 (item["path"], item["bytes"], item["sha256"]) for item in manifest
             ),
+            provenance_etag=_provenance_etag(manifest),
         ),
     )
 
@@ -957,7 +984,7 @@ def _complete_collection_upload_session(
 def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
     files: list[CollectionManifestEntry] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or _is_provenance_control_path(root, path):
             continue
         files.append(
             {
@@ -1026,32 +1053,57 @@ def _hash_collection_source(
     *,
     pack_member_bytes: int,
     raw_part_plaintext_bytes: int,
+    provenance: Path | None = None,
+    omit_provenance: str | None = None,
 ) -> CollectionManifestEntry:
     rel_path = source_path.relative_to(root).as_posix()
     byte_count = source_path.stat().st_size
     if byte_count >= _upload_file_log_bytes():
         _log_upload(f"Hashing {rel_path} ({_format_bytes(byte_count)})")
     if byte_count < pack_member_bytes:
-        return {
+        result: CollectionManifestEntry = {
             "path": rel_path,
             "bytes": byte_count,
             "sha256": _file_sha256(source_path),
         }
-    raw = hash_raw_source(
-        path=rel_path,
-        chunks=_iter_file_chunks(source_path),
-        expected_bytes=byte_count,
-        part_plaintext_bytes=raw_part_plaintext_bytes,
+    else:
+        raw = hash_raw_source(
+            path=rel_path,
+            chunks=_iter_file_chunks(source_path),
+            expected_bytes=byte_count,
+            part_plaintext_bytes=raw_part_plaintext_bytes,
+        )
+        result = {
+            "path": rel_path,
+            "bytes": byte_count,
+            "sha256": raw.sha256,
+            "raw_parts": {
+                "part_plaintext_bytes": raw.part_plaintext_bytes,
+                "sha256s": list(raw.part_sha256s),
+            },
+        }
+    prepared = prepare_file_provenance(
+        source_path,
+        relative_path=rel_path,
+        host_id=user_installation_id("riverhog-client"),
+        agent_name="riverhog-client",
+        agent_version=importlib.metadata.version("riverhog-client"),
+        provenance=provenance,
+        omit_reason=omit_provenance,
     )
-    return {
-        "path": rel_path,
-        "bytes": byte_count,
-        "sha256": raw.sha256,
-        "raw_parts": {
-            "part_plaintext_bytes": raw.part_plaintext_bytes,
-            "sha256s": list(raw.part_sha256s),
-        },
+    result["provenance"] = {
+        "status": prepared.binding.status,
+        **(
+            {
+                "journal_id": prepared.binding.journal_id,
+                "current_state_id": prepared.binding.current_state_id,
+            }
+            if prepared.binding.status == "captured"
+            else {"omission_reason": prepared.binding.omission_reason}
+        ),
     }
+    result["provenance_journals"] = prepared.journals
+    return result
 
 
 def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManifestEntry]:
@@ -1072,14 +1124,88 @@ def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManif
             or not isinstance(sha256, str)
         ):
             raise RuntimeError("upload session returned an invalid file identity")
-        result.append({"path": path, "bytes": byte_count, "sha256": sha256})
+        provenance = value.get("provenance")
+        if not isinstance(provenance, Mapping):
+            raise RuntimeError("upload session returned no file provenance identity")
+        result.append(
+            {
+                "path": path,
+                "bytes": byte_count,
+                "sha256": sha256,
+                "provenance": dict(provenance),
+            }
+        )
     return result
 
 
-def _manifest_identity(
+def _manifest_identity(manifest: list[CollectionManifestEntry]) -> list[tuple[object, ...]]:
+    return [
+        (
+            item["path"],
+            item["bytes"],
+            item["sha256"],
+            json.dumps(item.get("provenance"), sort_keys=True, separators=(",", ":")),
+        )
+        for item in manifest
+    ]
+
+
+def _provenance_etag(manifest: list[CollectionManifestEntry]) -> str | None:
+    bindings: list[FileProvenanceBinding] = []
+    journals: dict[str, bytes] = {}
+    for item in manifest:
+        provenance = item.get("provenance")
+        if not isinstance(provenance, Mapping):
+            raise RuntimeError("local manifest has no provenance accounting")
+        status = str(provenance.get("status", ""))
+        bindings.append(
+            FileProvenanceBinding(
+                path=item["path"],
+                bytes=item["bytes"],
+                sha256=item["sha256"],
+                status=cast(Any, status),
+                journal_id=cast(str | None, provenance.get("journal_id")),
+                current_state_id=cast(str | None, provenance.get("current_state_id")),
+                omission_reason=cast(str | None, provenance.get("omission_reason")),
+            )
+        )
+        journals.update(item.get("provenance_journals", {}))
+    if not journals:
+        return None
+    return build_provenance_archive(bindings=bindings, journals=journals).identity
+
+
+def _put_provenance_journals(
+    api: ApiClient,
+    collection_id: int,
     manifest: list[CollectionManifestEntry],
-) -> list[tuple[str, int, str]]:
-    return [(item["path"], item["bytes"], item["sha256"]) for item in manifest]
+) -> None:
+    journals: dict[str, bytes] = {}
+    for item in manifest:
+        for journal_id, content in item.get("provenance_journals", {}).items():
+            previous = journals.get(journal_id)
+            if previous is not None and previous != content:
+                raise Conflict(f"local provenance journal bytes disagree: {journal_id}")
+            journals[journal_id] = content
+    for journal_id, content in sorted(journals.items()):
+        _retry_transient_upload_operation(
+            f"Upload provenance journal {journal_id}",
+            partial(
+                api.put_collection_upload_session_provenance_journal,
+                collection_id,
+                journal_id,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        )
+
+
+def _is_provenance_control_path(root: Path, path: Path) -> bool:
+    relative = path.relative_to(root)
+    return path.name.endswith(SIDECAR_SUFFIX) or relative.parts[:2] == (
+        ".riverhog",
+        "provenance",
+    )
 
 
 def _upload_unit_content(
@@ -1226,6 +1352,8 @@ def _upload_collection_via_session(
     json_mode: bool = False,
     file_concurrency: int,
     api_factory: Callable[[], ApiClient] | None = None,
+    provenance: Path | None = None,
+    omit_provenance: str | None = None,
 ) -> dict[str, object]:
     _log_upload(f"Opening direct-to-archive upload session for {resolved_root}")
     session_payload = _create_or_resume_collection_upload_session(
@@ -1234,6 +1362,8 @@ def _upload_collection_via_session(
         tags,
         ingest_source=ingest_source,
         archive_store=archive_store,
+        provenance_mode="omitted" if omit_provenance is not None else "captured",
+        provenance_omission_reason=omit_provenance,
     )
     collection_id = cast(int, session_payload["collection_id"])
     if session_payload.get("state") == "finalized":
@@ -1241,7 +1371,11 @@ def _upload_collection_via_session(
         return session_payload
 
     pack_member_bytes, raw_part_plaintext_bytes = _session_layout(session_payload)
-    paths = [path for path in sorted(resolved_root.rglob("*")) if path.is_file()]
+    paths = [
+        path
+        for path in sorted(resolved_root.rglob("*"))
+        if path.is_file() and not _is_provenance_control_path(resolved_root, path)
+    ]
     if not paths:
         raise typer.BadParameter("collection source must contain at least one file")
     bytes_total = sum(path.stat().st_size for path in paths)
@@ -1266,6 +1400,8 @@ def _upload_collection_via_session(
                 path,
                 pack_member_bytes=pack_member_bytes,
                 raw_part_plaintext_bytes=raw_part_plaintext_bytes,
+                provenance=provenance,
+                omit_provenance=omit_provenance,
             )
 
         with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
@@ -1276,6 +1412,8 @@ def _upload_collection_via_session(
 
         state = str(session_payload.get("state") or "open")
         if state == "open":
+            progress.notice("Uploading validated provenance journals", phase="registering")
+            _put_provenance_journals(api, collection_id, manifest)
             progress.notice("Registering the canonical file manifest", phase="registering")
             for start in range(0, len(manifest), UPLOAD_REGISTRATION_BATCH_MAX):
                 batch = manifest[start : start + UPLOAD_REGISTRATION_BATCH_MAX]
@@ -1283,6 +1421,7 @@ def _upload_collection_via_session(
                 for _ in batch:
                     progress.registered_file()
         else:
+            _put_provenance_journals(api, collection_id, manifest)
             existing = _server_manifest(api, collection_id)
             if _manifest_identity(existing) != _manifest_identity(manifest):
                 raise Conflict("local collection identity differs from the resumable session")
@@ -1438,6 +1577,20 @@ def upload_cmd(
         str | None,
         typer.Option("--archive-store", help="Named archive store destination"),
     ] = None,
+    provenance: Annotated[
+        Path | None,
+        typer.Option(
+            "--provenance",
+            help="Existing Riverhog provenance journal or recovered provenance set",
+        ),
+    ] = None,
+    omit_provenance: Annotated[
+        str | None,
+        typer.Option(
+            "--omit-provenance",
+            help="Explicit reason to omit provenance for the whole collection",
+        ),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
     dry_run: Annotated[
         bool,
@@ -1454,6 +1607,11 @@ def upload_cmd(
     resolved_root = root.expanduser().resolve()
     if not resolved_root.is_dir():
         raise typer.BadParameter("collection source must be a directory")
+    if provenance is not None and omit_provenance is not None:
+        raise typer.BadParameter("--provenance and --omit-provenance are mutually exclusive")
+    resolved_provenance = provenance.expanduser().resolve() if provenance is not None else None
+    if resolved_provenance is not None and not resolved_provenance.exists():
+        raise typer.BadParameter("--provenance path does not exist")
 
     if dry_run:
         _log_upload(f"Hashing collection manifest from {resolved_root}")
@@ -1486,6 +1644,8 @@ def upload_cmd(
         archive_store=archive_store,
         json_mode=json_mode,
         file_concurrency=file_concurrency,
+        provenance=resolved_provenance,
+        omit_provenance=omit_provenance,
     )
     emit(
         payload if json_mode else format_collection_upload(payload),
@@ -1654,6 +1814,109 @@ def show_cmd(
 
     payload = client().get_collection(collection)
     emit(payload if json_mode else format_collection_summary(payload), json_mode=json_mode)
+
+
+_PROVENANCE_SORT_FIELDS = {"path", "bytes", "status"}
+
+
+@collection_provenance_app.command("list")
+def provenance_list_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "path",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Substring match over collection paths"),
+    ] = None,
+    status: Annotated[
+        str | None,
+        typer.Option("--status", help="Restrict to captured or omitted files"),
+    ] = None,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every matching file")] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List every file's provenance accounting in one collection."""
+
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_PROVENANCE_SORT_FIELDS)
+    if status is not None and status not in {"captured", "omitted"}:
+        raise typer.BadParameter("status must be captured or omitted", param_hint="--status")
+    payload = client().list_collection_provenance(
+        collection_id,
+        page=page,
+        per_page=per_page,
+        q=query,
+        status=status,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if selectors:
+        emit(format_file_selectors(payload), json_mode=False)
+        return
+    emit(payload if json_mode else format_provenance_files(payload), json_mode=json_mode)
+
+
+@collection_provenance_app.command("show")
+def provenance_show_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    path: Annotated[str, typer.Argument(help="Collection-relative file path")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one file's current provenance binding and journal summary."""
+
+    payload = client().get_collection_file_provenance(collection_id, path)
+    emit(payload if json_mode else format_file_provenance(payload), json_mode=json_mode)
+
+
+@collection_provenance_app.command("trace")
+def provenance_trace_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    path: Annotated[str, typer.Argument(help="Collection-relative file path")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Trace one file lineage through every reachable ancestor journal."""
+
+    payload = client().trace_collection_file_provenance(collection_id, path)
+    emit(payload if json_mode else format_provenance_trace(payload), json_mode=json_mode)
+
+
+@collection_provenance_app.command("export")
+def provenance_export_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    journal_id: Annotated[str, typer.Argument(help="Exact provenance journal id")],
+    output: Annotated[Path, typer.Option("--output", "-o", help="Destination .json-seq file")],
+) -> None:
+    """Export one exact canonical RFC 7464 journal."""
+
+    content = client().export_collection_provenance_journal(collection_id, journal_id)
+    destination = output.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+    try:
+        temporary.write_bytes(content)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    typer.echo(str(destination))
+
+
+@collection_provenance_app.command("verify")
+def provenance_verify_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Verify exact journals, bindings, identity, and database projection."""
+
+    payload = client().verify_collection_provenance(collection_id)
+    emit(payload if json_mode else format_provenance_verification(payload), json_mode=json_mode)
 
 
 _ARCHIVE_STORE_SORT_FIELDS = {

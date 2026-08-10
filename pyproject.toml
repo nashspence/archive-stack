@@ -12,6 +12,7 @@ members = [
 munchy-api-client = { workspace = true }
 munchy-target-support = { workspace = true }
 munchy-workflows = { workspace = true }
+riverhog-provenance = { workspace = true }
 time-formats = { workspace = true }
 
 [dependency-groups]
@@ -44,3 +45,21 @@ markers = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[[tool.mypy.overrides]]
+module = "riverhog_provenance.linux"
+# OSError.errno is typed as optional even on the caught native failures whose
+# numeric code is preserved for diagnostic rendering.
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "riverhog_provenance.macos"
+# The non-Darwin host stubs cannot express Darwin errno and native ABI details;
+# live macOS CI qualifies the implementation itself.
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "riverhog_provenance.windows"
+# The non-Windows host stubs intentionally omit ctypes/msvcrt/winreg members;
+# live Windows CI qualifies those APIs and their independently typed wrappers.
+disable_error_code = ["attr-defined"]

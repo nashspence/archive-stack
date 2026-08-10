@@ -117,6 +117,15 @@ def test_architecture_is_scoped_to_quick_context() -> None:
     assert len(architecture.split()) <= 500
 
 
+def test_architecture_states_the_repo_wide_provenance_authority_policy() -> None:
+    architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
+
+    assert "Per-file provenance is append-only custody history" in architecture
+    assert "Existing journals remain exact prefixes across in-repo handoffs" in architecture
+    assert "every omission has an explicit reason" in architecture
+    assert "relational provenance rows are a rebuildable query projection" in architecture
+
+
 def test_repository_map_exactly_covers_the_workspace_layout() -> None:
     architecture_path = REPO / "docs/architecture.md"
     architecture = architecture_path.read_text(encoding="utf-8")

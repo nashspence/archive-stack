@@ -43,6 +43,7 @@ from munchy_target_support.metadata_projection import (
 from munchy_workflows.profiles import (
     ArchiveContainer,
 )
+from riverhog_provenance import parse_journal, validate_journal
 from time_formats import (
     utc_timestamp_now,
 )
@@ -241,7 +242,10 @@ def routing_path_facts_for_files(
     sidecar_facts_errors_by_path: Mapping[str, str | None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     facts_by_path = {
-        str(file_state["path"]): routing_file_facts(str(file_state["path"]))
+        str(file_state["path"]): routing_file_facts(
+            str(file_state["path"]),
+            routing_facts={"provenance": file_state_provenance_facts(file_state)},
+        )
         for file_state in file_states
     }
     if routing.get("sidecars"):
@@ -967,7 +971,7 @@ def metadata_projection_facts_for_path(
     rel_path: str,
     path: Path,
     *,
-    filesystem_metadata: Mapping[str, Any] | None = None,
+    provenance: Mapping[str, Any] | None = None,
     sidecar_facts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     probe_summary: dict[str, Any] | None = None
@@ -985,9 +989,8 @@ def metadata_projection_facts_for_path(
         probe_summary=probe_summary,
         exiftool_summary=exiftool_summary,
     )
-    if filesystem_metadata:
-        facts["filesystem"] = dict(filesystem_metadata)
-        facts["source_filesystem_metadata"] = dict(filesystem_metadata)
+    if provenance:
+        facts["provenance"] = dict(provenance)
     if sidecar_facts:
         ids: list[str] = []
         for sidecar_id, payload in sorted(sidecar_facts.items()):
@@ -1013,7 +1016,7 @@ def projection_metadata_from_source(
     source_path: Path,
     *,
     group_config: dict[str, Any],
-    filesystem_metadata: Mapping[str, Any] | None = None,
+    provenance: Mapping[str, Any] | None = None,
     sidecar_facts: Mapping[str, Mapping[str, Any]] | None = None,
     tags: list[str] | None = None,
 ) -> ProjectionMetadata:
@@ -1023,7 +1026,7 @@ def projection_metadata_from_source(
             metadata_projection_facts_for_path(
                 rel_path,
                 source_path,
-                filesystem_metadata=filesystem_metadata,
+                provenance=provenance,
                 sidecar_facts=sidecar_facts,
             ),
             allow_missing_capture_date=bool(config["allow_missing_capture_date"]),
@@ -1049,9 +1052,54 @@ def projection_metadata_from_source(
         raise RuntimeError(f"metadata projection failed for {rel_path}: {exc}") from exc
 
 
-def file_state_filesystem_metadata(file_state: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    metadata = file_state.get("filesystem_metadata")
-    return cast(Mapping[str, Any], metadata) if isinstance(metadata, Mapping) else None
+def _provenance_state_facts(state: Mapping[str, Any]) -> dict[str, Any]:
+    filesystem = state.get("filesystem_metadata")
+    timestamps: dict[str, object] = {}
+    if isinstance(filesystem, Mapping):
+        for item in filesystem.get("timestamps", []):
+            if isinstance(item, Mapping) and item.get("kind") and item.get("value"):
+                timestamps[str(item["kind"])] = item["value"]
+    return {"state_id": str(state.get("id") or ""), "timestamps": timestamps}
+
+
+def file_state_provenance_facts(file_state: Mapping[str, Any]) -> dict[str, Any]:
+    provenance = file_state.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise RuntimeError("Munchy input file has no provenance accounting")
+    status = str(provenance.get("status") or "")
+    if status == "omitted":
+        return {
+            "status": "omitted",
+            "omission_reason": str(provenance.get("omission_reason") or ""),
+        }
+    journal_id = str(provenance.get("journal_id") or "")
+    upload_id = str(file_state.get("input_upload_id") or "")
+    content = upload_service.input_provenance_journal_path(upload_id, journal_id).read_bytes()
+    summary = validate_journal(content)
+    states = [
+        state
+        for frame in parse_journal(content)
+        for state in (
+            frame.document.get("body", {}).get("assertions", {}).get("states", [])
+            if isinstance(frame.document.get("body"), Mapping)
+            else []
+        )
+        if isinstance(state, Mapping) and state.get("lineage_id") == summary.primary_lineage_id
+    ]
+    if not states:
+        raise RuntimeError("Munchy input provenance has no primary-lineage states")
+    current = next(
+        (state for state in reversed(states) if state.get("id") == summary.current_state_id),
+        None,
+    )
+    if current is None:
+        raise RuntimeError("Munchy input provenance has no current state")
+    return {
+        "status": "captured",
+        "journal_id": summary.journal_id,
+        "origin": _provenance_state_facts(states[0]),
+        "current": _provenance_state_facts(current),
+    }
 
 
 def metadata_projection_sidecar_facts(
@@ -1249,7 +1297,7 @@ def ensure_file_projection_metadata(
         str(file_state["path"]),
         source_path if source_path is not None else upload_file_data_path(file_state),
         group_config=group_config,
-        filesystem_metadata=file_state_filesystem_metadata(file_state),
+        provenance=file_state_provenance_facts(file_state),
         sidecar_facts=metadata_projection_sidecar_facts(
             upload,
             file_state,
@@ -1296,7 +1344,7 @@ def projection_metadata_for_file_output(
         str(file_state["path"]),
         source_path,
         group_config=group_config,
-        filesystem_metadata=file_state_filesystem_metadata(file_state),
+        provenance=file_state_provenance_facts(file_state),
         sidecar_facts=metadata_projection_sidecar_facts(
             upload,
             file_state,

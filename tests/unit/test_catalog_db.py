@@ -23,7 +23,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0001"
+    assert upgraded.current_revision == validated.current_revision == "v1_0002"
     assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",

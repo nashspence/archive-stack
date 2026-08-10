@@ -23,6 +23,7 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "riverhog-age>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
   "sqlalchemy>=2.0,<3.0",
   "state-schema>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
@@ -38,6 +39,7 @@ http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
 riverhog-age = { workspace = true }
 riverhog-protocol = { workspace = true }
+riverhog-provenance = { workspace = true }
 state-schema = { workspace = true }
 time-formats = { workspace = true }
 

@@ -186,39 +186,35 @@ def test_immich_projection_uses_configured_path_regex_capture_date() -> None:
     assert metadata.capture_date_source == "path_regex:voice_filename"
 
 
-def test_immich_projection_uses_filesystem_birthtime_capture_date() -> None:
+def test_immich_projection_uses_origin_provenance_timestamp() -> None:
     metadata = project_test_metadata(
         {
-            "filesystem": {
-                "stat": {
-                    "birthtime": "2026-06-28T20:30:40+00:00",
-                }
-            },
+            "provenance": {"origin": {"timestamps": {"created": "2026-06-28T20:30:40+00:00"}}},
             "exif.gps_latitude": "37.1",
             "exif.gps_longitude": "-122.1",
         },
         capture_date_sources=[
             {"type": "embedded"},
-            {"type": "filesystem_birthtime", "name": "source_birthtime"},
+            {"type": "provenance_timestamp", "name": "origin_created"},
         ],
     )
 
     assert metadata.capture_date == "2026-06-28T20:30:40+00:00"
-    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+    assert metadata.capture_date_source == "provenance_timestamp:origin_created"
 
 
-def test_immich_projection_uses_filesystem_birthtime_ns_capture_date() -> None:
+def test_immich_projection_uses_numeric_provenance_timestamp() -> None:
     metadata = project_test_metadata(
         {
-            "filesystem": {"stat": {"birthtime_ns": 1782682240000000000}},
+            "provenance": {"origin": {"timestamps": {"created": 1782682240000000000}}},
             "exif.gps_latitude": "37.1",
             "exif.gps_longitude": "-122.1",
         },
-        capture_date_sources=[{"type": "filesystem_birthtime"}],
+        capture_date_sources=[{"type": "provenance_timestamp"}],
     )
 
     assert metadata.capture_date == "2026-06-28T21:30:40+00:00"
-    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+    assert metadata.capture_date_source == "provenance_timestamp:origin_created"
 
 
 def test_immich_projection_can_use_xmp_sidecar_evidence() -> None:
@@ -315,15 +311,15 @@ def test_immich_projection_configured_sidecar_capture_date_must_parse() -> None:
         )
 
 
-def test_immich_projection_filesystem_birthtime_must_parse() -> None:
+def test_immich_projection_provenance_timestamp_must_parse() -> None:
     with pytest.raises(MetadataProjectionError, match="invalid capture date"):
         project_test_metadata(
             {
-                "filesystem": {"stat": {"birthtime": "not a date"}},
+                "provenance": {"origin": {"timestamps": {"created": "not a date"}}},
                 "exif.gps_latitude": "37.1",
                 "exif.gps_longitude": "-122.1",
             },
-            capture_date_sources=[{"type": "filesystem_birthtime"}],
+            capture_date_sources=[{"type": "provenance_timestamp"}],
         )
 
 

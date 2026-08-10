@@ -532,8 +532,8 @@ def first_capture_date(
             if capture_date is not None:
                 return capture_date, capture_date_source
             continue
-        if source_type == "filesystem_birthtime":
-            capture_date, capture_date_source = filesystem_birthtime_capture_date(facts, source)
+        if source_type == "provenance_timestamp":
+            capture_date, capture_date_source = provenance_timestamp_capture_date(facts, source)
             if capture_date is not None:
                 return capture_date, capture_date_source
             continue
@@ -610,31 +610,29 @@ def first_embedded_capture_date(facts: Mapping[str, Any]) -> tuple[str | None, s
     return None, None
 
 
-def filesystem_birthtime_capture_date(
+def provenance_timestamp_capture_date(
     facts: Mapping[str, Any],
     source: Mapping[str, Any],
 ) -> tuple[str | None, str | None]:
-    name = str(source.get("name") or "source_birthtime").strip()
+    name = str(source.get("name") or "origin_created").strip()
     if not name:
-        raise MetadataProjectionError(
-            "metadata_projection filesystem_birthtime source requires name"
-        )
-    fact_keys = filesystem_birthtime_fact_keys(source)
+        raise MetadataProjectionError("metadata_projection provenance_timestamp requires name")
+    fact_keys = provenance_timestamp_fact_keys(source)
     for key in fact_keys:
         value = first_metadata_value(fact_value(facts, key))
         if value in (None, ""):
             continue
-        normalized = normalize_filesystem_birthtime(value)
+        normalized = normalize_provenance_timestamp(value)
         if normalized is None:
             raise MetadataProjectionError(
-                f"metadata_projection filesystem_birthtime source {name} found "
+                f"metadata_projection provenance_timestamp source {name} found "
                 f"invalid capture date in {key}: {value!r}"
             )
-        return normalized, f"filesystem_birthtime:{name}"
+        return normalized, f"provenance_timestamp:{name}"
     return None, None
 
 
-def filesystem_birthtime_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]:
+def provenance_timestamp_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]:
     fact = str(source.get("fact") or "").strip()
     if fact:
         return (fact,)
@@ -644,12 +642,8 @@ def filesystem_birthtime_fact_keys(source: Mapping[str, Any]) -> tuple[str, ...]
         if configured:
             return configured
     return (
-        "filesystem.stat.birthtime",
-        "source_filesystem_metadata.stat.birthtime",
-        "filesystem_metadata.stat.birthtime",
-        "filesystem.stat.birthtime_ns",
-        "source_filesystem_metadata.stat.birthtime_ns",
-        "filesystem_metadata.stat.birthtime_ns",
+        "provenance.origin.timestamps.created",
+        "provenance.origin.timestamps.content_modified",
     )
 
 
@@ -686,7 +680,7 @@ def sidecar_ids(facts: Mapping[str, Any]) -> list[str]:
     return sorted(found)
 
 
-def normalize_filesystem_birthtime(value: Any) -> str | None:
+def normalize_provenance_timestamp(value: Any) -> str | None:
     if isinstance(value, int):
         return datetime.fromtimestamp(value / 1_000_000_000, UTC).isoformat()
     if isinstance(value, float):

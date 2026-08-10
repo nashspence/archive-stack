@@ -29,6 +29,7 @@ from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     as_archive_store,
     as_ingress_store,
+    make_captured_provenance_archive,
     seed_archive_copy,
 )
 
@@ -45,6 +46,7 @@ def _service(
     *,
     source_ready: bool = True,
     destination: MemoryArchiveStore | None = None,
+    archive: FixtureArchive | None = None,
 ) -> tuple[
     RuntimeConfig,
     FixtureArchive,
@@ -52,7 +54,7 @@ def _service(
     MemoryArchiveStore,
     SqlAlchemyArchiveCopyService,
 ]:
-    config, archive = seed_archive_copy(path, FILES)
+    config, archive = seed_archive_copy(path, FILES, archive=archive)
     b2_config = replace(
         config.archive_store("deep"),
         name="b2",
@@ -101,8 +103,8 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
         f"{prefix}/{relative_path}": content
         for relative_path, content in archive.stored_objects.items()
     }
-    assert source.prepared == [("pack-000000000000",)]
-    assert source.cleaned == [("pack-000000000000",)]
+    assert source.prepared == [("pack-000000000000", "manifest", "proof")]
+    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
         assert copy is not None
@@ -147,6 +149,48 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
         "completed",
     ]
     assert events[-1].data["context"] == {"workflow": "promotion"}
+
+
+def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> None:
+    archive = make_captured_provenance_archive(FILES, tmp_path / "source")
+    config, archive, source, destination, service = _service(
+        tmp_path / "catalog.sqlite3",
+        archive=archive,
+    )
+
+    service.create_or_resume(
+        COLLECTION_ID,
+        source_store="deep",
+        destination_store="b2",
+        initiator=INITIATOR,
+    )
+    assert service.process_due(limit=1) == 1
+    assert archive.provenance is not None
+
+    expected_ids = (
+        "pack-000000000000",
+        *(bundle.bundle_id for bundle in archive.provenance.bundles),
+        "provenance-index",
+        "manifest",
+        "proof",
+    )
+    prefix = "archives/b2/new-copy"
+    assert destination.objects == {
+        f"{prefix}/{relative_path}": content
+        for relative_path, content in archive.stored_objects.items()
+    }
+    assert source.prepared == [expected_ids]
+    assert source.cleaned == [expected_ids]
+    with session_scope(make_session_factory(config.database_url)) as session:
+        copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
+        assert copy is not None
+        assert [(current.kind, current.object_id) for current in copy.objects] == [
+            ("pack", "pack-000000000000"),
+            *(("provenance-bundle", bundle.bundle_id) for bundle in archive.provenance.bundles),
+            ("provenance-index", "provenance-index"),
+            ("manifest", "manifest"),
+            ("proof", "proof"),
+        ]
 
 
 def test_archive_copy_to_restore_required_store_writes_final_custody(
@@ -235,7 +279,7 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None and job.state == "waiting"
-    assert source.prepared == [("pack-000000000000",)]
+    assert source.prepared == [("pack-000000000000", "manifest", "proof")]
     assert destination.objects == {}
 
 
@@ -290,7 +334,7 @@ def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
 
     assert service.process_due(limit=1) == 1
     assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
-    assert source.cleaned == [("pack-000000000000",)]
+    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
 
 
@@ -307,7 +351,7 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
 
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
-    assert source.cleaned == [("pack-000000000000",)]
+    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     filtered = service.list(
         page=1,

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/linux-fsxattr.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["xflags", "xflag_names", "extent_size", "nextents", "project_id", "cow_extent_size"],
+  "properties": {
+    "xflags": {"type": "integer", "minimum": 0},
+    "xflag_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "extent_size": {"type": "integer", "minimum": 0},
+    "nextents": {"type": "integer", "minimum": 0},
+    "project_id": {"type": "integer", "minimum": 0},
+    "cow_extent_size": {"type": "integer", "minimum": 0}
+  }
+}

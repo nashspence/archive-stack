@@ -1380,6 +1380,17 @@ def submit(
         bool,
         typer.Option("--no-hash-cache", help="Disable the local file hash cache"),
     ] = False,
+    provenance: Annotated[
+        Path | None,
+        typer.Option(
+            "--provenance",
+            help="Existing Riverhog provenance journal or recovered provenance set",
+        ),
+    ] = None,
+    omit_provenance: Annotated[
+        str | None,
+        typer.Option("--omit-provenance", help="Explicit provenance omission reason"),
+    ] = None,
     wait: Annotated[
         bool,
         typer.Option("--wait/--no-wait", help="Wait until the submission reaches safe completion"),
@@ -1395,6 +1406,10 @@ def submit(
 
     with keep_system_awake("munchy submit"):
         try:
+            if provenance is not None and omit_provenance is not None:
+                raise MunchyJobAuthoringError(
+                    "--provenance and --omit-provenance are mutually exclusive"
+                )
             request = build_submission_upload_request(
                 source=source,
                 template_id=template_id,
@@ -1407,6 +1422,8 @@ def submit(
                 upload_chunk_mib=upload_chunk_mib,
                 hash_cache=hash_cache,
                 use_hash_cache=not no_hash_cache,
+                provenance=provenance.expanduser().resolve() if provenance else None,
+                omit_provenance=omit_provenance,
             )
         except MunchyJobAuthoringError as exc:
             raise typer.BadParameter(str(exc)) from exc

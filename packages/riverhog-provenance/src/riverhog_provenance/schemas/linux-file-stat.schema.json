@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/linux-file-stat.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "device",
+    "inode",
+    "mode",
+    "nlink",
+    "uid",
+    "gid",
+    "size"
+  ],
+  "properties": {
+    "device": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inode": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^[0-7]+$"
+    },
+    "nlink": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "gid": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocks_512_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "preferred_io_block_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rdev": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "statx_available": {
+      "type": "boolean"
+    },
+    "statx_mask": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "statx_attributes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "statx_attributes_mask": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dio_mem_align": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dio_offset_align": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dev_major": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dev_minor": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "subvolume_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "atomic_write_unit_min": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "atomic_write_unit_max": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "atomic_write_segments_max": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "atomic_write_unit_max_opt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dio_read_offset_align": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

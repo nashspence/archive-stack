@@ -149,11 +149,34 @@ def normalize_output_mode(value: str | None) -> str:
     return str(value or "video")
 
 
+class InputFileProvenanceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["captured", "omitted"]
+    journal_id: str | None = None
+    current_state_id: str | None = None
+    omission_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> InputFileProvenanceSpec:
+        if self.status == "captured":
+            if not self.journal_id or not self.current_state_id or self.omission_reason is not None:
+                raise ValueError("captured provenance requires journal_id and current_state_id")
+        elif (
+            not self.omission_reason
+            or self.omission_reason != self.omission_reason.strip()
+            or self.journal_id is not None
+            or self.current_state_id is not None
+        ):
+            raise ValueError("omitted provenance requires only a visible omission_reason")
+        return self
+
+
 class InputFileSpec(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     bytes: int = Field(ge=0)
-    sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    filesystem_metadata: dict[str, Any] | None = None
+    sha256: str = Field(min_length=64, max_length=64)
+    provenance: InputFileProvenanceSpec
 
     @field_validator("path")
     @classmethod
@@ -165,9 +188,7 @@ class InputFileSpec(BaseModel):
 
     @field_validator("sha256")
     @classmethod
-    def validate_sha256(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def validate_sha256(cls, value: str) -> str:
         lowered = value.lower()
         if len(lowered) != 64 or any(ch not in "0123456789abcdef" for ch in lowered):
             raise ValueError("sha256 must be a 64-character hex digest")
@@ -377,7 +398,7 @@ class MetadataProjectionConfig(BaseModel):
         return validate_metadata_sources(
             value,
             label="metadata_projection.capture_date_sources",
-            allowed={"embedded", "path_regex", "filesystem_birthtime", "sidecar"},
+            allowed={"embedded", "path_regex", "provenance_timestamp", "sidecar"},
         )
 
     @field_validator("gps_sources")
@@ -423,7 +444,6 @@ class GroupConfig(BaseModel):
     encode_profile: EncodeProfile | None = None
     max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
     eager_pipeline_batches: int | None = Field(default=None, ge=1, le=64)
-    allow_missing_filesystem_metadata: bool = False
     metadata_projection: MetadataProjectionSetting = Field(default_factory=MetadataProjectionConfig)
 
     @field_validator("tasks")
@@ -443,19 +463,6 @@ class GroupConfig(BaseModel):
             task in self.tasks for task in ("archive_video", "qcut_video")
         ):
             raise ValueError("audio groups cannot run archive_video or qcut_video")
-        if (
-            self.allow_missing_filesystem_metadata
-            and self.metadata_projection is not False
-            and self.metadata_projection.capture_date_sources is not None
-            and any(
-                str(source.get("type") or "embedded") == "filesystem_birthtime"
-                for source in self.metadata_projection.capture_date_sources
-            )
-        ):
-            raise ValueError(
-                "allow_missing_filesystem_metadata cannot be true when metadata_projection "
-                "uses a filesystem_birthtime capture-date source"
-            )
         return self
 
 
@@ -769,7 +776,6 @@ class CreateJobRequest(BaseModel):
     output_mode: OutputMode = "video"
     tasks: list[TaskName] = Field(default_factory=default_tasks)
     encode_profile: EncodeProfile | None = None
-    allow_missing_filesystem_metadata: bool = False
     groups: dict[str, GroupConfig] = Field(default_factory=dict)
     routing: RoutingConfig | None = None
     handoff: HandoffConfig
@@ -807,24 +813,6 @@ class CreateJobRequest(BaseModel):
             missing = sorted(route_groups - group_names)
             if missing:
                 raise ValueError("routing references unknown group(s): " + ", ".join(missing))
-            filesystem_facts = sorted(
-                fact
-                for fact in routing_predicate_facts(self.routing.model_dump(mode="python"))
-                if fact.startswith(
-                    (
-                        "filesystem.",
-                        "filesystem_metadata.",
-                        "source_filesystem_metadata.",
-                    )
-                )
-            )
-            if filesystem_facts and any(
-                group.allow_missing_filesystem_metadata for group in self.groups.values()
-            ):
-                raise ValueError(
-                    "routing cannot reference filesystem metadata facts when a routed group "
-                    "allows missing filesystem metadata: " + ", ".join(filesystem_facts)
-                )
         task_lists = (
             [(name, group.output_mode, group.tasks) for name, group in self.groups.items()]
             if self.groups

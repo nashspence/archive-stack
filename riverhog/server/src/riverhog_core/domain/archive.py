@@ -11,6 +11,19 @@ class ArchiveFile:
 
 
 @dataclass(frozen=True, slots=True)
+class SealedProvenanceObject:
+    object_id: str
+    kind: str
+    relative_path: str
+    plaintext_bytes: int
+    plaintext_sha256: str
+    stored_bytes: int
+    stored_sha256: str
+    version_id: str | None
+    completed_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class PackMemberPlan:
     path: str
     bytes: int

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import builtins
 import errno
+import hashlib
 import http.client
 import json
 import os
@@ -66,7 +68,8 @@ class SubmissionInputFile:
     rel_path: str
     bytes: int
     sha256: str
-    filesystem_metadata: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, object] = field(default_factory=dict)
+    provenance_journals: dict[str, builtins.bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -140,7 +143,7 @@ def submission_payload(
             {
                 "path": item.rel_path,
                 "bytes": item.bytes,
-                "filesystem_metadata": item.filesystem_metadata or None,
+                "provenance": item.provenance,
                 **({"sha256": item.sha256} if item.sha256 else {}),
             }
             for item in request.files
@@ -1523,6 +1526,33 @@ class MunchyClient:
             expect={201},
         )
 
+    def put_submission_provenance_journal(
+        self,
+        submission_id: str,
+        journal_id: str,
+        *,
+        content: bytes,
+        sha256: str,
+    ) -> dict[str, Any]:
+        escaped_submission_id = urllib.parse.quote(submission_id)
+        escaped_journal_id = urllib.parse.quote(journal_id)
+        _, body, _ = self._request_with_transient_retries(
+            "PUT",
+            f"/v1/submissions/{escaped_submission_id}/provenance/journals/{escaped_journal_id}",
+            label=f"provenance journal {journal_id}",
+            timeout=300.0,
+            expect={200},
+            data=content,
+            headers={
+                "Content-Type": "application/json-seq",
+                "X-Riverhog-Provenance-SHA256": sha256,
+            },
+        )
+        value = json.loads(body)
+        if not isinstance(value, dict):
+            raise RuntimeError("Munchy returned an invalid provenance journal receipt")
+        return value
+
     def _request_with_transient_retries(
         self,
         method: str,
@@ -1532,6 +1562,8 @@ class MunchyClient:
         payload: dict[str, Any] | None = None,
         expect: set[int] | None = None,
         timeout: float | None = None,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> tuple[int, bytes, Any]:
         retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
         retry_count = 0
@@ -1544,6 +1576,8 @@ class MunchyClient:
                     payload=payload,
                     expect=expect,
                     timeout=timeout,
+                    data=data,
+                    headers=headers,
                 )
                 retry_reporter.finish()
                 return result
@@ -1616,6 +1650,7 @@ class MunchyClient:
             return self._upload_files(request)
 
     def _upload_files(self, request: UploadRequest) -> dict[str, Any]:
+        self._upload_provenance_journals(request)
         total_files = len(request.files)
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
@@ -1672,6 +1707,22 @@ class MunchyClient:
         if upload.get("state") != "uploaded":
             raise RuntimeError(f"input upload did not complete: {upload}")
         return upload
+
+    def _upload_provenance_journals(self, request: UploadRequest) -> None:
+        journals: dict[str, bytes] = {}
+        for item in request.files:
+            for journal_id, content in item.provenance_journals.items():
+                previous = journals.get(journal_id)
+                if previous is not None and previous != content:
+                    raise RuntimeError(f"provenance journal bytes disagree: {journal_id}")
+                journals[journal_id] = content
+        for journal_id, content in sorted(journals.items()):
+            self.put_submission_provenance_journal(
+                request.submission_id,
+                journal_id,
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
 
     def _upload_files_serial(
         self,

@@ -13,6 +13,14 @@ class CollectionUploadFileIn(RiverhogModel):
     bytes: int
     sha256: str
     raw_parts: CollectionUploadRawPartsIn | None = None
+    provenance: CollectionUploadFileProvenanceIn
+
+
+class CollectionUploadFileProvenanceIn(RiverhogModel):
+    status: Literal["captured", "omitted"]
+    journal_id: str | None = None
+    current_state_id: str | None = None
+    omission_reason: str | None = None
 
 
 class CollectionUploadRawPartsIn(RiverhogModel):
@@ -26,6 +34,8 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     ingest_source: str | None = None
     archive_store: str | None = None
     event_context: dict[str, Any] | None = None
+    provenance_mode: Literal["captured", "omitted"] = "captured"
+    provenance_omission_reason: str | None = None
 
 
 class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
@@ -35,6 +45,7 @@ class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
 class CompleteCollectionUploadSessionRequest(RiverhogModel):
     files_total: int = Field(ge=1)
     content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance_etag: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionSummaryOut(RiverhogModel):
@@ -103,6 +114,17 @@ class CollectionUploadFileOut(RiverhogModel):
     upload_state: str
     uploaded_bytes: int
     upload_state_expires_at: str | None
+    provenance: CollectionUploadFileProvenanceIn
+
+
+class CollectionUploadProvenanceJournalOut(RiverhogModel):
+    journal_id: str
+    bytes: int
+    sha256: str
+    current_state_id: str
+    current_path: str
+    current_bytes: int
+    current_sha256: str
 
 
 class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
@@ -171,6 +193,8 @@ class CollectionUploadSessionOut(RiverhogModel):
     created_at: str
     tags: list[str]
     ingest_source: str | None
+    provenance_mode: Literal["captured", "mixed", "omitted"]
+    provenance_etag: str | None
     archive_store: str
     state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
     layout: CollectionUploadLayoutOut | None

@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 import yaml
-from jeb_api_client import JebApiClient, JebApiError
+from jeb_api_client import JebApiClient, JebApiError, JebIngressClient
 from jeb_cli_support.listing import add_list_output_arguments, add_list_query_arguments
 from jeb_cli_support.output import (
     archive_plan_exit_code,
@@ -34,6 +35,7 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
 )
+from riverhog_provenance import prepare_file_provenance, user_installation_id
 
 _API_CLIENT: JebApiClient | None = None
 
@@ -179,6 +181,55 @@ def cmd_archive_now(args: argparse.Namespace) -> int:
         emit(format_operation(payload, title="jeb archive"), json_mode=False)
     if args.dry_run:
         return archive_plan_exit_code(payload)
+    return 0
+
+
+def cmd_upload(args: argparse.Namespace) -> int:
+    source_id = str(args.source or os.getenv("JEB_SOURCE") or "").strip()
+    if not source_id:
+        raise ValueError("Jeb upload requires --source or JEB_SOURCE")
+    if args.credential_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    else:
+        password = os.getenv("JEB_INGRESS_PASSWORD", "")
+    if not password:
+        raise ValueError("Jeb upload requires JEB_INGRESS_PASSWORD or --credential-stdin")
+    payload = Path(args.file)
+    if not payload.is_file():
+        raise ValueError(f"upload source is not a regular file: {payload}")
+    relative_path = str(args.path or payload.name)
+    prepared = prepare_file_provenance(
+        payload,
+        relative_path=relative_path,
+        host_id=user_installation_id("jeb-client"),
+        agent_name="jeb-client",
+        agent_version=importlib.metadata.version("jeb-client"),
+        provenance=Path(args.provenance) if args.provenance else None,
+        omit_reason=args.omit_provenance,
+    )
+    binding = {
+        "status": prepared.binding.status,
+        "path": prepared.binding.path,
+        "bytes": prepared.binding.bytes,
+        "sha256": prepared.binding.sha256,
+        **(
+            {
+                "journal_id": prepared.binding.journal_id,
+                "current_state_id": prepared.binding.current_state_id,
+            }
+            if prepared.binding.status == "captured"
+            else {"omission_reason": prepared.binding.omission_reason}
+        ),
+    }
+    with JebIngressClient(source=source_id, password=password) as ingress:
+        result = ingress.upload_file(
+            payload,
+            relative_path=relative_path,
+            binding=binding,
+            journals=prepared.journals,
+            chunk_mib=args.upload_chunk_mib,
+        )
+    emit(result, json_mode=args.json)
     return 0
 
 
@@ -355,6 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  check-config  validate deployed Jeb configuration\n"
             "  once          request one scheduler pass\n"
             "  archive-now   archive one source immediately\n"
+            "  upload        upload one file with provenance\n"
             "  source        manage enrolled sources"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -463,6 +515,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     archive_now.add_argument("--json", action="store_true", help="Emit JSON.")
     archive_now.set_defaults(func=cmd_archive_now)
+
+    upload = sub.add_parser("upload", help="upload one file through Jeb ingress")
+    upload.add_argument("file", help="Local regular file to upload.")
+    upload.add_argument("--path", help="Relative destination path; defaults to the file name.")
+    upload.add_argument("--source", help="Enrolled Jeb source id (or JEB_SOURCE).")
+    upload.add_argument(
+        "--credential-stdin",
+        action="store_true",
+        help="Read the Jeb ingress credential from one line of stdin.",
+    )
+    upload_provenance = upload.add_mutually_exclusive_group()
+    upload_provenance.add_argument(
+        "--provenance",
+        help="Existing Riverhog journal, provenance-set directory, or recovered index.",
+    )
+    upload_provenance.add_argument(
+        "--omit-provenance",
+        metavar="REASON",
+        help="Explicitly omit provenance with this visible reason.",
+    )
+    upload.add_argument("--upload-chunk-mib", type=int, default=64)
+    upload.add_argument("--json", action="store_true", help="Emit JSON.")
+    upload.set_defaults(func=cmd_upload)
 
     source = sub.add_parser("source", help="manage enrolled sources")
     source_sub = source.add_subparsers(dest="source_command", required=True)

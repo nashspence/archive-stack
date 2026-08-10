@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib.metadata
 import sqlite3
 import sys
 import time
@@ -8,9 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from riverhog_provenance import prepare_file_provenance, user_installation_id
 from time_formats import utc_timestamp_now
-
-from munchy_api_client.filesystem_metadata import collect_filesystem_metadata
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 FILE_HASH_CACHE_SCHEMA_VERSION = 1
@@ -44,7 +45,8 @@ class HashedLocalFile:
     rel_path: str
     bytes: int
     sha256: str
-    filesystem_metadata: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, object] = field(default_factory=dict)
+    provenance_journals: dict[str, builtins.bytes] = field(default_factory=dict)
 
 
 @dataclass
@@ -232,6 +234,8 @@ def hash_local_file_candidates(
     cache: FileHashCache | None,
     cache_enabled: bool = True,
     renderer: ProgressRenderer | None = None,
+    provenance: Path | None = None,
+    omit_provenance: str | None = None,
 ) -> LocalFileDiscovery:
     total_bytes = sum(candidate.bytes for candidate in candidates)
     stats = cache.stats if cache is not None else HashCacheStats()
@@ -239,13 +243,22 @@ def hash_local_file_candidates(
         stats.path = None
     files: list[HashedLocalFile] = []
     progress = HashProgress(len(candidates), total_bytes, renderer=renderer)
+    host_id = user_installation_id("munchy-client")
     for candidate in candidates:
-        filesystem_metadata = collect_filesystem_metadata(candidate.source)
         sha256 = sha256_file_cached(
             candidate.source,
             size=candidate.bytes,
             mtime_ns=candidate.mtime_ns,
             cache=cache,
+        )
+        prepared = prepare_file_provenance(
+            candidate.source,
+            relative_path=candidate.rel_path,
+            host_id=host_id,
+            agent_name="munchy-client",
+            agent_version=importlib.metadata.version("munchy-api-client"),
+            provenance=provenance,
+            omit_reason=omit_provenance,
         )
         files.append(
             HashedLocalFile(
@@ -253,7 +266,18 @@ def hash_local_file_candidates(
                 rel_path=candidate.rel_path,
                 bytes=candidate.bytes,
                 sha256=sha256,
-                filesystem_metadata=filesystem_metadata,
+                provenance={
+                    "status": prepared.binding.status,
+                    **(
+                        {
+                            "journal_id": prepared.binding.journal_id,
+                            "current_state_id": prepared.binding.current_state_id,
+                        }
+                        if prepared.binding.status == "captured"
+                        else {"omission_reason": prepared.binding.omission_reason}
+                    ),
+                },
+                provenance_journals=prepared.journals,
             )
         )
         progress.mark_complete(candidate.bytes, stats)

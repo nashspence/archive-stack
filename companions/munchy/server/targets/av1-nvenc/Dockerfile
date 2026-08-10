@@ -72,6 +72,7 @@ COPY packages/munchy-api-client packages/munchy-api-client
 COPY packages/munchy-config packages/munchy-config
 COPY packages/munchy-target-support packages/munchy-target-support
 COPY packages/munchy-workflows packages/munchy-workflows
+COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
 COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable

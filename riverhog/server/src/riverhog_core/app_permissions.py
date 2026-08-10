@@ -21,6 +21,8 @@ KEYS_MANAGE = "keys:manage"
 QUOTAS_MANAGE = "quotas:manage"
 EVENTS_READ = "events:read"
 EVENTS_READ_ALL = "events:read_all"
+PROVENANCE_READ = "provenance:read"
+PROVENANCE_EXPORT = "provenance:export"
 
 COLLECTION_PREFIX = "collection:"
 TAG_PREFIX = "tag:"
@@ -40,6 +42,8 @@ APPLICATION_PERMISSIONS = frozenset(
         QUOTAS_MANAGE,
         EVENTS_READ,
         EVENTS_READ_ALL,
+        PROVENANCE_READ,
+        PROVENANCE_EXPORT,
     }
 )
 
@@ -51,6 +55,8 @@ COLLECTION_SCOPED_PERMISSIONS = frozenset(
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
+        PROVENANCE_READ,
+        PROVENANCE_EXPORT,
     }
 )
 
@@ -78,6 +84,7 @@ def access_covers(grantor: ApplicationAccess, requested: ApplicationAccess) -> b
         grantor.permission == ALL_PERMISSIONS
         or grantor.permission == requested.permission
         or (grantor.permission == EVENTS_READ_ALL and requested.permission == EVENTS_READ)
+        or (grantor.permission == PROVENANCE_EXPORT and requested.permission == PROVENANCE_READ)
     )
     return permission_matches and resource_covers(grantor.resource, requested.resource)
 
@@ -112,6 +119,7 @@ class ApplicationPrincipal:
                 current.permission == ALL_PERMISSIONS
                 or current.permission == permission
                 or (current.permission == EVENTS_READ_ALL and permission == EVENTS_READ)
+                or (current.permission == PROVENANCE_EXPORT and permission == PROVENANCE_READ)
             )
             and (resource is None or resource_covers(current.resource, requested_resource))
             for current in self.access
@@ -199,6 +207,8 @@ __all__ = [
     "EVENTS_READ_ALL",
     "KEYS_MANAGE",
     "QUOTAS_MANAGE",
+    "PROVENANCE_EXPORT",
+    "PROVENANCE_READ",
     "RETRIEVAL_MANAGE",
     "TAGS_CREATE",
     "TAGS_DELETE",

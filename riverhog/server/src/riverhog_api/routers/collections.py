@@ -13,6 +13,7 @@ from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
     CollectionSummaryOut,
+    CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
     CollectionUploadUnitOut,
@@ -99,6 +100,8 @@ def create_or_resume_collection_upload_session(
         archive_store=request.archive_store,
         initiator=principal,
         event_context=request.event_context,
+        provenance_mode=request.provenance_mode,
+        provenance_omission_reason=request.provenance_omission_reason,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 
@@ -119,6 +122,41 @@ def register_collection_upload_session_files(
         [item.model_dump() for item in request.files],
     )
     return CollectionUploadSessionFilesRegistrationOut.model_validate(payload)
+
+
+@router.put(
+    "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+    response_model=CollectionUploadProvenanceJournalOut,
+)
+async def put_collection_upload_session_provenance_journal(
+    collection_id: int,
+    journal_id: str,
+    request: Request,
+    content: Annotated[
+        bytes,
+        Body(
+            media_type="application/json-seq",
+            json_schema_extra={"format": "binary"},
+        ),
+    ],
+    container: ContainerDep,
+    principal: CollectionCreator,
+    provenance_sha256: str = Header(alias="X-Riverhog-Provenance-SHA256"),
+) -> CollectionUploadProvenanceJournalOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdecimal():
+        raise HTTPException(status_code=411, detail="Content-Length is required")
+    if int(declared) != len(content):
+        raise HTTPException(status_code=400, detail="Content-Length does not match the journal")
+    payload = await run_in_threadpool(
+        container.collection_uploads.put_provenance_journal,
+        collection_id,
+        journal_id,
+        content=content,
+        sha256=provenance_sha256,
+    )
+    return CollectionUploadProvenanceJournalOut.model_validate(payload)
 
 
 @router.get(
@@ -158,6 +196,7 @@ def complete_collection_upload_session(
         collection_id,
         files_total=request.files_total,
         content_etag=request.content_etag,
+        provenance_etag=request.provenance_etag,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 

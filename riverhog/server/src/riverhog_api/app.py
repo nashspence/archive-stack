@@ -34,6 +34,7 @@ from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.events import router as events_router
+from riverhog_api.routers.provenance import router as provenance_router
 from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
@@ -454,6 +455,7 @@ def create_app(
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")
     app.include_router(quotas_router, prefix="/v1")
+    app.include_router(provenance_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)
     app.openapi_schema = apply_openapi_error_contract(app.openapi())

@@ -32,6 +32,7 @@ from jeb_core.domain.models import (
 )
 from jeb_core.domain.sources import SourceConfig, SourceRegistryError
 from jeb_core.ports.target import TargetContext
+from jeb_core.provenance import load_portable_provenance_set
 
 LOG = logging.getLogger("jeb.adapters.munchy")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -96,6 +97,10 @@ class MunchyTargetAdapter:
                     rel_path=item.target_path,
                     bytes=item.bytes,
                     sha256="",
+                    provenance={
+                        "status": "omitted",
+                        "omission_reason": "target preflight does not relinquish custody",
+                    },
                 )
                 for item in files
             ),
@@ -213,12 +218,32 @@ class MunchyTargetAdapter:
         attempt = context.load_attempt(attempt_id)
         source = context.source_by_id(str(attempt["source_id"]))
         config = self.normalize_source_config(source.target_config)
+        provenance = load_portable_provenance_set(
+            context.config.service.batch_dir
+            / str(attempt["batch_id"])
+            / "provenance"
+            / "index.json"
+        )
+        bindings = {item.path: item for item in provenance.bindings}
         files = tuple(
             SubmissionInputFile(
                 source=Path(str(row["staging_path"])),
                 rel_path=str(row["target_path"]),
                 bytes=int(row["bytes"]),
                 sha256=str(row["sha256"]),
+                provenance=(
+                    {
+                        "status": "captured",
+                        "journal_id": bindings[str(row["target_path"])].journal_id,
+                        "current_state_id": bindings[str(row["target_path"])].current_state_id,
+                    }
+                    if bindings[str(row["target_path"])].status == "captured"
+                    else {
+                        "status": "omitted",
+                        "omission_reason": bindings[str(row["target_path"])].omission_reason,
+                    }
+                ),
+                provenance_journals=provenance.journal_bytes,
             )
             for row in context.attempt_files(attempt_id)
         )

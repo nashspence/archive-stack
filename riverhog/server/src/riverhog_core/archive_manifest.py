@@ -14,6 +14,7 @@ from riverhog_core.domain.archive import (
     ArchiveFile,
     PackVolumePlan,
     SealedPackVolume,
+    SealedProvenanceObject,
     SealedRawVolume,
     StoredPartReceipt,
     VerifiedRawFile,
@@ -40,6 +41,8 @@ def build_collection_archive_manifest(
     packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
     raw_volumes: Sequence[SealedRawVolume] = (),
     verified_raw_files: Sequence[VerifiedRawFile] = (),
+    provenance_identity: str | None = None,
+    provenance_objects: Sequence[SealedProvenanceObject] = (),
 ) -> bytes:
     normalized_files = _normalized_files(files)
     expected_by_path = {current.path: current for current in normalized_files}
@@ -127,6 +130,20 @@ def build_collection_archive_manifest(
         "tree": tree,
         "volumes": volume_rows,
     }
+    if provenance_identity is not None:
+        if _SHA256_RE.fullmatch(provenance_identity) is None:
+            raise ValueError("archive provenance identity is invalid")
+        if not provenance_objects:
+            raise ValueError("archive provenance objects are required")
+        index = [item for item in provenance_objects if item.kind == "provenance-index"]
+        bundles = [item for item in provenance_objects if item.kind == "provenance-bundle"]
+        if len(index) != 1 or not bundles:
+            raise ValueError("archive provenance requires one index and at least one bundle")
+        payload["provenance"] = {
+            "identity": provenance_identity,
+            "index": _provenance_object_row(index[0]),
+            "bundles": [_provenance_object_row(item) for item in bundles],
+        }
     return canonical_json_bytes(payload)
 
 
@@ -141,7 +158,8 @@ def parse_collection_archive_manifest(content: bytes | str) -> dict[str, object]
     if (
         not isinstance(payload, dict)
         or payload.get("schema") != COLLECTION_ARCHIVE_MANIFEST_SCHEMA
-        or set(payload) != expected_fields
+        or frozenset(payload)
+        not in {frozenset(expected_fields), frozenset(expected_fields | {"provenance"})}
     ):
         raise ValueError("collection archive manifest schema mismatch")
     format_row = payload.get("format")
@@ -172,11 +190,83 @@ def parse_collection_archive_manifest(content: bytes | str) -> dict[str, object]
         seen_ids.add(volume_id)
         seen_paths.add(relative_path)
         volumes.append(row)
-    return {
+    result: dict[str, object] = {
         "schema": COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
         "format": dict(format_row),
         "tree": normalized_tree,
         "volumes": volumes,
+    }
+    if "provenance" in payload:
+        result["provenance"] = _normalized_provenance(payload["provenance"])
+    return result
+
+
+def _provenance_object_row(item: SealedProvenanceObject) -> dict[str, object]:
+    return {
+        "id": item.object_id,
+        "kind": item.kind,
+        "path": normalize_relpath(item.relative_path),
+        "plaintext_bytes": item.plaintext_bytes,
+        "sha256": item.plaintext_sha256,
+        "stored_bytes": item.stored_bytes,
+        "stored_sha256": item.stored_sha256,
+    }
+
+
+def _normalized_provenance(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != {"identity", "index", "bundles"}:
+        raise ValueError("collection archive provenance descriptor is invalid")
+    identity = str(value.get("identity", ""))
+    if _SHA256_RE.fullmatch(identity) is None:
+        raise ValueError("collection archive provenance identity is invalid")
+    raw_index = value.get("index")
+    raw_bundles = value.get("bundles")
+    if not isinstance(raw_index, Mapping) or not isinstance(raw_bundles, list) or not raw_bundles:
+        raise ValueError("collection archive provenance object set is invalid")
+    index = _normalized_provenance_object(raw_index, kind="provenance-index")
+    bundles = [
+        _normalized_provenance_object(item, kind="provenance-bundle") for item in raw_bundles
+    ]
+    if index["sha256"] != identity:
+        raise ValueError("collection archive provenance index identity mismatch")
+    expected_bundle_ids = [f"bundle-{sequence:012d}" for sequence in range(len(bundles))]
+    if [item["id"] for item in bundles] != expected_bundle_ids:
+        raise ValueError("collection archive provenance bundle order is not canonical")
+    return {"identity": identity, "index": index, "bundles": bundles}
+
+
+def _normalized_provenance_object(value: object, *, kind: str) -> dict[str, object]:
+    fields = {"id", "kind", "path", "plaintext_bytes", "sha256", "stored_bytes", "stored_sha256"}
+    if not isinstance(value, Mapping) or set(value) != fields or value.get("kind") != kind:
+        raise ValueError("collection archive provenance object descriptor is invalid")
+    object_id = str(value.get("id", ""))
+    path = normalize_relpath(str(value.get("path", "")))
+    expected_path = (
+        "provenance/index.json.age"
+        if kind == "provenance-index"
+        else f"provenance/{object_id}.tar.age"
+    )
+    if path != expected_path:
+        raise ValueError("collection archive provenance object path is not canonical")
+    plaintext_bytes = _stored_int(value.get("plaintext_bytes"), "provenance plaintext bytes")
+    stored_bytes = _stored_int(value.get("stored_bytes"), "provenance stored bytes")
+    sha256 = str(value.get("sha256", ""))
+    stored_sha256 = str(value.get("stored_sha256", ""))
+    if (
+        plaintext_bytes < 1
+        or stored_bytes < 1
+        or _SHA256_RE.fullmatch(sha256) is None
+        or _SHA256_RE.fullmatch(stored_sha256) is None
+    ):
+        raise ValueError("collection archive provenance object identity is invalid")
+    return {
+        "id": object_id,
+        "kind": kind,
+        "path": path,
+        "plaintext_bytes": plaintext_bytes,
+        "sha256": sha256,
+        "stored_bytes": stored_bytes,
+        "stored_sha256": stored_sha256,
     }
 
 

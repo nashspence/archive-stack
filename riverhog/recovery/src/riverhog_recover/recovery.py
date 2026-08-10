@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ._provenance import (
+    ValidatedProvenance,
+    build_portable_provenance_set,
+    validate_provenance_archive,
+)
+
 MANIFEST_SCHEMA = "collection-archive-manifest/v1"
 PACK_INDEX_SCHEMA = "riverhog-pack-index/v1"
 PACK_INDEX_PATH = ".riverhog/pack-index.json"
@@ -33,6 +39,8 @@ class RecoverySummary:
     files: int
     bytes: int
     volumes: int
+    provenance_mode: str = "omitted"
+    provenance_journals: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +90,25 @@ class Manifest:
     bytes: int
     tree_sha256: str
     volumes: tuple[VolumeIdentity, ...]
+    provenance: ProvenanceIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceObjectIdentity:
+    id: str
+    kind: str
+    path: str
+    plaintext_bytes: int
+    sha256: str
+    stored_bytes: int
+    stored_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceIdentity:
+    identity: str
+    index: ProvenanceObjectIdentity
+    bundles: tuple[ProvenanceObjectIdentity, ...]
 
 
 def recover_archive(
@@ -182,12 +209,33 @@ def recover_archive(
             or tree["sha256"] != manifest.tree_sha256
         ):
             raise RecoveryError("recovered collection tree does not match the root manifest")
+        provenance_mode = "omitted"
+        provenance_journals = 0
+        if manifest.provenance is not None:
+            validated = _recover_provenance(
+                archive,
+                scratch=scratch,
+                staging=staging,
+                descriptor=manifest.provenance,
+                expected_files=expected_files,
+                checksums=checksums,
+                passphrase=passphrase,
+                age_command=age_command,
+            )
+            provenance_mode = (
+                "mixed"
+                if any(item.status == "omitted" for item in validated.bindings)
+                else "captured"
+            )
+            provenance_journals = len(validated.journal_bytes)
         os.replace(staging, output)
         return RecoverySummary(
             output=output,
             files=manifest.files,
             bytes=manifest.bytes,
             volumes=len(manifest.volumes),
+            provenance_mode=provenance_mode,
+            provenance_journals=provenance_journals,
         )
     except RecoveryError:
         raise
@@ -202,7 +250,11 @@ def _parse_manifest(content: bytes) -> Manifest:
     if (
         not isinstance(payload, dict)
         or payload.get("schema") != MANIFEST_SCHEMA
-        or set(payload) != {"schema", "format", "tree", "volumes"}
+        or set(payload)
+        not in (
+            {"schema", "format", "tree", "volumes"},
+            {"schema", "format", "tree", "volumes", "provenance"},
+        )
     ):
         raise RecoveryError("root manifest schema is not collection-archive-manifest/v1")
     if payload.get("format") != {
@@ -237,7 +289,124 @@ def _parse_manifest(content: bytes) -> Manifest:
         seen_ids.add(volume.id)
         seen_paths.add(volume.path)
         volumes.append(volume)
-    return Manifest(files, byte_count, tree_sha256, tuple(volumes))
+    provenance = _parse_provenance(payload["provenance"]) if "provenance" in payload else None
+    return Manifest(files, byte_count, tree_sha256, tuple(volumes), provenance)
+
+
+def _parse_provenance(value: object) -> ProvenanceIdentity:
+    if not isinstance(value, Mapping) or set(value) != {"identity", "index", "bundles"}:
+        raise RecoveryError("root manifest provenance descriptor is invalid")
+    identity = _required_sha256(value, "identity")
+    index = _parse_provenance_object(value.get("index"), kind="provenance-index")
+    raw_bundles = value.get("bundles")
+    if not isinstance(raw_bundles, list) or not raw_bundles:
+        raise RecoveryError("root manifest provenance bundles are invalid")
+    bundles = tuple(
+        _parse_provenance_object(item, kind="provenance-bundle") for item in raw_bundles
+    )
+    if index.sha256 != identity:
+        raise RecoveryError("root manifest provenance identity does not match its index")
+    if [item.id for item in bundles] != [
+        f"bundle-{sequence:012d}" for sequence in range(len(bundles))
+    ]:
+        raise RecoveryError("root manifest provenance bundle order is not canonical")
+    return ProvenanceIdentity(identity=identity, index=index, bundles=bundles)
+
+
+def _parse_provenance_object(value: object, *, kind: str) -> ProvenanceObjectIdentity:
+    fields = {
+        "id",
+        "kind",
+        "path",
+        "plaintext_bytes",
+        "sha256",
+        "stored_bytes",
+        "stored_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields or value.get("kind") != kind:
+        raise RecoveryError("root manifest provenance object is invalid")
+    object_id = str(value.get("id") or "")
+    path = _normalize_relpath(str(value.get("path") or ""))
+    expected_path = (
+        "provenance/index.json.age"
+        if kind == "provenance-index"
+        else f"provenance/{object_id}.tar.age"
+    )
+    if path != expected_path:
+        raise RecoveryError("root manifest provenance path is not canonical")
+    plaintext_bytes = _required_nonnegative_int(value, "plaintext_bytes")
+    stored_bytes = _required_nonnegative_int(value, "stored_bytes")
+    if plaintext_bytes < 1 or stored_bytes < 1:
+        raise RecoveryError("root manifest provenance object is empty")
+    return ProvenanceObjectIdentity(
+        id=object_id,
+        kind=kind,
+        path=path,
+        plaintext_bytes=plaintext_bytes,
+        sha256=_required_sha256(value, "sha256"),
+        stored_bytes=stored_bytes,
+        stored_sha256=_required_sha256(value, "stored_sha256"),
+    )
+
+
+def _recover_provenance(
+    archive: Path,
+    *,
+    scratch: Path,
+    staging: Path,
+    descriptor: ProvenanceIdentity,
+    expected_files: Mapping[str, FileIdentity],
+    checksums: Mapping[str, str] | None,
+    passphrase: str,
+    age_command: str,
+) -> ValidatedProvenance:
+    objects = (descriptor.index, *descriptor.bundles)
+    plaintext: dict[str, bytes] = {}
+    for current in objects:
+        encrypted = _archive_file(archive, current.path)
+        _verify_inventory_file(encrypted, current.path, checksums)
+        if (
+            encrypted.stat().st_size != current.stored_bytes
+            or _sha256(encrypted) != current.stored_sha256
+        ):
+            raise RecoveryError(
+                f"provenance ciphertext does not match the root manifest: {current.id}"
+            )
+        destination = scratch / f"{current.id}.provenance"
+        _age_decrypt(encrypted, destination, passphrase=passphrase, command=age_command)
+        content = destination.read_bytes()
+        if (
+            len(content) != current.plaintext_bytes
+            or hashlib.sha256(content).hexdigest() != current.sha256
+        ):
+            raise RecoveryError(
+                f"provenance plaintext does not match the root manifest: {current.id}"
+            )
+        plaintext[current.id] = content
+        destination.unlink()
+    index_bytes = plaintext.pop(descriptor.index.id)
+    validated = validate_provenance_archive(index_bytes, plaintext)
+    if validated.identity != descriptor.identity:
+        raise RecoveryError("provenance index identity changed during recovery")
+    bindings = {item.path: item for item in validated.bindings}
+    if set(bindings) != set(expected_files):
+        raise RecoveryError("provenance does not account for every recovered file")
+    for path, expected in expected_files.items():
+        binding = bindings[path]
+        if binding.bytes != expected.bytes or binding.sha256 != expected.sha256:
+            raise RecoveryError(f"provenance payload binding mismatch: {path}")
+
+    root = staging / ".riverhog" / "provenance"
+    journal_dir = root / "journals"
+    journal_dir.mkdir(parents=True)
+    portable_index = build_portable_provenance_set(
+        bindings=validated.bindings,
+        journals=validated.journal_bytes,
+    )
+    (root / "index.json").write_bytes(portable_index)
+    for journal_id, content in sorted(validated.journal_bytes.items()):
+        (journal_dir / f"{journal_id}.json-seq").write_bytes(content)
+    return validated
 
 
 def _parse_volume(value: object, *, expected_sequence: int) -> VolumeIdentity:

@@ -19,6 +19,7 @@ COPY packages/munchy-config packages/munchy-config
 COPY packages/munchy-target-support packages/munchy-target-support
 COPY packages/munchy-workflows packages/munchy-workflows
 COPY packages/riverhog-api-client packages/riverhog-api-client
+COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats

@@ -14,6 +14,8 @@ from riverhog_core.app_permissions import (
     APPLICATION_PERMISSIONS,
     CATALOG_READ,
     COLLECTIONS_CREATE,
+    PROVENANCE_EXPORT,
+    PROVENANCE_READ,
     ApplicationAccess,
     ApplicationPrincipal,
 )
@@ -57,6 +59,36 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
 
     assert protected
     assert len(protected) == len(set(protected))
+    assert {
+        (method, path): permission
+        for method, path, permission in protected
+        if "/provenance/" in path
+    } == {
+        (
+            "PUT",
+            "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+        ): COLLECTIONS_CREATE,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/files",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/files/{path:path}",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/trace/{path:path}",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
+        ): PROVENANCE_EXPORT,
+        (
+            "POST",
+            "/v1/collections/{collection_id}/provenance/verify",
+        ): PROVENANCE_READ,
+    }
 
 
 def test_application_authentication_uses_the_public_error_contract() -> None:

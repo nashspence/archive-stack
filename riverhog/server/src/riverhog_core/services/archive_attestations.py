@@ -247,7 +247,15 @@ class SqlAlchemyArchiveAttestationService:
             archive_store = self._archive_stores.require(store)
             copy, objects = self._copy_objects(collection_id=collection_id, store=store)
             for current in objects:
-                if current.kind not in {"pack", "file", "segment", "manifest", "proof"}:
+                if current.kind not in {
+                    "pack",
+                    "file",
+                    "segment",
+                    "provenance-bundle",
+                    "provenance-index",
+                    "manifest",
+                    "proof",
+                }:
                     continue
                 if current.stored_sha256:
                     continue

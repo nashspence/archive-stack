@@ -17,6 +17,7 @@ from riverhog_core.domain.archive import (
     ArchiveFile,
     PackVolumePlan,
     SealedPackVolume,
+    SealedProvenanceObject,
     SealedRawVolume,
     VerifiedRawFile,
 )
@@ -71,6 +72,8 @@ class ArchiveRootPublisher:
         packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
         raw_volumes: Sequence[SealedRawVolume] = (),
         verified_raw_files: Sequence[VerifiedRawFile] = (),
+        provenance_identity: str | None = None,
+        provenance_objects: Sequence[SealedProvenanceObject] = (),
     ) -> SealedArchiveRoot:
         prefix = archive_storage_prefix.strip("/")
         if not prefix:
@@ -80,6 +83,8 @@ class ArchiveRootPublisher:
             packs=packs,
             raw_volumes=raw_volumes,
             verified_raw_files=verified_raw_files,
+            provenance_identity=provenance_identity,
+            provenance_objects=provenance_objects,
         )
         plaintext_sha256 = hashlib.sha256(manifest).hexdigest()
         tree = collection_tree_identity(files)

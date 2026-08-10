@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-usn-record.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_length",
+    "major_version",
+    "minor_version",
+    "parse_status"
+  ],
+  "properties": {
+    "record_length": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "major_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "minor_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "parse_status": {
+      "enum": [
+        "parsed",
+        "unresolved",
+        "unsupported_version"
+      ]
+    },
+    "file_reference_number": {
+      "type": "string",
+      "pattern": "^[0-9a-f]+$"
+    },
+    "parent_file_reference_number": {
+      "type": "string",
+      "pattern": "^[0-9a-f]+$"
+    },
+    "usn": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)$"
+    },
+    "security_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "file_attributes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "file_name": {
+      "type": "string"
+    },
+    "file_name_utf16le_base64": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "file_name_role": {
+      "enum": [
+        "exact",
+        "display"
+      ]
+    }
+  }
+}

@@ -15,6 +15,7 @@ from riverhog_core.domain.archive import (
     ArchiveFile,
     PackVolumePlan,
     SealedPackVolume,
+    SealedProvenanceObject,
     SealedRawVolume,
     StoredPartReceipt,
     VerifiedRawFile,
@@ -101,6 +102,8 @@ def build_archive_catalog_projection(
     packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
     raw_volumes: Sequence[SealedRawVolume] = (),
     verified_raw_files: Sequence[VerifiedRawFile] = (),
+    provenance_identity: str | None = None,
+    provenance_objects: Sequence[SealedProvenanceObject] = (),
 ) -> ArchiveCatalogProjection:
     """Build the exact durable catalog projection for one immutable archive root."""
 
@@ -114,6 +117,8 @@ def build_archive_catalog_projection(
         packs=packs,
         raw_volumes=raw_volumes,
         verified_raw_files=verified_raw_files,
+        provenance_identity=provenance_identity,
+        provenance_objects=provenance_objects,
     )
     if expected_manifest != root.manifest_bytes:
         raise ValueError("sealed root does not match the supplied archive volumes")

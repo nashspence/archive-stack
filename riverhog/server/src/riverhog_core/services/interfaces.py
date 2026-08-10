@@ -38,6 +38,49 @@ class CollectionService(Protocol):
     ) -> CollectionListPage: ...
 
 
+class ProvenanceService(Protocol):
+    def list_files(
+        self,
+        collection_id: int,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        status: str | None,
+        sort: str,
+        order: str,
+        all_items: bool,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def show_file(
+        self,
+        collection_id: int,
+        path: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def trace_file(
+        self,
+        collection_id: int,
+        path: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def export_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> tuple[bytes, str]: ...
+    def verify(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+
+
 class TagService(Protocol):
     def create(
         self,

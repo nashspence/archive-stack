@@ -71,7 +71,7 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0001"
+    assert upgraded.current_revision == validated.current_revision == "v1_0002"
     assert after == before
     engine.dispose()
 
@@ -106,6 +106,17 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         lifecycle_event = connection.execute(
             text("SELECT event_id, owner_app, subject FROM lifecycle_events WHERE sequence = 1")
         ).one()
+        existing_provenance = connection.execute(
+            text("SELECT provenance_mode, provenance_etag FROM collections WHERE id = 1")
+        ).one()
+        provenance_projection_counts = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM collection_provenance_journals), "
+                "(SELECT count(*) FROM collection_file_provenance), "
+                "(SELECT count(*) FROM collection_provenance_entities)"
+            )
+        ).one()
 
     assert status.condition == "current"
     assert principal is not None
@@ -125,6 +136,8 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         "2026-02-01T00:00:00.000000Z",
     )
     assert tuple(lifecycle_event) == ("riverhog-v1-event", "fixture-client", "1")
+    assert tuple(existing_provenance) == ("omitted", None)
+    assert tuple(provenance_projection_counts) == (0, 0, 0)
     engine.dispose()
 
 

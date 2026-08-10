@@ -34,6 +34,7 @@ members = [
     "riverhog-cli-support",
     "riverhog-client",
     "riverhog-protocol",
+    "riverhog-provenance",
     "riverhog-recover",
     "riverhog-server",
     "state-schema",
@@ -758,6 +759,8 @@ dependencies = [
     { name = "httpx" },
     { name = "jeb-protocol" },
     { name = "lifecycle-events" },
+    { name = "riverhog-provenance" },
+    { name = "tus-transport" },
 ]
 
 [package.metadata]
@@ -766,6 +769,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "tus-transport", editable = "packages/tus-transport" },
 ]
 
 [[package]]
@@ -794,6 +799,7 @@ dependencies = [
     { name = "jeb-protocol" },
     { name = "pyyaml" },
     { name = "riverhog-cli-support" },
+    { name = "riverhog-provenance" },
 ]
 
 [package.metadata]
@@ -804,6 +810,7 @@ requires-dist = [
     { name = "jeb-protocol", editable = "packages/jeb-protocol" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
 
 [[package]]
@@ -827,6 +834,7 @@ dependencies = [
     { name = "munchy-api-client" },
     { name = "pydantic" },
     { name = "riverhog-cli-support" },
+    { name = "riverhog-provenance" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
@@ -845,6 +853,7 @@ requires-dist = [
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
@@ -1125,6 +1134,7 @@ dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "lifecycle-events" },
+    { name = "riverhog-provenance" },
     { name = "time-formats" },
     { name = "tus-transport" },
 ]
@@ -1136,6 +1146,7 @@ requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
 ]
@@ -1177,6 +1188,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "riverhog-cli-support" },
+    { name = "riverhog-provenance" },
     { name = "time-formats" },
     { name = "tus-transport" },
     { name = "typer" },
@@ -1191,6 +1203,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1227,6 +1240,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "riverhog-api-client" },
     { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1249,6 +1263,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
@@ -1838,6 +1853,7 @@ dependencies = [
     { name = "riverhog-api-client" },
     { name = "riverhog-cli-support" },
     { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "typer" },
@@ -1850,6 +1866,7 @@ requires-dist = [
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1859,6 +1876,17 @@ requires-dist = [
 name = "riverhog-protocol"
 version = "0.1.0"
 source = { editable = "packages/riverhog-protocol" }
+
+[[package]]
+name = "riverhog-provenance"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance" }
+dependencies = [
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "jsonschema", specifier = ">=4.23,<5.0" }]
 
 [[package]]
 name = "riverhog-recover"
@@ -1883,6 +1911,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "riverhog-age" },
     { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
     { name = "sqlalchemy" },
     { name = "state-schema" },
     { name = "time-formats" },
@@ -1904,6 +1933,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-age", editable = "packages/riverhog-age" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },

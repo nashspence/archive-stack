@@ -27,6 +27,7 @@ from munchy_config import (
     normalize_munchy_job_authoring,
 )
 from pydantic import ValidationError
+from riverhog_provenance import SIDECAR_SUFFIX
 from time_formats import utc_now
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
 
@@ -237,10 +238,6 @@ def normalize_group_payload(
     eager_pipeline_batches = group.get("eager_pipeline_batches")
     if eager_pipeline_batches is not None:
         payload["eager_pipeline_batches"] = eager_pipeline_batches
-    if "allow_missing_filesystem_metadata" in group:
-        payload["allow_missing_filesystem_metadata"] = bool(
-            group["allow_missing_filesystem_metadata"]
-        )
     return payload
 
 
@@ -378,7 +375,9 @@ def discover_local_candidates(
         sources = [
             (path, path.relative_to(source).as_posix())
             for path in sorted(source.rglob("*"))
-            if path.is_file() and not is_platform_cruft_path(path.relative_to(source).as_posix())
+            if path.is_file()
+            and not _is_provenance_control_path(path.relative_to(source))
+            and not is_platform_cruft_path(path.relative_to(source).as_posix())
         ]
     if not sources:
         raise MunchyJobAuthoringError(f"{source} has no files to upload")
@@ -398,6 +397,10 @@ def discover_local_candidates(
     return candidates
 
 
+def _is_provenance_control_path(path: Path | PurePosixPath) -> bool:
+    return path.name.endswith(SIDECAR_SUFFIX) or path.parts[:2] == (".riverhog", "provenance")
+
+
 def default_hash_cache_path() -> Path:
     configured = os.getenv(HASH_CACHE_ENV)
     if configured:
@@ -410,6 +413,8 @@ def hash_local_candidates(
     *,
     hash_cache: Path | None,
     use_hash_cache: bool,
+    provenance: Path | None = None,
+    omit_provenance: str | None = None,
 ) -> list[SubmissionInputFile]:
     renderer = make_progress_renderer(include_job=False, title="Munchy Prepare")
     cache_context: FileHashCache | None = None
@@ -422,17 +427,26 @@ def hash_local_candidates(
                 cache=None,
                 cache_enabled=False,
                 renderer=renderer,
+                provenance=provenance,
+                omit_provenance=omit_provenance,
             )
     else:
         with cache_context as cache, renderer:
-            discovery = hash_local_file_candidates(candidates, cache=cache, renderer=renderer)
+            discovery = hash_local_file_candidates(
+                candidates,
+                cache=cache,
+                renderer=renderer,
+                provenance=provenance,
+                omit_provenance=omit_provenance,
+            )
     return [
         SubmissionInputFile(
             source=item.source,
             rel_path=item.rel_path,
             bytes=item.bytes,
             sha256=item.sha256,
-            filesystem_metadata=item.filesystem_metadata,
+            provenance=item.provenance,
+            provenance_journals=item.provenance_journals,
         )
         for item in discovery.files
     ]
@@ -451,6 +465,8 @@ def build_submission_upload_request(
     upload_chunk_mib: int = DEFAULT_TUS_UPLOAD_CHUNK_MIB,
     hash_cache: Path | None = None,
     use_hash_cache: bool = True,
+    provenance: Path | None = None,
+    omit_provenance: str | None = None,
 ) -> SubmissionUploadRequest:
     template_name = template_id.strip()
     if not template_name:
@@ -474,6 +490,8 @@ def build_submission_upload_request(
         candidates,
         hash_cache=hash_cache,
         use_hash_cache=use_hash_cache,
+        provenance=provenance,
+        omit_provenance=omit_provenance,
     )
     return SubmissionUploadRequest(
         submission_id=identifier,

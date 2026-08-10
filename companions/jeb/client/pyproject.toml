@@ -16,6 +16,7 @@ dependencies = [
   "jeb-protocol>=0.1,<0.2",
   "PyYAML>=6.0,<7.0",
   "riverhog-cli-support>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ jeb-api-client = { workspace = true }
 jeb-cli-support = { workspace = true }
 jeb-protocol = { workspace = true }
 riverhog-cli-support = { workspace = true }
+riverhog-provenance = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jeb_cli"]

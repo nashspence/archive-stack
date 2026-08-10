@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import importlib.metadata
 import logging
 import os
 import shutil
@@ -22,6 +23,14 @@ from media_preflight import (
     MediaPreflightResult,
     run_media_preflight,
 )
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    append_replacement_transformation,
+    canonical_sidecar_path,
+    load_or_create_installation_id,
+    prepare_file_provenance,
+    validate_journal,
+)
 
 import jeb_core.domain.models as domain_models
 import jeb_core.persistence.sqlite_state as state_store
@@ -39,6 +48,13 @@ from jeb_core.domain.models import (
 )
 from jeb_core.domain.sources import SourceConfig
 from jeb_core.ports.target import TargetAdapter, TargetContext
+from jeb_core.provenance import (
+    ingress_provenance_path,
+    load_portable_provenance_set,
+    remove_ingress_provenance,
+    replace_portable_provenance_set,
+    write_portable_provenance_set,
+)
 from jeb_core.services.files import (
     file_sha256,
     format_media_preflight_error,
@@ -570,6 +586,8 @@ class JebAttemptService:
             if self.store.load_attempt(attempt_id)["state"] == "batched":
                 self.ensure_hashes(attempt_id)
             if self.store.load_attempt(attempt_id)["state"] == "hashed":
+                self.ensure_provenance(attempt_id)
+            if self.store.load_attempt(attempt_id)["state"] == "provenanced":
                 self.ensure_media_preflight(attempt_id)
             adapter = self.target_adapters[str(attempt["target_name"])]
             adapter.advance(self.target_context(), attempt_id)
@@ -694,6 +712,62 @@ class JebAttemptService:
                     )
                     last_logged_at = now
         self.store.set_attempt_state(batch_id, "hashed")
+
+    def ensure_provenance(self, attempt_id: str) -> None:
+        attempt = self.store.load_attempt(attempt_id)
+        batch_id = str(attempt["batch_id"])
+        root = self.config.service.batch_dir / batch_id / "provenance"
+        index_path = root / "index.json"
+        rows = self.store.attempt_files(attempt_id)
+        if index_path.is_file():
+            validated = load_portable_provenance_set(index_path)
+            by_path = {item.path: item for item in validated.bindings}
+            for row in rows:
+                target_path = str(row["target_path"])
+                binding = by_path.get(target_path)
+                if (
+                    binding is None
+                    or binding.bytes != int(row["bytes"])
+                    or binding.sha256 != str(row["sha256"])
+                ):
+                    raise UnrecoverableJebError(
+                        f"stored provenance no longer binds Jeb file: {target_path}"
+                    )
+            self.store.set_attempt_state(attempt_id, "provenanced")
+            return
+
+        bindings: list[FileProvenanceBinding] = []
+        journals: dict[str, bytes] = {}
+        for row in rows:
+            source = Path(str(row["input_path"]))
+            staging = Path(str(row["staging_path"]))
+            payload = source if source.is_file() else staging
+            incoming = ingress_provenance_path(source) / "index.json"
+            prepared = prepare_file_provenance(
+                payload,
+                relative_path=str(row["target_path"]),
+                host_id=load_or_create_installation_id(
+                    self.config.ingress.provenance_installation_id_path
+                ),
+                agent_name="jeb-server",
+                agent_version=importlib.metadata.version("jeb-server"),
+                provenance=incoming if incoming.is_file() else None,
+            )
+            if prepared.binding.bytes != int(row["bytes"]) or prepared.binding.sha256 != str(
+                row["sha256"]
+            ):
+                raise UnrecoverableJebError(
+                    f"prepared provenance does not bind Jeb file: {row['target_path']}"
+                )
+            bindings.append(prepared.binding)
+            for journal_id, content in prepared.journals.items():
+                previous = journals.setdefault(journal_id, content)
+                if previous != content:
+                    raise UnrecoverableJebError(
+                        f"Jeb provenance journal bytes disagree: {journal_id}"
+                    )
+        write_portable_provenance_set(root, bindings=bindings, journals=journals)
+        self.store.set_attempt_state(attempt_id, "provenanced")
 
     def ensure_media_preflight(self, batch_id: str) -> None:
         files = self.media_preflight_files(batch_id)
@@ -832,6 +906,7 @@ class JebAttemptService:
         suffix = Path(target_path).suffix or staging.suffix or ".mkv"
         temp = staging.with_name(f".{staging.name}.safe-remux-{os.getpid()}{suffix}")
         temp.unlink(missing_ok=True)
+        transform_started_at = event_timestamp()
         try:
             run_safe_remux(
                 ffmpeg_path=self.config.service.preflight_repair_ffmpeg,
@@ -874,6 +949,49 @@ class JebAttemptService:
             hardlink_stage_file(source, staging)
             stat = source.stat()
             digest = file_sha256(staging)
+            provenance_root = self.config.service.batch_dir / str(row["batch_id"]) / "provenance"
+            provenance = load_portable_provenance_set(provenance_root / "index.json")
+            bindings = {item.path: item for item in provenance.bindings}
+            original_binding = bindings[target_path]
+            journals = dict(provenance.journal_bytes)
+            if original_binding.status == "captured":
+                journal_id = str(original_binding.journal_id)
+                transformed = append_replacement_transformation(
+                    journals[journal_id],
+                    staging,
+                    relative_path=target_path,
+                    host_id=load_or_create_installation_id(
+                        self.config.ingress.provenance_installation_id_path
+                    ),
+                    agent_name="jeb-server",
+                    agent_version=importlib.metadata.version("jeb-server"),
+                    event_label="Jeb safe-remux repair",
+                    started_at=transform_started_at,
+                    ended_at=event_timestamp(),
+                )
+                journals[journal_id] = transformed
+                current = validate_journal(transformed)
+                bindings[target_path] = FileProvenanceBinding(
+                    path=target_path,
+                    bytes=stat.st_size,
+                    sha256=digest,
+                    status="captured",
+                    journal_id=journal_id,
+                    current_state_id=current.current_state_id,
+                )
+            else:
+                bindings[target_path] = FileProvenanceBinding(
+                    path=target_path,
+                    bytes=stat.st_size,
+                    sha256=digest,
+                    status="omitted",
+                    omission_reason=original_binding.omission_reason,
+                )
+            replace_portable_provenance_set(
+                provenance_root,
+                bindings=list(bindings.values()),
+                journals=journals,
+            )
             with self.store.transaction() as conn:
                 conn.execute(
                     """
@@ -919,6 +1037,7 @@ class JebAttemptService:
             raise UnrecoverableJebError(
                 f"source and staging file are both missing: {source} -> {staging}"
             )
+        self.remove_batch_provenance_binding(str(row["batch_id"]), target_path)
         with self.store.transaction() as conn:
             conn.execute(
                 "DELETE FROM attempt_files WHERE attempt_id = ? AND target_path = ?",
@@ -928,6 +1047,26 @@ class JebAttemptService:
                 "DELETE FROM files WHERE batch_id = ? AND target_path = ?",
                 (row["batch_id"], target_path),
             )
+
+    def remove_batch_provenance_binding(self, batch_id: str, target_path: str) -> None:
+        root = self.config.service.batch_dir / batch_id / "provenance"
+        provenance = load_portable_provenance_set(root / "index.json")
+        bindings = [item for item in provenance.bindings if item.path != target_path]
+        if not bindings:
+            shutil.rmtree(root)
+            return
+        reachable = {str(item.journal_id) for item in bindings if item.status == "captured"}
+        pending = list(reachable)
+        while pending:
+            for reference in provenance.journals[pending.pop()].external_states:
+                if reference.journal_id not in reachable:
+                    reachable.add(reference.journal_id)
+                    pending.append(reference.journal_id)
+        replace_portable_provenance_set(
+            root,
+            bindings=bindings,
+            journals={key: provenance.journal_bytes[key] for key in sorted(reachable)},
+        )
 
     def finish_attempt_success(self, attempt_id: str) -> None:
         attempt = self.store.load_attempt(attempt_id)
@@ -946,9 +1085,17 @@ class JebAttemptService:
 
     def cleanup_attempt(self, attempt_id: str) -> None:
         try:
-            for row in self.store.attempt_files(attempt_id):
-                Path(str(row["input_path"])).unlink(missing_ok=True)
+            rows = self.store.attempt_files(attempt_id)
+            for row in rows:
+                input_path = Path(str(row["input_path"]))
+                input_path.unlink(missing_ok=True)
+                canonical_sidecar_path(input_path).unlink(missing_ok=True)
+                remove_ingress_provenance(input_path)
             shutil.rmtree(self.config.service.batch_dir / attempt_id)
+            if rows:
+                batch_id = str(rows[0]["batch_id"])
+                if batch_id != attempt_id:
+                    shutil.rmtree(self.config.service.batch_dir / batch_id, ignore_errors=True)
         except FileNotFoundError:
             pass
         except Exception as exc:

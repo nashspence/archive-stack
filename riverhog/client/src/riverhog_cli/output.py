@@ -487,3 +487,63 @@ def format_file_selectors(
         for item in _items(payload, key)
         if item.get("collection_id") not in {None, ""} and item.get("path") not in {None, ""}
     )
+
+
+def format_provenance_files(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "files")]
+    for file in _items(payload, "files"):
+        provenance = file.get("provenance")
+        status = (
+            provenance.get("status", "unknown") if isinstance(provenance, Mapping) else "unknown"
+        )
+        journal = provenance.get("journal_id", "") if isinstance(provenance, Mapping) else ""
+        lines.append(
+            f"- {file.get('path', 'unknown')}  status={status}  "
+            f"bytes={_bytes(file.get('bytes'))}" + (f"  journal={journal}" if journal else "")
+        )
+    return "\n".join(lines)
+
+
+def format_file_provenance(payload: Mapping[str, object]) -> str:
+    provenance = payload.get("provenance")
+    current = provenance if isinstance(provenance, Mapping) else {}
+    lines = [
+        (
+            f"collection file {payload.get('collection_id', 'unknown')}::"
+            f"{payload.get('path', 'unknown')}"
+        ),
+        f"payload: {_bytes(payload.get('bytes'))} sha256={payload.get('sha256', 'unknown')}",
+        f"provenance: {current.get('status', 'unknown')}",
+    ]
+    if current.get("journal_id"):
+        lines.append(f"journal: {current['journal_id']}")
+        lines.append(f"current state: {current.get('current_state_id', 'unknown')}")
+    if current.get("omission_reason"):
+        lines.append(f"omission: {current['omission_reason']}")
+    return "\n".join(lines)
+
+
+def format_provenance_trace(payload: Mapping[str, object]) -> str:
+    lines = [format_file_provenance(payload)]
+    journals = _items(payload, "journals")
+    lines.append(f"lineage journals: {len(journals)}")
+    for journal in journals:
+        lines.append(
+            f"- {journal.get('journal_id', 'unknown')}  entries={journal.get('entries', 0)}  "
+            f"current={journal.get('current_state_id', 'unknown')}"
+        )
+    return "\n".join(lines)
+
+
+def format_provenance_verification(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"collection provenance {payload.get('collection_id', 'unknown')}: "
+            f"{'valid' if payload.get('valid') else 'invalid'}",
+            f"mode: {payload.get('provenance_mode', 'unknown')}",
+            f"identity: {payload.get('provenance_etag') or 'omitted'}",
+            f"files: {payload.get('files', 0)}",
+            f"journals: {payload.get('journals', 0)}",
+            f"projected entities: {payload.get('entities', 0)}",
+        ]
+    )

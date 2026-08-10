@@ -1272,6 +1272,81 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     assert "skipped 2 already complete files" in stderr.getvalue()
 
 
+def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000041"
+    state_id = "urn:uuid:00000000-0000-4000-8000-000000000042"
+    journal = b'\x1e{"exact":"journal"}\n'
+    item = SubmissionInputFile(
+        source=source,
+        rel_path="video/clip.mp4",
+        bytes=source.stat().st_size,
+        sha256=hashlib.sha256(b"video").hexdigest(),
+        provenance={
+            "status": "captured",
+            "journal_id": journal_id,
+            "current_state_id": state_id,
+        },
+        provenance_journals={journal_id: journal},
+    )
+    request = SubmissionUploadRequest(
+        submission_id="submission-provenance",
+        template_id="test-template",
+        files=(item,),
+        upload_workers=1,
+        upload_chunk_mib=9,
+    )
+    client = MunchyClient("https://munchy.test")
+    calls: list[str] = []
+    submission_gets = 0
+
+    def put_journal(
+        submission_id: str,
+        requested_journal_id: str,
+        *,
+        content: bytes,
+        sha256: str,
+    ) -> dict[str, object]:
+        assert submission_id == request.submission_id
+        assert requested_journal_id == journal_id
+        assert content == journal
+        assert sha256 == hashlib.sha256(journal).hexdigest()
+        calls.append("provenance")
+        return {"journal_id": journal_id}
+
+    def get_submission(submission_id: str) -> dict[str, object]:
+        nonlocal submission_gets
+        assert submission_id == request.submission_id
+        submission_gets += 1
+        complete = submission_gets > 1
+        return {
+            "job": {"state": "uploading"},
+            "upload": {
+                "state": "uploaded" if complete else "uploading",
+                "files": [{"path": item.rel_path, "complete": complete}],
+            },
+        }
+
+    def upload_file(
+        upload_id: str,
+        requested: SubmissionInputFile,
+        **_kwargs: object,
+    ) -> None:
+        assert upload_id == request.submission_id
+        assert requested is item
+        calls.append("payload")
+
+    client.put_submission_provenance_journal = put_journal  # type: ignore[method-assign]
+    client.get_submission = get_submission  # type: ignore[method-assign]
+    client.upload_file = upload_file  # type: ignore[method-assign]
+
+    upload = client.upload_files(request)
+
+    assert calls == ["provenance", "payload"]
+    assert upload["state"] == "uploaded"
+
+
 def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")

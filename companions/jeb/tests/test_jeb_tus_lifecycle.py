@@ -75,7 +75,11 @@ def write_upload(
         ingress,
         services.source_registry,
         authorization=basic_authorization("phone", "phone-password"),
-        metadata={"path": f"notes/{offset}.txt"},
+        metadata={
+            "path": f"notes/{offset}.txt",
+            "sha256": "0" * 64,
+            "provenance_sha256": "1" * 64,
+        },
         size=size,
     )
     ingress.tus_staging_dir.mkdir(parents=True, exist_ok=True)
@@ -215,7 +219,11 @@ def test_jeb_tus_publication_resolves_destination_under_its_source_root(
         services.config.ingress,
         services.source_registry,
         authorization=basic_authorization("phone", "phone-password"),
-        metadata={"path": "notes/note.txt"},
+        metadata={
+            "path": "notes/note.txt",
+            "sha256": "0" * 64,
+            "provenance_sha256": "1" * 64,
+        },
         size=5,
     )
     staging = services.config.ingress.tus_staging_dir

@@ -8,10 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, cast
 
-from munchy_api_client.filesystem_metadata import (
-    SOURCE_FILESYSTEM_METADATA_FILENAME,
-    load_filesystem_metadata_map,
-)
 from munchy_target_support.metadata_projection import (
     ProjectionMetadata,
     ffmpeg_container_metadata_args,
@@ -280,7 +276,7 @@ def audio_archive_metadata_for_source(
     *,
     rel_path: str,
     group_config: dict[str, Any],
-    filesystem_metadata: Mapping[str, Any] | None,
+    provenance: Mapping[str, Any] | None,
 ) -> ProjectionMetadata | None:
     if not routing_service.metadata_projection_enabled(group_config):
         return None
@@ -288,7 +284,7 @@ def audio_archive_metadata_for_source(
         rel_path,
         source,
         group_config=group_config,
-        filesystem_metadata=filesystem_metadata,
+        provenance=provenance,
     )
 
 
@@ -332,11 +328,7 @@ def archive_audio_sources(
         raise RuntimeError(f"input group is missing: {input_root}")
     if rel_paths is not None:
         return sorted(input_root / Path(rel_path) for rel_path in rel_paths)
-    return sorted(
-        path
-        for path in input_root.rglob("*")
-        if path.is_file() and path.name != SOURCE_FILESYSTEM_METADATA_FILENAME
-    )
+    return sorted(path for path in input_root.rglob("*") if path.is_file())
 
 
 def archive_audio_output_for_source(source: Path, input_root: Path, output_root: Path) -> Path:
@@ -349,26 +341,16 @@ def run_archive_audio_item(
     dest: Path,
     input_root: Path,
     group_config: dict[str, Any],
-    filesystem_metadata: Mapping[str, Any],
+    provenance: Mapping[str, Any] | None,
     source_sidecars: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     profile, _audio = audio_archive_profile(group_config)
     rel_path = source.relative_to(input_root).as_posix()
-    metadata = filesystem_metadata.get(rel_path)
-    allow_missing_filesystem_metadata = bool(
-        group_config.get("allow_missing_filesystem_metadata", False)
-    )
-    if (not isinstance(metadata, Mapping) or not metadata) and not (
-        allow_missing_filesystem_metadata
-    ):
-        raise RuntimeError(
-            f"unresumable: source filesystem metadata sidecar is missing entries for {rel_path}"
-        )
     audio_metadata = audio_archive_metadata_for_source(
         source,
         rel_path=rel_path,
         group_config=group_config,
-        filesystem_metadata=metadata,
+        provenance=provenance,
     )
     sidecar = routing_service.source_artifact_sidecar_for_archive_output(dest)
     if dest.is_file() and sidecar.is_file():
@@ -390,8 +372,6 @@ def run_archive_audio_item(
         archive_mkv=dest,
         encode_command=cast(list[str], result["command"]),
         encode_profile=profile,
-        source_filesystem_metadata=metadata,
-        allow_missing_filesystem_metadata=allow_missing_filesystem_metadata,
         source_sidecars=source_sidecars,
     )
     return {
@@ -413,17 +393,11 @@ def run_archive_audio_group(
     group_config: dict[str, Any],
     source_rel_paths: set[str] | None = None,
     source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
+    provenance_by_rel_path: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     sources = archive_audio_sources(input_root, rel_paths=source_rel_paths)
     if not sources:
         return {"status": "skipped", "reason": "no audio sources", "items": []}
-    filesystem_metadata = load_filesystem_metadata_map(input_root)
-    if not filesystem_metadata and not bool(
-        group_config.get("allow_missing_filesystem_metadata", False)
-    ):
-        raise RuntimeError(
-            "unresumable: source filesystem metadata sidecar is missing for audio archive group"
-        )
     output_root.mkdir(parents=True, exist_ok=True)
     items: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=runtime_config.AUDIO_ARCHIVE_MAX_PARALLEL) as pool:
@@ -434,7 +408,11 @@ def run_archive_audio_group(
                 dest=archive_audio_output_for_source(source, input_root, output_root),
                 input_root=input_root,
                 group_config=group_config,
-                filesystem_metadata=filesystem_metadata,
+                provenance=(
+                    provenance_by_rel_path.get(source.relative_to(input_root).as_posix())
+                    if provenance_by_rel_path
+                    else None
+                ),
                 source_sidecars=(
                     source_artifacts_sidecars.get(source.relative_to(input_root).as_posix(), [])
                     if source_artifacts_sidecars

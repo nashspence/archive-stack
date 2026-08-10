@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-compression-state.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "file_attribute_compressed",
+    "compressed_size",
+    "compression_format",
+    "compression_format_name",
+    "compression_unit_shift",
+    "chunk_shift",
+    "cluster_shift"
+  ],
+  "properties": {
+    "file_attribute_compressed": {
+      "type": "boolean"
+    },
+    "compressed_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "compression_format": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "compression_format_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compression_unit_shift": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "chunk_shift": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cluster_shift": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

@@ -213,7 +213,6 @@ def prepare_review_sweep_route_input(
         if not source.is_file():
             raise RuntimeError(f"review sweep source file is missing: {source}")
         upload_service.link_or_copy(source, route_input_root / group_name / rel_path)
-    upload_service.write_group_filesystem_metadata(route_input_root, group_name, all_file_states)
 
 
 def review_sweep_result_state(job: dict[str, Any]) -> dict[str, Any]:
@@ -362,9 +361,6 @@ def run_review_sweep_job(
                             tasks,
                             group_config,
                         )
-                    ),
-                    "allow_missing_filesystem_metadata": bool(
-                        group_config.get("allow_missing_filesystem_metadata", False)
                     ),
                     "encode_profile": variant["encode_profile"],
                 }
@@ -1262,9 +1258,6 @@ def build_eager_gpu_payload(
         "container_metadata_required": routing_service.gpu_tasks_require_container_metadata(
             tasks, group_config
         ),
-        "allow_missing_filesystem_metadata": bool(
-            group_config.get("allow_missing_filesystem_metadata", False)
-        ),
     }
     if group_config.get("encode_profile") is not None:
         payload["encode_profile"] = group_config["encode_profile"]
@@ -1385,11 +1378,6 @@ def prepare_eager_gpu_batch_input(
         )
         if container_metadata_changed:
             upload = upload_service.save_input_upload_raw(upload)
-        upload_service.write_group_filesystem_metadata(
-            batch_root,
-            group_name,
-            [*file_states, *evidence_file_states],
-        )
         source_artifacts_sidecars = upload_service.source_artifacts_sidecar_entries(
             upload,
             file_states,
@@ -1521,7 +1509,6 @@ def start_eager_audio_batch(
         batch_root.mkdir(parents=True, exist_ok=True)
         for file_state in file_states:
             upload_service.materialize_upload_file(file_state, batch_root)
-        upload_service.write_group_filesystem_metadata(batch_root, group_name, file_states)
 
     batch: dict[str, Any] = {
         "batch_id": batch_id,

@@ -222,6 +222,8 @@ def _seed_collection(
         archive_store=None,
         initiator=_creator(),
         event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture does not exercise source observation",
     )
     collection_id = int(opened["collection_id"])
     manifest: list[dict[str, object]] = []

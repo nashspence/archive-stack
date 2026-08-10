@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -24,6 +26,16 @@ from riverhog_api_client.client import ApiClient
 from riverhog_api_client.uploads import configured_upload_concurrency, upload_collection_units
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.raw_ingress import hash_raw_source
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    ProvenanceArchive,
+    append_observation,
+    append_replacement_transformation,
+    build_provenance_archive,
+    create_derivative_journal,
+    load_or_create_installation_id,
+    validate_journal,
+)
 from time_formats import format_utc_timestamp, utc_timestamp_now
 
 import munchy_core.domain.errors as domain_errors
@@ -50,6 +62,13 @@ RIVERHOG_FINALIZE_POLL_SECONDS = max(
     1.0,
     float(os.getenv("MUNCHY_RIVERHOG_FINALIZE_POLL_SECONDS", "5")),
 )
+
+MUNCHY_PROVENANCE_AGENT_NAME = "munchy-server"
+
+
+def _provenance_host_id() -> str:
+    return load_or_create_installation_id(runtime_config.STATE_DIR / "provenance-installation-id")
+
 
 UPSTREAM_EVENT_POLL_SECONDS = max(
     1.0,
@@ -527,9 +546,11 @@ def ensure_riverhog_session(
     lock = riverhog_upload_lock(str(job.get("job_id") or ""))
     with lock:
         state = riverhog_session_state(job)
+        provenance, _bindings, _journals = munchy_output_provenance(job, archive_dir)
         if state.get("collection_id"):
             return int(state["collection_id"])
 
+        provenance_mode = "captured" if provenance is not None else "omitted"
         payload = api.create_or_resume_collection_upload_session(
             str(job.get("submission_id") or job["job_id"]),
             [str(tag) for tag in riverhog_handoff_options(job).get("tags") or []],
@@ -539,6 +560,12 @@ def ensure_riverhog_session(
                 riverhog_handoff_options(job).get("archive_store"),
             ),
             event_context=normalize_event_context(job.get("event_context")),
+            provenance_mode=provenance_mode,
+            provenance_omission_reason=(
+                None
+                if provenance is not None
+                else "Provenance was explicitly omitted for every Munchy input."
+            ),
         )
         update_remote_state_from_payload(job, payload)
         state = riverhog_session_state(job)
@@ -548,6 +575,338 @@ def ensure_riverhog_session(
         if collection_id is None:
             raise RuntimeError("riverhog upload session did not return a collection_id")
         return int(collection_id)
+
+
+def _provenance_binding_payload(binding: FileProvenanceBinding) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "path": binding.path,
+        "bytes": binding.bytes,
+        "sha256": binding.sha256,
+        "status": binding.status,
+    }
+    if binding.status == "captured":
+        payload.update(
+            {
+                "journal_id": str(binding.journal_id),
+                "current_state_id": str(binding.current_state_id),
+            }
+        )
+    else:
+        payload["omission_reason"] = str(binding.omission_reason)
+    return payload
+
+
+def _provenance_binding_from_payload(value: Mapping[str, object]) -> FileProvenanceBinding:
+    status = str(value.get("status") or "")
+    if status == "captured":
+        return FileProvenanceBinding(
+            path=str(value["path"]),
+            bytes=int(str(value["bytes"])),
+            sha256=str(value["sha256"]),
+            status="captured",
+            journal_id=str(value["journal_id"]),
+            current_state_id=str(value["current_state_id"]),
+        )
+    return FileProvenanceBinding(
+        path=str(value["path"]),
+        bytes=int(str(value["bytes"])),
+        sha256=str(value["sha256"]),
+        status="omitted",
+        omission_reason=str(value["omission_reason"]),
+    )
+
+
+def _munchy_output_provenance_root(job: Mapping[str, Any]) -> Path:
+    return (
+        upload_service.shared_input_upload_root(str(job["input_upload_id"]))
+        / ".riverhog"
+        / "riverhog-handoff-provenance"
+    )
+
+
+def _archive_binding(path: Path, archive_dir: Path, **identity: object) -> FileProvenanceBinding:
+    rel_path = path.relative_to(archive_dir).as_posix()
+    return FileProvenanceBinding(
+        path=rel_path,
+        bytes=path.stat().st_size,
+        sha256=upload_service.file_sha256(path),
+        **identity,  # type: ignore[arg-type]
+    )
+
+
+def _input_provenance_sources(
+    upload: Mapping[str, Any],
+    primary: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    primary_path = str(primary.get("path") or "")
+    sources = [primary]
+    sources.extend(
+        item
+        for item in upload.get("files", [])
+        if isinstance(item, Mapping) and str(item.get("sidecar_for") or "") == primary_path
+    )
+    return sources
+
+
+def _source_omission_reason(sources: list[Mapping[str, Any]]) -> str | None:
+    reasons = sorted(
+        {
+            str(provenance.get("omission_reason") or "")
+            for source in sources
+            if isinstance((provenance := source.get("provenance")), Mapping)
+            and provenance.get("status") == "omitted"
+        }
+    )
+    if not reasons:
+        return None
+    return "Munchy output provenance omitted because source provenance was omitted: " + "; ".join(
+        reasons
+    )
+
+
+def _source_journal_bytes(
+    sources: list[Mapping[str, Any]], journals: Mapping[str, bytes]
+) -> list[bytes]:
+    result: list[bytes] = []
+    seen: set[str] = set()
+    for source in sources:
+        provenance = source.get("provenance")
+        if not isinstance(provenance, Mapping) or provenance.get("status") != "captured":
+            continue
+        journal_id = str(provenance.get("journal_id") or "")
+        if journal_id not in seen:
+            result.append(journals[journal_id])
+            seen.add(journal_id)
+    return result
+
+
+def _reachable_output_journals(
+    directly_bound: set[str], candidates: Mapping[str, bytes]
+) -> dict[str, bytes]:
+    reachable = set(directly_bound)
+    pending = list(directly_bound)
+    while pending:
+        journal_id = pending.pop()
+        content = candidates.get(journal_id)
+        if content is None:
+            raise RuntimeError(f"Munchy output provenance is missing journal {journal_id}")
+        for reference in validate_journal(content).external_states:
+            if reference.journal_id not in reachable:
+                reachable.add(reference.journal_id)
+                pending.append(reference.journal_id)
+    return {journal_id: candidates[journal_id] for journal_id in sorted(reachable)}
+
+
+def _load_munchy_output_provenance(
+    job: dict[str, Any], archive_dir: Path, state: Mapping[str, Any]
+) -> tuple[ProvenanceArchive | None, tuple[FileProvenanceBinding, ...], dict[str, bytes]]:
+    bindings = tuple(
+        _provenance_binding_from_payload(item)
+        for item in state.get("files", [])
+        if isinstance(item, Mapping)
+    )
+    for binding in bindings:
+        path = archive_dir / binding.path
+        if (
+            not path.is_file()
+            or path.stat().st_size != binding.bytes
+            or upload_service.file_sha256(path) != binding.sha256
+        ):
+            raise RuntimeError(
+                f"Munchy output changed after provenance preparation: {binding.path}"
+            )
+    if state.get("mode") == "omitted":
+        if any(binding.status != "omitted" for binding in bindings):
+            raise RuntimeError("Munchy omitted provenance state has captured file bindings")
+        return None, bindings, {}
+    root = _munchy_output_provenance_root(job)
+    journals = {
+        str(journal_id): (root / f"{str(journal_id)}.json-seq").read_bytes()
+        for journal_id in state.get("journals", {})
+    }
+    archive = build_provenance_archive(bindings=bindings, journals=journals)
+    if archive.identity != state.get("etag"):
+        raise RuntimeError("Munchy output provenance identity changed after preparation")
+    return archive, bindings, journals
+
+
+def munchy_output_provenance(
+    job: dict[str, Any], archive_dir: Path
+) -> tuple[ProvenanceArchive | None, tuple[FileProvenanceBinding, ...], dict[str, bytes]]:
+    state = riverhog_session_state(job)
+    existing = state.get("provenance")
+    if isinstance(existing, Mapping):
+        return _load_munchy_output_provenance(job, archive_dir, existing)
+
+    upload = upload_service.load_input_upload_raw(str(job["input_upload_id"]))
+    input_journals = upload_service.input_provenance_journals(upload)
+    candidates = dict(input_journals)
+    groups = job.get("groups")
+    if not isinstance(groups, Mapping):
+        raise RuntimeError("Munchy job has no resolved groups for provenance preparation")
+    primary_sources: dict[str, Mapping[str, Any]] = {}
+    for group_name, raw_group in groups.items():
+        if not isinstance(
+            raw_group, dict
+        ) or not routing_service.group_produces_primary_archive_output(raw_group):
+            continue
+        for source in upload_service.primary_upload_files_for_groups(upload, {str(group_name)}):
+            output = routing_service.archive_output_path_for_routed_file(
+                source,
+                group_name=str(group_name),
+                group_config=raw_group,
+                archive_dir=archive_dir,
+            )
+            if output.is_file():
+                primary_sources[output.relative_to(archive_dir).as_posix()] = source
+
+    version = importlib.metadata.version("munchy-server")
+    started_at = str(job.get("started_at") or utc_timestamp_now())
+    ended_at = utc_timestamp_now()
+    bindings: list[FileProvenanceBinding] = []
+    directly_bound: set[str] = set()
+    artifacts = routing_service.archive_dir_artifact_paths(archive_dir)
+    for artifact in artifacts:
+        rel_path = artifact.relative_to(archive_dir).as_posix()
+        primary = primary_sources.get(rel_path)
+        if primary is not None:
+            sources = [primary]
+            omission_reason = _source_omission_reason(sources)
+            if omission_reason is not None:
+                bindings.append(
+                    _archive_binding(
+                        artifact,
+                        archive_dir,
+                        status="omitted",
+                        omission_reason=omission_reason,
+                    )
+                )
+                continue
+            source_journal = _source_journal_bytes(sources, input_journals)[0]
+            group_name = upload_service.upload_file_resolved_group(dict(primary))
+            group_config = groups.get(str(group_name))
+            if not isinstance(group_config, dict):
+                raise RuntimeError(f"Munchy output has no group contract: {rel_path}")
+            if (
+                domain_models.normalize_output_mode(str(group_config.get("output_mode") or "video"))
+                == "preserve"
+            ):
+                result = append_observation(
+                    source_journal,
+                    artifact,
+                    relative_path=rel_path,
+                    host_id=_provenance_host_id(),
+                    agent_name=MUNCHY_PROVENANCE_AGENT_NAME,
+                    agent_version=version,
+                )
+            else:
+                result = append_replacement_transformation(
+                    source_journal,
+                    artifact,
+                    relative_path=rel_path,
+                    host_id=_provenance_host_id(),
+                    agent_name=MUNCHY_PROVENANCE_AGENT_NAME,
+                    agent_version=version,
+                    event_label="Munchy canonical archive transformation",
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            summary = validate_journal(result)
+            candidates[summary.journal_id] = result
+            directly_bound.add(summary.journal_id)
+            bindings.append(
+                _archive_binding(
+                    artifact,
+                    archive_dir,
+                    status="captured",
+                    journal_id=summary.journal_id,
+                    current_state_id=summary.current_state_id,
+                )
+            )
+            continue
+
+        matching_primary = next(
+            (
+                (path, source)
+                for path, source in primary_sources.items()
+                if rel_path.startswith(path + ".")
+            ),
+            None,
+        )
+        if matching_primary is None:
+            sources = list(primary_sources.values())
+        else:
+            sources = _input_provenance_sources(upload, matching_primary[1])
+        omission_reason = _source_omission_reason(sources)
+        source_journals = _source_journal_bytes(sources, input_journals)
+        if omission_reason is not None or not source_journals:
+            bindings.append(
+                _archive_binding(
+                    artifact,
+                    archive_dir,
+                    status="omitted",
+                    omission_reason=omission_reason
+                    or (
+                        "Munchy could not associate this generated artifact with captured "
+                        "source provenance."
+                    ),
+                )
+            )
+            continue
+        result = create_derivative_journal(
+            artifact,
+            relative_path=rel_path,
+            source_journals=source_journals,
+            host_id=_provenance_host_id(),
+            agent_name=MUNCHY_PROVENANCE_AGENT_NAME,
+            agent_version=version,
+            event_label="Munchy generated archive artifact",
+            started_at=started_at,
+            ended_at=ended_at,
+            derivation_kind="aggregation" if len(source_journals) > 1 else "extraction",
+        )
+        summary = validate_journal(result)
+        candidates[summary.journal_id] = result
+        directly_bound.add(summary.journal_id)
+        bindings.append(
+            _archive_binding(
+                artifact,
+                archive_dir,
+                status="captured",
+                journal_id=summary.journal_id,
+                current_state_id=summary.current_state_id,
+            )
+        )
+
+    if not bindings:
+        raise RuntimeError("Munchy produced no Riverhog archive artifacts")
+    if not directly_bound:
+        provenance: ProvenanceArchive | None = None
+        journals: dict[str, bytes] = {}
+        mode = "omitted"
+    else:
+        journals = _reachable_output_journals(directly_bound, candidates)
+        provenance = build_provenance_archive(bindings=bindings, journals=journals)
+        mode = "captured"
+    root = _munchy_output_provenance_root(job)
+    root.mkdir(parents=True, exist_ok=True)
+    journal_descriptors: dict[str, dict[str, object]] = {}
+    for journal_id, content in journals.items():
+        (root / f"{journal_id}.json-seq").write_bytes(content)
+        journal_descriptors[journal_id] = {
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    state["provenance"] = {
+        "mode": mode,
+        "etag": provenance.identity if provenance is not None else None,
+        "files": [_provenance_binding_payload(item) for item in bindings],
+        "journals": journal_descriptors,
+        "prepared_at": ended_at,
+    }
+    touch_riverhog_session_state(job)
+    state_store.save_job(job)
+    return provenance, tuple(bindings), journals
 
 
 def _iter_source_chunks(
@@ -692,6 +1051,23 @@ def _riverhog_registration_payload(record: Mapping[str, object]) -> dict[str, ob
     raw_parts = record.get("raw_parts")
     if isinstance(raw_parts, dict):
         payload["raw_parts"] = dict(raw_parts)
+    provenance = record.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise RuntimeError(f"Riverhog file has no provenance accounting: {record['path']}")
+    status = str(provenance.get("status") or "")
+    if status == "captured":
+        payload["provenance"] = {
+            "status": "captured",
+            "journal_id": str(provenance.get("journal_id") or ""),
+            "current_state_id": str(provenance.get("current_state_id") or ""),
+        }
+    elif status == "omitted":
+        payload["provenance"] = {
+            "status": "omitted",
+            "omission_reason": str(provenance.get("omission_reason") or ""),
+        }
+    else:
+        raise RuntimeError(f"Riverhog file has invalid provenance accounting: {record['path']}")
     return payload
 
 
@@ -702,11 +1078,27 @@ def register_riverhog_artifacts(
 ) -> dict[str, int | float]:
     started = time.monotonic()
     collection_id = ensure_riverhog_session(job, api, archive_dir)
+    _provenance, bindings, journals = munchy_output_provenance(job, archive_dir)
+    bindings_by_path = {item.path: item for item in bindings}
+    for journal_id, content in sorted(journals.items()):
+        api.put_collection_upload_session_provenance_journal(
+            collection_id,
+            journal_id,
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
     records = [
         riverhog_file_record(job, archive_dir, path)
         for path in sorted(routing_service.archive_dir_artifact_paths(archive_dir))
         if path.is_file()
     ]
+    for record in records:
+        binding = bindings_by_path.get(str(record["path"]))
+        if binding is None:
+            raise RuntimeError(f"Munchy provenance did not account for {record['path']}")
+        if int(record["bytes"]) != binding.bytes or str(record["sha256"]) != binding.sha256:
+            raise RuntimeError(f"Munchy payload and provenance identity disagree: {record['path']}")
+        record["provenance"] = _provenance_binding_payload(binding)
     pending = [
         record
         for record in records
@@ -724,13 +1116,15 @@ def register_riverhog_artifacts(
         with riverhog_upload_lock(str(job["job_id"])):
             files = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
             for current in batch:
-                record = files.get(str(current["path"]))
-                if not isinstance(record, dict):
+                current_record = files.get(str(current["path"]))
+                if not isinstance(current_record, dict):
                     raise RuntimeError("Riverhog registration state lost a source file")
-                record["registered_at"] = record.get("registered_at") or utc_timestamp_now()
-                record["state"] = "registered"
+                current_record["registered_at"] = (
+                    current_record.get("registered_at") or utc_timestamp_now()
+                )
+                current_record["state"] = "registered"
                 registered_files += 1
-                registered_bytes += int(record["bytes"])
+                registered_bytes += int(current_record["bytes"])
             touch_riverhog_session_state(job)
         state_store.save_job(job)
     return {
@@ -801,6 +1195,7 @@ def complete_riverhog_session(
     archive_dir: Path,
 ) -> dict[str, Any]:
     collection_id = ensure_riverhog_session(job, api, archive_dir)
+    provenance, _bindings, _journals = munchy_output_provenance(job, archive_dir)
     try:
         files = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
         manifest = [
@@ -817,6 +1212,7 @@ def complete_riverhog_session(
             collection_id,
             files_total=len(manifest),
             content_etag=collection_content_etag(manifest),
+            provenance_etag=provenance.identity if provenance is not None else None,
         )
     except Conflict:
         payload = api.get_collection_upload_session(collection_id)

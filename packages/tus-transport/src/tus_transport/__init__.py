@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Callable, Mapping
+from urllib.parse import urljoin
 
 import httpx
 
@@ -83,6 +84,35 @@ class TusTransport:
             return -1
         self._raise_for_status(response, expected={200})
         return int(response.headers["Upload-Offset"])
+
+    def create_upload(
+        self,
+        collection_url: str,
+        *,
+        length: int,
+        metadata: Mapping[str, str],
+    ) -> str:
+        if length < 0:
+            raise ValueError("tus upload length must be non-negative")
+        encoded_metadata = ",".join(
+            f"{key} {base64.b64encode(value.encode('utf-8')).decode('ascii')}"
+            for key, value in sorted(metadata.items())
+        )
+        response = self._client_for_request().post(
+            self._url_rewriter(collection_url),
+            headers=self._request_headers(
+                {
+                    "Tus-Resumable": TUS_VERSION,
+                    "Upload-Length": str(length),
+                    "Upload-Metadata": encoded_metadata,
+                }
+            ),
+        )
+        self._raise_for_status(response, expected={201})
+        location = response.headers.get("Location")
+        if not location:
+            raise RuntimeError("tus upload creation returned no Location")
+        return str(urljoin(str(response.request.url), str(location)))
 
     def patch_chunk(
         self,

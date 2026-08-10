@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/linux-mount-context.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mount_id", "parent_id", "device", "root", "mount_point", "mount_options", "optional_fields", "filesystem_type", "source", "super_options"],
+  "properties": {
+    "mount_id": {"type": "integer", "minimum": 0},
+    "parent_id": {"type": "integer", "minimum": 0},
+    "device": {"type": "string"},
+    "root": {"type": "string"},
+    "mount_point": {"type": "string"},
+    "mount_options": {"type": "array", "items": {"type": "string"}},
+    "optional_fields": {"type": "array", "items": {"type": "string"}},
+    "filesystem_type": {"type": "string", "minLength": 1},
+    "source": {"type": "string"},
+    "super_options": {"type": "array", "items": {"type": "string"}}
+  }
+}

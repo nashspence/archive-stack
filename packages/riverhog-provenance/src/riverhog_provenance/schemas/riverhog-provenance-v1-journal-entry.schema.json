@@ -1,0 +1,4194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/journal-entry.schema.json",
+  "title": "Riverhog provenance v1 journal entry",
+  "description": "One immutable entry in a hash-chained RFC 7464 per-file provenance journal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "profile",
+    "schema_version",
+    "id",
+    "type",
+    "journal_id",
+    "sequence",
+    "recorded_at",
+    "recorded_by_agent_id",
+    "entry_kind",
+    "body"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://nashspence.github.io/riverhog/v1/provenance/journal-entry.schema.json"
+    },
+    "profile": {
+      "const": "https://nashspence.github.io/riverhog/v1/provenance"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "$ref": "#/$defs/urnUuid"
+    },
+    "type": {
+      "const": "riverhog_provenance_journal_entry"
+    },
+    "journal_id": {
+      "$ref": "#/$defs/urnUuid"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "recorded_at": {
+      "$ref": "#/$defs/utcDateTime"
+    },
+    "recorded_by_agent_id": {
+      "$ref": "#/$defs/urnUuid"
+    },
+    "recording_environment_id": {
+      "$ref": "#/$defs/urnUuid"
+    },
+    "entry_kind": {
+      "type": "string",
+      "enum": [
+        "journal_init",
+        "assertion",
+        "correction",
+        "checkpoint"
+      ]
+    },
+    "previous_entry": {
+      "$ref": "#/$defs/entryReference"
+    },
+    "body": {
+      "type": "object"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "entry_kind": {
+            "const": "journal_init"
+          }
+        },
+        "required": [
+          "entry_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          },
+          "body": {
+            "$ref": "#/$defs/journalInitBody"
+          }
+        },
+        "not": {
+          "required": [
+            "previous_entry"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entry_kind": {
+            "const": "assertion"
+          }
+        },
+        "required": [
+          "entry_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sequence": {
+            "minimum": 1
+          },
+          "body": {
+            "$ref": "#/$defs/assertionBody"
+          }
+        },
+        "required": [
+          "previous_entry"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entry_kind": {
+            "const": "correction"
+          }
+        },
+        "required": [
+          "entry_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sequence": {
+            "minimum": 1
+          },
+          "body": {
+            "$ref": "#/$defs/correctionBody"
+          }
+        },
+        "required": [
+          "previous_entry"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entry_kind": {
+            "const": "checkpoint"
+          }
+        },
+        "required": [
+          "entry_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sequence": {
+            "minimum": 1
+          },
+          "body": {
+            "$ref": "#/$defs/checkpointBody"
+          }
+        },
+        "required": [
+          "previous_entry"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "portableString": {
+      "type": "string",
+      "pattern": "^[^\\u0000\\uD800-\\uDFFF]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+      "minLength": 1
+    },
+    "absoluteUri": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$"
+    },
+    "urnUuid": {
+      "type": "string",
+      "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "utcDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$",
+      "description": "RFC 3339 date-time normalized to UTC with uppercase Z and at most nanosecond precision."
+    },
+    "coverageStatus": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "not_supported",
+        "not_applicable",
+        "not_requested",
+        "failed"
+      ]
+    },
+    "sourcePlatform": {
+      "type": "string",
+      "enum": [
+        "linux",
+        "windows",
+        "macos",
+        "freebsd",
+        "openbsd",
+        "netbsd",
+        "illumos",
+        "aix",
+        "posix",
+        "android",
+        "ios",
+        "solaris",
+        "other"
+      ]
+    },
+    "byteString": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "encoding": {
+          "const": "base64"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "media_type": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "encoding",
+        "data",
+        "byte_length"
+      ]
+    },
+    "identifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "record",
+            "repository",
+            "host",
+            "volume",
+            "filesystem",
+            "organization",
+            "global"
+          ]
+        },
+        "representation": {
+          "type": "string",
+          "enum": [
+            "clear",
+            "sha256",
+            "hmac_sha256"
+          ]
+        },
+        "authority_id": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "scheme",
+        "value",
+        "scope",
+        "representation"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "representation": {
+                "enum": [
+                  "sha256",
+                  "hmac_sha256"
+                ]
+              }
+            },
+            "required": [
+              "representation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "not": {
+                  "const": "global"
+                }
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "authority_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "representation": {
+                "const": "hmac_sha256"
+              }
+            },
+            "required": [
+              "representation"
+            ]
+          },
+          "then": {
+            "required": [
+              "authority_id"
+            ]
+          }
+        }
+      ]
+    },
+    "observedIdentifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "record",
+            "repository",
+            "host",
+            "volume",
+            "filesystem",
+            "organization",
+            "global"
+          ]
+        },
+        "representation": {
+          "type": "string",
+          "enum": [
+            "clear",
+            "sha256",
+            "hmac_sha256"
+          ]
+        },
+        "authority_id": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "source": {
+          "$ref": "#/$defs/sourceDescriptor"
+        }
+      },
+      "required": [
+        "scheme",
+        "value",
+        "scope",
+        "representation",
+        "source"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "representation": {
+                "enum": [
+                  "sha256",
+                  "hmac_sha256"
+                ]
+              }
+            },
+            "required": [
+              "representation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "not": {
+                  "const": "global"
+                }
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "authority_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "representation": {
+                "const": "hmac_sha256"
+              }
+            },
+            "required": [
+              "representation"
+            ]
+          },
+          "then": {
+            "required": [
+              "authority_id"
+            ]
+          }
+        }
+      ]
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]{0,63}$"
+        },
+        "algorithm_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "encoding": {
+          "const": "hex"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "fixity",
+            "native_metadata",
+            "executable",
+            "configuration",
+            "evidence",
+            "journal_entry",
+            "other"
+          ]
+        },
+        "purpose_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "originator_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        }
+      },
+      "required": [
+        "algorithm",
+        "encoding",
+        "value",
+        "purpose",
+        "originator_agent_id"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "algorithm": {
+                "const": "sha-256"
+              }
+            },
+            "required": [
+              "algorithm"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "algorithm": {
+                "const": "sha-512"
+              }
+            },
+            "required": [
+              "algorithm"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{128}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "algorithm": {
+                "not": {
+                  "enum": [
+                    "sha-256",
+                    "sha-512"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "algorithm"
+            ]
+          },
+          "then": {
+            "required": [
+              "algorithm_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "then": {
+            "required": [
+              "purpose_uri"
+            ]
+          }
+        }
+      ],
+      "description": "A cryptographic digest assertion. Content digests identify byte equality evidence, not file-entity identity."
+    },
+    "sourceDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "$ref": "#/$defs/sourcePlatform"
+        },
+        "platform_name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "api": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "api_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "field": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "field_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "platform",
+        "api"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "platform": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "platform"
+            ]
+          },
+          "then": {
+            "required": [
+              "platform_name"
+            ]
+          }
+        }
+      ]
+    },
+    "fieldSourceDescriptor": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sourceDescriptor"
+        },
+        {
+          "required": [
+            "field"
+          ]
+        }
+      ]
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "syntax": {
+          "type": "string",
+          "enum": [
+            "posix",
+            "windows",
+            "uri",
+            "opaque"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "absolute",
+            "relative",
+            "opaque"
+          ]
+        },
+        "text": {
+          "$ref": "#/$defs/portableString"
+        },
+        "bytes": {
+          "$ref": "#/$defs/byteString"
+        },
+        "source_encoding": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_id": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "text_role": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "display"
+          ],
+          "description": "Required when text and bytes coexist."
+        }
+      },
+      "required": [
+        "syntax",
+        "kind"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "bytes"
+          ]
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "syntax": {
+                "const": "opaque"
+              }
+            },
+            "required": [
+              "syntax"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "opaque"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "opaque"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "syntax": {
+                "const": "opaque"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "text_role"
+            ]
+          },
+          "then": {
+            "required": [
+              "text"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "text_role": {
+                "const": "display"
+              }
+            },
+            "required": [
+              "text_role"
+            ]
+          },
+          "then": {
+            "required": [
+              "bytes"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "text",
+              "bytes"
+            ]
+          },
+          "then": {
+            "required": [
+              "text_role"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "text_role": {
+                "const": "exact"
+              }
+            },
+            "required": [
+              "text_role",
+              "bytes"
+            ]
+          },
+          "then": {
+            "required": [
+              "source_encoding"
+            ]
+          }
+        }
+      ]
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user",
+            "group",
+            "service",
+            "device",
+            "unknown"
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "unresolved",
+            "not_attempted"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "resolution"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "identifiers"
+          ]
+        }
+      ]
+    },
+    "accessMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/principal"
+        },
+        "group": {
+          "$ref": "#/$defs/principal"
+        },
+        "posix_mode": {
+          "type": "string",
+          "pattern": "^[0-7]{4}$"
+        }
+      },
+      "minProperties": 1
+    },
+    "bytesValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "bytes"
+        },
+        "encoding": {
+          "const": "base64"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "media_type": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type",
+        "encoding",
+        "data",
+        "byte_length"
+      ]
+    },
+    "textValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "data": {
+          "$ref": "#/$defs/portableString"
+        },
+        "source_encoding": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "media_type": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "dependentRequired": {
+        "byte_length": [
+          "source_encoding"
+        ]
+      }
+    },
+    "integerValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "integer"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^-?(?:0|[1-9][0-9]*)$"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "decimalValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "decimal"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "booleanValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "boolean"
+        },
+        "data": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "timestampValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "timestamp"
+        },
+        "data": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "resolution_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "uriValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "uri"
+        },
+        "data": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "entityReferenceValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "entity_reference"
+        },
+        "data": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ]
+    },
+    "nonNullJson": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/portableString"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonNullJson"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/portableString"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/nonNullJson"
+          }
+        }
+      ]
+    },
+    "jsonValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "json"
+        },
+        "data": {
+          "$ref": "#/$defs/nonNullJson"
+        },
+        "schema": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "type",
+        "data",
+        "schema"
+      ]
+    },
+    "digestOnlyValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "digest"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type",
+        "byte_length",
+        "digests"
+      ]
+    },
+    "capturedValue": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytesValue"
+        },
+        {
+          "$ref": "#/$defs/textValue"
+        },
+        {
+          "$ref": "#/$defs/integerValue"
+        },
+        {
+          "$ref": "#/$defs/decimalValue"
+        },
+        {
+          "$ref": "#/$defs/booleanValue"
+        },
+        {
+          "$ref": "#/$defs/timestampValue"
+        },
+        {
+          "$ref": "#/$defs/uriValue"
+        },
+        {
+          "$ref": "#/$defs/entityReferenceValue"
+        },
+        {
+          "$ref": "#/$defs/jsonValue"
+        }
+      ]
+    },
+    "typedValue": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/capturedValue"
+        },
+        {
+          "$ref": "#/$defs/digestOnlyValue"
+        }
+      ],
+      "description": "Closed tagged value union."
+    },
+    "interpretation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text_decode",
+            "structured_parse",
+            "normalized_value",
+            "other"
+          ]
+        },
+        "schema": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "value": {
+          "$ref": "#/$defs/capturedValue"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "unknown"
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "kind",
+        "value",
+        "agent_id",
+        "confidence"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "text_decode"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/textValue"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "structured_parse",
+                  "other"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "schema"
+            ]
+          }
+        }
+      ]
+    },
+    "nativeCoverageCategory": {
+      "type": "string",
+      "enum": [
+        "extended_attributes",
+        "access_control",
+        "alternate_streams",
+        "resource_forks",
+        "file_flags",
+        "security_metadata",
+        "storage_layout",
+        "special_file_features",
+        "native_metadata_other"
+      ]
+    },
+    "nativeMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "extended_attribute",
+            "windows_extended_attribute",
+            "alternate_data_stream",
+            "resource_fork",
+            "finder_info",
+            "acl",
+            "security_descriptor",
+            "file_flag",
+            "capability",
+            "security_label",
+            "reparse_point",
+            "sparse_map",
+            "compression_state",
+            "encryption_state",
+            "native_stat_field",
+            "other"
+          ]
+        },
+        "kind_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "coverage_category": {
+          "$ref": "#/$defs/nativeCoverageCategory"
+        },
+        "namespace": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "name_bytes": {
+          "$ref": "#/$defs/byteString"
+        },
+        "name_role": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "display"
+          ]
+        },
+        "name_source_encoding": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "capture_status": {
+          "type": "string",
+          "enum": [
+            "captured",
+            "digest_only",
+            "redacted",
+            "unreadable",
+            "not_retained"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/sourceDescriptor"
+        },
+        "observed_byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "value": {
+          "$ref": "#/$defs/typedValue"
+        },
+        "interpretations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/interpretation"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "personal",
+            "security_sensitive",
+            "secret",
+            "unknown"
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "kind",
+        "coverage_category",
+        "name",
+        "capture_status",
+        "source",
+        "sensitivity"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "kind_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capture_status": {
+                "const": "captured"
+              }
+            },
+            "required": [
+              "capture_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/capturedValue"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capture_status": {
+                "const": "digest_only"
+              }
+            },
+            "required": [
+              "capture_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/digestOnlyValue"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capture_status": {
+                "enum": [
+                  "redacted",
+                  "unreadable",
+                  "not_retained"
+                ]
+              }
+            },
+            "required": [
+              "capture_status"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name_bytes"
+            ]
+          },
+          "then": {
+            "required": [
+              "name_role"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name_role": {
+                "const": "display"
+              }
+            },
+            "required": [
+              "name_role"
+            ]
+          },
+          "then": {
+            "required": [
+              "name_bytes"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name_role": {
+                "const": "exact"
+              }
+            },
+            "required": [
+              "name_role",
+              "name_bytes"
+            ]
+          },
+          "then": {
+            "required": [
+              "name_source_encoding"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capture_status": {
+                "enum": [
+                  "redacted",
+                  "unreadable",
+                  "not_retained"
+                ]
+              }
+            },
+            "required": [
+              "capture_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "note"
+            ]
+          }
+        }
+      ],
+      "description": "Source-native metadata evidence separated from any interpretation and from restoration semantics."
+    },
+    "timestampObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "created",
+            "content_modified",
+            "metadata_changed",
+            "accessed",
+            "backup",
+            "archived",
+            "other"
+          ]
+        },
+        "kind_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "value_status": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "assumed",
+            "unresolved"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "resolution_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "source": {
+          "$ref": "#/$defs/fieldSourceDescriptor"
+        },
+        "raw_value": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "raw_unit": {
+          "type": "string",
+          "enum": [
+            "seconds",
+            "milliseconds",
+            "microseconds",
+            "nanoseconds",
+            "ticks_100ns",
+            "days",
+            "other"
+          ]
+        },
+        "raw_unit_name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "raw_epoch": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "assumption": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "kind",
+        "value_status",
+        "source"
+      ],
+      "dependentRequired": {
+        "raw_unit": [
+          "raw_value"
+        ],
+        "raw_epoch": [
+          "raw_value"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "kind_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_status": {
+                "enum": [
+                  "exact",
+                  "assumed"
+                ]
+              }
+            },
+            "required": [
+              "value_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "value",
+              "resolution_ns"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_status": {
+                "const": "assumed"
+              }
+            },
+            "required": [
+              "value_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "assumption"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "value_status": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "value_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "raw_value"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "raw_unit": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "raw_unit"
+            ]
+          },
+          "then": {
+            "required": [
+              "raw_unit_name"
+            ]
+          }
+        }
+      ]
+    },
+    "filesystemMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timestamps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timestampObservation"
+          },
+          "uniqueItems": true
+        },
+        "access": {
+          "$ref": "#/$defs/accessMetadata"
+        },
+        "native_identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observedIdentifier"
+          },
+          "uniqueItems": true
+        },
+        "native_metadata": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nativeMetadata"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "timestamps",
+        "native_identifiers",
+        "native_metadata"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "error"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "general",
+            "content_fixity",
+            "locator",
+            "basic_filesystem",
+            "timestamps",
+            "ownership",
+            "permissions",
+            "native_identifiers",
+            "extended_attributes",
+            "access_control",
+            "alternate_streams",
+            "resource_forks",
+            "file_flags",
+            "security_metadata",
+            "storage_layout",
+            "special_file_features",
+            "native_metadata_other"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "message": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "native_code": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source": {
+          "$ref": "#/$defs/sourceDescriptor"
+        }
+      },
+      "required": [
+        "severity",
+        "category",
+        "code",
+        "message"
+      ]
+    },
+    "association": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "executing_software",
+            "operator",
+            "responsible_organization",
+            "authorizing_agent",
+            "capture_device",
+            "process_owner",
+            "creator",
+            "editor",
+            "reviewer",
+            "other"
+          ]
+        },
+        "role_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "agent_id",
+        "role"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "required": [
+              "role_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "executing_software"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "required": [
+              "plan_id"
+            ]
+          }
+        }
+      ]
+    },
+    "captureDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "command_line": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/portableString"
+          },
+          "minItems": 1
+        },
+        "working_directory": {
+          "$ref": "#/$defs/locator"
+        },
+        "configuration_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "minProperties": 1
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "release": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "minProperties": 1
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "hardware_architecture": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hardware_model": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "operatingSystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "linux",
+            "windows",
+            "macos",
+            "freebsd",
+            "openbsd",
+            "netbsd",
+            "illumos",
+            "aix",
+            "android",
+            "ios",
+            "solaris",
+            "other"
+          ]
+        },
+        "family_name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "build": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "kernel": {
+          "$ref": "#/$defs/kernel"
+        }
+      },
+      "required": [
+        "family",
+        "name",
+        "version"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "family"
+            ]
+          },
+          "then": {
+            "required": [
+              "family_name"
+            ]
+          }
+        }
+      ]
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "type_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "volume_identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "snapshot_identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "mount_locator": {
+          "$ref": "#/$defs/locator"
+        },
+        "case_sensitive": {
+          "type": "boolean"
+        },
+        "case_preserving": {
+          "type": "boolean"
+        },
+        "name_normalization": {
+          "type": "string",
+          "enum": [
+            "none",
+            "nfc",
+            "nfd",
+            "nfkc",
+            "nfkd",
+            "implementation_defined",
+            "unknown"
+          ]
+        },
+        "networked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "process_architecture": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "time_zone": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "utc_offset": {
+          "type": "string",
+          "pattern": "^[+-](?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "locale": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "character_encoding": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "privilege": {
+          "type": "string",
+          "enum": [
+            "unprivileged",
+            "elevated",
+            "root",
+            "system",
+            "unknown"
+          ]
+        },
+        "effective_principal": {
+          "$ref": "#/$defs/principal"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "container": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "process_architecture",
+        "privilege"
+      ]
+    },
+    "softwareAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "type": {
+          "const": "software"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "build": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "vendor": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "executable_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "name"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "version"
+          ]
+        },
+        {
+          "required": [
+            "build"
+          ]
+        },
+        {
+          "required": [
+            "executable_digests"
+          ]
+        }
+      ]
+    },
+    "personAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "type": {
+          "const": "person"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ]
+    },
+    "organizationAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "type": {
+          "const": "organization"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ]
+    },
+    "hardwareAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "type": {
+          "const": "hardware"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "model": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "vendor": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "name"
+      ]
+    },
+    "agent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/softwareAgent"
+        },
+        {
+          "$ref": "#/$defs/personAgent"
+        },
+        {
+          "$ref": "#/$defs/organizationAgent"
+        },
+        {
+          "$ref": "#/$defs/hardwareAgent"
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content_fixity": {
+          "const": "complete"
+        },
+        "locator": {
+          "const": "complete"
+        },
+        "basic_filesystem": {
+          "const": "complete"
+        },
+        "timestamps": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "ownership": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "permissions": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "native_identifiers": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "extended_attributes": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "access_control": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "alternate_streams": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "resource_forks": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "file_flags": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "security_metadata": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "storage_layout": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "special_file_features": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "native_metadata_other": {
+          "$ref": "#/$defs/coverageStatus"
+        }
+      },
+      "required": [
+        "content_fixity",
+        "locator",
+        "basic_filesystem",
+        "timestamps",
+        "ownership",
+        "permissions",
+        "native_identifiers",
+        "extended_attributes",
+        "access_control",
+        "alternate_streams",
+        "resource_forks",
+        "file_flags",
+        "security_metadata",
+        "storage_layout",
+        "special_file_features",
+        "native_metadata_other"
+      ],
+      "description": "Exhaustiveness status for every filesystem capture category. Complete concerns accountable enumeration under the declared plan, not universal retention."
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "technical_environment"
+        },
+        "host": {
+          "$ref": "#/$defs/host"
+        },
+        "operating_system": {
+          "$ref": "#/$defs/operatingSystem"
+        },
+        "filesystem": {
+          "$ref": "#/$defs/filesystem"
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtime"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "host",
+        "operating_system",
+        "filesystem",
+        "runtime"
+      ],
+      "description": "Host/OS/filesystem/runtime state used by an observation or transition; a PROV Entity, not an Agent merely because execution occurred there."
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entryReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "json_sha256": {
+          "$ref": "#/$defs/sha256Hex"
+        }
+      },
+      "required": [
+        "entry_id",
+        "sequence",
+        "json_sha256"
+      ],
+      "description": "Reference to the exact UTF-8 JSON-text octets of an earlier journal entry, excluding RFC 7464 RS/LF framing."
+    },
+    "fileLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "file_lineage"
+        },
+        "label": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "continuity_basis": {
+          "type": "string",
+          "enum": [
+            "producer_declared",
+            "repository_tracking",
+            "source_native_tracking",
+            "process_provenance",
+            "other"
+          ]
+        },
+        "continuity_basis_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "continuity_basis",
+        "asserted_by_agent_id"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "continuity_basis": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "continuity_basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "continuity_basis_uri"
+            ]
+          }
+        }
+      ],
+      "description": "An abstract continuing file lineage. Each immutable state is a specialization of one lineage; grouping is an attributable continuity assertion, not inferred from path or digest alone."
+    },
+    "contentDescription": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": {
+            "type": "object",
+            "properties": {
+              "algorithm": {
+                "const": "sha-256"
+              },
+              "purpose": {
+                "const": "fixity"
+              }
+            },
+            "required": [
+              "algorithm",
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      },
+      "required": [
+        "size_bytes",
+        "digests"
+      ],
+      "description": "Opaque primary byte-stream observations only: length and cryptographic fixity. Internal format, codec, dimensions, duration, and other byte semantics are outside the core profile."
+    },
+    "fileState": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "regular_file_state"
+        },
+        "lineage_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "locator": {
+          "$ref": "#/$defs/locator"
+        },
+        "content": {
+          "$ref": "#/$defs/contentDescription"
+        },
+        "filesystem_metadata": {
+          "$ref": "#/$defs/filesystemMetadata"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "lineage_id",
+        "locator",
+        "content",
+        "filesystem_metadata"
+      ],
+      "description": "One immutable, full observed snapshot of one operating-system regular-file state; a PROV Entity and PREMIS File."
+    },
+    "captureEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "file_state_capture"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "metadata_extraction",
+              "message_digest_calculation",
+              "principal_resolution"
+            ]
+          },
+          "minItems": 2,
+          "uniqueItems": true,
+          "allOf": [
+            {
+              "contains": {
+                "const": "metadata_extraction"
+              },
+              "minContains": 1
+            },
+            {
+              "contains": {
+                "const": "message_digest_calculation"
+              },
+              "minContains": 1
+            }
+          ]
+        },
+        "started_at": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "ended_at": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "success",
+            "partial"
+          ]
+        },
+        "consistency": {
+          "type": "string",
+          "enum": [
+            "snapshot",
+            "verified_unchanged",
+            "best_effort",
+            "unknown"
+          ]
+        },
+        "environment_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "associations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/association"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "const": "executing_software"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "minContains": 1
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "detail": {
+          "$ref": "#/$defs/captureDetail"
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          },
+          "minItems": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "state_id": {
+          "$ref": "#/$defs/urnUuid"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "state_id",
+        "operations",
+        "started_at",
+        "ended_at",
+        "outcome",
+        "consistency",
+        "environment_id",
+        "associations",
+        "coverage"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "partial"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "required": [
+              "diagnostics"
+            ]
+          }
+        }
+      ],
+      "description": "Observation Activity/PREMIS Event that used a file state and technical environment to generate provenance assertions. It does not generate the file state."
+    },
+    "activityTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "approximate",
+            "bounded",
+            "unknown"
+          ]
+        },
+        "started_at": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "ended_at": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "exact"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "started_at",
+              "ended_at"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approximate"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "note"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "started_at"
+                ]
+              },
+              {
+                "required": [
+                  "ended_at"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "bounded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "started_at",
+              "ended_at",
+              "note"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "note"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "started_at"
+                  ]
+                },
+                {
+                  "required": [
+                    "ended_at"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "processEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "direct_process_record",
+            "application_log",
+            "operating_system_audit",
+            "repository_workflow",
+            "user_attestation",
+            "imported_provenance",
+            "inferred_from_state_comparison",
+            "unknown",
+            "other"
+          ]
+        },
+        "basis_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "unknown"
+          ]
+        },
+        "reference": {
+          "$ref": "#/$defs/typedValue"
+        },
+        "comparison_relation_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "basis",
+        "asserted_by_agent_id",
+        "confidence"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "basis_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "inferred_from_state_comparison"
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "comparison_relation_id"
+            ]
+          }
+        }
+      ],
+      "description": "Evidence supporting the asserted process type. Activity labels such as transcode are process provenance, never inferred from payload bytes unless explicitly marked as a comparison-based inference."
+    },
+    "processDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plan_id": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "command_line": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/portableString"
+          },
+          "minItems": 1
+        },
+        "working_directory": {
+          "$ref": "#/$defs/locator"
+        },
+        "configuration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "external_event_identifier": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "minProperties": 1
+    },
+    "transitionActivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "file_state_transition"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "creation",
+            "content_modification",
+            "metadata_update",
+            "transformation",
+            "copy",
+            "relocation",
+            "deletion",
+            "composite",
+            "unknown_change",
+            "other"
+          ]
+        },
+        "event_type_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "event_label": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "time": {
+          "$ref": "#/$defs/activityTime"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "success",
+            "partial",
+            "failure",
+            "unknown"
+          ]
+        },
+        "environment_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "associations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/association"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/processEvidence"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "detail": {
+          "$ref": "#/$defs/processDetail"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "event_type",
+        "time",
+        "outcome",
+        "evidence"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "event_type_uri"
+            ]
+          }
+        }
+      ],
+      "description": "A real-world Activity/PREMIS Event that used, generated, or invalidated file states. It is distinct from observation capture."
+    },
+    "stateReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "local",
+            "external"
+          ]
+        },
+        "journal_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "entry_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "entry_json_sha256": {
+          "$ref": "#/$defs/sha256Hex"
+        },
+        "sidecar_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "id",
+        "scope"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "local"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "journal_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "entry_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "entry_json_sha256"
+                  ]
+                },
+                {
+                  "required": [
+                    "sidecar_uri"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "external"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "journal_id"
+            ]
+          }
+        }
+      ],
+      "dependentRequired": {
+        "entry_id": [
+          "entry_json_sha256"
+        ],
+        "entry_json_sha256": [
+          "entry_id"
+        ]
+      }
+    },
+    "relationRole": {
+      "type": "string",
+      "enum": [
+        "source",
+        "input",
+        "reference",
+        "component",
+        "metadata_source",
+        "result",
+        "output",
+        "derivative",
+        "replacement",
+        "copy",
+        "other"
+      ]
+    },
+    "usageRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "usage"
+        },
+        "activity_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "role": {
+          "$ref": "#/$defs/relationRole"
+        },
+        "role_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "activity_id",
+        "state",
+        "role"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "required": [
+              "role_uri"
+            ]
+          }
+        }
+      ]
+    },
+    "generationRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "generation"
+        },
+        "activity_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "role": {
+          "$ref": "#/$defs/relationRole"
+        },
+        "role_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "activity_id",
+        "state",
+        "role"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "required": [
+              "role_uri"
+            ]
+          }
+        }
+      ]
+    },
+    "derivationRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "derivation"
+        },
+        "generated_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "used_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "activity_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "derivation_kind": {
+          "type": "string",
+          "enum": [
+            "revision",
+            "transformation",
+            "copy",
+            "metadata_change",
+            "relocation",
+            "aggregation",
+            "extraction",
+            "other"
+          ]
+        },
+        "derivation_kind_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "generated_state",
+        "used_state",
+        "activity_id",
+        "derivation_kind"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "derivation_kind": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "derivation_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "derivation_kind_uri"
+            ]
+          }
+        }
+      ]
+    },
+    "invalidationRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "invalidation"
+        },
+        "activity_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "activity_id",
+        "state",
+        "reason"
+      ]
+    },
+    "continuityBasis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "native_file_identity",
+            "snapshot_identity",
+            "repository_tracking",
+            "process_record",
+            "operator_assertion",
+            "matching_fixity_and_locator",
+            "other"
+          ]
+        },
+        "uri": {
+          "$ref": "#/$defs/absoluteUri"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "uri"
+            ]
+          }
+        }
+      ]
+    },
+    "continuityRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "state_continuity"
+        },
+        "from_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "to_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "continuity_kind": {
+          "type": "string",
+          "enum": [
+            "reobservation",
+            "same_source_instance",
+            "declared_successor"
+          ]
+        },
+        "basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/continuityBasis"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "unknown"
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "from_state",
+        "to_state",
+        "continuity_kind",
+        "basis",
+        "asserted_by_agent_id",
+        "confidence"
+      ]
+    },
+    "comparisonDimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "primary_content",
+            "locator",
+            "timestamps",
+            "ownership",
+            "permissions",
+            "native_identifiers",
+            "native_metadata"
+          ]
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "matching_fixity",
+            "equal",
+            "different",
+            "not_observed",
+            "not_comparable",
+            "indeterminate"
+          ]
+        },
+        "basis": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "size",
+              "sha-256",
+              "exact_json_value",
+              "byte_exact",
+              "normalized_value",
+              "complete_capture",
+              "producer_assertion"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "dimension",
+        "result",
+        "basis"
+      ]
+    },
+    "comparisonRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "state_comparison"
+        },
+        "from_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "to_state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "from_capture_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "to_capture_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "compared_at": {
+          "$ref": "#/$defs/utcDateTime"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/comparisonDimension"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "unknown"
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "from_state",
+        "to_state",
+        "from_capture_id",
+        "to_capture_id",
+        "compared_at",
+        "dimensions",
+        "asserted_by_agent_id",
+        "confidence"
+      ]
+    },
+    "relation": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/usageRelation"
+        },
+        {
+          "$ref": "#/$defs/generationRelation"
+        },
+        {
+          "$ref": "#/$defs/derivationRelation"
+        },
+        {
+          "$ref": "#/$defs/invalidationRelation"
+        },
+        {
+          "$ref": "#/$defs/continuityRelation"
+        },
+        {
+          "$ref": "#/$defs/comparisonRelation"
+        }
+      ]
+    },
+    "payloadBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "payload_binding"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "bind",
+            "unbind"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "co_resident_primary_payload",
+            "related_payload",
+            "other"
+          ]
+        },
+        "role_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "state": {
+          "$ref": "#/$defs/stateReference"
+        },
+        "relative_payload_locator": {
+          "$ref": "#/$defs/locator"
+        },
+        "established_by_capture_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "size_and_sha256",
+            "repository_assertion",
+            "other"
+          ]
+        },
+        "basis_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "replaces_binding_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "operation",
+        "role",
+        "asserted_by_agent_id"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "required": [
+              "role_uri"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "bind"
+              }
+            },
+            "required": [
+              "operation"
+            ]
+          },
+          "then": {
+            "required": [
+              "state",
+              "relative_payload_locator",
+              "established_by_capture_id",
+              "basis"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "unbind"
+              }
+            },
+            "required": [
+              "operation"
+            ]
+          },
+          "then": {
+            "required": [
+              "replaces_binding_id"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "state"
+                  ]
+                },
+                {
+                  "required": [
+                    "relative_payload_locator"
+                  ]
+                },
+                {
+                  "required": [
+                    "established_by_capture_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "basis"
+                  ]
+                },
+                {
+                  "required": [
+                    "basis_uri"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "basis_uri"
+            ]
+          }
+        }
+      ],
+      "description": "Append-only assertion binding a journal state to a payload locator relative to the sidecar. The latest effective event per role determines the current binding."
+    },
+    "semanticAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "type": {
+          "const": "semantic_assertion"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "property": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "value": {
+          "$ref": "#/$defs/typedValue"
+        },
+        "asserted_by_agent_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "unknown"
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "subject_id",
+        "property",
+        "value",
+        "asserted_by_agent_id",
+        "confidence"
+      ],
+      "description": "URI-named semantic assertion over the closed typed-value union. It cannot redefine core Riverhog provenance semantics."
+    },
+    "graphFragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lineages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fileLineage"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fileState"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "captures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/captureEvent"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transitionActivity"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relation"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "environments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/environment"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/agent"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "payload_bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/payloadBinding"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/semanticAssertion"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "minProperties": 1,
+      "description": "An immutable atomic bundle of graph assertions. Arrays are semantic sets; array order does not imply chronology or causality."
+    },
+    "journalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary_lineage_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
+        "scope": {
+          "const": "primary_lineage_with_related_provenance"
+        },
+        "serialization": {
+          "const": "rfc7464_json_text_sequence"
+        },
+        "entry_digest_algorithm": {
+          "const": "sha-256"
+        },
+        "entry_digest_coverage": {
+          "const": "json_text_octets_excluding_framing"
+        },
+        "state_representation": {
+          "const": "full_snapshot"
+        },
+        "payload_semantics": {
+          "const": "opaque_bytes"
+        },
+        "correction_model": {
+          "const": "monotonic_entry_supersession"
+        },
+        "retention_intent": {
+          "type": "string",
+          "enum": [
+            "permanent_archival",
+            "long_term_preservation",
+            "operational_provenance",
+            "other"
+          ]
+        },
+        "retention_intent_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "label": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "primary_lineage_id",
+        "scope",
+        "serialization",
+        "entry_digest_algorithm",
+        "entry_digest_coverage",
+        "state_representation",
+        "payload_semantics",
+        "correction_model",
+        "retention_intent"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "retention_intent": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "retention_intent"
+            ]
+          },
+          "then": {
+            "required": [
+              "retention_intent_uri"
+            ]
+          }
+        }
+      ]
+    },
+    "journalInitBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "journal": {
+          "$ref": "#/$defs/journalPolicy"
+        },
+        "assertions": {
+          "$ref": "#/$defs/graphFragment"
+        }
+      },
+      "required": [
+        "journal",
+        "assertions"
+      ]
+    },
+    "assertionBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assertions": {
+          "$ref": "#/$defs/graphFragment"
+        }
+      },
+      "required": [
+        "assertions"
+      ]
+    },
+    "correctionBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "retract"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "supersedes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entryReference"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "replacement": {
+          "$ref": "#/$defs/graphFragment"
+        }
+      },
+      "required": [
+        "action",
+        "reason",
+        "supersedes"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "replace"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "required": [
+              "replacement"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "retract"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "replacement"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Monotonic correction of prior assertion entries. Supersession changes the effective provenance description; it never denotes a change to the file itself."
+    },
+    "checkpointCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "lineages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "states": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "captures": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "relations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "checkpointBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_kind": {
+          "type": "string",
+          "enum": [
+            "periodic",
+            "transfer",
+            "archive_ingest",
+            "publication",
+            "other"
+          ]
+        },
+        "checkpoint_kind_uri": {
+          "$ref": "#/$defs/absoluteUri"
+        },
+        "covered_through": {
+          "$ref": "#/$defs/entryReference"
+        },
+        "stream_prefix_sha256": {
+          "$ref": "#/$defs/sha256Hex"
+        },
+        "counts": {
+          "$ref": "#/$defs/checkpointCounts"
+        },
+        "note": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "checkpoint_kind",
+        "covered_through",
+        "stream_prefix_sha256",
+        "counts"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "checkpoint_kind": {
+                "const": "other"
+              }
+            },
+            "required": [
+              "checkpoint_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "checkpoint_kind_uri"
+            ]
+          }
+        }
+      ],
+      "description": "A cumulative checkpoint over exact RFC 7464 bytes through the preceding entry. Tail truncation is detectable only when a checkpoint or tail digest is anchored externally."
+    }
+  }
+}

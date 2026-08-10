@@ -604,6 +604,9 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     batch_id = services.attempts.archive_now(source_id="camera", process=False)
     assert batch_id is not None
     assert batch_id.startswith("20260719T160102Z__camera__")
+    services.attempts.stage_attempt_files(batch_id)
+    services.attempts.ensure_hashes(batch_id)
+    services.attempts.ensure_provenance(batch_id)
     request = MunchyTargetAdapter().submission_request(
         services,
         batch_id,
@@ -616,7 +619,8 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     assert request.event_context == {"initiator": {"app": "jeb", "attempt_id": batch_id}}
     assert [item.rel_path for item in request.files] == ["camera/clip.txt"]
     assert request.files[0].sha256
-    assert request.files[0].filesystem_metadata == {}
+    assert request.files[0].provenance["status"] == "captured"
+    assert request.files[0].provenance_journals
 
 
 def test_jeb_attempt_issue_is_appended_to_lifecycle_log(tmp_path: Path) -> None:

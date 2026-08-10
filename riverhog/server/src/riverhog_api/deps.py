@@ -35,12 +35,14 @@ from riverhog_core.services.interfaces import (
     CollectionService,
     LifecycleEventService,
     ProofMaturationService,
+    ProvenanceService,
     RetrievalService,
     SearchService,
     TagService,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationService
+from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
@@ -59,6 +61,7 @@ class ServiceContainer:
     tags: TagService
     collections: CollectionService
     collection_uploads: SqlAlchemyCollectionUploadService
+    provenance: ProvenanceService
     collection_deletions: CollectionDeletionService
     search: SearchService
     archive_maintenance: ArchiveMaintenanceService
@@ -114,6 +117,7 @@ def default_container() -> ServiceContainer:
             archive_ingress_stores,
             proof_stamper=proof_stamper,
         ),
+        provenance=SqlAlchemyProvenanceService(config),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
             archive_stores,

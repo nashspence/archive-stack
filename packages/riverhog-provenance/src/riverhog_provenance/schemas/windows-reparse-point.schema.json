@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-reparse-point.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reparse_tag",
+    "reparse_tag_hex",
+    "name_surrogate",
+    "followed_for_primary_content"
+  ],
+  "properties": {
+    "reparse_tag": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reparse_tag_hex": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{8}$"
+    },
+    "name_surrogate": {
+      "type": "boolean"
+    },
+    "followed_for_primary_content": {
+      "type": "boolean"
+    }
+  }
+}

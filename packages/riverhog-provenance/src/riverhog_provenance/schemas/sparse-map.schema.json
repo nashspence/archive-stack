@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/sparse-map.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["complete", "extents"],
+  "properties": {
+    "complete": {"type": "boolean"},
+    "extents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "offset", "length"],
+        "properties": {
+          "kind": {"enum": ["data", "hole"]},
+          "offset": {"type": "integer", "minimum": 0},
+          "length": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

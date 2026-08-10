@@ -13,6 +13,7 @@ COPY packages/application-access packages/application-access
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-age packages/riverhog-age
+COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats

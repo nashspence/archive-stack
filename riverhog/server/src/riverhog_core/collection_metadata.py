@@ -11,6 +11,8 @@ def collection_record_manifest(
     *,
     collection_id: int,
     content_etag: str,
+    provenance_mode: str,
+    provenance_etag: str | None,
     metadata_revision: int,
     tags: Sequence[str],
     files: Iterable[tuple[str, int, str]],
@@ -19,6 +21,8 @@ def collection_record_manifest(
         "format": "riverhog-collection/v1",
         "collection": collection_id,
         "content_etag": content_etag,
+        "provenance_mode": provenance_mode,
+        "provenance_etag": provenance_etag,
         "metadata_revision": metadata_revision,
         "tags": sorted(tags),
         "files": [

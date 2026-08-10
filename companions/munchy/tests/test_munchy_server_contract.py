@@ -15,13 +15,10 @@ from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
-from munchy_api_client.filesystem_metadata import (
-    SOURCE_FILESYSTEM_METADATA_FILENAME,
-    write_filesystem_metadata_map,
-)
 from munchy_target_support.metadata_projection import project_immich_metadata
 from munchy_target_support.uvicorn_logging import DropHealthAccessLogFilter
 from riverhog_api_client import Conflict, NotFound
+from riverhog_provenance import create_observation_journal, validate_journal
 from time_formats import utc_timestamp_now
 
 SERVER_MODULES = {
@@ -53,6 +50,10 @@ SERVER_MODULES = {
     "template_service": "munchy_core.services.templates",
     "upload_service": "munchy_core.services.uploads",
 }
+
+
+def omitted_test_provenance() -> dict[str, str]:
+    return {"status": "omitted", "omission_reason": "test fixture"}
 
 
 def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
@@ -208,7 +209,6 @@ def job_template_definition(*, archive_store: str = "b2") -> dict[str, object]:
         "kind": "munchy.job",
         "job": {
             "workflow_mode": "collection_archive",
-            "allow_missing_filesystem_metadata": True,
             "handoff": {
                 "destination": "riverhog",
                 "options": {
@@ -453,7 +453,14 @@ def test_riverhog_handoff_template_owns_tags(tmp_path: Path, monkeypatch) -> Non
                 "submission_id": "submission-1",
                 "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
-                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+                "files": [
+                    {
+                        "path": "video/a.mp4",
+                        "bytes": 4,
+                        "sha256": "a" * 64,
+                        "provenance": omitted_test_provenance(),
+                    }
+                ],
             },
         )
 
@@ -552,7 +559,14 @@ def test_submission_resolves_declared_template_input(tmp_path: Path, monkeypatch
                 "template_id": "camera-review",
                 "inputs": {"route": "camera-telephoto"},
                 "run_id": "20260101T000000.123456Z",
-                "files": [{"path": "review/a.mp4", "bytes": 4}],
+                "files": [
+                    {
+                        "path": "review/a.mp4",
+                        "bytes": 4,
+                        "sha256": "a" * 64,
+                        "provenance": omitted_test_provenance(),
+                    }
+                ],
             },
         )
 
@@ -583,7 +597,14 @@ def test_submission_preflight_resolves_template_without_creating_state(
             json={
                 "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
-                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+                "files": [
+                    {
+                        "path": "video/a.mp4",
+                        "bytes": 4,
+                        "sha256": "a" * 64,
+                        "provenance": omitted_test_provenance(),
+                    }
+                ],
             },
         )
 
@@ -596,97 +617,6 @@ def test_submission_preflight_resolves_template_without_creating_state(
     assert payload["files_total"] == 1
 
 
-def test_submission_preflight_requires_explicit_missing_filesystem_metadata_policy(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    definition = job_template_definition()
-    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
-
-    with TestClient(server.app) as client:
-        assert (
-            client.post(
-                "/v1/admin/job-templates",
-                json={"template_id": "strict-archive", "definition": definition},
-            ).status_code
-            == 201
-        )
-        response = client.post(
-            "/v1/submissions/preflight",
-            json={
-                "template_id": "strict-archive",
-                "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
-            },
-        )
-
-    assert response.status_code == 400
-    assert "allow_missing_filesystem_metadata" in response.json()["error"]["message"]
-
-
-def test_job_template_rejects_missing_filesystem_metadata_policy_with_birthtime_source(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    definition = job_template_definition()
-    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
-    definition["groups"] = {
-        "video": {
-            "tasks": ["archive_video"],
-            "allow_missing_filesystem_metadata": True,
-            "metadata_projection": {
-                "capture_date_sources": [{"type": "filesystem_birthtime"}],
-            },
-        }
-    }
-
-    with TestClient(server.app) as client:
-        response = client.post(
-            "/v1/admin/job-templates",
-            json={"template_id": "contradictory", "definition": definition},
-        )
-
-    assert response.status_code == 400
-    assert "filesystem_birthtime" in response.json()["error"]["message"]
-
-
-def test_job_template_rejects_missing_filesystem_metadata_policy_with_routing_fact(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    server = load_server(tmp_path, monkeypatch)
-    definition = job_template_definition()
-    definition["job"].pop("allow_missing_filesystem_metadata")  # type: ignore[union-attr]
-    definition["groups"] = {
-        "video": {
-            "tasks": ["archive_video"],
-            "allow_missing_filesystem_metadata": True,
-            "metadata_projection": False,
-        }
-    }
-    definition["job"]["routing"] = {  # type: ignore[index]
-        "routes": [
-            {
-                "id": "filesystem-routed",
-                "group": "video",
-                "when": {"fact": "filesystem.stat.birthtime", "exists": True},
-            }
-        ]
-    }
-
-    with TestClient(server.app) as client:
-        response = client.post(
-            "/v1/admin/job-templates",
-            json={"template_id": "routing-contradiction", "definition": definition},
-        )
-
-    assert response.status_code == 400
-    assert "routing cannot reference filesystem metadata" in response.json()["error"]["message"]
-    assert server.state_store.list_states("job") == []
-    assert server.state_store.list_states("input-upload") == []
-
-
 def test_submission_creation_is_idempotent_and_snapshots_template_revision(
     tmp_path: Path,
     monkeypatch,
@@ -697,7 +627,14 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         "submission_id": "submission-1",
         "template_id": "camera-archive",
         "run_id": "20260101T000000.123456Z",
-        "files": [{"path": "video/a.mp4", "bytes": 4, "sha256": "a" * 64}],
+        "files": [
+            {
+                "path": "video/a.mp4",
+                "bytes": 4,
+                "sha256": "a" * 64,
+                "provenance": omitted_test_provenance(),
+            }
+        ],
     }
 
     with TestClient(server.app) as client:
@@ -732,7 +669,14 @@ def test_submission_creation_is_idempotent_and_snapshots_template_revision(
         assert retried.json()["template_revision"] == 1
 
         conflict_request = dict(request)
-        conflict_request["files"] = [{"path": "video/b.mp4", "bytes": 4, "sha256": "b" * 64}]
+        conflict_request["files"] = [
+            {
+                "path": "video/b.mp4",
+                "bytes": 4,
+                "sha256": "b" * 64,
+                "provenance": omitted_test_provenance(),
+            }
+        ]
         conflict = client.post("/v1/submissions", json=conflict_request)
         assert conflict.status_code == 409
         assert conflict.json()["error"] == {
@@ -772,7 +716,14 @@ def test_submission_file_upload_is_scoped_to_registered_manifest(
                 "submission_id": "submission-1",
                 "template_id": "camera-archive",
                 "run_id": "20260101T000000.123456Z",
-                "files": [{"path": "video/a.mp4", "bytes": 4}],
+                "files": [
+                    {
+                        "path": "video/a.mp4",
+                        "bytes": 4,
+                        "sha256": "a" * 64,
+                        "provenance": omitted_test_provenance(),
+                    }
+                ],
             },
         )
         upload = client.post("/v1/submissions/submission-1/files/video/a.mp4/upload")
@@ -791,6 +742,7 @@ def test_handoff_failure_policy_is_runtime_job_option(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
     data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"x")
@@ -805,7 +757,15 @@ def test_handoff_failure_policy_is_runtime_job_option(
                 "tasks": ["archive_video"],
                 "groups": {},
             },
-            "files": [{"path": "video/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "video/a.mp4",
+                    "bytes": 1,
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                }
+            ],
         }
     )
 
@@ -862,7 +822,14 @@ def test_structured_input_upload_accepts_source_prefixed_paths(
     server = load_server(tmp_path, monkeypatch)
 
     req = server.domain_models.CreateInputUploadRequest(
-        files=[server.domain_models.InputFileSpec(path="front-door/telephoto/clip.mp4", bytes=12)],
+        files=[
+            server.domain_models.InputFileSpec(
+                path="front-door/telephoto/clip.mp4",
+                bytes=12,
+                sha256="a" * 64,
+                provenance=omitted_test_provenance(),
+            )
+        ],
         storage_hint=server.domain_models.InputUploadStorageHint(
             workflow_mode="collection_archive",
             handoff_destination="riverhog",
@@ -1236,6 +1203,8 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                     "file_upload_id": "front-door-clip",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "front-door/pending.mp4",
@@ -1243,6 +1212,8 @@ def test_completed_structured_file_routes_by_path_without_full_upload(
                     "file_upload_id": "front-door-pending",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -1306,6 +1277,7 @@ def test_routing_manifest_records_actual_route_and_output(
                     "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
                 }
             ],
         }
@@ -1405,6 +1377,7 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
                     "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
                 },
                 {
                     "path": "phone/IMG_0001.MOV.xmp",
@@ -1413,6 +1386,7 @@ def test_routing_manifest_records_sidecar_evidence_without_fake_output(
                     "file_upload_id": "phone-xmp-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
                 },
             ],
         }
@@ -1515,6 +1489,8 @@ def test_metadata_projection_sidecars_written_for_archive_outputs(
                     "resolved_group_rel": "iphone/video/IMG_0001.MOV",
                     "pair_kind": "live-photo",
                     "pair_role": "movie",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -1687,6 +1663,8 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
                     "route_id": "iphone-photo",
                     "resolved_group": "photos",
                     "resolved_group_rel": "IMG_0001.HEIC",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "phone/IMG_0001.HEIC.xmp",
@@ -1698,6 +1676,8 @@ def test_metadata_projection_merges_existing_xmp_sidecar_for_preserve_outputs(
                     "sidecar_for": "phone/IMG_0001.HEIC",
                     "resolved_group": "photos",
                     "resolved_group_rel": "IMG_0001.HEIC.xmp",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -1790,7 +1770,7 @@ def test_source_artifact_entries_include_sidecar_evidence_for_reencodes(
     }
 
 
-def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
+def test_metadata_projection_can_use_origin_provenance_timestamp(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1812,20 +1792,18 @@ def test_metadata_projection_can_use_uploaded_filesystem_birthtime(
                 "creators": ["Example Operator"],
                 "capture_date_sources": [
                     {"type": "embedded"},
-                    {"type": "filesystem_birthtime"},
+                    {"type": "provenance_timestamp"},
                 ],
             }
         },
-        filesystem_metadata={
-            "stat": {
-                "birthtime": "2026-06-28T20:30:40+00:00",
-                "size": 3,
-            }
+        provenance={
+            "status": "captured",
+            "origin": {"timestamps": {"created": "2026-06-28T20:30:40+00:00"}},
         },
     )
 
     assert metadata.capture_date == "2026-06-28T20:30:40+00:00"
-    assert metadata.capture_date_source == "filesystem_birthtime:source_birthtime"
+    assert metadata.capture_date_source == "provenance_timestamp:origin_created"
 
 
 def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
@@ -1896,6 +1874,8 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                 "file_upload_id": "camera-video-1",
                 "resolved_group": "video",
                 "resolved_group_rel": "camera/C0001.MP4",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
             {
                 "path": "camera/C0001M01.XML",
@@ -1907,6 +1887,8 @@ def test_metadata_projection_uses_declared_non_xmp_sidecar_facts(
                 "sidecar_for": "camera/C0001.MP4",
                 "resolved_group": "video",
                 "resolved_group_rel": "camera/C0001M01.XML",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
         ],
     }
@@ -2154,6 +2136,8 @@ def test_gpu_payload_carries_required_projected_container_metadata(
             "creators": ["Example Operator"],
             "tags": [],
         },
+        "provenance": omitted_test_provenance(),
+        "sha256": "a" * 64,
     }
 
     container_metadata, changed = server.routing_service.container_metadata_for_gpu_payload(
@@ -2208,6 +2192,8 @@ def test_eager_gpu_projection_reads_materialized_original_name(
                     "path": "camera/Back Yard_00_20260630123456.mp4",
                     "bytes": 5,
                     "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -2301,6 +2287,8 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
                     "bytes": 5,
                     "file_upload_id": "upload-a",
                     "target_path": server.upload_service.target_path_for(upload_id, source_path),
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": pending_path,
@@ -2308,6 +2296,8 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
                     "file_upload_id": "upload-b",
                     "target_path": server.upload_service.target_path_for(upload_id, pending_path),
                     "upload_url": None,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -2433,7 +2423,15 @@ def test_input_upload_state_compare_and_swap_rejects_stale_snapshots(
     server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     stale = server.upload_service.load_input_upload_raw("upload-1")
@@ -2465,6 +2463,8 @@ def test_routed_structured_file_stays_complete_after_materialized_tusd_cleanup(
         "structured_routing": True,
         "resolved_group": "phone-preserve",
         "resolved_group_rel": "iphone-se2/photo/rear-heic/IMG_0001.HEIC",
+        "provenance": omitted_test_provenance(),
+        "sha256": "a" * 64,
     }
     materialized = server.upload_service.shared_input_upload_root(upload_id) / (
         "phone-preserve/iphone-se2/photo/rear-heic/IMG_0001.HEIC"
@@ -2506,6 +2506,8 @@ def test_completed_structured_file_can_route_by_probe_metadata(
                     "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -2588,6 +2590,8 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
                     "file_upload_id": "phone-img-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "phone/IMG_0001.MOV.xmp",
@@ -2595,6 +2599,8 @@ def test_sidecar_evidence_is_not_probed_during_runner_routing(
                     "file_upload_id": "phone-xmp-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -2685,6 +2691,8 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
                     "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/C0001M01.XML",
@@ -2692,6 +2700,8 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
                     "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/C0002.MP4",
@@ -2699,6 +2709,8 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
                     "file_upload_id": "camera-video-2",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/C0002M01.XML",
@@ -2706,6 +2718,8 @@ def test_sidecar_routing_can_progress_by_complete_primary_sidecar_pair(
                     "file_upload_id": "camera-xml-2",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -2793,6 +2807,8 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
                     "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/C0001M01.XML",
@@ -2800,6 +2816,8 @@ def test_sidecar_facts_are_bounded_during_runner_routing(
                     "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -2894,6 +2912,8 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
                     "file_upload_id": "camera-video-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/C0001M01.XML",
@@ -2901,6 +2921,8 @@ def test_sidecar_facts_unlock_primary_exiftool_during_runner_routing(
                     "file_upload_id": "camera-xml-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -2997,6 +3019,8 @@ def test_routing_skips_expensive_tools_for_path_only_runner_route(
                     "file_upload_id": "state-1",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -3070,6 +3094,8 @@ def test_completed_structured_file_fails_when_no_route_matches(
                     "file_upload_id": "unknown-clip",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -3107,7 +3133,12 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
     monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_SCRATCH_MULTIPLIER", 0.5)
     monkeypatch.setattr(server.admission_service, "gpu_input_copy_multiplier", lambda: 0.0)
     files = [
-        server.domain_models.InputFileSpec(path=f"camera/{index}.mp4", bytes=size)
+        server.domain_models.InputFileSpec(
+            path=f"camera/{index}.mp4",
+            bytes=size,
+            sha256=f"{index:064x}",
+            provenance=omitted_test_provenance(),
+        )
         for index, size in enumerate([100, 90, 80, 70, 60], start=1)
     ]
     hint = server.domain_models.InputUploadStorageHint(
@@ -3134,7 +3165,14 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
-    files = [server.domain_models.InputFileSpec(path="voice/REC_0001.wav", bytes=100)]
+    files = [
+        server.domain_models.InputFileSpec(
+            path="voice/REC_0001.wav",
+            bytes=100,
+            sha256="a" * 64,
+            provenance=omitted_test_provenance(),
+        )
+    ]
     hint = server.domain_models.InputUploadStorageHint(
         workflow_mode="collection_archive",
         handoff_destination="riverhog",
@@ -3173,7 +3211,8 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
                     "bytes": 3,
                     "file_upload_id": "upload-a",
                     "input_upload_id": upload_id,
-                    "filesystem_metadata": {"stat": {"birthtime": "2026-06-29T12:00:00Z"}},
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -3239,18 +3278,6 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
     source = input_root / "REC_20260628_203040.WAV"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"wav")
-    write_filesystem_metadata_map(
-        input_root,
-        {
-            source.name: {
-                "stat": {
-                    "birthtime": "2026-06-28T20:30:40+00:00",
-                    "size": 3,
-                }
-            }
-        },
-        created_at="2026-06-29T00:00:00Z",
-    )
     group_config = {
         "output_mode": "audio",
         "tasks": ["archive_audio"],
@@ -3277,7 +3304,7 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
             "creators": ["Example Operator"],
             "capture_date_sources": [
                 {"type": "embedded"},
-                {"type": "filesystem_birthtime"},
+                {"type": "provenance_timestamp"},
             ],
         },
     }
@@ -3289,9 +3316,6 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         return {"command": cmd, "duration_s": 0.1}
 
     def fake_build_strict_source_artifacts(**kwargs: object) -> dict[str, object]:
-        metadata = kwargs["source_filesystem_metadata"]
-        assert isinstance(metadata, dict)
-        assert metadata["stat"]["birthtime"] == "2026-06-28T20:30:40+00:00"
         return {"path": str(kwargs["archive_mkv"]) + ".source-artifacts.tar.zst"}
 
     monkeypatch.setattr(server.command_runtime, "run_command", fake_run_command)
@@ -3307,6 +3331,12 @@ def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
         input_root=input_root,
         output_root=output_root,
         group_config=group_config,
+        provenance_by_rel_path={
+            source.name: {
+                "status": "captured",
+                "origin": {"timestamps": {"created": "2026-06-28T20:30:40+00:00"}},
+            }
+        },
     )
 
     output = output_root / "REC_20260628_203040.opus"
@@ -3376,17 +3406,6 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
     source = input_root / "memo" / "R-00013_2606222246_REC.MP3"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"mp3")
-    source_metadata = {
-        "stat": {
-            "birthtime": "2026-06-23T05:46:32+00:00",
-            "size": 3,
-        }
-    }
-    write_filesystem_metadata_map(
-        input_root,
-        {"memo/R-00013_2606222246_REC.MP3": source_metadata},
-        created_at="2026-06-29T00:00:00Z",
-    )
     group_config = {
         "output_mode": "audio",
         "tasks": ["archive_audio"],
@@ -3405,7 +3424,7 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
             "creators": ["Example Operator"],
             "capture_date_sources": [
                 {"type": "embedded"},
-                {"type": "filesystem_birthtime"},
+                {"type": "provenance_timestamp"},
             ],
             "tags": ["device/esonic-memoq-sr600-example"],
         },
@@ -3417,10 +3436,8 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
 
     def fake_build_strict_source_artifacts(**kwargs: object) -> dict[str, object]:
         encode_profile = kwargs["encode_profile"]
-        filesystem_metadata = kwargs["source_filesystem_metadata"]
         assert isinstance(encode_profile, dict)
         assert encode_profile["source"]["allow_conversion_only_container"] is True
-        assert filesystem_metadata == source_metadata
         sidecar = Path(str(kwargs["archive_mkv"]) + ".source-artifacts.tar.zst")
         sidecar.write_bytes(b"source artifacts")
         return {
@@ -3447,6 +3464,12 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
         input_root=input_root,
         output_root=output_root,
         group_config=group_config,
+        provenance_by_rel_path={
+            "memo/R-00013_2606222246_REC.MP3": {
+                "status": "captured",
+                "origin": {"timestamps": {"created": "2026-06-23T05:46:32+00:00"}},
+            }
+        },
     )
     output = output_root / "memo" / "R-00013_2606222246_REC.opus"
     upload = server.upload_service.save_input_upload_raw(
@@ -3458,7 +3481,9 @@ def test_audio_archive_projection_uses_birthtime_and_conversion_only_source_arti
                     "bytes": 3,
                     "file_upload_id": "file-voice",
                     "input_upload_id": upload_id,
-                    "filesystem_metadata": source_metadata,
+                    "provenance": omitted_test_provenance(),
+                    "metadata_projection_metadata": result["items"][0]["container_metadata"],
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -3693,6 +3718,124 @@ def test_munchy_translates_owned_riverhog_events_idempotently(
     }
 
 
+def test_munchy_continues_source_history_and_registers_it_before_the_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
+    upload_id = "captured-input"
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"original container")
+    source_journal = create_observation_journal(
+        source,
+        relative_path="video/source.mov",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
+        agent_name="munchy-client",
+        agent_version="1.0.0",
+    )
+    source_summary = validate_journal(source_journal)
+    server.upload_service.save_input_upload_raw(
+        {
+            "input_upload_id": upload_id,
+            "files": [
+                {
+                    "input_upload_id": upload_id,
+                    "file_upload_id": "source-file",
+                    "path": "video/source.mov",
+                    "bytes": source.stat().st_size,
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "resolved_group": "video",
+                    "resolved_group_rel": "source.mov",
+                    "route_action": "upload",
+                    "provenance": {
+                        "status": "captured",
+                        "journal_id": source_summary.journal_id,
+                        "current_state_id": source_summary.current_state_id,
+                    },
+                }
+            ],
+        }
+    )
+    server.upload_service.put_input_provenance_journal(
+        upload_id,
+        source_summary.journal_id,
+        content=source_journal,
+        sha256=source_summary.journal_sha256,
+    )
+    archive_dir = tmp_path / "archive"
+    output = archive_dir / "video" / "source.mkv"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"canonical transformed container")
+    job = {
+        "job_id": "captured-job",
+        "input_upload_id": upload_id,
+        "started_at": "2026-08-10T01:00:00.000000Z",
+        "groups": {
+            "video": {
+                "output_mode": "video",
+                "tasks": ["archive_video"],
+            }
+        },
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {"collection_id": 41, "files": {}},
+    }
+    server.state_store.save_job(job)
+
+    provenance, bindings, journals = server.riverhog.munchy_output_provenance(job, archive_dir)
+    binding = bindings[0]
+    continued = journals[str(binding.journal_id)]
+    current = validate_journal(continued)
+
+    assert provenance is not None
+    assert binding.status == "captured"
+    assert binding.path == "video/source.mkv"
+    assert continued.startswith(source_journal)
+    assert current.journal_id == source_summary.journal_id
+    assert current.primary_lineage_id == source_summary.primary_lineage_id
+    assert current.current_path == "video/source.mkv"
+    assert current.current_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+
+    calls: list[str] = []
+
+    class FakeApi:
+        def put_collection_upload_session_provenance_journal(
+            self,
+            collection_id: int,
+            journal_id: str,
+            *,
+            content: bytes,
+            sha256: str,
+        ) -> None:
+            assert collection_id == 41
+            assert journal_id == current.journal_id
+            assert content == continued
+            assert sha256 == current.journal_sha256
+            calls.append("provenance")
+
+        def register_collection_upload_session_files(
+            self,
+            collection_id: int,
+            files: tuple[dict[str, object], ...],
+        ) -> dict[str, object]:
+            assert collection_id == 41
+            assert files[0]["path"] == "video/source.mkv"
+            assert files[0]["provenance"] == {
+                "status": "captured",
+                "journal_id": current.journal_id,
+                "current_state_id": current.current_state_id,
+            }
+            calls.append("binding")
+            return {"collection_id": 41, "state": "open"}
+
+    registered = server.riverhog.register_riverhog_artifacts(job, FakeApi(), archive_dir)
+
+    assert calls == ["provenance", "binding"]
+    assert registered["registered_files"] == 1
+
+
 def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
     tmp_path: Path,
     monkeypatch,
@@ -3743,6 +3886,11 @@ def test_missing_remote_handoff_artifact_fails_without_retrying_forever(
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
     monkeypatch.setattr(server.riverhog, "RIVERHOG_HANDOFF_ENABLED", True)
+    monkeypatch.setattr(
+        server.riverhog,
+        "munchy_output_provenance",
+        lambda *_args: (None, (), {}),
+    )
     collection_id = 41
     job = {
         "job_id": "job-1",
@@ -3897,8 +4045,20 @@ def test_upload_stalled_event_is_time_sensitive_and_paced(
         "input_upload_id": "upload-1",
         "created_at": "2026-01-01T00:00:00Z",
         "files": [
-            {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
-            {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
+            {
+                "path": "camera/a.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "camera/b.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-b",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
         ],
     }
     progress = {
@@ -4050,7 +4210,15 @@ def test_load_input_upload_does_not_refresh_state_timestamp(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     before = server.state_store.read_state("input-upload", "upload-1")["updated_at"]
@@ -4267,7 +4435,15 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -4308,7 +4484,15 @@ def test_cancel_job_with_cleanup_preserves_input_upload_referenced_by_sibling(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -4362,7 +4546,15 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     job = server.state_store.save_job(
@@ -4423,7 +4615,15 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -4516,7 +4716,15 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -4600,7 +4808,15 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
         {
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -4654,8 +4870,20 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
             "input_upload_id": "upload-1",
             "created_at": "2026-01-01T00:00:00Z",
             "files": [
-                {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
-                {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                },
+                {
+                    "path": "camera/b.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-b",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                },
             ],
         }
     )
@@ -5139,6 +5367,7 @@ def test_prepare_shared_input_tree_links_uploaded_files_without_sha_rehash(
                 "bytes": 5,
                 "sha256": "0" * 64,
                 "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
             }
         ],
     }
@@ -5182,13 +5411,15 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
                 "path": "camera/a.mp4",
                 "bytes": 7,
                 "file_upload_id": "upload-a",
-                "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
             {
                 "path": "camera/b.mp4",
                 "bytes": 7,
                 "file_upload_id": "upload-b",
-                "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
         ],
     }
@@ -5214,11 +5445,6 @@ def test_sync_shared_input_tree_links_completed_files_incrementally(
     assert not partial_path.exists()
     assert progress["files_uploaded"] == 2
     assert progress["input_tree_files_ready"] == 2
-    metadata_path = root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["kind"] == "munchy.input-filesystem-metadata-map"
-    assert metadata["files"]["a.mp4"]["stat"]["st_birthtime"] == 1.25
-    assert metadata["files"]["b.mp4"]["stat"]["st_birthtime"] == 2.5
 
 
 def test_refresh_input_upload_does_not_sync_shared_input_tree(
@@ -5238,6 +5464,8 @@ def test_refresh_input_upload_does_not_sync_shared_input_tree(
                 "path": "camera/a.mp4",
                 "bytes": 5,
                 "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
         ],
     }
@@ -5277,6 +5505,8 @@ def test_eager_archive_upload_progress_does_not_report_shared_input_tree(
                     "bytes": 7,
                     "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -5327,6 +5557,8 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
                     "input_upload_id": "upload-1",
                     "resolved_group": "preserve",
                     "resolved_group_rel": "photo.jpg",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/video.mp4",
@@ -5335,6 +5567,8 @@ def test_mixed_eager_archive_upload_progress_scopes_shared_input_tree_totals(
                     "input_upload_id": "upload-1",
                     "resolved_group": "video",
                     "resolved_group_rel": "video.mp4",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -5379,6 +5613,8 @@ def test_structured_unrouted_upload_progress_does_not_require_groups(
                     "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
                     "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -5425,6 +5661,8 @@ def test_wait_for_upload_groups_skips_configured_group_with_no_files(
                     "input_upload_id": "upload-1",
                     "resolved_group": "camera",
                     "resolved_group_rel": "front-door/clip.mp4",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -5467,6 +5705,8 @@ def test_non_eager_upload_progress_still_reports_shared_input_tree(
                     "bytes": 7,
                     "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -5524,7 +5764,7 @@ def test_create_file_upload_does_not_sync_entire_shared_tree(
                     "path": rel_path,
                     "bytes": 10,
                     "sha256": None,
-                    "filesystem_metadata": {},
+                    "provenance": omitted_test_provenance(),
                     "target_path": target_path,
                     "input_upload_id": upload_id,
                     "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
@@ -5601,7 +5841,7 @@ def test_concurrent_file_upload_setup_creates_one_tusd_upload(
                     "path": rel_path,
                     "bytes": 10,
                     "sha256": None,
-                    "filesystem_metadata": {},
+                    "provenance": omitted_test_provenance(),
                     "target_path": target_path,
                     "input_upload_id": upload_id,
                     "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
@@ -5700,7 +5940,7 @@ def test_resume_file_upload_heads_tusd_outside_state_lock(
                     "path": rel_path,
                     "bytes": 10,
                     "sha256": None,
-                    "filesystem_metadata": {},
+                    "provenance": omitted_test_provenance(),
                     "target_path": target_path,
                     "input_upload_id": upload_id,
                     "file_upload_id": server.upload_service.tusd_upload_id_for_target_path(
@@ -5775,7 +6015,8 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                     "file_upload_id": "upload-a",
                     "target_path": server.upload_service.target_path_for(upload_id, "camera/a.mp4"),
                     "input_upload_id": upload_id,
-                    "filesystem_metadata": {"stat": {"st_birthtime": 1.25}},
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/b.mp4",
@@ -5783,7 +6024,8 @@ def test_sync_shared_input_file_materializes_only_completed_file(
                     "file_upload_id": "upload-b",
                     "target_path": server.upload_service.target_path_for(upload_id, "camera/b.mp4"),
                     "input_upload_id": upload_id,
-                    "filesystem_metadata": {"stat": {"st_birthtime": 2.5}},
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         },
@@ -5796,7 +6038,6 @@ def test_sync_shared_input_file_materializes_only_completed_file(
     assert not complete_path.exists()
     assert not (root / "camera" / "b.mp4").exists()
     assert partial_path.exists()
-    assert not (root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME).exists()
 
 
 def test_consume_input_upload_file_removes_only_that_shared_input_file(
@@ -5815,12 +6056,16 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
                     "bytes": 7,
                     "file_upload_id": "upload-a",
                     "input_upload_id": "upload-1",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/b.mp4",
                     "bytes": 7,
                     "file_upload_id": "upload-b",
                     "input_upload_id": "upload-1",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -5829,14 +6074,11 @@ def test_consume_input_upload_file_removes_only_that_shared_input_file(
     (root / "camera").mkdir(parents=True)
     (root / "camera" / "a.mp4").write_bytes(b"video-a")
     (root / "camera" / "b.mp4").write_bytes(b"video-b")
-    metadata_path = root / "camera" / SOURCE_FILESYSTEM_METADATA_FILENAME
-    metadata_path.write_text("{}", encoding="utf-8")
 
     upload = server.processing_service.consume_input_upload_files("upload-1", {"camera/a.mp4"})
 
     assert not (root / "camera" / "a.mp4").exists()
     assert (root / "camera" / "b.mp4").read_bytes() == b"video-b"
-    assert metadata_path.exists()
     by_path = {str(item["path"]): item for item in upload["files"]}
     assert by_path["camera/a.mp4"]["consumed_at"]
     assert by_path["camera/a.mp4"]["complete"] is True
@@ -5858,12 +6100,16 @@ def test_cleanup_consumed_shared_input_files_removes_existing_consumed_files(
                 "file_upload_id": "upload-a",
                 "input_upload_id": "upload-1",
                 "consumed_at": "2026-01-01T00:00:00Z",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
             {
                 "path": "camera/b.mp4",
                 "bytes": 7,
                 "file_upload_id": "upload-b",
                 "input_upload_id": "upload-1",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
             },
         ],
     }
@@ -5926,7 +6172,13 @@ def test_materialize_upload_file_reuses_existing_dest_when_tusd_data_is_gone(
     dest = dest_root / "camera" / "a.mp4"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"video-a")
-    file_state = {"path": "camera/a.mp4", "bytes": 7, "file_upload_id": "missing-upload"}
+    file_state = {
+        "path": "camera/a.mp4",
+        "bytes": 7,
+        "file_upload_id": "missing-upload",
+        "provenance": omitted_test_provenance(),
+        "sha256": "a" * 64,
+    }
 
     server.upload_service.materialize_upload_file(file_state, dest_root)
 
@@ -5945,6 +6197,8 @@ def test_materialize_upload_file_retries_shared_source_when_tusd_disappears(
         "bytes": 7,
         "file_upload_id": "upload-a",
         "input_upload_id": upload_id,
+        "provenance": omitted_test_provenance(),
+        "sha256": "a" * 64,
     }
     tusd_source = server.upload_service.tusd_data_path("upload-a")
     shared_source = server.upload_service.shared_input_file_path(file_state)
@@ -6014,7 +6268,15 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -6093,7 +6355,15 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     common_job = {
@@ -6183,7 +6453,15 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
                     }
                 },
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -6258,6 +6536,23 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     video.write_bytes(b"video")
     sidecar.write_bytes(b"meta")
 
+    server.upload_service.save_input_upload_raw(
+        {
+            "input_upload_id": "upload-1",
+            "state": "complete",
+            "files": [
+                {
+                    "input_upload_id": "upload-1",
+                    "file_upload_id": "file-1",
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "sha256": hashlib.sha256(b"input").hexdigest(),
+                    "provenance": omitted_test_provenance(),
+                }
+            ],
+        }
+    )
+
     job = {
         "job_id": "job-1",
         "state": "running",
@@ -6266,6 +6561,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
         "input_upload_id": "upload-1",
         "template_id": "camera-archive",
         "run_id": "20260101T000000Z",
+        "groups": {"camera": {"output_mode": "video", "tasks": ["archive_video"]}},
         "handoff": {
             "destination": "riverhog",
             "options": {"tags": ["camera-archive"]},
@@ -6291,11 +6587,15 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
             ingest_source: str | None = None,
             archive_store: str | None = None,
             event_context: dict[str, object] | None = None,
+            provenance_mode: str = "captured",
+            provenance_omission_reason: str | None = None,
         ) -> dict[str, object]:
             assert idempotency_key == "job-1"
             assert tags == ["camera-archive"]
             assert ingest_source == str(archive_dir)
             assert event_context == {"workflow": "desktop-archive"}
+            assert provenance_mode == "omitted"
+            assert provenance_omission_reason
             return self.payload(state="open")
 
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
@@ -6473,8 +6773,20 @@ def test_routed_riverhog_job_plans_path_only_primary_count(
                 "groups": {"video": {"output_mode": "video", "tasks": ["archive_video"]}},
             },
             "files": [
-                {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "a"},
-                {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "b"},
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                },
+                {
+                    "path": "camera/b.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "b",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                },
             ],
         }
     )
@@ -7243,7 +7555,15 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -7322,7 +7642,15 @@ def test_run_job_reuses_stored_shared_review_plan(
                 "tasks": ["qcut_video"],
                 "groups": {"camera": {"output_mode": "video", "tasks": ["qcut_video"]}},
             },
-            "files": [{"path": "camera/a.mp4", "bytes": 5, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 5,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     server.state_store.save_job(
@@ -7415,6 +7743,8 @@ def test_run_job_runs_review_sweep_as_one_job(
                     "route_id": "video-4k",
                     "route_action": "upload",
                     "routed_at": "2026-01-01T00:00:00Z",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 }
             ],
         }
@@ -7573,9 +7903,27 @@ def test_ready_eager_files_skips_claimed_encoding_files(
     upload = {
         "input_upload_id": "upload-1",
         "files": [
-            {"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"},
-            {"path": "camera/b.mp4", "bytes": 1, "file_upload_id": "upload-b"},
-            {"path": "camera/c.mp4", "bytes": 1, "file_upload_id": "upload-c"},
+            {
+                "path": "camera/a.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "camera/b.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-b",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "camera/c.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-c",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
         ],
     }
 
@@ -7730,9 +8078,27 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
     upload = {
         "input_upload_id": "upload-1",
         "files": [
-            {"path": "voice/a.mp3", "bytes": 1, "file_upload_id": "upload-a"},
-            {"path": "voice/b.mp3", "bytes": 1, "file_upload_id": "upload-b"},
-            {"path": "voice/c.mp3", "bytes": 1, "file_upload_id": "upload-c"},
+            {
+                "path": "voice/a.mp3",
+                "bytes": 1,
+                "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "voice/b.mp3",
+                "bytes": 1,
+                "file_upload_id": "upload-b",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "voice/c.mp3",
+                "bytes": 1,
+                "file_upload_id": "upload-c",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            },
         ],
     }
     groups = {"voice": {"output_mode": "audio", "tasks": ["archive_audio"]}}
@@ -7779,7 +8145,15 @@ def test_claim_running_eager_batch_files_marks_running_batch_paths(
     }
     upload = {
         "input_upload_id": "upload-1",
-        "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+        "files": [
+            {
+                "path": "camera/a.mp4",
+                "bytes": 1,
+                "file_upload_id": "upload-a",
+                "provenance": omitted_test_provenance(),
+                "sha256": "a" * 64,
+            }
+        ],
     }
 
     changed = server.processing_service.claim_running_eager_batch_files(
@@ -7821,7 +8195,15 @@ def test_mark_existing_eager_outputs_does_not_complete_claimed_files(
     upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": "upload-1",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
 
@@ -7861,11 +8243,15 @@ def test_job_response_includes_eager_encode_progress(
                     "bytes": 1024,
                     "file_upload_id": "upload-a",
                     "consumed_at": "2026-06-05T00:00:00Z",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/b.mp4",
                     "bytes": 2048,
                     "file_upload_id": "upload-b",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -7952,6 +8338,8 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
                     "bytes": 1024,
                     "file_upload_id": "upload-a",
                     "consumed_at": "2026-06-05T00:00:00Z",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
                 {
                     "path": "camera/a.xml",
@@ -7959,6 +8347,8 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
                     "file_upload_id": "upload-a-xml",
                     "route_action": "evidence",
                     "sidecar_for": "camera/a.mp4",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
                 },
             ],
         }
@@ -8064,7 +8454,15 @@ def test_compact_job_response_keeps_operational_fields_only(
     server.upload_service.save_input_upload(
         {
             "input_upload_id": "upload-1",
-            "files": [{"path": "camera/a.mp4", "bytes": 1, "file_upload_id": "upload-a"}],
+            "files": [
+                {
+                    "path": "camera/a.mp4",
+                    "bytes": 1,
+                    "file_upload_id": "upload-a",
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                }
+            ],
         }
     )
     job = {

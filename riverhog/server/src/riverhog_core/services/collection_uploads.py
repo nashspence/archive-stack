@@ -21,6 +21,13 @@ from riverhog_protocol.paths import (
     normalize_relpath,
 )
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest, raw_volume_part_sha256s
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    ProvenanceArchive,
+    ProvenanceValidationError,
+    build_provenance_archive,
+    validate_journal,
+)
 from sqlalchemy import asc, desc, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
@@ -29,6 +36,10 @@ from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincip
 from riverhog_core.archive_catalog import build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
+from riverhog_core.archive_provenance import (
+    ArchiveProvenancePublisher,
+    SealedArchiveProvenance,
+)
 from riverhog_core.archive_root import ArchiveRootPublisher, SealedArchiveRoot
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
@@ -39,12 +50,15 @@ from riverhog_core.catalog_models import (
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionFileProvenanceRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
+    CollectionProvenanceJournalRecord,
     CollectionRecord,
     CollectionTagRecord,
     CollectionUploadFileRecord,
+    CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
     CollectionUploadTagRecord,
     TagRecord,
@@ -74,6 +88,7 @@ from riverhog_core.pack_volume import (
     parse_pack_volume_plan,
 )
 from riverhog_core.proofs import ProofStamper
+from riverhog_core.provenance_projection import provenance_entity_records
 from riverhog_core.raw_upload import RawUploadCheckpoint, RawVolumeUploader
 from riverhog_core.raw_verification import verify_raw_file_from_part_manifest
 from riverhog_core.raw_volume import parse_raw_volume_plan, raw_volume_plan_bytes
@@ -99,6 +114,10 @@ class _RegisteredFile(TypedDict):
     bytes: int
     sha256: str
     raw_manifest_json: str | None
+    provenance_status: str
+    provenance_journal_id: str | None
+    provenance_current_state_id: str | None
+    provenance_omission_reason: str | None
 
 
 class SqlAlchemyCollectionUploadService:
@@ -138,6 +157,8 @@ class SqlAlchemyCollectionUploadService:
         archive_store: str | None,
         initiator: ApplicationPrincipal,
         event_context: Mapping[str, object] | None,
+        provenance_mode: str = "captured",
+        provenance_omission_reason: str | None = None,
     ) -> dict[str, object]:
         key = _normalize_idempotency_key(idempotency_key)
         normalized_tags = _normalize_tags(tags)
@@ -149,6 +170,10 @@ class SqlAlchemyCollectionUploadService:
             raise BadRequest(str(exc)) from exc
         require_collection_create_access(initiator, COLLECTIONS_CREATE, normalized_tags)
         context_json = event_context_json(event_context)
+        normalized_provenance_mode, normalized_omission_reason = _normalize_provenance_mode(
+            provenance_mode,
+            provenance_omission_reason,
+        )
 
         with session_scope(self._session_factory) as session:
             collection = session.scalar(
@@ -163,6 +188,14 @@ class SqlAlchemyCollectionUploadService:
                 collection_tags = tuple(sorted(current.tag_id for current in collection.tags))
                 if collection_tags != normalized_tags:
                     raise Conflict("collection upload idempotency identity changed")
+                if (
+                    normalized_provenance_mode == "omitted"
+                    and collection.provenance_mode != "omitted"
+                ) or (
+                    normalized_provenance_mode == "captured"
+                    and collection.provenance_mode == "omitted"
+                ):
+                    raise Conflict("collection upload provenance identity changed")
                 return _finalized_payload(session, collection, store_name=store_name)
             upload = session.scalar(
                 select(CollectionUploadRecord)
@@ -177,6 +210,8 @@ class SqlAlchemyCollectionUploadService:
                     _upload_tags(upload) != normalized_tags
                     or upload.archive_store != store_name
                     or upload.event_context_json != context_json
+                    or upload.provenance_mode != normalized_provenance_mode
+                    or upload.provenance_omission_reason != normalized_omission_reason
                 ):
                     raise Conflict("collection upload idempotency identity changed")
                 return _upload_payload(session, upload)
@@ -187,6 +222,8 @@ class SqlAlchemyCollectionUploadService:
             upload = CollectionUploadRecord(
                 idempotency_key=key,
                 ingest_source=ingest_source,
+                provenance_mode=normalized_provenance_mode,
+                provenance_omission_reason=normalized_omission_reason,
                 initiated_by_app=initiator.app,
                 initiated_by_key_id=initiator.key_id,
                 event_context_json=context_json,
@@ -256,7 +293,13 @@ class SqlAlchemyCollectionUploadService:
                 raise Conflict(f"collection upload session is not open: {normalized_id}")
             checkpoint = _planner_checkpoint(upload)
             normalized_files = tuple(
-                _normalize_file(value, policy=checkpoint.policy) for value in files
+                _normalize_file(
+                    value,
+                    policy=checkpoint.policy,
+                    provenance_mode=upload.provenance_mode,
+                    collection_omission_reason=upload.provenance_omission_reason,
+                )
+                for value in files
             )
             if list(normalized_files) != sorted(normalized_files, key=lambda item: item["path"]):
                 raise BadRequest("collection upload files must be in canonical path order")
@@ -299,6 +342,10 @@ class SqlAlchemyCollectionUploadService:
                             else None
                         ),
                         raw_digest_manifest_json=current["raw_manifest_json"],
+                        provenance_status=current["provenance_status"],
+                        provenance_journal_id=current["provenance_journal_id"],
+                        provenance_current_state_id=current["provenance_current_state_id"],
+                        provenance_omission_reason=current["provenance_omission_reason"],
                     )
                 )
                 ordered.append(
@@ -334,12 +381,66 @@ class SqlAlchemyCollectionUploadService:
                 "volumes": [_volume_summary(row) for row in batch.volumes],
             }
 
+    def put_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        content: bytes,
+        sha256: str,
+    ) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        if len(content) > 64 * 1024 * 1024:
+            raise BadRequest("provenance journal exceeds the 64 MiB per-journal limit")
+        if hashlib.sha256(content).hexdigest() != sha256:
+            raise BadRequest("provenance journal SHA-256 does not match its content")
+        try:
+            summary = validate_journal(content)
+        except ProvenanceValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        if summary.journal_id != journal_id:
+            raise BadRequest("provenance journal path identity does not match its content")
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            if upload.state != "open" or upload.provenance_mode == "omitted":
+                raise Conflict("collection upload does not accept provenance journals")
+            existing = session.get(
+                CollectionUploadProvenanceJournalRecord,
+                (normalized_id, journal_id),
+            )
+            if existing is not None:
+                if existing.sha256 != sha256 or existing.journal_bytes != content:
+                    raise Conflict("provenance journal already has different exact bytes")
+                return _journal_payload(existing)
+            record = CollectionUploadProvenanceJournalRecord(
+                collection_id=normalized_id,
+                journal_id=journal_id,
+                journal_bytes=content,
+                bytes=len(content),
+                sha256=sha256,
+                current_state_id=summary.current_state_id,
+                current_path=summary.current_path,
+                current_bytes=summary.current_bytes,
+                current_sha256=summary.current_sha256,
+            )
+            session.add(record)
+            upload.last_activity_at = utc_timestamp_now()
+            session.flush()
+            return _journal_payload(record)
+
     def complete(
         self,
         collection_id: int,
         *,
         files_total: int,
         content_etag: str,
+        provenance_etag: str | None = None,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
         if files_total < 1 or _SHA256_RE.fullmatch(content_etag) is None:
@@ -347,7 +448,10 @@ class SqlAlchemyCollectionUploadService:
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_id)
             if collection is not None:
-                if collection.content_etag != content_etag:
+                if (
+                    collection.content_etag != content_etag
+                    or collection.provenance_etag != provenance_etag
+                ):
                     raise Conflict("collection upload completion identity changed")
                 return _finalized_payload(
                     session,
@@ -377,6 +481,10 @@ class SqlAlchemyCollectionUploadService:
             )
             if len(rows) != files_total or actual_etag != content_etag:
                 raise Conflict("collection upload registered manifest differs from completion")
+            provenance = _upload_provenance_archive(upload)
+            actual_provenance_etag = provenance.identity if provenance is not None else None
+            if provenance_etag != actual_provenance_etag:
+                raise Conflict("collection upload provenance identity differs from completion")
             checkpoint = _planner_checkpoint(upload)
             if not checkpoint.closed:
                 batch = advance_incremental_volume_plan(checkpoint, (), final=True)
@@ -385,6 +493,7 @@ class SqlAlchemyCollectionUploadService:
                     batch.checkpoint
                 ).decode("utf-8")
             upload.state = "uploading"
+            upload.provenance_etag = actual_provenance_etag
             upload.closed_at = utc_timestamp_now()
             upload.last_activity_at = upload.closed_at
             upload.archive_phase = "uploading"
@@ -1022,8 +1131,21 @@ class SqlAlchemyCollectionUploadService:
             prefix = upload.archive_storage_prefix
             if not prefix:
                 raise RuntimeError("collection archive storage prefix is missing")
+            provenance = _upload_provenance_archive(upload)
 
         ingress_store = self._ingress_stores.require(store_name)
+        sealed_provenance = (
+            ArchiveProvenancePublisher(
+                object_store=ingress_store.root,
+                passphrase=self._config.archive_passphrase,
+                scrypt_log_n=self._config.archive_scrypt_work_factor,
+            ).publish(
+                archive_storage_prefix=prefix,
+                provenance=provenance,
+            )
+            if provenance is not None
+            else None
+        )
         root = ArchiveRootPublisher(
             object_store=ingress_store.root,
             passphrase=self._config.archive_passphrase,
@@ -1034,6 +1156,14 @@ class SqlAlchemyCollectionUploadService:
             packs=packs,
             raw_volumes=raw_volumes,
             verified_raw_files=verified_raw,
+            provenance_identity=(
+                sealed_provenance.identity if sealed_provenance is not None else None
+            ),
+            provenance_objects=(
+                (*sealed_provenance.bundles, sealed_provenance.index)
+                if sealed_provenance is not None
+                else ()
+            ),
         )
         proof_bytes = self._persisted_proof(collection_id, root.manifest_bytes)
         proof_ciphertext = encrypt_age_scrypt(
@@ -1061,6 +1191,14 @@ class SqlAlchemyCollectionUploadService:
             packs=packs,
             raw_volumes=raw_volumes,
             verified_raw_files=verified_raw,
+            provenance_identity=(
+                sealed_provenance.identity if sealed_provenance is not None else None
+            ),
+            provenance_objects=(
+                (*sealed_provenance.bundles, sealed_provenance.index)
+                if sealed_provenance is not None
+                else ()
+            ),
         )
         self._commit_finalized_collection(
             collection_id=collection_id,
@@ -1068,6 +1206,7 @@ class SqlAlchemyCollectionUploadService:
             root=root,
             proof_bytes=proof_bytes,
             proof_receipt=proof_receipt,
+            sealed_provenance=sealed_provenance,
         )
 
     def _persisted_proof(self, collection_id: int, manifest_bytes: bytes) -> bytes:
@@ -1101,6 +1240,7 @@ class SqlAlchemyCollectionUploadService:
         root: SealedArchiveRoot,
         proof_bytes: bytes,
         proof_receipt: object,
+        sealed_provenance: SealedArchiveProvenance | None,
     ) -> None:
         from riverhog_core.archive_catalog import ArchiveCatalogProjection
         from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
@@ -1128,6 +1268,8 @@ class SqlAlchemyCollectionUploadService:
             _, record_etag = collection_record_manifest(
                 collection_id=collection_id,
                 content_etag=content_etag,
+                provenance_mode=_final_provenance_mode(upload),
+                provenance_etag=upload.provenance_etag,
                 metadata_revision=1,
                 tags=tags,
                 files=file_entries,
@@ -1136,6 +1278,8 @@ class SqlAlchemyCollectionUploadService:
                 id=collection_id,
                 creation_idempotency_key=upload.idempotency_key,
                 content_etag=content_etag,
+                provenance_mode=_final_provenance_mode(upload),
+                provenance_etag=upload.provenance_etag,
                 record_etag=record_etag,
                 metadata_revision=1,
                 metadata_updated_at=now,
@@ -1155,6 +1299,40 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for row in rows
             )
+            for journal in upload.provenance_journals:
+                session.add(
+                    CollectionProvenanceJournalRecord(
+                        collection_id=collection_id,
+                        journal_id=journal.journal_id,
+                        journal_bytes=journal.journal_bytes,
+                        bytes=journal.bytes,
+                        sha256=journal.sha256,
+                        current_state_id=journal.current_state_id,
+                        current_path=journal.current_path,
+                        current_bytes=journal.current_bytes,
+                        current_sha256=journal.current_sha256,
+                    )
+                )
+            session.flush()
+            session.add_all(
+                CollectionFileProvenanceRecord(
+                    collection_id=collection_id,
+                    path=row.path,
+                    status=row.provenance_status,
+                    journal_id=row.provenance_journal_id,
+                    current_state_id=row.provenance_current_state_id,
+                    omission_reason=row.provenance_omission_reason,
+                )
+                for row in rows
+            )
+            for journal in upload.provenance_journals:
+                session.add_all(
+                    provenance_entity_records(
+                        collection_id=collection_id,
+                        journal_id=journal.journal_id,
+                        content=journal.journal_bytes,
+                    )
+                )
             collection.tags.extend(
                 CollectionTagRecord(
                     collection_id=collection_id,
@@ -1203,6 +1381,28 @@ class SqlAlchemyCollectionUploadService:
                     )
                 )
             artifact_order = len(projection.volumes)
+            if sealed_provenance is not None:
+                for current in (*sealed_provenance.bundles, sealed_provenance.index):
+                    session.add(
+                        CollectionArchiveObjectRecord(
+                            collection_id=collection_id,
+                            store=upload.archive_store,
+                            object_id=current.object_id,
+                            object_order=artifact_order,
+                            kind=current.kind,
+                            object_path=f"{projection.root.archive_storage_prefix}/{current.relative_path}",
+                            plaintext_bytes=current.plaintext_bytes,
+                            stored_bytes=current.stored_bytes,
+                            sha256=current.plaintext_sha256,
+                            stored_sha256=current.stored_sha256,
+                            version_id=current.version_id,
+                            backend=store_config.backend,
+                            storage_class=store_config.storage_class,
+                            uploaded_at=current.completed_at,
+                            verified_at=now,
+                        )
+                    )
+                    artifact_order += 1
             session.add_all(
                 (
                     CollectionArchiveObjectRecord(
@@ -1316,7 +1516,11 @@ class SqlAlchemyCollectionUploadService:
                     "bytes_total": sum(row.bytes for row in rows),
                     "archive_store": upload.archive_store,
                     "archive_storage_prefix": projection.root.archive_storage_prefix,
-                    "archive_objects": len(projection.volumes) + 2,
+                    "archive_objects": (
+                        len(projection.volumes)
+                        + (len(sealed_provenance.bundles) + 1 if sealed_provenance else 0)
+                        + 2
+                    ),
                 },
                 terminal=True,
                 session=session,
@@ -1358,6 +1562,8 @@ def _normalize_file(
     value: Mapping[str, object],
     *,
     policy: CollectionVolumePolicy,
+    provenance_mode: str,
+    collection_omission_reason: str | None,
 ) -> _RegisteredFile:
     try:
         path = normalize_relpath(str(value.get("path", "")))
@@ -1397,7 +1603,48 @@ def _normalize_file(
             raise BadRequest(str(exc)) from exc
     elif raw is not None:
         raise BadRequest(f"raw part digests are only valid for large files: {path}")
-    return {"path": path, "bytes": byte_count, "sha256": sha256, "raw_manifest_json": raw_json}
+    raw_provenance = value.get("provenance")
+    if raw_provenance is None and provenance_mode == "omitted":
+        raw_provenance = {
+            "status": "omitted",
+            "omission_reason": collection_omission_reason,
+        }
+    if not isinstance(raw_provenance, Mapping):
+        raise BadRequest(f"collection upload file provenance is required: {path}")
+    status = raw_provenance.get("status")
+    provenance_journal_id: str | None = None
+    provenance_current_state_id: str | None = None
+    provenance_omission_reason: str | None = None
+    if status == "captured":
+        if provenance_mode == "omitted":
+            raise BadRequest("collection-wide provenance omission cannot contain journals")
+        if set(raw_provenance) != {"status", "journal_id", "current_state_id"}:
+            raise BadRequest(f"captured file provenance is invalid: {path}")
+        provenance_journal_id = str(raw_provenance.get("journal_id", ""))
+        provenance_current_state_id = str(raw_provenance.get("current_state_id", ""))
+        if not provenance_journal_id or not provenance_current_state_id:
+            raise BadRequest(f"captured file provenance identity is invalid: {path}")
+    elif status == "omitted":
+        if set(raw_provenance) != {"status", "omission_reason"}:
+            raise BadRequest(f"omitted file provenance is invalid: {path}")
+        provenance_omission_reason = str(raw_provenance.get("omission_reason", ""))
+        if (
+            not provenance_omission_reason
+            or provenance_omission_reason != provenance_omission_reason.strip()
+        ):
+            raise BadRequest(f"file provenance omission requires a visible reason: {path}")
+    else:
+        raise BadRequest(f"collection upload file provenance status is invalid: {path}")
+    return {
+        "path": path,
+        "bytes": byte_count,
+        "sha256": sha256,
+        "raw_manifest_json": raw_json,
+        "provenance_status": str(status),
+        "provenance_journal_id": provenance_journal_id,
+        "provenance_current_state_id": provenance_current_state_id,
+        "provenance_omission_reason": provenance_omission_reason,
+    }
 
 
 def _registered_file_identity(record: CollectionUploadFileRecord) -> _RegisteredFile:
@@ -1406,7 +1653,58 @@ def _registered_file_identity(record: CollectionUploadFileRecord) -> _Registered
         "bytes": record.bytes,
         "sha256": record.sha256,
         "raw_manifest_json": record.raw_digest_manifest_json,
+        "provenance_status": record.provenance_status,
+        "provenance_journal_id": record.provenance_journal_id,
+        "provenance_current_state_id": record.provenance_current_state_id,
+        "provenance_omission_reason": record.provenance_omission_reason,
     }
+
+
+def _normalize_provenance_mode(
+    mode: str,
+    omission_reason: str | None,
+) -> tuple[str, str | None]:
+    if mode == "captured" and omission_reason is None:
+        return mode, None
+    if mode == "omitted" and omission_reason:
+        normalized = omission_reason.strip()
+        if normalized == omission_reason:
+            return mode, normalized
+    raise BadRequest("provenance_mode must be captured, or omitted with provenance_omission_reason")
+
+
+def _upload_provenance_archive(
+    upload: CollectionUploadRecord,
+) -> ProvenanceArchive | None:
+    bindings = tuple(
+        FileProvenanceBinding(
+            path=row.path,
+            bytes=row.bytes,
+            sha256=row.sha256,
+            status=row.provenance_status,  # type: ignore[arg-type]
+            journal_id=row.provenance_journal_id,
+            current_state_id=row.provenance_current_state_id,
+            omission_reason=row.provenance_omission_reason,
+        )
+        for row in sorted(upload.files, key=lambda item: item.file_order)
+    )
+    journals = {row.journal_id: row.journal_bytes for row in upload.provenance_journals}
+    if upload.provenance_mode == "omitted":
+        if journals or any(item.status != "omitted" for item in bindings):
+            raise Conflict("collection-wide provenance omission is not internally consistent")
+        return None
+    try:
+        return build_provenance_archive(bindings=bindings, journals=journals)
+    except ProvenanceValidationError as exc:
+        raise Conflict(str(exc)) from exc
+
+
+def _final_provenance_mode(upload: CollectionUploadRecord) -> str:
+    if upload.provenance_mode == "omitted":
+        return "omitted"
+    return (
+        "mixed" if any(item.provenance_status == "omitted" for item in upload.files) else "captured"
+    )
 
 
 def _planner_checkpoint(upload: CollectionUploadRecord) -> Any:
@@ -1511,6 +1809,32 @@ def _file_payload(record: CollectionUploadFileRecord) -> dict[str, object]:
         "upload_state": "registered",
         "uploaded_bytes": 0,
         "upload_state_expires_at": None,
+        "provenance": (
+            {
+                "status": "captured",
+                "journal_id": record.provenance_journal_id,
+                "current_state_id": record.provenance_current_state_id,
+            }
+            if record.provenance_status == "captured"
+            else {
+                "status": "omitted",
+                "omission_reason": record.provenance_omission_reason,
+            }
+        ),
+    }
+
+
+def _journal_payload(
+    record: CollectionUploadProvenanceJournalRecord,
+) -> dict[str, object]:
+    return {
+        "journal_id": record.journal_id,
+        "bytes": record.bytes,
+        "sha256": record.sha256,
+        "current_state_id": record.current_state_id,
+        "current_path": record.current_path,
+        "current_bytes": record.current_bytes,
+        "current_sha256": record.current_sha256,
     }
 
 
@@ -1733,6 +2057,8 @@ def _upload_payload(
         "created_at": upload.opened_at,
         "tags": list(_upload_tags(upload)),
         "ingest_source": upload.ingest_source,
+        "provenance_mode": upload.provenance_mode,
+        "provenance_etag": upload.provenance_etag,
         "archive_store": upload.archive_store,
         "state": state or upload.state,
         "layout": _layout_payload(_planner_checkpoint(upload).policy),
@@ -1782,6 +2108,8 @@ def _finalized_payload(
         "created_at": collection.created_at,
         "tags": tags,
         "ingest_source": collection.ingest_source,
+        "provenance_mode": collection.provenance_mode,
+        "provenance_etag": collection.provenance_etag,
         "archive_store": copy.store if copy else store_name,
         "state": "finalized",
         "layout": None,

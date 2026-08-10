@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-backup-stream-info.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "stream_id",
+    "stream_attributes",
+    "stream_attribute_names",
+    "stream_size"
+  ],
+  "properties": {
+    "stream_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stream_attributes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stream_attribute_names": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "stream_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ea_flags": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "need_ea": {
+      "type": "boolean"
+    }
+  }
+}

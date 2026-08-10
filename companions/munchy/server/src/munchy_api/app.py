@@ -607,6 +607,27 @@ def create_or_resume_submission_file_upload(
         return job_service._create_or_resume_input_file_upload(submission_id, rel_path)
 
 
+@app.put("/v1/submissions/{submission_id}/provenance/journals/{journal_id}")
+async def put_submission_provenance_journal(
+    submission_id: str,
+    journal_id: str,
+    request: Request,
+) -> dict[str, object]:
+    job = job_service.load_submission(submission_id)
+    digest = request.headers.get("X-Riverhog-Provenance-SHA256", "").strip().lower()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise HTTPException(
+            status_code=400,
+            detail="X-Riverhog-Provenance-SHA256 must be a SHA-256 hex digest",
+        )
+    return upload_service.put_input_provenance_journal(
+        str(job["input_upload_id"]),
+        journal_id,
+        content=await request.body(),
+        sha256=digest,
+    )
+
+
 @app.get("/v1/admin/scheduler")
 def get_scheduler_status() -> dict[str, Any]:
     control = scheduling_service.scheduler_control()

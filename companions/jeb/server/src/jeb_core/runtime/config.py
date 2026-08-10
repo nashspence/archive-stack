@@ -92,6 +92,7 @@ def config_from_env(
                 or str(landing_dir / ".ingress" / "tus")
             )
         ),
+        provenance_installation_id_path=state_dir / "provenance-installation-id",
         tusd_base_url=(
             env_value_from(
                 values,

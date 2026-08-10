@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/darwin-file-attributes.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "generation": {"type": "integer", "minimum": 0},
+    "document_id": {"type": "integer", "minimum": 0},
+    "total_size": {"type": "integer", "minimum": 0},
+    "allocation_size": {"type": "integer", "minimum": 0},
+    "io_block_size": {"type": "integer", "minimum": 0},
+    "data_length": {"type": "integer", "minimum": 0},
+    "data_allocation_size": {"type": "integer", "minimum": 0},
+    "resource_fork_length": {"type": "integer", "minimum": 0},
+    "resource_fork_allocation_size": {"type": "integer", "minimum": 0}
+  },
+  "minProperties": 1
+}

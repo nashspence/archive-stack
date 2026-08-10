@@ -99,12 +99,18 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
         1,
         [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
     )
-    client.complete_collection_upload_session(1, files_total=1, content_etag="b" * 64)
+    client.complete_collection_upload_session(
+        1,
+        files_total=1,
+        content_etag="b" * 64,
+        provenance_etag=None,
+    )
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
         "tags": [],
         "archive_store": "b2",
+        "provenance_mode": "captured",
     }
     assert client.calls[1][2]["json"] == {
         "files": [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
@@ -112,6 +118,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     assert client.calls[2][2]["json"] == {
         "files_total": 1,
         "content_etag": "b" * 64,
+        "provenance_etag": None,
     }
 
 
@@ -376,6 +383,43 @@ def test_collection_upload_unit_uses_the_canonical_content_contract() -> None:
                 "timeout": 1800.0,
             },
         )
+    ]
+
+
+def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
+    client = RecordingClient()
+
+    client.list_collection_provenance(
+        42,
+        q="movie",
+        status="captured",
+        sort="bytes",
+        order="desc",
+        all_items=True,
+    )
+    client.get_collection_file_provenance(42, "media/movie.mov")
+    client.trace_collection_file_provenance(42, "media/movie.mov")
+    client.verify_collection_provenance(42)
+
+    assert client.calls == [
+        (
+            "GET",
+            "/v1/collections/42/provenance/files",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "bytes",
+                    "order": "desc",
+                    "q": "movie",
+                    "status": "captured",
+                    "all": True,
+                }
+            },
+        ),
+        ("GET", "/v1/collections/42/provenance/files/media/movie.mov", {}),
+        ("GET", "/v1/collections/42/provenance/trace/media/movie.mov", {}),
+        ("POST", "/v1/collections/42/provenance/verify", {}),
     ]
 
 

@@ -48,41 +48,6 @@ from munchy_core.persistence.application_keys import (
 log = logging.getLogger("munchy.server")
 
 
-def _group_archives_source(group: domain_models.GroupConfig) -> bool:
-    return group.output_mode == "preserve" or any(
-        task in group.tasks for task in ("archive_video", "archive_audio")
-    )
-
-
-def require_submission_filesystem_metadata(
-    req: domain_models.SubmissionSpec,
-    job_request: domain_models.CreateJobRequest,
-) -> None:
-    missing = [item.path for item in req.files if not item.filesystem_metadata]
-    if not missing:
-        return
-    groups = (
-        job_request.groups
-        if job_request.groups
-        else {"default": upload_service.default_group_config(job_request)}
-    )
-    strict_groups = sorted(
-        name
-        for name, group in groups.items()
-        if _group_archives_source(group) and not group.allow_missing_filesystem_metadata
-    )
-    if strict_groups:
-        raise ServiceError(
-            status_code=422,
-            detail=(
-                f"submission omits filesystem_metadata for {len(missing)} file(s), but "
-                f"template group(s) {', '.join(strict_groups)} require it for source "
-                "artifacts; set allow_missing_filesystem_metadata: true on those groups "
-                "only when origin filesystem metadata is unavailable by design"
-            ),
-        )
-
-
 def submission_request_digest(req: domain_models.SubmissionSpec) -> str:
     payload = req.model_dump(mode="json")
     payload.pop("submission_id", None)
@@ -117,7 +82,6 @@ def resolved_submission(
     except ValidationError as exc:
         raise ServiceError(status_code=422, detail=str(exc)) from exc
     storage_hint = admission_service.storage_hint_for_job_request(job_request)
-    require_submission_filesystem_metadata(req, job_request)
     try:
         domain_models.CreateInputUploadRequest(files=req.files, storage_hint=storage_hint)
     except ValidationError as exc:
@@ -503,9 +467,6 @@ def run_job(job_id: str) -> None:
                             group_name=group_name,
                             source_root=input_dir / group_name,
                             output_root=archive_dir / group_name,
-                            allow_missing_filesystem_metadata=bool(
-                                group_config.get("allow_missing_filesystem_metadata", False)
-                            ),
                         )
                     )
                     input_upload = upload_service.save_input_upload_raw(input_upload)
@@ -549,6 +510,12 @@ def run_job(job_id: str) -> None:
                             group_name=group_name,
                             materialized_group_root=input_dir / group_name,
                         ),
+                        provenance_by_rel_path={
+                            upload_service.upload_file_group_rel_for_state(
+                                file_state, group_name
+                            ).as_posix(): routing_service.file_state_provenance_facts(file_state)
+                            for file_state in audio_file_states
+                        },
                     ),
                     "archive_audio_at": utc_timestamp_now(),
                 }
@@ -606,9 +573,6 @@ def run_job(job_id: str) -> None:
                                 tasks,
                                 group_config,
                             )
-                        ),
-                        "allow_missing_filesystem_metadata": bool(
-                            group_config.get("allow_missing_filesystem_metadata", False)
                         ),
                     }
                     if group_config.get("encode_profile") is not None:
@@ -821,7 +785,7 @@ def create_input_upload_state(
                     "path": item.path,
                     "bytes": item.bytes,
                     "sha256": item.sha256,
-                    "filesystem_metadata": item.filesystem_metadata,
+                    "provenance": item.provenance.model_dump(exclude_none=True),
                     "target_path": target_path,
                     "input_upload_id": input_upload_id,
                     "file_upload_id": upload_service.tusd_upload_id_for_target_path(target_path),
@@ -834,6 +798,7 @@ def create_input_upload_state(
             "state": "uploading",
             "created_at": utc_timestamp_now(),
             "files": file_states,
+            "provenance_journals": {},
             "storage_hint": storage_hint.model_dump(exclude_none=True),
             "tusd_creation_url": runtime_config.TUSD_PUBLIC_BASE_URL,
         }

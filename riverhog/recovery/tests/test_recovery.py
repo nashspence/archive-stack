@@ -12,12 +12,24 @@ from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
+    SealedProvenanceObject,
     SealedRawVolume,
     StoredPartReceipt,
     VerifiedRawFile,
 )
 from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
 from riverhog_core.raw_verification import raw_file_volume_set_sha256
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    append_observation,
+    append_replacement_transformation,
+    build_portable_provenance_set,
+    build_provenance_archive,
+    create_observation_journal,
+    prepare_file_provenance,
+    validate_journal,
+    validate_portable_provenance_set,
+)
 from riverhog_recover import RecoveryError, recover_archive
 
 from tests.fixtures.archive import age_state_json
@@ -76,7 +88,12 @@ if proof != expected:
     return path
 
 
-def _write_archive(root: Path) -> dict[str, bytes]:
+def _write_archive(
+    root: Path,
+    *,
+    with_provenance: bool = False,
+    provenance_journal: bytes | None = None,
+) -> tuple[dict[str, bytes], bytes | None]:
     expected = {
         "notes/alpha.txt": b"alpha\n",
         "notes/beta.txt": b"beta\n",
@@ -143,11 +160,89 @@ def _write_archive(root: Path) -> dict[str, bytes]:
         ),
         verified_at="2026-08-08T00:00:00Z",
     )
+    provenance_identity: str | None = None
+    provenance_objects: tuple[SealedProvenanceObject, ...] = ()
+    provenance_ciphertexts: dict[str, bytes] = {}
+    exact_journal: bytes | None = None
+    if with_provenance:
+        exact_journal = provenance_journal
+        if exact_journal is None:
+            observed = root.parent / "observed-alpha.txt"
+            observed.write_bytes(expected["notes/alpha.txt"])
+            exact_journal = create_observation_journal(
+                observed,
+                relative_path="notes/alpha.txt",
+                host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
+                agent_name="recovery-fixture",
+                agent_version="1.0.0",
+            )
+            observed.unlink()
+        summary = validate_journal(exact_journal)
+        bindings = tuple(
+            FileProvenanceBinding(
+                path=current.path,
+                bytes=current.bytes,
+                sha256=current.sha256,
+                status="captured" if current.path == "notes/alpha.txt" else "omitted",
+                journal_id=(summary.journal_id if current.path == "notes/alpha.txt" else None),
+                current_state_id=(
+                    summary.current_state_id if current.path == "notes/alpha.txt" else None
+                ),
+                omission_reason=(
+                    None
+                    if current.path == "notes/alpha.txt"
+                    else "fixture explicitly omitted source provenance"
+                ),
+            )
+            for current in files
+        )
+        provenance = build_provenance_archive(
+            bindings=bindings,
+            journals={summary.journal_id: exact_journal},
+        )
+        sealed: list[SealedProvenanceObject] = []
+        for object_id, kind, relative_path, plaintext in (
+            *(
+                (
+                    bundle.bundle_id,
+                    "provenance-bundle",
+                    bundle.relative_path,
+                    bundle.content,
+                )
+                for bundle in provenance.bundles
+            ),
+            (
+                "provenance-index",
+                "provenance-index",
+                "provenance/index.json.age",
+                provenance.index_bytes,
+            ),
+        ):
+            ciphertext = encrypt_age_scrypt(plaintext, PASSPHRASE, log_n=1)
+            provenance_ciphertexts[relative_path] = ciphertext
+            sealed.append(
+                SealedProvenanceObject(
+                    object_id=object_id,
+                    kind=kind,
+                    relative_path=relative_path,
+                    plaintext_bytes=len(plaintext),
+                    plaintext_sha256=_sha256(plaintext),
+                    stored_bytes=len(ciphertext),
+                    stored_sha256=_sha256(ciphertext),
+                    version_id=f"{object_id}-version",
+                    completed_at="2026-08-08T00:00:00Z",
+                )
+            )
+        provenance_identity = provenance.identity
+        provenance_objects = tuple(sealed)
+
     manifest = build_collection_archive_manifest(
         files=files,
         packs=((pack_plan, sealed_pack),),
         raw_volumes=raw_volumes,
         verified_raw_files=(verified_raw,),
+        provenance_identity=provenance_identity,
+        provenance_objects=provenance_objects,
     )
     proof = f"sha256:{_sha256(manifest)}\n".encode()
 
@@ -156,6 +251,7 @@ def _write_archive(root: Path) -> dict[str, bytes]:
         "manifest.json.ots.age": encrypt_age_scrypt(proof, PASSPHRASE, log_n=1),
         sealed_pack.relative_path: pack_ciphertext,
         **raw_ciphertexts,
+        **provenance_ciphertexts,
     }
     for relative, content in ciphertext.items():
         destination = root / relative
@@ -167,12 +263,12 @@ def _write_archive(root: Path) -> dict[str, bytes]:
         ),
         encoding="utf-8",
     )
-    return expected
+    return expected, exact_journal
 
 
 def test_recovers_complete_collection_without_server_or_database(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
-    expected = _write_archive(archive)
+    expected, _journal = _write_archive(archive)
     output = tmp_path / "recovered"
     ots = _write_ots_command(tmp_path / "ots-fixture")
 
@@ -191,7 +287,7 @@ def test_recovers_complete_collection_without_server_or_database(tmp_path: Path)
 
 def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
-    expected = _write_archive(archive)
+    expected, _journal = _write_archive(archive)
     output = tmp_path / "recovered"
     passphrase_file = tmp_path / "passphrase"
     passphrase_file.write_text(PASSPHRASE, encoding="utf-8")
@@ -239,3 +335,87 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
         )
 
     assert not output.exists()
+
+
+def test_client_jeb_munchy_riverhog_recovery_preserves_one_exact_main_lineage(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-alpha.txt"
+    source.write_bytes(b"original alpha\n")
+    client_journal = create_observation_journal(
+        source,
+        relative_path="camera/alpha.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
+        agent_name="riverhog-client",
+        agent_version="1.0.0",
+    )
+    staged = tmp_path / "staged-alpha.txt"
+    staged.write_bytes(source.read_bytes())
+    jeb_journal = append_observation(
+        client_journal,
+        staged,
+        relative_path="staging/alpha.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
+        agent_name="jeb-server",
+        agent_version="1.0.0",
+    )
+    transformed = tmp_path / "transformed-alpha.txt"
+    transformed.write_bytes(b"alpha\n")
+    munchy_journal = append_replacement_transformation(
+        jeb_journal,
+        transformed,
+        relative_path="notes/alpha.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000003",
+        agent_name="munchy-server",
+        agent_version="1.0.0",
+        event_label="Munchy canonical archive transformation",
+        started_at="2026-08-10T01:00:00Z",
+        ended_at="2026-08-10T01:01:00Z",
+    )
+    assert jeb_journal.startswith(client_journal)
+    assert munchy_journal.startswith(jeb_journal)
+
+    archive = tmp_path / "archive"
+    expected, exact_journal = _write_archive(
+        archive,
+        with_provenance=True,
+        provenance_journal=munchy_journal,
+    )
+    assert exact_journal is not None
+    exact_summary = validate_journal(exact_journal)
+    assert exact_summary.primary_lineage_id == validate_journal(client_journal).primary_lineage_id
+    output = tmp_path / "recovered"
+    ots = _write_ots_command(tmp_path / "ots-fixture")
+
+    summary = recover_archive(
+        archive,
+        output,
+        passphrase=PASSPHRASE,
+        ots_command=str(ots),
+    )
+
+    provenance_root = output / ".riverhog" / "provenance"
+    index = (provenance_root / "index.json").read_bytes()
+    journals = {
+        exact_summary.journal_id: (
+            provenance_root / "journals" / f"{exact_summary.journal_id}.json-seq"
+        ).read_bytes()
+    }
+    validated = validate_portable_provenance_set(index, journals)
+    assert summary.provenance_mode == "mixed"
+    assert summary.provenance_journals == 1
+    assert journals == {exact_summary.journal_id: exact_journal}
+    assert index == build_portable_provenance_set(
+        bindings=validated.bindings,
+        journals=journals,
+    )
+    prepared = prepare_file_provenance(
+        output / "notes" / "alpha.txt",
+        relative_path="notes/alpha.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
+        agent_name="riverhog-client",
+        agent_version="1.0.0",
+        provenance=provenance_root,
+    )
+    assert prepared.journals == {exact_summary.journal_id: exact_journal}
+    assert {path: (output / path).read_bytes() for path in expected} == expected

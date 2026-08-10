@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/observation-policy.json",
+  "title": "Riverhog provenance observer capture policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "strict_consistency",
+    "attempt_noatime",
+    "verify_path_binding",
+    "second_content_hash",
+    "hash_chunk_bytes",
+    "inline_native_value_bytes",
+    "maximum_native_value_bytes",
+    "large_value_disposition",
+    "capture_xattrs",
+    "capture_acl",
+    "capture_file_flags",
+    "capture_sparse_map",
+    "capture_special_features",
+    "capture_native_stat",
+    "resolve_principals",
+    "include_access_time",
+    "include_hostname",
+    "include_effective_principal",
+    "maximum_sparse_extents",
+    "resource_fork_chunk_bytes",
+    "native_stream_chunk_bytes",
+    "maximum_native_streams",
+    "capture_system_acl",
+    "windows_allow_shared_write",
+    "windows_allow_shared_delete",
+    "windows_follow_non_name_surrogate_reparse_points",
+    "windows_capture_usn",
+    "windows_capture_object_id"
+  ],
+  "properties": {
+    "strict_consistency": {
+      "type": "boolean"
+    },
+    "attempt_noatime": {
+      "type": "boolean"
+    },
+    "verify_path_binding": {
+      "type": "boolean"
+    },
+    "second_content_hash": {
+      "type": "boolean"
+    },
+    "hash_chunk_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "inline_native_value_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maximum_native_value_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "large_value_disposition": {
+      "enum": [
+        "digest_only",
+        "not_retained",
+        "fail"
+      ]
+    },
+    "capture_xattrs": {
+      "type": "boolean"
+    },
+    "capture_acl": {
+      "type": "boolean"
+    },
+    "capture_file_flags": {
+      "type": "boolean"
+    },
+    "capture_sparse_map": {
+      "type": "boolean"
+    },
+    "capture_special_features": {
+      "type": "boolean"
+    },
+    "capture_native_stat": {
+      "type": "boolean"
+    },
+    "resolve_principals": {
+      "type": "boolean"
+    },
+    "include_access_time": {
+      "type": "boolean"
+    },
+    "include_hostname": {
+      "type": "boolean"
+    },
+    "include_effective_principal": {
+      "type": "boolean"
+    },
+    "maximum_sparse_extents": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resource_fork_chunk_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "native_stream_chunk_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maximum_native_streams": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capture_system_acl": {
+      "type": "boolean"
+    },
+    "windows_allow_shared_write": {
+      "type": "boolean"
+    },
+    "windows_allow_shared_delete": {
+      "type": "boolean"
+    },
+    "windows_follow_non_name_surrogate_reparse_points": {
+      "type": "boolean"
+    },
+    "windows_capture_usn": {
+      "type": "boolean"
+    },
+    "windows_capture_object_id": {
+      "type": "boolean"
+    }
+  }
+}

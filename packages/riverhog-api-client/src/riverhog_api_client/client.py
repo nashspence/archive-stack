@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -375,10 +376,13 @@ class ApiClient(_HttpApiClient):
         ingest_source: str | None = None,
         archive_store: str | None = None,
         event_context: Mapping[str, Any] | None = None,
+        provenance_mode: str = "captured",
+        provenance_omission_reason: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "idempotency_key": idempotency_key,
             "tags": list(tags),
+            "provenance_mode": provenance_mode,
         }
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
@@ -386,6 +390,8 @@ class ApiClient(_HttpApiClient):
             payload["archive_store"] = archive_store
         if event_context is not None:
             payload["event_context"] = dict(event_context)
+        if provenance_omission_reason is not None:
+            payload["provenance_omission_reason"] = provenance_omission_reason
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
 
     def register_collection_upload_session_files(
@@ -415,6 +421,26 @@ class ApiClient(_HttpApiClient):
                 "per_page": per_page,
                 "all": str(all_items).lower(),
             },
+        )
+
+    def put_collection_upload_session_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        content: bytes,
+        sha256: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/provenance/journals/"
+            f"{quote(journal_id, safe='')}",
+            headers={
+                "Content-Type": "application/json-seq",
+                "X-Riverhog-Provenance-SHA256": sha256,
+            },
+            content=content,
+            timeout=self.upload_timeout_seconds,
         )
 
     def list_collection_upload_sessions(
@@ -451,11 +477,16 @@ class ApiClient(_HttpApiClient):
         *,
         files_total: int,
         content_etag: str,
+        provenance_etag: str | None,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(collection_id)}/complete",
-            json={"files_total": files_total, "content_etag": content_etag},
+            json={
+                "files_total": files_total,
+                "content_etag": content_etag,
+                "provenance_etag": provenance_etag,
+            },
         )
 
     def cancel_collection_upload_session(self, collection_id: int) -> dict[str, Any]:
@@ -547,6 +578,77 @@ class ApiClient(_HttpApiClient):
         return self._json(
             "GET",
             f"/v1/collections/{str(collection_id)}",
+        )
+
+    def list_collection_provenance(
+        self,
+        collection_id: int,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        status: str | None = None,
+        sort: str = "path",
+        order: str = "asc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, object] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if status:
+            params["status"] = status
+        if all_items:
+            params["all"] = True
+        return self._json(
+            "GET",
+            f"/v1/collections/{collection_id}/provenance/files",
+            params=params,
+        )
+
+    def get_collection_file_provenance(
+        self,
+        collection_id: int,
+        path: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{collection_id}/provenance/files/{quote(path, safe='/')}",
+        )
+
+    def trace_collection_file_provenance(
+        self,
+        collection_id: int,
+        path: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{collection_id}/provenance/trace/{quote(path, safe='/')}",
+        )
+
+    def export_collection_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> bytes:
+        response = self._request(
+            "GET",
+            f"/v1/collections/{collection_id}/provenance/journals/{quote(journal_id, safe='')}",
+        )
+        content = response.content
+        expected = response.headers.get("ETag", "").strip().strip('"')
+        if not expected or hashlib.sha256(content).hexdigest() != expected:
+            raise InvalidState("provenance export does not match its ETag")
+        return content
+
+    def verify_collection_provenance(self, collection_id: int) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collections/{collection_id}/provenance/verify",
         )
 
     def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:

@@ -165,7 +165,6 @@ def _default_group_from_section(section: Mapping[str, Any]) -> dict[str, Any]:
     for key in (
         "output_mode",
         "tasks",
-        "allow_missing_filesystem_metadata",
         "metadata_projection",
     ):
         if key in section:

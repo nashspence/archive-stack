@@ -110,6 +110,8 @@ class SqlAlchemyRetrievalService:
             payload, etag = collection_record_manifest(
                 collection_id=normalized_id,
                 content_etag=collection.content_etag,
+                provenance_mode=collection.provenance_mode,
+                provenance_etag=collection.provenance_etag,
                 metadata_revision=collection.metadata_revision,
                 tags=tags,
                 files=((row.path, row.bytes, row.sha256) for row in files),

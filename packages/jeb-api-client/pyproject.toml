@@ -14,12 +14,16 @@ dependencies = [
   "httpx>=0.27,<1.0",
   "jeb-protocol>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
+  "tus-transport>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
 http-api-contracts = { workspace = true }
 jeb-protocol = { workspace = true }
 lifecycle-events = { workspace = true }
+riverhog-provenance = { workspace = true }
+tus-transport = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jeb_api_client"]

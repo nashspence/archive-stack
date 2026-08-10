@@ -32,12 +32,6 @@ def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> Non
         encode_cmd=["ffmpeg", "-i", "clip.mp4", "clip.mkv"],
         selected_output_path=tmp_path / "clip.mkv",
         encode_output_path=tmp_path / "clip.mkv",
-        source_filesystem_metadata={
-            "schema_version": 1,
-            "kind": "munchy.source-filesystem-metadata",
-            "stat": {"mode_octal": "0o644", "mtime_ns": 123},
-            "extended_attributes": {"available": True, "items": []},
-        },
     )
 
     created = source_artifacts._build_source_artifacts_bundle(
@@ -52,15 +46,7 @@ def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> Non
         manifest_member = tar.extractfile("manifest.json")
         assert manifest_member is not None
         manifest = json.loads(manifest_member.read().decode("utf-8"))
-        fs_member = tar.extractfile("inventory/source-filesystem.json")
-        assert fs_member is not None
-        fs_metadata = json.loads(fs_member.read().decode("utf-8"))
     assert manifest["kind"] == "munchy.source-artifacts"
-    assert fs_metadata["kind"] == "munchy.source-filesystem-metadata"
-    assert any(
-        item["path"] == "inventory/source-filesystem.json" and item["kind"] == "source_filesystem"
-        for item in manifest["artifacts"]
-    )
     assert all(not str(item["path"]).startswith("rebuild/") for item in manifest["artifacts"])
 
     audit = source_artifacts._audit_source_artifacts_bundle(bundle_path)
@@ -70,28 +56,7 @@ def test_source_artifact_bundle_uses_munchy_manifest_kind(tmp_path: Path) -> Non
     assert audit["artifacts_checked"] == len(artifacts)
 
 
-def test_source_artifact_bundle_requires_source_filesystem_metadata(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="unresumable.*filesystem metadata"):
-        source_artifacts._assemble_source_artifact_bundle_inputs(
-            work_dir=tmp_path / "work",
-            src="clip.mp4",
-            output="clip.mkv",
-            source_metadata={"format": {}, "streams": []},
-            source_container={"supported": True, "mode": "iso_bmff_rebuild"},
-            container_inventory=[],
-            container_artifacts=[],
-            exports=[],
-            stream_transforms=[],
-            dropped_items=[],
-            encode_cmd=["ffmpeg", "-i", "clip.mp4", "clip.mkv"],
-            selected_output_path=tmp_path / "clip.mkv",
-            encode_output_path=tmp_path / "clip.mkv",
-        )
-
-
-def test_source_artifact_bundle_can_explicitly_omit_filesystem_metadata(
-    tmp_path: Path,
-) -> None:
+def test_source_artifact_bundle_preserves_media_inventory(tmp_path: Path) -> None:
     artifacts = source_artifacts._assemble_source_artifact_bundle_inputs(
         work_dir=tmp_path / "work",
         src="clip.mp4",
@@ -106,14 +71,13 @@ def test_source_artifact_bundle_can_explicitly_omit_filesystem_metadata(
         encode_cmd=["ffmpeg", "-i", "clip.mp4", "clip.mkv"],
         selected_output_path=tmp_path / "clip.mkv",
         encode_output_path=tmp_path / "clip.mkv",
-        allow_missing_filesystem_metadata=True,
     )
 
     assert artifacts
-    assert all(artifact.kind != "source_filesystem" for artifact in artifacts)
+    assert any(artifact.kind == "source_ffprobe" for artifact in artifacts)
 
 
-def test_preserve_source_artifacts_can_explicitly_omit_missing_metadata(
+def test_preserve_source_artifacts_reports_no_additional_artifacts(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "clip.bin"
@@ -122,13 +86,11 @@ def test_preserve_source_artifacts_can_explicitly_omit_missing_metadata(
     result = build_preserve_source_artifacts(
         source=source,
         output=source,
-        source_filesystem_metadata=None,
-        allow_missing_filesystem_metadata=True,
     )
 
     assert result == {
         "omitted": True,
-        "reason": "origin filesystem metadata is unavailable",
+        "reason": "no independently retained source artifacts were produced",
     }
 
 
@@ -156,12 +118,6 @@ def test_source_artifact_bundle_has_no_rebuild_directory(
         encode_cmd=["ffmpeg", "-i", "voice.mp3", "voice.opus"],
         selected_output_path=tmp_path / "voice.opus",
         encode_output_path=tmp_path / "voice.opus",
-        source_filesystem_metadata={
-            "schema_version": 1,
-            "kind": "munchy.source-filesystem-metadata",
-            "stat": {"mode_octal": "0o644", "mtime_ns": 123},
-            "extended_attributes": {"available": True, "items": []},
-        },
     )
 
     assert all(not artifact.arcname.startswith("rebuild/") for artifact in artifacts)
@@ -203,12 +159,6 @@ def test_preserve_source_artifacts_include_evidence_sidecars(tmp_path: Path) -> 
     result = build_preserve_source_artifacts(
         source=source,
         output=output,
-        source_filesystem_metadata={
-            "schema_version": 1,
-            "kind": "munchy.source-filesystem-metadata",
-            "stat": {"mode_octal": "0o644", "mtime_ns": 123},
-            "extended_attributes": {"available": True, "items": []},
-        },
         source_sidecars=[
             {
                 "id": "xmp",
@@ -235,7 +185,6 @@ def test_preserve_source_artifacts_include_evidence_sidecars(tmp_path: Path) -> 
         for path in extract_dir.rglob("*")
         if path.is_file()
     }
-    assert "inventory/source-filesystem.json" in names
     assert "sidecars/IMG_0001.HEIC.xmp" in names
     assert "inventory/source-ffprobe.json" not in names
     assert "inventory/source-inventory.json" not in names

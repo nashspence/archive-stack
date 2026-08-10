@@ -21,6 +21,7 @@ dependencies = [
   "munchy-api-client>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
   "riverhog-cli-support>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
   "state-schema>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
   "uvicorn[standard]>=0.30,<1.0",
@@ -37,6 +38,7 @@ lifecycle-events = { workspace = true }
 media-preflight = { workspace = true }
 munchy-api-client = { workspace = true }
 riverhog-cli-support = { workspace = true }
+riverhog-provenance = { workspace = true }
 state-schema = { workspace = true }
 time-formats = { workspace = true }
 

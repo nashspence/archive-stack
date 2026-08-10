@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import riverhog_cli.main
+from riverhog_cli.main import app
+from typer.testing import CliRunner
+
+RUNNER = CliRunner()
+JOURNAL_ID = "urn:uuid:00000000-0000-4000-8000-000000000042"
+JOURNAL = b'\x1e{"exact":"journal"}\n'
+
+
+def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    binding = {
+        "status": "captured",
+        "journal_id": JOURNAL_ID,
+        "current_state_id": "urn:uuid:00000000-0000-4000-8000-000000000043",
+    }
+    shown = {
+        "collection_id": 41,
+        "path": "media/movie.mov",
+        "bytes": 7,
+        "sha256": "a" * 64,
+        "provenance": binding,
+        "journal": {"journal_id": JOURNAL_ID, "entries": 2},
+    }
+
+    class FakeClient:
+        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
+            calls.append(("list", (collection_id, kwargs)))
+            return {
+                "collection_id": collection_id,
+                "provenance_mode": "captured",
+                "files": [shown],
+                "page": 1,
+                "per_page": 1,
+                "total": 1,
+                "pages": 1,
+            }
+
+        def get_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
+            calls.append(("show", (collection_id, path)))
+            return shown
+
+        def trace_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
+            calls.append(("trace", (collection_id, path)))
+            return {**shown, "journals": [shown["journal"]], "lineage_edges": []}
+
+        def export_collection_provenance_journal(
+            self, collection_id: int, journal_id: str
+        ) -> bytes:
+            calls.append(("export", (collection_id, journal_id)))
+            return JOURNAL
+
+        def verify_collection_provenance(self, collection_id: int) -> dict[str, Any]:
+            calls.append(("verify", collection_id))
+            return {
+                "collection_id": collection_id,
+                "valid": True,
+                "provenance_mode": "captured",
+                "provenance_etag": "b" * 64,
+                "files": 1,
+                "journals": 1,
+                "entities": 4,
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    output = tmp_path / "movie.json-seq"
+
+    listed = RUNNER.invoke(
+        app,
+        [
+            "collection",
+            "provenance",
+            "list",
+            "41",
+            "--query",
+            "movie",
+            "--status",
+            "captured",
+            "--all",
+            "--json",
+        ],
+    )
+    shown_result = RUNNER.invoke(
+        app,
+        ["collection", "provenance", "show", "41", "media/movie.mov", "--json"],
+    )
+    traced = RUNNER.invoke(
+        app,
+        ["collection", "provenance", "trace", "41", "media/movie.mov", "--json"],
+    )
+    exported = RUNNER.invoke(
+        app,
+        [
+            "collection",
+            "provenance",
+            "export",
+            "41",
+            JOURNAL_ID,
+            "--output",
+            str(output),
+        ],
+    )
+    verified = RUNNER.invoke(
+        app,
+        ["collection", "provenance", "verify", "41", "--json"],
+    )
+
+    assert listed.exit_code == 0
+    assert json.loads(listed.stdout)["files"] == [shown]
+    assert shown_result.exit_code == 0
+    assert json.loads(shown_result.stdout) == shown
+    assert traced.exit_code == 0
+    assert json.loads(traced.stdout)["journals"] == [shown["journal"]]
+    assert exported.exit_code == 0
+    assert output.read_bytes() == JOURNAL
+    assert verified.exit_code == 0
+    assert json.loads(verified.stdout)["valid"] is True
+    assert calls == [
+        (
+            "list",
+            (
+                41,
+                {
+                    "page": 1,
+                    "per_page": 25,
+                    "q": "movie",
+                    "status": "captured",
+                    "sort": "path",
+                    "order": "asc",
+                    "all_items": True,
+                },
+            ),
+        ),
+        ("show", (41, "media/movie.mov")),
+        ("trace", (41, "media/movie.mov")),
+        ("export", (41, JOURNAL_ID)),
+        ("verify", 41),
+    ]
+
+
+def test_provenance_list_selectors_match_other_file_list_commands(monkeypatch) -> None:
+    class FakeClient:
+        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
+            assert collection_id == 41
+            assert kwargs["all_items"] is True
+            return {
+                "files": [
+                    {"collection_id": 41, "path": "one.mov"},
+                    {"collection_id": 41, "path": "nested/two.mov"},
+                ]
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    result = RUNNER.invoke(
+        app,
+        ["collection", "provenance", "list", "41", "--all", "--selectors"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "41::one.mov\n41::nested/two.mov\n"

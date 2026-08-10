@@ -22,7 +22,11 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "true"
 
-    assert set(workflow["jobs"]) == {"repository", "images"}
+    assert set(workflow["jobs"]) == {
+        "repository",
+        "provenance-observers",
+        "images",
+    }
     job = workflow["jobs"]["repository"]
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["strategy"]["fail-fast"] == "false"
@@ -66,4 +70,23 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     assert steps[3]["with"] == {"version": "v5.1.1"}
     assert [step["run"] for step in steps if "run" in step] == ['make "$CI_TARGET"']
     assert steps[-1]["env"] == {"CI_TARGET": "${{ matrix.target }}"}
+
+    observers = workflow["jobs"]["provenance-observers"]
+    assert observers["strategy"] == {
+        "fail-fast": "false",
+        "matrix": {
+            "os": ["ubuntu-24.04", "macos-15", "windows-2025"],
+        },
+    }
+    assert observers["runs-on"] == "${{ matrix.os }}"
+    assert [step["uses"].split("@", 1)[0] for step in observers["steps"] if "uses" in step] == [
+        "actions/checkout",
+        "jdx/mise-action",
+    ]
+    assert observers["steps"][0]["with"]["persist-credentials"] == "false"
+    assert [step["run"] for step in observers["steps"] if "run" in step] == [
+        "mise x -- uv run --locked --all-packages --group dev "
+        "python -m pytest -q "
+        "packages/riverhog-provenance/tests/test_platform_live.py"
+    ]
     assert "secrets." not in text

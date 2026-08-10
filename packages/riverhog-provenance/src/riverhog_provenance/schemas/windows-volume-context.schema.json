@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/observers/schemas/windows-volume-context.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "filesystem_name",
+    "volume_label",
+    "volume_serial_number",
+    "maximum_component_length",
+    "filesystem_flags",
+    "mount_path",
+    "volume_guid_path",
+    "drive_type",
+    "sectors_per_cluster",
+    "bytes_per_sector",
+    "final_path"
+  ],
+  "properties": {
+    "filesystem_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "volume_label": {
+      "type": "string"
+    },
+    "volume_serial_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "maximum_component_length": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "filesystem_flags": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mount_path": {
+      "type": "string"
+    },
+    "volume_guid_path": {
+      "type": "string"
+    },
+    "drive_type": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sectors_per_cluster": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bytes_per_sector": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "final_path": {
+      "type": "string"
+    }
+  }
+}
