@@ -1,11 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
+
+
+class CollectionUploadCapturedFileProvenanceIn(RiverhogModel):
+    status: Literal["captured"]
+    journal_id: str
+    current_state_id: str
+
+
+class CollectionUploadOmittedFileProvenanceIn(RiverhogModel):
+    status: Literal["omitted"]
+    omission_reason: str
+
+
+CollectionUploadFileProvenanceIn = Annotated[
+    CollectionUploadCapturedFileProvenanceIn | CollectionUploadOmittedFileProvenanceIn,
+    Field(discriminator="status"),
+]
 
 
 class CollectionUploadFileIn(RiverhogModel):
@@ -14,13 +31,6 @@ class CollectionUploadFileIn(RiverhogModel):
     sha256: str
     raw_parts: CollectionUploadRawPartsIn | None = None
     provenance: CollectionUploadFileProvenanceIn
-
-
-class CollectionUploadFileProvenanceIn(RiverhogModel):
-    status: Literal["captured", "omitted"]
-    journal_id: str | None = None
-    current_state_id: str | None = None
-    omission_reason: str | None = None
 
 
 class CollectionUploadRawPartsIn(RiverhogModel):
