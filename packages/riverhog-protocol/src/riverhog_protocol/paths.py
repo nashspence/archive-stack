@@ -10,7 +10,6 @@ __all__ = [
     "normalize_collection_id",
     "normalize_relpath",
     "normalize_tag",
-    "path_parents",
 ]
 
 
@@ -65,8 +64,3 @@ def normalize_collection_id(raw: str | int) -> int:
     if value < 1 or text != str(value):
         raise PathNormalizationError("collection id must be a canonical positive integer")
     return value
-
-
-def path_parents(relpath: str) -> list[str]:
-    parts = normalize_relpath(relpath).split("/")
-    return ["/".join(parts[:i]) for i in range(1, len(parts))]

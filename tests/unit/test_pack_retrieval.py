@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from decimal import Decimal
 
 from riverhog_age import ResumableAgeScryptSession
 from riverhog_core.domain.archive import ArchiveFile
@@ -12,11 +11,9 @@ from riverhog_core.pack_retrieval import (
     PackRangeBatchReader,
     PackRangeRetrievalPolicy,
     PackVolumeRetrievalSource,
-    pack_range_retrieval_plan_payload,
     plan_pack_range_retrieval,
-    range_merge_gap_for_costs,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 
 
 class MemoryRangeStore:
@@ -55,8 +52,13 @@ def _archive(
     files = tuple(_file(path, content) for path, content in contents.items())
     plan = plan_pack_volume(files, sequence=0)
     plaintext = b"".join(
-        render_pack_upload_unit(plan, unit.unit, lambda path: (contents[path],))
+        chunk
         for unit in plan.units
+        for chunk in iter_render_pack_upload_unit(
+            plan,
+            unit.unit,
+            lambda path: (contents[path],),
+        )
     )
     session = ResumableAgeScryptSession.create(
         "archive passphrase",
@@ -134,15 +136,9 @@ def test_batch_reader_coalesces_nearby_members_and_verifies_each_file() -> None:
     assert len(store.requests) == 1
 
 
-def test_range_plan_accounts_for_request_egress_tradeoff_and_cold_store_semantics() -> None:
+def test_range_plan_accounts_for_cold_store_whole_object_semantics() -> None:
     contents = {"a.bin": b"a" * 1000, "b.bin": b"b" * 1000}
     _plan, source, members, _ciphertext = _archive(contents)
-    gap = range_merge_gap_for_costs(
-        request_usd=Decimal("0.0004"),
-        egress_usd_per_gib=Decimal("0.09"),
-    )
-    assert gap == 4_772_185
-
     whole_object = plan_pack_range_retrieval(
         source,
         (members["a.bin"],),
@@ -150,14 +146,6 @@ def test_range_plan_accounts_for_request_egress_tradeoff_and_cold_store_semantic
     )
     assert whole_object.remote_bytes < source.stored_bytes
     assert whole_object.accounted_remote_bytes == source.stored_bytes
-
-
-def test_range_plan_has_canonical_identity() -> None:
-    contents = {"a.txt": b"alpha", "b.txt": b"beta"}
-    _plan, source, members, _ciphertext = _archive(contents)
-    plan = plan_pack_range_retrieval(source, tuple(members.values()))
-    payload = pack_range_retrieval_plan_payload(plan)
-    assert payload["schema"] == "pack-range-retrieval-plan/v1"
 
 
 def test_batch_reader_verifies_zero_byte_members_without_remote_read() -> None:

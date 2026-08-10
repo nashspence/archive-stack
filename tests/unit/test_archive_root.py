@@ -9,7 +9,7 @@ from riverhog_core.domain.archive import (
     SealedPackVolume,
     StoredPartReceipt,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
 
 from tests.fixtures.archive import age_state_json
@@ -60,7 +60,7 @@ def test_root_publish_is_logically_idempotent_and_never_rewrites_manifest() -> N
         sha256=hashlib.sha256(content).hexdigest(),
     )
     plan = plan_pack_volume((file,), sequence=0)
-    plaintext = render_pack_upload_unit(plan, 0, lambda _path: (content,))
+    plaintext = b"".join(iter_render_pack_upload_unit(plan, 0, lambda _path: (content,)))
     pack = SealedPackVolume(
         volume_id=plan.volume_id,
         sequence=0,

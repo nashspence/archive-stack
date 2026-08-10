@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Protocol
 
 from riverhog_age import UploadState, iter_decrypt_age_scrypt
@@ -95,45 +95,6 @@ def raw_file_verification_payload(receipt: VerifiedRawFile) -> dict[str, object]
         "volume_set_sha256": receipt.volume_set_sha256,
         "verified_at": receipt.verified_at,
     }
-
-
-def raw_file_verification_bytes(receipt: VerifiedRawFile) -> bytes:
-    return canonical_json_bytes(raw_file_verification_payload(receipt))
-
-
-def parse_raw_file_verification(content: bytes | str) -> VerifiedRawFile:
-    if isinstance(content, bytes):
-        content = content.decode("utf-8")
-    try:
-        payload = json.loads(content)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("raw file verification is not valid JSON") from exc
-    expected = {
-        "schema",
-        "path",
-        "bytes",
-        "sha256",
-        "volume_set_sha256",
-        "verified_at",
-    }
-    if (
-        not isinstance(payload, Mapping)
-        or payload.get("schema") != RAW_FILE_VERIFICATION_SCHEMA
-        or set(payload) != expected
-    ):
-        raise ValueError("raw file verification schema mismatch")
-    receipt = VerifiedRawFile(
-        path=normalize_relpath(str(payload.get("path", ""))),
-        bytes=_canonical_nonnegative_int(payload.get("bytes"), label="file bytes"),
-        sha256=_required_sha256(payload.get("sha256"), label="file"),
-        volume_set_sha256=_required_sha256(payload.get("volume_set_sha256"), label="volume set"),
-        verified_at=str(payload.get("verified_at", "")),
-    )
-    if not receipt.verified_at:
-        raise ValueError("raw file verification timestamp is empty")
-    if receipt.path.startswith(RESERVED_ARCHIVE_PREFIX):
-        raise ValueError("raw verification path uses the reserved archive namespace")
-    return receipt
 
 
 def verify_raw_file_from_part_manifest(
@@ -383,22 +344,3 @@ def _consume_verified_plaintext_parts(
         if bytes(current):
             raise ValueError("raw plaintext is longer than its recorded parts")
     return total
-
-
-def _required_sha256(value: object, *, label: str) -> str:
-    candidate = str(value or "")
-    if _SHA256_RE.fullmatch(candidate) is None:
-        raise ValueError(f"{label} sha256 is invalid")
-    return candidate
-
-
-def _canonical_nonnegative_int(value: object, *, label: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be a non-negative integer")
-    try:
-        parsed = int(str(value))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a non-negative integer") from exc
-    if parsed < 0 or str(parsed) != str(value):
-        raise ValueError(f"{label} must be a canonical non-negative integer")
-    return parsed

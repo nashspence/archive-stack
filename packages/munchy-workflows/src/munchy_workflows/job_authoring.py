@@ -241,34 +241,6 @@ def normalize_group_payload(
     return payload
 
 
-def default_group_payload(group_name: str) -> dict[str, dict[str, Any]]:
-    return {
-        group_name: {
-            "output_mode": "video",
-            "tasks": list(DEFAULT_TASKS),
-        }
-    }
-
-
-def storage_groups(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for name, group in groups.items():
-        payload: dict[str, Any] = {
-            "output_mode": normalize_mode(
-                str(group.get("output_mode") or "video"),
-                default="video",
-                allowed=OUTPUT_MODES,
-                label="output_mode",
-            ),
-            "tasks": [str(task) for task in _sequence(group.get("tasks"))],
-        }
-        eager_pipeline_batches = group.get("eager_pipeline_batches")
-        if eager_pipeline_batches is not None:
-            payload["eager_pipeline_batches"] = eager_pipeline_batches
-        out[name] = payload
-    return out
-
-
 def review_group_payloads(
     groups: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -297,35 +269,6 @@ def review_group_payloads(
         payload["tasks"] = review_tasks
         out[str(name)] = payload
     return out
-
-
-def grouped_tasks(groups: Mapping[str, Mapping[str, Any]]) -> list[str]:
-    tasks: list[str] = []
-    for group in groups.values():
-        for task in _sequence(group.get("tasks")):
-            text = str(task)
-            if text not in tasks:
-                tasks.append(text)
-    return tasks
-
-
-def effective_group(
-    *,
-    group: str | None,
-    groups: Mapping[str, Any],
-    structured_routing: bool,
-) -> str | None:
-    if structured_routing:
-        if group:
-            raise MunchyJobAuthoringError("--group is only valid without routing")
-        return None
-    if group:
-        return normalize_posix_path(group)
-    if len(groups) == 1:
-        return next(iter(groups))
-    if not groups:
-        return DEFAULT_GROUP
-    raise MunchyJobAuthoringError("--group is required when multiple configured groups exist")
 
 
 def group_base_encode_profile(group: Mapping[str, Any]) -> dict[str, Any]:
@@ -777,12 +720,9 @@ __all__ = [
     "configured_groups",
     "configured_job_defaults",
     "configured_profiles",
-    "default_group_payload",
     "default_hash_cache_path",
     "default_tasks_for_output_mode",
     "discover_local_candidates",
-    "effective_group",
-    "grouped_tasks",
     "hash_local_candidates",
     "join_rel_path",
     "load_munchy_job_config",
@@ -795,6 +735,5 @@ __all__ = [
     "review_group_payloads",
     "routing_report_text",
     "safe_id",
-    "storage_groups",
     "run_id_now",
 ]

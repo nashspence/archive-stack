@@ -3,13 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from riverhog_protocol.paths import normalize_relpath
 
 PACK_UPLOAD_PLAN_SCHEMA = "pack-upload-plan/v1"
-PACK_UNIT_PAYLOAD_MEDIA_TYPE = "application/vnd.riverhog.pack-unit"
 RESERVED_ARCHIVE_PREFIX = ".riverhog/"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
@@ -74,53 +73,6 @@ def canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def pack_upload_plan_payload(
-    *,
-    volume_id: str,
-    plaintext_bytes: int,
-    units: Sequence[PackUnitDescriptor],
-) -> dict[str, object]:
-    if _PACK_VOLUME_ID_RE.fullmatch(volume_id) is None:
-        raise ValueError("pack volume id is invalid")
-    if plaintext_bytes <= 0:
-        raise ValueError("pack upload plaintext bytes must be positive")
-    if not units:
-        raise ValueError("pack upload plan requires at least one unit")
-    _validate_unit_ranges(units, plaintext_bytes=plaintext_bytes)
-    expected_digest = pack_upload_plan_sha256(
-        volume_id=volume_id, plaintext_bytes=plaintext_bytes, units=units
-    )
-    if any(
-        current.volume_id != volume_id or current.plan_sha256 != expected_digest
-        for current in units
-    ):
-        raise ValueError("pack upload unit identity does not match the plan")
-    unit_rows = [
-        {
-            "unit": current.unit,
-            "payload_bytes": current.payload_bytes,
-            "plaintext_start": current.plaintext_start,
-            "plaintext_bytes": current.plaintext_bytes,
-            "final": current.final,
-            "sources": [
-                {
-                    "path": source.path,
-                    "bytes": source.bytes,
-                    "sha256": source.sha256,
-                }
-                for source in current.sources
-            ],
-        }
-        for current in units
-    ]
-    return {
-        "schema": PACK_UPLOAD_PLAN_SCHEMA,
-        "volume_id": volume_id,
-        "plaintext_bytes": plaintext_bytes,
-        "units": unit_rows,
-    }
-
-
 def pack_upload_plan_sha256(
     *,
     volume_id: str,
@@ -163,94 +115,6 @@ def pack_upload_plan_sha256(
         "units": normalized_rows,
     }
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
-
-
-def parse_pack_upload_plan(content: bytes | str) -> tuple[str, int, tuple[PackUnitDescriptor, ...]]:
-    if isinstance(content, bytes):
-        content = content.decode("utf-8")
-    try:
-        payload = json.loads(content)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("pack upload plan is not valid JSON") from exc
-    expected_fields = {"schema", "volume_id", "plaintext_bytes", "units"}
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != PACK_UPLOAD_PLAN_SCHEMA
-        or set(payload) != expected_fields
-    ):
-        raise ValueError("pack upload plan schema mismatch")
-    volume_id = str(payload.get("volume_id", ""))
-    if _PACK_VOLUME_ID_RE.fullmatch(volume_id) is None:
-        raise ValueError("pack upload plan volume id is invalid")
-    plaintext_bytes = _required_nonnegative_int(payload, "plaintext_bytes")
-    if plaintext_bytes <= 0:
-        raise ValueError("pack upload plan plaintext bytes must be positive")
-    raw_units = payload.get("units")
-    if not isinstance(raw_units, list) or not raw_units:
-        raise ValueError("pack upload plan units must be a non-empty list")
-    normalized_rows = [
-        _normalized_unit_row(current, expected_unit=index)
-        for index, current in enumerate(raw_units)
-    ]
-    plan_sha256 = hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "schema": PACK_UPLOAD_PLAN_SCHEMA,
-                "volume_id": volume_id,
-                "plaintext_bytes": plaintext_bytes,
-                "units": normalized_rows,
-            }
-        )
-    ).hexdigest()
-    units = tuple(
-        PackUnitDescriptor(
-            volume_id=volume_id,
-            unit=_required_nonnegative_int(row, "unit"),
-            payload_bytes=_required_nonnegative_int(row, "payload_bytes"),
-            plaintext_start=_required_nonnegative_int(row, "plaintext_start"),
-            plaintext_bytes=_required_nonnegative_int(row, "plaintext_bytes"),
-            final=bool(row["final"]),
-            sources=tuple(
-                PackUnitSource(
-                    path=str(source["path"]),
-                    bytes=_required_nonnegative_int(source, "bytes"),
-                    sha256=str(source["sha256"]),
-                )
-                for source in _source_rows(row["sources"])
-            ),
-            plan_sha256=plan_sha256,
-        )
-        for row in normalized_rows
-    )
-    _validate_unit_ranges(units, plaintext_bytes=plaintext_bytes)
-    return volume_id, plaintext_bytes, units
-
-
-def iter_pack_unit_payload(
-    descriptor: PackUnitDescriptor,
-    read_source_chunks: Callable[[str], Iterable[bytes]],
-) -> Iterator[bytes]:
-    """Yield the wire payload: source file bytes concatenated in descriptor order."""
-
-    for source in descriptor.sources:
-        byte_count = 0
-        digest = hashlib.sha256()
-        chunks = read_source_chunks(source.path)
-        if not isinstance(chunks, Iterable):
-            raise TypeError("pack source reader must return an iterable of bytes")
-        for chunk in chunks:
-            data = bytes(chunk)
-            if not data:
-                continue
-            byte_count += len(data)
-            digest.update(data)
-            if byte_count > source.bytes:
-                raise ValueError(f"pack unit source is longer than declared: {source.path}")
-            yield data
-        if byte_count != source.bytes:
-            raise ValueError(f"pack unit source byte count mismatch: {source.path}")
-        if digest.hexdigest() != source.sha256:
-            raise ValueError(f"pack unit source sha256 mismatch: {source.path}")
 
 
 class PackUnitPayloadReader:
@@ -381,28 +245,3 @@ def _required_nonnegative_int(value: Mapping[str, object], key: str) -> int:
     if parsed < 0 or str(parsed) != str(raw):
         raise ValueError(f"{key} must be a canonical non-negative integer")
     return parsed
-
-
-def _validate_unit_ranges(
-    units: Sequence[PackUnitDescriptor],
-    *,
-    plaintext_bytes: int,
-) -> None:
-    if not units or len(units) > 10_000:
-        raise ValueError("pack upload plan unit count is invalid")
-    expected_start = 0
-    source_paths: set[str] = set()
-    for index, current in enumerate(units):
-        if current.plaintext_bytes <= 0:
-            raise ValueError("pack upload unit plaintext bytes must be positive")
-        if current.unit != index or current.plaintext_start != expected_start:
-            raise ValueError("pack upload unit plaintext ranges are not contiguous")
-        if current.final != (index == len(units) - 1):
-            raise ValueError("only the final pack upload unit may be marked final")
-        for source in current.sources:
-            if source.path in source_paths:
-                raise ValueError(f"pack upload plan repeats source path: {source.path}")
-            source_paths.add(source.path)
-        expected_start = current.plaintext_end
-    if expected_start != plaintext_bytes:
-        raise ValueError("pack upload units do not cover the pack plaintext")

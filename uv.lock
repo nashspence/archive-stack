@@ -45,6 +45,7 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.59,<2.0" },
+    { name = "httpx2", specifier = ">=2,<3" },
     { name = "mypy", specifier = ">=2.3.0,<3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0" },
@@ -668,6 +669,19 @@ wheels = [
 ]
 
 [[package]]
+name = "httpcore2"
+version = "2.10.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h11" },
+    { name = "truststore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/83/a896fc59940fc5a6e2aff3a4be1d92fa890112936803b331cae75a993c34/httpcore2-2.10.0.tar.gz", hash = "sha256:13c0cc3d1919d4f28457f60cd2c2abe04113a8af184ccf1142811beba936f9dc", size = 67427, upload-time = "2026-08-09T09:11:32.123Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/4f/d149104195a35e2853a2fc203a8e3477747e58c80e17dda686dace174383/httpcore2-2.10.0-py3-none-any.whl", hash = "sha256:7df06cfb34070cae4f7c89be69dc1095eca138e9704ceffb98d25c1912ab6f01", size = 83000, upload-time = "2026-08-09T09:11:29.555Z" },
+]
+
+[[package]]
 name = "httptools"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -721,6 +735,32 @@ wheels = [
 [package.optional-dependencies]
 http2 = [
     { name = "h2" },
+]
+
+[[package]]
+name = "httpx2"
+version = "2.10.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bd/3d/f9a8c07a3884f3e5b26205e8436a18b3af61c5d53192c3bea235574dbbec/httpx2-2.10.0.tar.gz", hash = "sha256:8741d7329fe2c7885fc9ceb61c8217acfb87a85f75723714b89ebf7ad7196338", size = 98749, upload-time = "2026-08-09T09:11:33.24Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/6d/a637d52449d98a6892d9a4dc0262587afdb6a66f201871842dce5a97b1c1/httpx2-2.10.0-py3-none-any.whl", hash = "sha256:5e3194a432701e1cc6f69a8b1b2fa199ef907013fede8d9a09a2c5b7b8141a18", size = 94355, upload-time = "2026-08-09T09:11:30.882Z" },
+]
+
+[[package]]
+name = "httpx2-jsfetch"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/0e5636363151a2a1795e0a77617168b9ca438e1748ec05fc9b5687f93d64/httpx2_jsfetch-1.0.tar.gz", hash = "sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60", size = 6872, upload-time = "2026-08-07T00:13:07.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl", hash = "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32", size = 6382, upload-time = "2026-08-07T00:13:06.567Z" },
 ]
 
 [[package]]
@@ -835,6 +875,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "riverhog-cli-support" },
     { name = "riverhog-provenance" },
+    { name = "starlette" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
@@ -854,6 +895,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
@@ -988,12 +1030,14 @@ source = { editable = "packages/lifecycle-events" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "time-formats" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "time-formats", editable = "packages/time-formats" },
 ]
 
 [[package]]
@@ -1117,12 +1161,6 @@ wheels = [
 name = "media-preflight"
 version = "0.1.0"
 source = { editable = "packages/media-preflight" }
-dependencies = [
-    { name = "time-formats" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "time-formats", editable = "packages/time-formats" }]
 
 [[package]]
 name = "munchy-api-client"
@@ -1130,10 +1168,10 @@ version = "0.1.0"
 source = { editable = "packages/munchy-api-client" }
 dependencies = [
     { name = "file-download" },
-    { name = "h2" },
     { name = "http-api-contracts" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
+    { name = "rich" },
     { name = "riverhog-provenance" },
     { name = "time-formats" },
     { name = "tus-transport" },
@@ -1142,10 +1180,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "file-download", editable = "packages/file-download" },
-    { name = "h2", specifier = ">=4.4.1,<5" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
@@ -1157,7 +1195,6 @@ version = "0.1.0"
 source = { editable = "companions/munchy/server/targets/av1-nvenc" }
 dependencies = [
     { name = "fastapi" },
-    { name = "munchy-api-client" },
     { name = "munchy-target-support" },
     { name = "munchy-workflows" },
     { name = "pydantic" },
@@ -1168,7 +1205,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1,<1.0" },
-    { name = "munchy-api-client", specifier = ">=0.1,<0.2" },
     { name = "munchy-target-support", specifier = ">=0.1,<0.2" },
     { name = "munchy-workflows", specifier = ">=0.1,<0.2" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
@@ -1188,7 +1224,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "riverhog-cli-support" },
-    { name = "riverhog-provenance" },
     { name = "time-formats" },
     { name = "tus-transport" },
     { name = "typer" },
@@ -1203,7 +1238,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
-    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1226,12 +1260,10 @@ version = "0.1.0"
 source = { editable = "companions/munchy/server" }
 dependencies = [
     { name = "application-access" },
-    { name = "argon2-cffi" },
     { name = "config-validation" },
     { name = "fastapi" },
     { name = "http-api-contracts" },
     { name = "httpx" },
-    { name = "jsonschema" },
     { name = "lifecycle-events" },
     { name = "munchy-api-client" },
     { name = "munchy-config" },
@@ -1241,6 +1273,7 @@ dependencies = [
     { name = "riverhog-api-client" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "starlette" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1249,12 +1282,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "application-access", editable = "packages/application-access" },
-    { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "config-validation", editable = "packages/config-validation" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "munchy-config", editable = "packages/munchy-config" },
@@ -1264,6 +1295,7 @@ requires-dist = [
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
@@ -1295,6 +1327,7 @@ dependencies = [
     { name = "munchy-api-client" },
     { name = "munchy-config" },
     { name = "pydantic" },
+    { name = "riverhog-provenance" },
     { name = "time-formats" },
     { name = "tus-transport" },
 ]
@@ -1305,6 +1338,7 @@ requires-dist = [
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "munchy-config", editable = "packages/munchy-config" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "tus-transport", editable = "packages/tus-transport" },
 ]
@@ -1815,9 +1849,8 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-api-client" }
 dependencies = [
     { name = "file-download" },
-    { name = "h2" },
     { name = "http-api-contracts" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
     { name = "riverhog-protocol" },
 ]
@@ -1825,9 +1858,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "file-download", editable = "packages/file-download" },
-    { name = "h2", specifier = ">=4.4.1,<5" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
 ]
@@ -1898,9 +1930,10 @@ name = "riverhog-server"
 version = "0.1.0"
 source = { editable = "riverhog/server" }
 dependencies = [
+    { name = "alembic" },
     { name = "application-access" },
-    { name = "argon2-cffi" },
     { name = "boto3" },
+    { name = "botocore" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -1913,6 +1946,7 @@ dependencies = [
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
     { name = "sqlalchemy" },
+    { name = "starlette" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1920,9 +1954,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "application-access", editable = "packages/application-access" },
-    { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "boto3", specifier = ">=1.35,<2.0" },
+    { name = "botocore", specifier = ">=1.35,<2.0" },
     { name = "cryptography", specifier = ">=50.0.0,<51" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
@@ -1935,6 +1970,7 @@ requires-dist = [
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
+    { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
@@ -2198,19 +2234,24 @@ wheels = [
 ]
 
 [[package]]
+name = "truststore"
+version = "0.10.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
+]
+
+[[package]]
 name = "tus-transport"
 version = "0.1.0"
 source = { editable = "packages/tus-transport" }
 dependencies = [
-    { name = "h2" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["http2"] },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "h2", specifier = ">=4.4.1,<5" },
-    { name = "httpx", specifier = ">=0.27,<1.0" },
-]
+requires-dist = [{ name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" }]
 
 [[package]]
 name = "typer"

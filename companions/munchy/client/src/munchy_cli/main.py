@@ -62,6 +62,7 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
     json_text,
+    plain_output_requested,
 )
 from time_formats import parse_duration
 from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
@@ -144,18 +145,13 @@ def munchy_app(
     ctx.call_on_close(_close_clients)
 
 
-def _plain_requested() -> bool:
-    raw_value = os.getenv("MUNCHY_CLI_PLAIN", "").strip().casefold()
-    return raw_value in {"1", "true", "yes", "on"} or os.getenv("TERM") == "dumb"
-
-
 def _rich_enabled() -> bool:
     return (
         RichConsole is not None
         and RichGroup is not None
         and RichTable is not None
         and RichText is not None
-        and not _plain_requested()
+        and not plain_output_requested("MUNCHY_CLI_PLAIN")
     )
 
 

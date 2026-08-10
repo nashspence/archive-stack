@@ -6,7 +6,6 @@ import time
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
     ArchiveTransferResources,
-    LinkThroughputTarget,
     S3TransportTuning,
     TransferConcurrencyGate,
     WeightedByteSemaphore,
@@ -107,18 +106,6 @@ def test_capacity_reports_memory_and_connection_pool_constraints() -> None:
     assert capacity.effective_retrieval_slots < capacity.retrieval_worker_slots
     assert capacity.constrained
     assert len(capacity.warnings) >= 4
-
-
-def test_link_target_sizes_parallel_requests_from_bandwidth_delay_product() -> None:
-    target = LinkThroughputTarget(
-        bandwidth_mbps=10_000,
-        round_trip_milliseconds=40,
-        headroom=2,
-    )
-
-    assert target.bandwidth_delay_product_bytes == 50_000_000
-    assert target.target_inflight_bytes == 100_000_000
-    assert target.minimum_parallel_requests(64 * 1024 * 1024) == 2
 
 
 def test_shared_transfer_resources_use_process_wide_tuning_limits() -> None:

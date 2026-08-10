@@ -56,16 +56,6 @@ def authenticate_token(token: str, container: ServiceContainer) -> ApplicationPr
     return container.app_keys.authenticate(supplied)
 
 
-def authenticate_authorization_header(
-    authorization: str | None,
-    container: ServiceContainer,
-) -> ApplicationPrincipal | None:
-    scheme, _, token = (authorization or "").partition(" ")
-    if scheme.casefold() != "bearer":
-        return None
-    return authenticate_token(token, container)
-
-
 def require_application(
     credentials: BearerCredentials,
     container: ContainerDep,
@@ -165,7 +155,6 @@ __all__ = [
     "RetrievalManager",
     "TagCreator",
     "TagDeleter",
-    "authenticate_authorization_header",
     "authenticate_token",
     "require_application",
     "require_permission",

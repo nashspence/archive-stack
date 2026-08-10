@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import sys
 import tomllib
 from pathlib import Path
 
@@ -38,6 +39,28 @@ CORE_ROOTS = {
     "munchy_core": REPO / "companions/munchy/server/src/munchy_core",
     "jeb_core": REPO / "companions/jeb/server/src/jeb_core",
 }
+EXTERNAL_DISTRIBUTION_MODULES = {
+    "alembic": {"alembic"},
+    "argon2-cffi": {"argon2"},
+    "boto3": {"boto3"},
+    "botocore": {"botocore"},
+    "cryptography": {"cryptography"},
+    "fastapi": {"fastapi"},
+    "httpx": {"httpx"},
+    "jsonschema": {"jsonschema"},
+    "opentimestamps-client": set(),
+    "psycopg": set(),
+    "pydantic": {"pydantic"},
+    "pyyaml": {"yaml"},
+    "rich": {"rich"},
+    "sqlalchemy": {"sqlalchemy"},
+    "starlette": {"starlette"},
+    "typer": {"typer"},
+    "uvicorn": {"uvicorn"},
+}
+RUNTIME_ONLY_DEPENDENCIES = {
+    "riverhog-server": {"opentimestamps-client", "psycopg"},
+}
 
 
 def normalize_distribution_name(name: str) -> str:
@@ -63,6 +86,15 @@ def workspace_project_graph() -> tuple[dict[str, Path], dict[str, set[str]]]:
         }
         declared_dependencies[name] = dependencies & projects.keys()
     return projects, declared_dependencies
+
+
+def declared_project_dependencies(config: dict[str, object]) -> set[str]:
+    project = config["project"]
+    assert isinstance(project, dict)
+    return {
+        normalize_distribution_name(re.split(r"[<>=!~;\[]", str(raw), maxsplit=1)[0])
+        for raw in project.get("dependencies", [])
+    }
 
 
 def dependency_closure(root: str, graph: dict[str, set[str]]) -> set[str]:
@@ -192,6 +224,42 @@ def test_shared_packages_do_not_import_implementation_projects() -> None:
         for path in (REPO / "packages").rglob("*.py")
         if (crossed := sorted(imported_roots(path) & ALL_IMPLEMENTATION_MODULES))
     ]
+    assert not violations, "\n".join(violations)
+
+
+def test_projects_declare_their_exact_direct_runtime_dependencies() -> None:
+    configs: dict[str, tuple[Path, dict[str, object]]] = {}
+    distribution_modules: dict[str, set[str]] = dict(EXTERNAL_DISTRIBUTION_MODULES)
+    for pyproject in workspace_pyprojects(REPO):
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        distribution = normalize_distribution_name(str(config["project"]["name"]))
+        configs[distribution] = (pyproject, config)
+        distribution_modules[distribution] = source_module_roots(pyproject.parent / "src")
+
+    known_roots = {
+        root: distribution for distribution, roots in distribution_modules.items() for root in roots
+    }
+    violations: list[str] = []
+    for distribution, (pyproject, config) in configs.items():
+        dependencies = declared_project_dependencies(config)
+        imported = set().union(
+            *(imported_roots(path) for path in (pyproject.parent / "src").rglob("*.py"))
+        )
+        runtime_only = RUNTIME_ONLY_DEPENDENCIES.get(distribution, set())
+
+        for dependency in sorted(dependencies):
+            roots = distribution_modules.get(dependency)
+            if roots is None:
+                violations.append(f"{distribution}: unknown dependency mapping for {dependency}")
+            elif dependency not in runtime_only and not (roots & imported):
+                violations.append(f"{distribution}: unused direct dependency {dependency}")
+
+        local_roots = distribution_modules[distribution]
+        for root in sorted(imported - local_roots - sys.stdlib_module_names):
+            required = known_roots.get(root)
+            if required is not None and required not in dependencies:
+                violations.append(f"{distribution}: imports {root} without declaring {required}")
+
     assert not violations, "\n".join(violations)
 
 

@@ -15,7 +15,7 @@ from riverhog_core.domain.archive import (
     StoredPartReceipt,
     VerifiedRawFile,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.raw_verification import raw_file_volume_set_sha256
 
 from tests.fixtures.archive import age_state_json
@@ -28,7 +28,9 @@ def _file(path: str, content: bytes) -> ArchiveFile:
 def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
     parts = []
     for unit in plan.units:
-        plaintext = render_pack_upload_unit(plan, unit.unit, lambda path: (contents[path],))
+        plaintext = b"".join(
+            iter_render_pack_upload_unit(plan, unit.unit, lambda path: (contents[path],))
+        )
         parts.append(
             StoredPartReceipt(
                 number=unit.unit + 1,

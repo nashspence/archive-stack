@@ -1185,11 +1185,9 @@ def _collect_packet_timestamps_seconds(
 def _dump_streams_and_metadata(
     src: str,
     dest_dir: pathlib.Path,
-    verbose: bool,
     *,
     drop_policy: SourceArtifactDropPolicy,
     allow_conversion_only_container: bool = False,
-    naming_stem: str | None = None,
 ) -> DumpedStreams:
     dest_dir.mkdir(parents=True, exist_ok=True)
     cmd = [

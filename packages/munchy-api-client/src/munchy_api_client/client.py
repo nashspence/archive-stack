@@ -943,7 +943,7 @@ class ProgressRenderer:
     def __enter__(self) -> ProgressRenderer:
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         self.stop()
 
     def update(self, job: dict[str, Any], *, force: bool = False) -> None:

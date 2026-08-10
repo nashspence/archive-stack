@@ -11,7 +11,7 @@ from riverhog_core.domain.archive import (
     SealedPackVolume,
     StoredPartReceipt,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 
 from tests.fixtures.archive import age_state_json
 
@@ -34,10 +34,12 @@ def _fixture() -> tuple[
     plan = plan_pack_volume(files, sequence=0)
     parts = []
     for unit in plan.units:
-        plaintext = render_pack_upload_unit(
-            plan,
-            unit.unit,
-            lambda path: (contents[path],),
+        plaintext = b"".join(
+            iter_render_pack_upload_unit(
+                plan,
+                unit.unit,
+                lambda path: (contents[path],),
+            )
         )
         parts.append(
             StoredPartReceipt(

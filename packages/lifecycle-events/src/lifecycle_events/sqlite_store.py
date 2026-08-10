@@ -5,7 +5,8 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from contextlib import closing
-from datetime import UTC, datetime
+
+from time_formats import utc_timestamp_now
 
 from lifecycle_events.models import CloudEvent, EventPage, normalize_event_context
 
@@ -51,7 +52,7 @@ def create_lifecycle_event_schema(connection: sqlite3.Connection) -> None:
 
 
 def _now_text() -> str:
-    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return utc_timestamp_now()
 
 
 def _cursor(value: str | None) -> int:

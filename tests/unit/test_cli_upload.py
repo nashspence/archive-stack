@@ -22,6 +22,18 @@ LAYOUT = {
 }
 
 
+def test_upload_runtime_settings_have_explicit_parsers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_LOG_BYTES", "0")
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS", "0.25")
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS", "12.5")
+
+    assert riverhog_main._upload_file_log_bytes() == 0
+    assert riverhog_main._upload_finalize_poll_seconds() == 0.25
+    assert riverhog_main._upload_finalize_timeout_seconds() == 12.5
+
+
 def test_local_collection_manifest_streams_file_hashes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

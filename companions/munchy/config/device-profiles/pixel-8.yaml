@@ -10,7 +10,6 @@ section:
   - .jpeg
   - .mp4
   output_mode: preserve
-  media_preflight: false
   group: preserve
   groups:
     preserve:

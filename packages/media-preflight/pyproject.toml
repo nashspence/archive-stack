@@ -9,12 +9,7 @@ description = "Reusable structural and ffprobe-based media validation."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = [
-  "time-formats>=0.1,<0.2",
-]
-
-[tool.uv.sources]
-time-formats = { workspace = true }
+dependencies = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/media_preflight"]

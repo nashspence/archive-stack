@@ -33,7 +33,7 @@ from riverhog_core.domain.archive import (
     SealedProvenanceObject,
     StoredPartReceipt,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.ports.archive_ingress_store import (
     ArchiveObjectIdentityConflict,
     CompletedObjectReceipt,
@@ -97,7 +97,7 @@ def make_archive(
         for path, content in sorted(files.items())
     )
     plan = plan_pack_volume(archive_files, sequence=0)
-    plaintext = render_pack_upload_unit(plan, 0, lambda path: (files[path],))
+    plaintext = b"".join(iter_render_pack_upload_unit(plan, 0, lambda path: (files[path],)))
     age_session = ResumableAgeScryptSession.create(
         DEV_ARCHIVE_PASSPHRASE,
         log_n=1,

@@ -10,11 +10,13 @@ from jeb_api.app import create_app as create_jeb_app
 from jeb_api_client import JebApiClient
 from munchy_api.app import app as munchy_app
 from munchy_api_client.client import MunchyAdminClient, MunchyClient
+from munchy_cli import main as munchy_cli
 from munchy_core.adapters import riverhog as munchy_riverhog
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import configured_upload_concurrency, upload_collection_units
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
+from riverhog_cli import upload_progress as riverhog_upload_progress
 from riverhog_protocol.errors import BadRequest
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
@@ -238,6 +240,22 @@ def test_official_clients_allow_explicit_remote_cleartext_transport(
 def test_official_direct_ingress_callers_share_the_upload_runner() -> None:
     assert riverhog_cli.upload_collection_units is upload_collection_units
     assert munchy_riverhog.upload_collection_units is upload_collection_units
+
+
+@pytest.mark.parametrize(
+    ("setting", "rich_enabled"),
+    (
+        ("RIVERHOG_CLI_PLAIN", riverhog_upload_progress._rich_progress_available),
+        ("MUNCHY_CLI_PLAIN", munchy_cli._rich_enabled),
+    ),
+)
+def test_rich_clients_share_plain_output_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str,
+    rich_enabled: Callable[[], bool],
+) -> None:
+    monkeypatch.setenv(setting, "true")
+    assert rich_enabled() is False
 
 
 def test_direct_ingress_openapi_describes_the_binary_unit_body() -> None:

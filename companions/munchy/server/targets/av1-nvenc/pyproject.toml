@@ -11,7 +11,6 @@ license = "CAL-1.0"
 license-files = ["LICENSE"]
 dependencies = [
   "fastapi>=0.141.1,<1.0",
-  "munchy-api-client>=0.1,<0.2",
   "munchy-target-support>=0.1,<0.2",
   "munchy-workflows>=0.1,<0.2",
   "pydantic>=2.7,<3.0",

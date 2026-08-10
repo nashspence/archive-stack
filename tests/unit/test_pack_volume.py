@@ -6,21 +6,32 @@ import tarfile
 from io import BytesIO
 
 from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE
-from riverhog_core.domain.archive import ArchiveFile
+from riverhog_core.domain.archive import ArchiveFile, PackVolumePlan
 from riverhog_core.pack_volume import (
     PACK_INDEX_PATH,
     PACK_PADDING_PREFIX,
-    iter_pack_plaintext,
+    iter_render_pack_upload_unit,
+    iter_render_pack_upload_unit_payload,
     pack_unit_descriptors,
-    parse_pack_index,
     plan_pack_volume,
-    render_pack_upload_unit_payload,
 )
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 
 
 def _file(path: str, content: bytes) -> ArchiveFile:
     return ArchiveFile(path=path, bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+
+def _pack_plaintext(plan: PackVolumePlan, contents: dict[str, bytes]) -> bytes:
+    return b"".join(
+        chunk
+        for unit in plan.units
+        for chunk in iter_render_pack_upload_unit(
+            plan,
+            unit.unit,
+            lambda path: (contents[path],),
+        )
+    )
 
 
 def test_pack_plan_uses_age_aligned_nonfinal_units_and_is_deterministic() -> None:
@@ -62,7 +73,7 @@ def test_rendered_pack_is_standard_tar_with_embedded_verified_index() -> None:
         part_plaintext_bytes=S3_MIN_PART_SIZE,
     )
 
-    plaintext = b"".join(iter_pack_plaintext(plan, lambda path: (contents[path],)))
+    plaintext = _pack_plaintext(plan, contents)
 
     assert len(plaintext) == plan.plaintext_bytes
     with tarfile.open(fileobj=BytesIO(plaintext), mode="r:") as archive:
@@ -75,7 +86,9 @@ def test_rendered_pack_is_standard_tar_with_embedded_verified_index() -> None:
         )
         index_bytes = archive.extractfile(PACK_INDEX_PATH).read()  # type: ignore[union-attr]
     assert hashlib.sha256(index_bytes).hexdigest() == plan.index_sha256
-    parsed = parse_pack_index(index_bytes)
+    parsed = json.loads(index_bytes)
+    assert set(parsed) == {"schema", "volume", "tree", "files"}
+    assert parsed["schema"] == "riverhog-pack-index/v1"
     assert parsed["volume"] == {"id": plan.volume_id, "sequence": 3}
     assert [row["path"] for row in parsed["files"]] == sorted(contents)
     assert all(
@@ -93,7 +106,7 @@ def test_pack_unit_wire_payload_is_only_concatenated_source_bytes() -> None:
     descriptor = pack_unit_descriptors(plan)[0]
     payload = b"".join(contents[source.path] for source in descriptor.sources)
 
-    rendered = render_pack_upload_unit_payload(plan, 0, (payload[:4], payload[4:]))
+    rendered = b"".join(iter_render_pack_upload_unit_payload(plan, 0, (payload[:4], payload[4:])))
 
     assert len(rendered) == plan.units[0].plaintext_bytes
     with tarfile.open(fileobj=BytesIO(rendered), mode="r:") as archive:

@@ -250,3 +250,16 @@ def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
         == hashlib.sha256(journal).hexdigest()
     )
     assert [request.method for request in requests] == ["POST", "PUT", "PUT", "HEAD", "PATCH"]
+
+
+def test_jeb_ingress_uses_the_shared_explicit_cleartext_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JEB_INGRESS_URL", "http://ingress.example.test")
+    monkeypatch.setenv("JEB_ALLOW_INSECURE_HTTP", "true")
+
+    client = JebIngressClient(source="camera", password="secret")
+    try:
+        assert client.base_url == "http://ingress.example.test"
+    finally:
+        client.close()

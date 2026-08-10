@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
 from riverhog_age import S3_MIN_PART_SIZE
 from riverhog_core.collection_plan import (
     CollectionVolumePolicy,
-    collection_volume_plan_bytes,
-    parse_collection_volume_plan,
     plan_collection_volumes,
 )
 from riverhog_core.domain.archive import ArchiveFile
@@ -44,26 +41,6 @@ def test_collection_planner_assigns_canonical_pack_then_segment_sequences() -> N
         2 * S3_MIN_PART_SIZE,
     ]
     assert plan.volume_count == 4
-
-
-def test_collection_plan_round_trips() -> None:
-    policy = CollectionVolumePolicy(
-        pack_source_bytes=1024,
-        pack_files=10,
-        pack_member_bytes=8,
-        pack_part_plaintext_bytes=S3_MIN_PART_SIZE,
-        raw_volume_plaintext_bytes=S3_MIN_PART_SIZE,
-        raw_part_plaintext_bytes=S3_MIN_PART_SIZE,
-    )
-    plan = plan_collection_volumes(
-        (_file("small", 3, b"s"), _file("large", S3_MIN_PART_SIZE + 1, b"l")),
-        policy=policy,
-    )
-    encoded = collection_volume_plan_bytes(plan)
-
-    assert json.loads(encoded)["schema"] == "collection-volume-plan/v1"
-    assert parse_collection_volume_plan(encoded) == plan
-    assert collection_volume_plan_bytes(parse_collection_volume_plan(encoded)) == encoded
 
 
 def test_default_policy_preserves_retrieval_economics_boundary() -> None:

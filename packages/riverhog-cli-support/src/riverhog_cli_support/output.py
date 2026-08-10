@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -24,6 +25,11 @@ def error_document(
     details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return error_payload(code=code, message=message, details=details)
+
+
+def plain_output_requested(setting: str) -> bool:
+    value = os.getenv(setting, "").strip().casefold()
+    return value in {"1", "true", "yes", "on"} or os.getenv("TERM") == "dumb"
 
 
 def human_bytes(value: object) -> str:
@@ -104,4 +110,5 @@ __all__ = [
     "json_text",
     "mapping_items",
     "page_line",
+    "plain_output_requested",
 ]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
 import pytest
 from riverhog_core import raw_verification
@@ -88,14 +87,7 @@ def test_raw_file_is_reassembled_and_verified_before_root_publication(
         ),
         volumes=(second, first),
     )
-    assert (
-        raw_verification.parse_raw_file_verification(
-            raw_verification.raw_file_verification_bytes(verified)
-        )
-        == verified
-    )
-
-    payload = json.loads(raw_verification.raw_file_verification_bytes(verified))
+    payload = raw_verification.raw_file_verification_payload(verified)
     assert payload["schema"] == "raw-file-verification/v1"
 
 

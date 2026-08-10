@@ -11,6 +11,7 @@ COPY utilities/mango-fish/pyproject.toml utilities/mango-fish/pyproject.toml
 COPY utilities/mango-fish/src utilities/mango-fish/src
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/state-schema packages/state-schema
+COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package mango-fish --no-dev --no-editable
 
 

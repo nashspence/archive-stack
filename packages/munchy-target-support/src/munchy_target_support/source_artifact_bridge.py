@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from munchy_workflows.profiles import normalize_artifact_drop_selector
+from munchy_workflows.profiles import artifact_drop_reason_map
 
 from munchy_target_support import source_artifacts
 
@@ -50,36 +50,6 @@ def _archive_profile(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
 def _audio_profile(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
     audio = _archive_profile(profile).get("audio")
     return audio if isinstance(audio, Mapping) else {}
-
-
-def _artifact_drop_reason_map(profile: Mapping[str, Any] | None) -> dict[str, str]:
-    source = profile.get("source") if profile else None
-    if source is None:
-        return {}
-    if not isinstance(source, Mapping):
-        raise ValueError("source profile must be a mapping")
-    drops = source.get("artifact_drops") or []
-    if not isinstance(drops, Sequence) or isinstance(drops, (str, bytes)):
-        raise ValueError("source artifact_drops must be a list")
-
-    reasons: dict[str, str] = {}
-    for item in drops:
-        if not isinstance(item, Mapping):
-            raise ValueError("source artifact drop entries must be mappings")
-        selector = item.get("selector")
-        reason = item.get("reason")
-        if not isinstance(selector, str):
-            raise ValueError("source artifact drop selector must be a string")
-        if not isinstance(reason, str):
-            raise ValueError("source artifact drop reason must be a string")
-        normalized = normalize_artifact_drop_selector(selector)
-        stripped_reason = reason.strip()
-        if not stripped_reason:
-            raise ValueError("source artifact drop reason must not be blank")
-        if normalized in reasons:
-            raise ValueError(f"duplicate source artifact drop selector: {normalized}")
-        reasons[normalized] = stripped_reason
-    return reasons
 
 
 def _allow_conversion_only_container(profile: Mapping[str, Any] | None) -> bool:
@@ -244,7 +214,7 @@ def build_strict_source_artifacts(
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     profile = dict(encode_profile or {})
-    drop_policy = source_artifacts.SourceArtifactDropPolicy(_artifact_drop_reason_map(profile))
+    drop_policy = source_artifacts.SourceArtifactDropPolicy(artifact_drop_reason_map(profile))
     allow_conversion_only_container = _allow_conversion_only_container(profile)
     work_dir = archive_mkv.parent / f".{archive_mkv.name}.source-artifacts-work"
     bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(archive_mkv)))
@@ -257,10 +227,8 @@ def build_strict_source_artifacts(
         dumped = source_artifacts._dump_streams_and_metadata(
             str(source),
             work_dir,
-            False,
             drop_policy=drop_policy,
             allow_conversion_only_container=allow_conversion_only_container,
-            naming_stem=source.stem,
         )
         exports = dumped["exports"]
         container_artifacts = dumped["container_artifacts"]

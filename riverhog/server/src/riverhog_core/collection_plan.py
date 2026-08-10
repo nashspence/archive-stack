@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -187,65 +186,6 @@ def plan_collection_volumes(
     )
 
 
-def collection_volume_plan_payload(plan: CollectionVolumePlan) -> dict[str, object]:
-    rebuilt = plan_collection_volumes(plan.files, policy=plan.policy)
-    if rebuilt != plan:
-        raise ValueError("collection volume plan does not reproduce its identity")
-    base = _base_payload(
-        files=plan.files,
-        policy=plan.policy,
-        packs=plan.packs,
-        raw_volumes=plan.raw_volumes,
-        tree=collection_tree_identity(plan.files),
-    )
-    return {**base, "plan_sha256": plan.plan_sha256}
-
-
-def collection_volume_plan_bytes(plan: CollectionVolumePlan) -> bytes:
-    return canonical_json_bytes(collection_volume_plan_payload(plan))
-
-
-def parse_collection_volume_plan(content: bytes | str) -> CollectionVolumePlan:
-    if isinstance(content, bytes):
-        content = content.decode("utf-8")
-    try:
-        payload = json.loads(content)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("collection volume plan is not valid JSON") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != COLLECTION_VOLUME_PLAN_SCHEMA:
-        raise ValueError("collection volume plan schema mismatch")
-    expected_keys = {
-        "schema",
-        "policy",
-        "tree",
-        "files",
-        "volumes",
-        "plan_sha256",
-    }
-    if set(payload) != expected_keys:
-        raise ValueError("collection volume plan fields are invalid")
-    policy = _parse_policy(payload.get("policy"))
-    raw_files = payload.get("files")
-    if not isinstance(raw_files, list) or not raw_files:
-        raise ValueError("collection volume plan files must be a non-empty list")
-    files: list[ArchiveFile] = []
-    for raw in raw_files:
-        if not isinstance(raw, dict) or set(raw) != {"path", "bytes", "sha256"}:
-            raise ValueError("collection volume plan file is invalid")
-        files.append(
-            ArchiveFile(
-                path=str(raw.get("path", "")),
-                bytes=_canonical_nonnegative_int(raw.get("bytes"), label="file bytes"),
-                sha256=str(raw.get("sha256", "")),
-            )
-        )
-    rebuilt = plan_collection_volumes(files, policy=policy)
-    expected_payload = collection_volume_plan_payload(rebuilt)
-    if canonical_json_bytes(payload) != canonical_json_bytes(expected_payload):
-        raise ValueError("persisted collection volume plan does not reproduce its identity")
-    return rebuilt
-
-
 def _base_payload(
     *,
     files: Sequence[ArchiveFile],
@@ -300,39 +240,6 @@ def _base_payload(
     }
 
 
-def _parse_policy(value: object) -> CollectionVolumePolicy:
-    if not isinstance(value, dict):
-        raise ValueError("collection volume policy must be a mapping")
-    expected = {
-        "pack_source_bytes",
-        "pack_files",
-        "pack_member_bytes",
-        "pack_part_plaintext_bytes",
-        "raw_volume_plaintext_bytes",
-        "raw_part_plaintext_bytes",
-    }
-    if set(value) != expected:
-        raise ValueError("collection volume policy fields are invalid")
-    return CollectionVolumePolicy(
-        pack_source_bytes=_canonical_positive_int(
-            value.get("pack_source_bytes"), label="pack source bytes"
-        ),
-        pack_files=_canonical_positive_int(value.get("pack_files"), label="pack files"),
-        pack_member_bytes=_canonical_positive_int(
-            value.get("pack_member_bytes"), label="pack member bytes"
-        ),
-        pack_part_plaintext_bytes=_canonical_positive_int(
-            value.get("pack_part_plaintext_bytes"), label="pack part plaintext bytes"
-        ),
-        raw_volume_plaintext_bytes=_canonical_positive_int(
-            value.get("raw_volume_plaintext_bytes"), label="raw volume plaintext bytes"
-        ),
-        raw_part_plaintext_bytes=_canonical_positive_int(
-            value.get("raw_part_plaintext_bytes"), label="raw part plaintext bytes"
-        ),
-    )
-
-
 def _normalized_files(files: Sequence[ArchiveFile]) -> tuple[ArchiveFile, ...]:
     normalized: list[ArchiveFile] = []
     seen: set[str] = set()
@@ -347,25 +254,6 @@ def _normalized_files(files: Sequence[ArchiveFile]) -> tuple[ArchiveFile, ...]:
     if not normalized:
         raise ValueError("collection volume plan requires at least one file")
     return tuple(sorted(normalized, key=lambda current: current.path))
-
-
-def _canonical_positive_int(value: object, *, label: str) -> int:
-    parsed = _canonical_nonnegative_int(value, label=label)
-    if parsed < 1:
-        raise ValueError(f"{label} must be positive")
-    return parsed
-
-
-def _canonical_nonnegative_int(value: object, *, label: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{label} must be a non-negative integer")
-    try:
-        parsed = int(str(value))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a non-negative integer") from exc
-    if parsed < 0 or str(parsed) != str(value):
-        raise ValueError(f"{label} must be a canonical non-negative integer")
-    return parsed
 
 
 def _env_int(values: Mapping[str, str], name: str, default: int) -> int:

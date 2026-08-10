@@ -11,7 +11,7 @@ from riverhog_core.raw_retrieval import (
     RawVolumeRangeReader,
     RawVolumeRetrievalSource,
 )
-from riverhog_core.raw_volume import encrypt_raw_part, raw_s3_part_plans
+from riverhog_core.raw_volume import raw_s3_part_plans
 
 
 class SlowRangeStore:
@@ -61,11 +61,11 @@ def _source(content: bytes):
         session,
         target_plaintext_bytes=S3_MIN_PART_SIZE,
     ):
-        ciphertext, plaintext_sha256, stored_sha256 = encrypt_raw_part(
-            plan=plan,
-            session=session,
-            part=part,
-            plaintext=content[part.plaintext_start : part.plaintext_end],
+        plaintext = content[part.plaintext_start : part.plaintext_end]
+        ciphertext = session.encrypt_part(
+            part,
+            lambda _chunk_index, start, end: content[start:end],
+            plaintext_size=plan.plaintext_bytes,
         )
         stored.append(ciphertext)
         receipts.append(
@@ -73,9 +73,9 @@ def _source(content: bytes):
                 number=part.part_number,
                 plaintext_start=part.plaintext_start,
                 plaintext_bytes=part.plaintext_len,
-                plaintext_sha256=plaintext_sha256,
+                plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(ciphertext),
-                stored_sha256=stored_sha256,
+                stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
                 etag=f"part-{part.part_number}",
             )
         )

@@ -1204,7 +1204,7 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
         "upload",
         item,
         chunk_bytes=4,
-        progress_callback=lambda uploaded_item, offset: offsets.append(offset),
+        progress_callback=lambda _uploaded_item, offset: offsets.append(offset),
     )
 
     assert offsets == [4, 8]

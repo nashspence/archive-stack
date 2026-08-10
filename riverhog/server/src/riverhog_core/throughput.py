@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 import threading
 import time
@@ -558,40 +557,6 @@ class ArchiveThroughputTuning:
                 DEFAULT_AGE_DERIVATION_CONCURRENCY,
             ),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class LinkThroughputTarget:
-    """Bandwidth-delay-product target for one network leg.
-
-    This is a sizing heuristic rather than a throughput guarantee. It answers whether the
-    configured request count and buffered bytes are even capable of keeping the requested
-    amount of data in flight across the measured round-trip time.
-    """
-
-    bandwidth_mbps: float
-    round_trip_milliseconds: float
-    headroom: float = 2.0
-
-    def __post_init__(self) -> None:
-        if self.bandwidth_mbps <= 0 or self.round_trip_milliseconds < 0:
-            raise ValueError("link bandwidth must be positive and RTT non-negative")
-        if self.headroom < 1.0 or not math.isfinite(self.headroom):
-            raise ValueError("link headroom must be finite and at least 1")
-
-    @property
-    def bandwidth_delay_product_bytes(self) -> int:
-        bytes_per_second = self.bandwidth_mbps * 1_000_000 / 8
-        return math.ceil(bytes_per_second * self.round_trip_milliseconds / 1000)
-
-    @property
-    def target_inflight_bytes(self) -> int:
-        return math.ceil(self.bandwidth_delay_product_bytes * self.headroom)
-
-    def minimum_parallel_requests(self, request_payload_bytes: int) -> int:
-        if request_payload_bytes <= 0:
-            raise ValueError("link request payload bytes must be positive")
-        return max(1, math.ceil(self.target_inflight_bytes / request_payload_bytes))
 
 
 @dataclass(frozen=True, slots=True)

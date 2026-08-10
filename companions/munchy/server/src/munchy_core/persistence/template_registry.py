@@ -7,8 +7,9 @@ import sqlite3
 import tempfile
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from datetime import UTC, datetime
 from pathlib import Path
+
+from time_formats import utc_timestamp_now
 
 from munchy_core.domain.job_templates import (
     JobTemplateError,
@@ -169,7 +170,7 @@ def create_template_registry_snapshot(source_db: Path, snapshot_db: Path) -> int
                 "INSERT INTO template_registry_snapshot(schema_version, created_at) VALUES(?, ?)",
                 (
                     SNAPSHOT_SCHEMA_VERSION,
-                    datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                    utc_timestamp_now(),
                 ),
             )
             snapshot.execute("ATTACH DATABASE ? AS server", (str(online_copy),))

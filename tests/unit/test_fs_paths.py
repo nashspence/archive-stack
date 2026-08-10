@@ -5,7 +5,6 @@ from riverhog_protocol.paths import (
     normalize_collection_id,
     normalize_relpath,
     normalize_tag,
-    path_parents,
 )
 
 
@@ -56,7 +55,3 @@ def test_normalize_tag_folds_and_collapses(raw: str, expected: str) -> None:
 def test_normalize_tag_rejects_empty_tag() -> None:
     with pytest.raises(ValueError):
         normalize_tag(" -- ")
-
-
-def test_path_parents_lists_intermediate_dirs() -> None:
-    assert path_parents("a/b/c.txt") == ["a", "a/b"]

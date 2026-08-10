@@ -182,7 +182,6 @@ DEVICE_PROFILE_SECTION_SCHEMA: dict[str, Any] = {
         "video_extensions": STRING_LIST,
         "output_mode": {"enum": ["video", "audio", "preserve"]},
         "tasks": STRING_LIST,
-        "media_preflight": {"type": "boolean"},
         "group": {"type": "string"},
         "encode_profile": {"oneOf": [{"type": "boolean"}, {"type": "object"}]},
         "metadata_projection": {

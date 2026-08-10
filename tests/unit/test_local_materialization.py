@@ -84,6 +84,22 @@ def test_local_state_commands_report_and_verify_the_current_revision(
     assert json.loads(verified.stdout)["condition"] == "current"
 
 
+def test_local_state_uses_the_configured_database_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    target = tmp_path / "local"
+    database = tmp_path / "state" / "local.sqlite3"
+    database.parent.mkdir()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setenv("RIVERHOG_LOCAL_DATABASE", str(database))
+
+    result = CliRunner().invoke(local_materialization.local_app, ["state", "upgrade", "--json"])
+
+    assert result.exit_code == 0
+    assert database.is_file()
+
+
 class FakeApi:
     def __init__(self) -> None:
         self.deleted = False

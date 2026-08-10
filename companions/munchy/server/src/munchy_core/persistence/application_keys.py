@@ -7,9 +7,10 @@ import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from application_access import create_key_credentials, normalize_app_name, token_sha256
+from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
 ALL_PERMISSIONS = "*"
 SUBMISSIONS_MANAGE = "submissions:manage"
@@ -22,7 +23,7 @@ _KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 
 
 def _now_text() -> str:
-    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return utc_timestamp_now()
 
 
 def normalize_permissions(values: Iterable[str]) -> tuple[str, ...]:
@@ -115,13 +116,9 @@ class SQLiteApplicationKeyStore:
         normalized_permissions = normalize_permissions(permissions)
         if expires_in is not None and expires_in.total_seconds() <= 0:
             raise ValueError("app key expiry must be positive")
-        created = datetime.now(UTC)
-        created_at = created.isoformat(timespec="microseconds").replace("+00:00", "Z")
-        expires_at = (
-            (created + expires_in).isoformat(timespec="microseconds").replace("+00:00", "Z")
-            if expires_in is not None
-            else None
-        )
+        created = utc_now()
+        created_at = format_utc_timestamp(created)
+        expires_at = format_utc_timestamp(created + expires_in) if expires_in is not None else None
         with closing(self._connect()) as connection:
             while True:
                 key_id, token, digest = create_key_credentials("mu_app_")

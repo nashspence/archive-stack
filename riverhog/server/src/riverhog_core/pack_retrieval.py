@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 
 from riverhog_age import AEAD_TAG_SIZE, CHUNK_SIZE, ResumableAgeScryptSession, UploadState
 from riverhog_protocol.paths import normalize_relpath
@@ -30,11 +28,9 @@ from riverhog_core.throughput import (
     WeightedByteSemaphore,
 )
 
-PACK_RANGE_RETRIEVAL_PLAN_SCHEMA = "pack-range-retrieval-plan/v1"
 BILLING_MODE_RETURNED_BYTES = "returned_bytes"
 BILLING_MODE_WHOLE_OBJECT = "whole_object"
 DEFAULT_MAX_RANGE_REQUEST_BYTES = 64 * 1024 * 1024
-_GIB = 1024**3
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
 
@@ -229,61 +225,6 @@ def plan_pack_range_retrieval(
         remote_bytes=remote_bytes,
         accounted_remote_bytes=accounted_remote_bytes,
     )
-
-
-def pack_range_retrieval_plan_payload(plan: PackRangeRetrievalPlan) -> dict[str, object]:
-    state = UploadState.from_json_bytes(plan.source.age_state_json)
-    return {
-        "schema": PACK_RANGE_RETRIEVAL_PLAN_SCHEMA,
-        "source": {
-            "volume_id": plan.source.volume_id,
-            "object_path": plan.source.object_path,
-            "version_id": plan.source.version_id,
-            "plaintext_bytes": plan.source.plaintext_bytes,
-            "stored_bytes": plan.source.stored_bytes,
-            "age_state": json.loads(state.to_json_bytes()),
-        },
-        "policy": {
-            "merge_gap_ciphertext_bytes": plan.policy.merge_gap_ciphertext_bytes,
-            "max_request_ciphertext_bytes": plan.policy.max_request_ciphertext_bytes,
-            "billing_mode": plan.policy.billing_mode,
-        },
-        "members": [
-            {
-                "path": current.path,
-                "bytes": current.bytes,
-                "sha256": current.sha256,
-                "data_offset": current.data_offset,
-                "ciphertext_offset": current.ciphertext_offset,
-                "ciphertext_bytes": current.ciphertext_bytes,
-                "first_chunk": current.first_chunk,
-                "chunk_count": current.chunk_count,
-            }
-            for current in plan.members
-        ],
-        "requests": [
-            {
-                "number": current.number,
-                "ciphertext_offset": current.ciphertext_offset,
-                "ciphertext_bytes": current.ciphertext_bytes,
-                "first_chunk": current.first_chunk,
-                "last_chunk": current.last_chunk,
-                "member_paths": list(current.member_paths),
-            }
-            for current in plan.requests
-        ],
-        "logical_bytes": plan.logical_bytes,
-        "remote_bytes": plan.remote_bytes,
-        "accounted_remote_bytes": plan.accounted_remote_bytes,
-    }
-
-
-def pack_range_retrieval_plan_bytes(plan: PackRangeRetrievalPlan) -> bytes:
-    return json.dumps(
-        pack_range_retrieval_plan_payload(plan),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 class PackMemberRangeReader:
@@ -672,34 +613,6 @@ class PackRangeBatchReader:
                 elapsed_seconds=time.perf_counter() - started,
             ),
         )
-
-
-def range_merge_gap_for_costs(
-    *,
-    request_usd: Decimal | str | float,
-    egress_usd_per_gib: Decimal | str | float,
-    maximum_gap_bytes: int = DEFAULT_MAX_RANGE_REQUEST_BYTES,
-) -> int:
-    """Return the largest gap worth overfetching to avoid one remote request.
-
-    Inputs are economic policy values: the marginal price of one range request and the
-    marginal price of one GiB returned. Callers using prices quoted per 1,000 requests must
-    divide that quote by 1,000 before calling.
-    """
-
-    if maximum_gap_bytes < 0:
-        raise ValueError("maximum range merge gap must be non-negative")
-    try:
-        request_cost = Decimal(str(request_usd))
-        egress_cost = Decimal(str(egress_usd_per_gib))
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("range retrieval costs must be decimal numbers") from exc
-    if request_cost < 0 or egress_cost <= 0:
-        raise ValueError("range retrieval costs must be non-negative with positive egress cost")
-    break_even = (request_cost * Decimal(_GIB) / egress_cost).to_integral_value(
-        rounding=ROUND_FLOOR
-    )
-    return min(int(break_even), maximum_gap_bytes)
 
 
 def _coalesced_requests(

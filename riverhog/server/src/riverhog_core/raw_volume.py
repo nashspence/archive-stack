@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan
 from riverhog_protocol.pack_ingress import RESERVED_ARCHIVE_PREFIX, canonical_json_bytes
@@ -16,16 +14,6 @@ RAW_VOLUME_PLAN_SCHEMA = "raw-volume-plan/v1"
 DEFAULT_RAW_VOLUME_PLAINTEXT_BYTES = 16 * 1024 * 1024 * 1024
 DEFAULT_RAW_PART_PLAINTEXT_BYTES = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-
-
-@dataclass(frozen=True, slots=True)
-class RawPartDescriptor:
-    volume_id: str
-    part_number: int
-    source_path: str
-    source_offset: int
-    plaintext_bytes: int
-    final: bool
 
 
 def plan_raw_volumes(
@@ -159,59 +147,6 @@ def raw_s3_part_plans(
             plan.plaintext_bytes,
             chunks_per_part=chunks_per_part,
         )
-    )
-
-
-def raw_part_descriptors(
-    plan: RawVolumePlan,
-    session: ResumableAgeScryptSession,
-    *,
-    target_plaintext_bytes: int = DEFAULT_RAW_PART_PLAINTEXT_BYTES,
-) -> tuple[RawPartDescriptor, ...]:
-    parts = raw_s3_part_plans(
-        plan,
-        session,
-        target_plaintext_bytes=target_plaintext_bytes,
-    )
-    return tuple(
-        RawPartDescriptor(
-            volume_id=plan.volume_id,
-            part_number=current.part_number,
-            source_path=plan.source_path,
-            source_offset=plan.file_offset + current.plaintext_start,
-            plaintext_bytes=current.plaintext_len,
-            final=current.plaintext_end == plan.plaintext_bytes,
-        )
-        for current in parts
-    )
-
-
-def encrypt_raw_part(
-    *,
-    plan: RawVolumePlan,
-    session: ResumableAgeScryptSession,
-    part: S3PartPlan,
-    plaintext: bytes,
-) -> tuple[bytes, str, str]:
-    if len(plaintext) != part.plaintext_len:
-        raise ValueError("raw upload part plaintext length mismatch")
-    if part.plaintext_start < 0 or part.plaintext_end > plan.plaintext_bytes:
-        raise ValueError("raw upload part is outside its volume")
-
-    def provider(_chunk_index: int, start: int, end: int) -> bytes:
-        relative_start = start - part.plaintext_start
-        relative_end = end - part.plaintext_start
-        return plaintext[relative_start:relative_end]
-
-    ciphertext = session.encrypt_part(
-        part,
-        provider,
-        plaintext_size=plan.plaintext_bytes,
-    )
-    return (
-        ciphertext,
-        hashlib.sha256(plaintext).hexdigest(),
-        hashlib.sha256(ciphertext).hexdigest(),
     )
 
 

@@ -14,7 +14,6 @@ section:
   - .heif
   - .arw
   output_mode: preserve
-  media_preflight: false
   group: preserve
   encode_profile: false
   profiles:

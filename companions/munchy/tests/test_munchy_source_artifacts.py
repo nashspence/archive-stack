@@ -10,7 +10,6 @@ import pytest
 from munchy_target_support import source_artifacts
 from munchy_target_support.source_artifact_bridge import (
     _allow_conversion_only_container,
-    _artifact_drop_reason_map,
     build_preserve_source_artifacts,
 )
 
@@ -273,7 +272,6 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
     }
 
     assert _allow_conversion_only_container(profile) is True
-    assert _artifact_drop_reason_map(profile) == {"stream:7": "not useful after stabilization"}
 
 
 def test_source_artifact_bridge_rejects_non_boolean_conversion_only_override() -> None:

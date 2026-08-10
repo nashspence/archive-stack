@@ -47,19 +47,6 @@ class AgePlaintextRange:
         return max(0, self.ciphertext_bytes - self.plaintext_bytes)
 
 
-@dataclass(frozen=True, slots=True)
-class PackMemberRangeBounds:
-    """Alignment-independent transfer bounds for one member inside a non-final pack."""
-
-    file_bytes: int
-    minimum_ciphertext_bytes: int
-    maximum_ciphertext_bytes: int
-
-    @property
-    def maximum_overfetch_bytes(self) -> int:
-        return self.maximum_ciphertext_bytes - self.file_bytes
-
-
 def plan_age_plaintext_range(
     *,
     age_state: UploadState | bytes | str,
@@ -221,47 +208,6 @@ def iter_decrypt_age_plaintext_range(
             raise ValueError("age ciphertext range contains trailing bytes")
     if emitted != plan.plaintext_bytes:
         raise RuntimeError("age plaintext range emitted an unexpected byte count")
-
-
-def decrypt_age_plaintext_range(
-    *,
-    age_state: UploadState | bytes | str,
-    plan: AgePlaintextRange,
-    ciphertext_chunks: Iterable[bytes],
-    passphrase: str | bytes | None = None,
-    session: ResumableAgeScryptSession | None = None,
-) -> bytes:
-    return b"".join(
-        iter_decrypt_age_plaintext_range(
-            age_state=age_state,
-            plan=plan,
-            ciphertext_chunks=ciphertext_chunks,
-            passphrase=passphrase,
-            session=session,
-        )
-    )
-
-
-def pack_member_range_bounds(file_bytes: int) -> PackMemberRangeBounds:
-    """Return best/worst ciphertext transfer sizes before a pack offset is known.
-
-    Pack members are followed by the pack index and tar terminator, so their covering chunks
-    are ordinary full non-final age chunks. The maximum overfetch is bounded by fewer than two
-    64 KiB chunks plus authentication tags, independent of the total pack size.
-    """
-
-    if file_bytes < 0:
-        raise ValueError("pack member bytes must be non-negative")
-    if file_bytes == 0:
-        return PackMemberRangeBounds(0, 0, 0)
-    minimum_chunks = (file_bytes + CHUNK_SIZE - 1) // CHUNK_SIZE
-    maximum_chunks = (file_bytes + (2 * CHUNK_SIZE) - 2) // CHUNK_SIZE
-    chunk_ciphertext_bytes = CHUNK_SIZE + AEAD_TAG_SIZE
-    return PackMemberRangeBounds(
-        file_bytes=file_bytes,
-        minimum_ciphertext_bytes=minimum_chunks * chunk_ciphertext_bytes,
-        maximum_ciphertext_bytes=maximum_chunks * chunk_ciphertext_bytes,
-    )
 
 
 def _upload_state(value: UploadState | bytes | str) -> UploadState:

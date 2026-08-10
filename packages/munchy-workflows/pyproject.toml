@@ -14,6 +14,7 @@ dependencies = [
   "munchy-api-client>=0.1,<0.2",
   "munchy-config>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
+  "riverhog-provenance>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
   "tus-transport>=0.1,<0.2",
 ]
@@ -22,6 +23,7 @@ dependencies = [
 config-validation = { workspace = true }
 munchy-api-client = { workspace = true }
 munchy-config = { workspace = true }
+riverhog-provenance = { workspace = true }
 time-formats = { workspace = true }
 tus-transport = { workspace = true }
 

@@ -3,18 +3,18 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 CLOUDEVENTS_JSON_CONTENT_TYPE = "application/cloudevents+json"
 MAX_EVENT_CONTEXT_BYTES = 4096
 
 
 def event_time(value: datetime | None = None) -> str:
-    current = (value or datetime.now(UTC)).astimezone(UTC)
-    return current.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return format_utc_timestamp(value or utc_now())
 
 
 class CloudEvent(BaseModel):
@@ -35,7 +35,7 @@ class CloudEvent(BaseModel):
         normalized = value.strip()
         if not normalized.endswith("Z"):
             raise ValueError("CloudEvent time must be a UTC timestamp ending in Z")
-        datetime.fromisoformat(normalized.removesuffix("Z") + "+00:00")
+        parse_utc_timestamp(normalized)
         return normalized
 
 

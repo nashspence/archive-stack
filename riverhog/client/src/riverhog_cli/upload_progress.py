@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
+
+from riverhog_cli_support.output import plain_output_requested
 
 from riverhog_cli.output import ATTENTION_STYLE, ENTITY_ID_STYLE, FIELD_STYLE
 
@@ -39,11 +40,6 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in stripped env
     RichTextColumn = None
 
 
-def _plain_requested() -> bool:
-    raw_value = os.getenv("RIVERHOG_CLI_PLAIN", "").strip().casefold()
-    return raw_value in {"1", "true", "yes", "on"} or os.getenv("TERM") == "dumb"
-
-
 def _rich_progress_available() -> bool:
     return (
         RichBarColumn is not None
@@ -54,7 +50,7 @@ def _rich_progress_available() -> bool:
         and RichTable is not None
         and RichText is not None
         and RichTextColumn is not None
-        and not _plain_requested()
+        and not plain_output_requested("RIVERHOG_CLI_PLAIN")
     )
 
 
@@ -314,7 +310,7 @@ class CollectionUploadProgress:
         self.renderer.start(self._state())
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         self.renderer.stop()
 
     def set_totals(self, *, files_total: int, bytes_total: int) -> None:

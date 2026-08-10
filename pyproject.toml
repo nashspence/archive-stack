@@ -18,6 +18,7 @@ time-formats = { workspace = true }
 [dependency-groups]
 dev = [
   "boto3-stubs[s3]>=1.43.59,<2.0",
+  "httpx2>=2,<3",
   "mypy>=2.3.0,<3.0",
   "psycopg[binary]>=3.3.4,<4.0",
   "pytest>=9.0.3,<10.0",
@@ -37,6 +38,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
+filterwarnings = ["error"]
 testpaths = ["companions", "packages", "riverhog", "tests", "utilities"]
 markers = [
   "integration: non-contract regression coverage",

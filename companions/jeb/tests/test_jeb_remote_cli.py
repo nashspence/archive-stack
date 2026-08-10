@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from jeb_api_client import JebApiError
@@ -260,6 +262,88 @@ def test_jeb_remote_cli_lists_lifecycle_events(capsys, monkeypatch) -> None:  # 
     assert "events: 1" in output
     assert "io.riverhog.jeb.attempt.succeeded" in output
     assert "next cursor: 8" in output
+
+
+def test_jeb_remote_cli_uploads_with_existing_provenance(
+    capsys,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "movie.mov"
+    source.write_bytes(b"movie")
+    sidecar = tmp_path / "movie.json-seq"
+    sidecar.write_bytes(b"existing journal")
+    journal_id = "urn:uuid:00000000-0000-0000-0000-000000000001"
+    state_id = "urn:uuid:00000000-0000-0000-0000-000000000002"
+    calls: list[tuple[str, object]] = []
+
+    def prepare(path: Path, **kwargs: object) -> SimpleNamespace:
+        calls.append(("prepare", {"path": path, **kwargs}))
+        return SimpleNamespace(
+            binding=SimpleNamespace(
+                status="captured",
+                path="incoming/movie.mov",
+                bytes=5,
+                sha256="a" * 64,
+                journal_id=journal_id,
+                current_state_id=state_id,
+                omission_reason=None,
+            ),
+            journals={journal_id: b"existing journal"},
+        )
+
+    class Ingress:
+        def __init__(self, *, source: str, password: str) -> None:
+            calls.append(("connect", {"source": source, "password": password}))
+
+        def __enter__(self) -> Ingress:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return
+
+        def upload_file(self, path: Path, **kwargs: object) -> dict[str, object]:
+            calls.append(("upload", {"path": path, **kwargs}))
+            return {"upload_id": "upload-1", "path": kwargs["relative_path"]}
+
+    monkeypatch.setattr(jeb_cli, "prepare_file_provenance", prepare)
+    monkeypatch.setattr(jeb_cli, "user_installation_id", lambda _agent: "host-1")
+    monkeypatch.setattr(jeb_cli, "JebIngressClient", Ingress)
+    monkeypatch.setenv("JEB_SOURCE", "camera")
+    monkeypatch.setenv("JEB_INGRESS_PASSWORD", "secret")
+
+    assert (
+        jeb_cli.main(
+            [
+                "upload",
+                str(source),
+                "--path",
+                "incoming/movie.mov",
+                "--provenance",
+                str(sidecar),
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "path": "incoming/movie.mov",
+        "upload_id": "upload-1",
+    }
+    assert calls[0][0] == "prepare"
+    assert calls[0][1]["provenance"] == sidecar  # type: ignore[index]
+    assert calls[1] == ("connect", {"source": "camera", "password": "secret"})
+    upload = calls[2][1]
+    assert upload["binding"] == {  # type: ignore[index]
+        "status": "captured",
+        "path": "incoming/movie.mov",
+        "bytes": 5,
+        "sha256": "a" * 64,
+        "journal_id": journal_id,
+        "current_state_id": state_id,
+    }
+    assert upload["journals"] == {journal_id: b"existing journal"}  # type: ignore[index]
 
 
 def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

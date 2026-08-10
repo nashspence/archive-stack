@@ -17,7 +17,7 @@ from riverhog_core.domain.archive import (
     StoredPartReceipt,
     VerifiedRawFile,
 )
-from riverhog_core.pack_volume import plan_pack_volume, render_pack_upload_unit
+from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.raw_verification import raw_file_volume_set_sha256
 from riverhog_provenance import (
     FileProvenanceBinding,
@@ -103,10 +103,12 @@ def _write_archive(
 
     pack_files = tuple(current for current in files if current.path.startswith("notes/"))
     pack_plan = plan_pack_volume(pack_files, sequence=0)
-    pack_plaintext = render_pack_upload_unit(
-        pack_plan,
-        0,
-        lambda path: (expected[path],),
+    pack_plaintext = b"".join(
+        iter_render_pack_upload_unit(
+            pack_plan,
+            0,
+            lambda path: (expected[path],),
+        )
     )
     pack_ciphertext = encrypt_age_scrypt(pack_plaintext, PASSPHRASE, log_n=1)
     sealed_pack = SealedPackVolume(

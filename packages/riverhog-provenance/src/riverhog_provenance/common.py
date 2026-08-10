@@ -32,7 +32,6 @@ from .model import (
     NativeStat,
     ObservationRequest,
     ObservationResult,
-    PathInput,
 )
 
 UTC = dt.UTC
@@ -98,13 +97,6 @@ def safe_portable_text(value: str) -> str:
     if "\x00" in value or any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
         raise ValueError("text contains a JSON/PostgreSQL-incompatible character")
     return value
-
-
-def path_to_absolute(path: PathInput) -> str | bytes:
-    raw = os.fspath(path)
-    if not isinstance(raw, (str, bytes)):
-        raise TypeError("path must resolve to str or bytes")
-    return os.path.abspath(raw)
 
 
 def path_bytes(path: str | bytes) -> bytes:
