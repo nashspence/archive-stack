@@ -4,21 +4,21 @@ import sys
 
 from .errors import UnsupportedPlatformError
 from .interface import FileStateObserver
-from .linux import UbuntuFileStateObserver
+from .linux import LinuxFileStateObserver
 from .macos import MacOSFileStateObserver
 from .windows import WindowsFileStateObserver
 
 
 def get_observer(platform_name: str = "auto") -> FileStateObserver:
-    """Return the reference observer for Windows, macOS, or Ubuntu/Linux."""
+    """Return the reference observer for Windows, macOS, or Linux."""
 
     normalized = platform_name.strip().lower()
-    if normalized in {"windows", "win", "win32"}:
+    if normalized == "windows":
         return WindowsFileStateObserver()
-    if normalized in {"macos", "mac", "osx", "darwin"}:
+    if normalized == "macos":
         return MacOSFileStateObserver()
-    if normalized in {"ubuntu", "linux"}:
-        return UbuntuFileStateObserver(enforce_ubuntu=(normalized == "ubuntu"))
+    if normalized == "linux":
+        return LinuxFileStateObserver()
     if normalized != "auto":
         raise ValueError(f"unknown observer platform: {platform_name}")
     if sys.platform == "win32":
@@ -26,5 +26,5 @@ def get_observer(platform_name: str = "auto") -> FileStateObserver:
     if sys.platform == "darwin":
         return MacOSFileStateObserver()
     if sys.platform.startswith("linux"):
-        return UbuntuFileStateObserver()
+        return LinuxFileStateObserver()
     raise UnsupportedPlatformError(f"no Riverhog provenance observer for {sys.platform!r}")

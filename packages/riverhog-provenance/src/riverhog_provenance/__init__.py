@@ -44,7 +44,7 @@ from .journal import (
     validate_journal_set,
     verify_payload_binding,
 )
-from .linux import LinuxNativeAPI, UbuntuFileStateObserver
+from .linux import LinuxFileStateObserver, LinuxNativeAPI
 from .macos import MacOSFileStateObserver, MacOSNativeAPI
 from .model import (
     LargeValueDisposition,
@@ -71,6 +71,7 @@ __all__ = [
     "JournalFrame",
     "JournalSummary",
     "LargeValueDisposition",
+    "LinuxFileStateObserver",
     "LinuxNativeAPI",
     "MacOSFileStateObserver",
     "MacOSNativeAPI",
@@ -89,7 +90,6 @@ __all__ = [
     "SIDECAR_SUFFIX",
     "SchemaValidationUnavailable",
     "SymlinkRefusedError",
-    "UbuntuFileStateObserver",
     "UnstableFileError",
     "UnsupportedFileTypeError",
     "UnsupportedPlatformError",

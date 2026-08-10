@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from riverhog_provenance import (
+    LinuxFileStateObserver,
     ObservationRequest,
-    UbuntuFileStateObserver,
     validate_entry_document,
     validate_graph_fragment,
 )
@@ -15,7 +15,7 @@ from riverhog_provenance.common import canonical_json
 def test_assertion_entry_template_validates_at_schema_level(tmp_path: Path, urn_factory) -> None:
     payload = tmp_path / "file"
     payload.write_bytes(b"abc")
-    result = UbuntuFileStateObserver(enforce_ubuntu=False).observe(
+    result = LinuxFileStateObserver().observe(
         ObservationRequest(path=payload, lineage_id=urn_factory(), host_id=urn_factory())
     )
     validate_graph_fragment(result.graph_fragment())
@@ -37,7 +37,7 @@ def test_assertion_entry_template_validates_at_schema_level(tmp_path: Path, urn_
 def test_observer_does_not_claim_payload_format(tmp_path: Path, urn_factory) -> None:
     payload = tmp_path / "misleading.jpg"
     payload.write_bytes(b"not actually a JPEG")
-    result = UbuntuFileStateObserver(enforce_ubuntu=False).observe(
+    result = LinuxFileStateObserver().observe(
         ObservationRequest(path=payload, lineage_id=urn_factory(), host_id=urn_factory())
     )
     content = result.state["content"]
@@ -52,7 +52,7 @@ def test_policy_extension_is_digest_bound(tmp_path: Path, urn_factory) -> None:
 
     payload = tmp_path / "bound"
     payload.write_bytes(b"bound")
-    result = UbuntuFileStateObserver(enforce_ubuntu=False).observe(
+    result = LinuxFileStateObserver().observe(
         ObservationRequest(path=payload, lineage_id=urn_factory(), host_id=urn_factory())
     )
     fragment = copy.deepcopy(result.graph_fragment())

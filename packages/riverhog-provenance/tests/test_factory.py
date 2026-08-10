@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from riverhog_provenance import (
+    LinuxFileStateObserver,
     MacOSFileStateObserver,
-    UbuntuFileStateObserver,
     WindowsFileStateObserver,
     get_observer,
 )
@@ -13,13 +13,13 @@ def test_explicit_factory_platforms() -> None:
     linux = get_observer("linux")
     macos = get_observer("macos")
     windows = get_observer("windows")
-    assert isinstance(linux, UbuntuFileStateObserver)
+    assert isinstance(linux, LinuxFileStateObserver)
     assert isinstance(macos, MacOSFileStateObserver)
     assert isinstance(windows, WindowsFileStateObserver)
 
 
 def test_unknown_factory_platform() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown observer platform"):
         get_observer("plan9")
 
 

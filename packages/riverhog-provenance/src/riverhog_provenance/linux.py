@@ -508,7 +508,7 @@ def _classify_xattr(name: bytes) -> tuple[str, str, str, str]:
     return "extended_attribute", "extended_attributes", namespace, sensitivity
 
 
-class UbuntuBackend(PlatformBackend):
+class LinuxBackend(PlatformBackend):
     platform_family = "linux"
 
     def __init__(
@@ -516,22 +516,13 @@ class UbuntuBackend(PlatformBackend):
         *,
         native: LinuxNativeAPI | None = None,
         enforce_platform: bool = True,
-        enforce_ubuntu: bool = True,
     ) -> None:
         self.native = native
         self.enforce_platform = enforce_platform
-        self.enforce_ubuntu = enforce_ubuntu
 
     def assert_supported(self) -> None:
         if self.enforce_platform and not sys.platform.startswith("linux"):
-            raise UnsupportedPlatformError("Ubuntu observer requires Linux")
-        if self.enforce_ubuntu:
-            release = _read_os_release()
-            if release.get("ID", "").lower() != "ubuntu":
-                raise UnsupportedPlatformError(
-                    "Ubuntu observer requires an Ubuntu userspace; set "
-                    "enforce_ubuntu=False only for compatible test hosts"
-                )
+            raise UnsupportedPlatformError("Linux observer requires Linux")
         if self.native is None:
             self.native = LinuxNativeAPI()
 
@@ -1316,20 +1307,18 @@ class UbuntuBackend(PlatformBackend):
         }
 
 
-class UbuntuFileStateObserver(DescriptorFileStateObserver):
-    """Archive-level Riverhog provenance observer for Ubuntu 26.04 LTS and compatible Linux."""
+class LinuxFileStateObserver(DescriptorFileStateObserver):
+    """Archive-level Riverhog provenance observer for Linux."""
 
     def __init__(
         self,
         *,
         native: LinuxNativeAPI | None = None,
         enforce_platform: bool = True,
-        enforce_ubuntu: bool = True,
     ) -> None:
         super().__init__(
-            UbuntuBackend(
+            LinuxBackend(
                 native=native,
                 enforce_platform=enforce_platform,
-                enforce_ubuntu=enforce_ubuntu,
             )
         )

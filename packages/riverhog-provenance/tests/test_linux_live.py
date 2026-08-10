@@ -9,18 +9,19 @@ from pathlib import Path
 
 import pytest
 from riverhog_provenance import (
+    LinuxFileStateObserver,
     ObservationPolicy,
     ObservationRequest,
     PayloadBindingRequest,
     SymlinkRefusedError,
-    UbuntuFileStateObserver,
     UnstableFileError,
+    prepare_file_provenance,
     validate_graph_fragment,
 )
 from riverhog_provenance.linux import (
     FS_IOC_FSGETXATTR,
     FSXATTR_STRUCT_SIZE,
-    UbuntuBackend,
+    LinuxBackend,
     _portable_mount_field,
 )
 from riverhog_provenance.model import NativeCollection, NativeStat
@@ -28,10 +29,8 @@ from riverhog_provenance.model import NativeCollection, NativeStat
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
 
 
-def _observer() -> UbuntuFileStateObserver:
-    # The CI/build host need only expose the Linux ABI. Distribution enforcement is
-    # covered separately and remains enabled by default in production.
-    return UbuntuFileStateObserver(enforce_ubuntu=False)
+def _observer() -> LinuxFileStateObserver:
+    return LinuxFileStateObserver()
 
 
 def test_live_linux_observation_is_riverhog_provenance_valid(tmp_path: Path, urn_factory) -> None:
@@ -65,6 +64,32 @@ def test_live_linux_observation_is_riverhog_provenance_valid(tmp_path: Path, urn
     assert result.capture["coverage"]["content_fixity"] == "complete"
     assert result.capture["coverage"]["basic_filesystem"] == "complete"
     assert result.payload_binding is not None
+
+
+def test_auto_linux_observation_uses_the_linux_abi_across_distributions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import riverhog_provenance.linux as linux_module
+
+    payload = tmp_path / "container-payload"
+    payload.write_bytes(b"containerized Jeb custody")
+    monkeypatch.setattr(
+        linux_module,
+        "_read_os_release",
+        lambda: {"ID": "debian", "NAME": "Debian GNU/Linux"},
+    )
+
+    prepared = prepare_file_provenance(
+        payload,
+        relative_path="container-payload",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
+        agent_name="jeb-server",
+        agent_version="1.0.0",
+    )
+
+    assert prepared.source == "captured"
+    assert prepared.binding.status == "captured"
+    assert prepared.binding.bytes == len(b"containerized Jeb custody")
 
 
 def test_linux_non_utf8_filename_round_trips(tmp_path: Path, urn_factory) -> None:
@@ -233,10 +258,9 @@ class _ACLXattrOnlyNative:
 
 def test_acl_xattr_counts_as_access_control_evidence_without_libacl(urn_factory) -> None:
     request = ObservationRequest(path="unused", lineage_id=urn_factory(), host_id=urn_factory())
-    backend = UbuntuBackend(
+    backend = LinuxBackend(
         native=_ACLXattrOnlyNative(),
         enforce_platform=False,
-        enforce_ubuntu=False,
     )
     collection = NativeCollection()
     backend._capture_xattrs(0, request, collection)
@@ -268,10 +292,9 @@ def test_policy_not_retained_xattr_does_not_make_enumeration_partial(urn_factory
         host_id=urn_factory(),
         policy=ObservationPolicy(inline_native_value_bytes=4, maximum_native_value_bytes=8),
     )
-    backend = UbuntuBackend(
+    backend = LinuxBackend(
         native=_LargeXattrNative(),
         enforce_platform=False,
-        enforce_ubuntu=False,
     )
     collection = NativeCollection()
     backend._capture_xattrs(0, request, collection)
@@ -282,10 +305,9 @@ def test_policy_not_retained_xattr_does_not_make_enumeration_partial(urn_factory
 def test_unexpected_getflags_failure_is_partial_not_complete(urn_factory, monkeypatch) -> None:
     import riverhog_provenance.linux as linux_module
 
-    backend = UbuntuBackend(
+    backend = LinuxBackend(
         native=_ACLXattrOnlyNative(),
         enforce_platform=False,
-        enforce_ubuntu=False,
     )
     stat_snapshot = NativeStat(
         device=1,
