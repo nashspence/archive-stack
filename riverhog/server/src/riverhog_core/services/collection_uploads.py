@@ -160,6 +160,9 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             if collection is not None:
+                collection_tags = tuple(sorted(current.tag_id for current in collection.tags))
+                if collection_tags != normalized_tags:
+                    raise Conflict("collection upload idempotency identity changed")
                 return _finalized_payload(session, collection, store_name=store_name)
             upload = session.scalar(
                 select(CollectionUploadRecord)

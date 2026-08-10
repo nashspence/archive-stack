@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
 from starlette.concurrency import run_in_threadpool
 
@@ -244,6 +246,13 @@ async def put_collection_upload_session_unit(
     volume_id: str,
     unit: int,
     request: Request,
+    content: Annotated[
+        bytes,
+        Body(
+            media_type="application/octet-stream",
+            json_schema_extra={"format": "binary"},
+        ),
+    ],
     container: ContainerDep,
     principal: CollectionCreator,
     if_match: str = Header(alias="If-Match"),
@@ -258,7 +267,6 @@ async def put_collection_upload_session_unit(
         raise RuntimeError("collection upload unit payload size is invalid")
     if int(declared) != expected_bytes:
         raise HTTPException(status_code=400, detail="Content-Length does not match the upload unit")
-    content = await request.body()
     payload = await run_in_threadpool(
         container.collection_uploads.upload_unit,
         collection_id,

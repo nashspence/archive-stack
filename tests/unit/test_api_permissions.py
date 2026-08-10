@@ -10,8 +10,10 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from riverhog_api.app import create_app
 from riverhog_core.app_permissions import (
+    ALL_RESOURCES,
     APPLICATION_PERMISSIONS,
     CATALOG_READ,
+    COLLECTIONS_CREATE,
     ApplicationAccess,
     ApplicationPrincipal,
 )
@@ -95,5 +97,84 @@ def test_application_authentication_uses_the_public_error_contract() -> None:
                     "message": "application permission required: collections:create",
                 }
             }
+
+    anyio.run(exercise)
+
+
+def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
+    principal = ApplicationPrincipal(
+        app="uploader",
+        key_id="uploader-key",
+        access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES)}),
+    )
+
+    class Keys:
+        def authenticate(self, token: str) -> ApplicationPrincipal | None:
+            return principal if token == "uploader-token" else None
+
+    class Uploads:
+        content: bytes | None = None
+
+        def require_access(self, collection_id: int, current: ApplicationPrincipal) -> None:
+            assert collection_id == 42
+            assert current == principal
+
+        def get_unit(self, collection_id: int, volume_id: str, unit: int) -> dict[str, object]:
+            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            return {
+                "unit": 0,
+                "payload_bytes": 3,
+                "plaintext_bytes": 3,
+                "sources": [],
+                "state": "pending",
+            }
+
+        def upload_unit(
+            self,
+            collection_id: int,
+            volume_id: str,
+            unit: int,
+            *,
+            plan_sha256: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            assert plan_sha256 == "a" * 64
+            self.content = content
+            return {
+                "unit": 0,
+                "payload_bytes": 3,
+                "plaintext_bytes": 3,
+                "sources": [],
+                "state": "committed",
+            }
+
+    uploads = Uploads()
+    app = create_app(
+        container=cast(
+            Any,
+            SimpleNamespace(
+                app_keys=Keys(),
+                collection_uploads=uploads,
+            ),
+        )
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.put(
+                "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/0",
+                headers={
+                    "Authorization": "Bearer uploader-token",
+                    "Content-Type": "application/octet-stream",
+                    "If-Match": '"' + "a" * 64 + '"',
+                },
+                content=b"\x00\xff\x80",
+            )
+
+        assert response.status_code == 200
+        assert response.json()["state"] == "committed"
+        assert uploads.content == b"\x00\xff\x80"
 
     anyio.run(exercise)

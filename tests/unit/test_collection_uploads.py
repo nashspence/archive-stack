@@ -22,6 +22,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_protocol.errors import Conflict
 from riverhog_protocol.manifest import collection_content_etag
 
 from tests.fixtures.crypto import FixtureProofStamper
@@ -162,6 +163,27 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert objects[0].object_path.endswith("/volumes/pack-000000000000.tar.age")
     assert objects[1].object_path.endswith("/manifest.json.age")
     assert objects[2].object_path.endswith("/manifest.json.ots.age")
+
+    resumed = service.create_or_resume(
+        idempotency_key="upload-1",
+        tags=tags,
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+    )
+    assert resumed["collection_id"] == collection_id
+    assert resumed["state"] == "finalized"
+    changed_tags = () if tags else ("docs",)
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=changed_tags,
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+        )
 
 
 def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint(

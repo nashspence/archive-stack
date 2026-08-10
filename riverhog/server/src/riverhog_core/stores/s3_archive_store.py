@@ -375,14 +375,16 @@ class S3ArchiveStore:
                 and metadata.get(PLAINTEXT_BYTES_METADATA) == str(len(manifest))
                 and metadata.get(PLAINTEXT_SHA256_METADATA) == manifest_sha256
             ):
-                stored = b"".join(self._iter_s3_stored_object(object_key))
+                existing_version_id = _provider_version_id(existing)
+                stored = b"".join(
+                    self._iter_s3_stored_object(
+                        object_key,
+                        version_id=existing_version_id,
+                    )
+                )
                 return MutableManifestReceipt(
                     object_path=object_key,
-                    version_id=(
-                        str(existing["VersionId"])
-                        if existing.get("VersionId") is not None
-                        else None
-                    ),
+                    version_id=existing_version_id,
                     stored_bytes=len(stored),
                     stored_sha256=hashlib.sha256(stored).hexdigest(),
                     published_at=_format_s3_timestamp(
@@ -700,7 +702,12 @@ class S3ArchiveStore:
         sha256 = hashlib.sha256(content).hexdigest()
         existing = self._head_object(object_key=object_key)
         if existing is not None:
-            existing_content = b"".join(self._iter_s3_stored_object(object_key))
+            existing_content = b"".join(
+                self._iter_s3_stored_object(
+                    object_key,
+                    version_id=_provider_version_id(existing),
+                )
+            )
             if existing_content == content or (accept_existing and not replace):
                 return self._plaintext_attestation_receipt(
                     object_id=object_id,
@@ -738,7 +745,12 @@ class S3ArchiveStore:
             head=head,
             uploaded_at=uploaded_at,
         )
-        persisted = b"".join(self._iter_s3_stored_object(object_key))
+        persisted = b"".join(
+            self._iter_s3_stored_object(
+                object_key,
+                version_id=receipt.version_id,
+            )
+        )
         if persisted != content:
             raise RuntimeError("persisted archive attestation artifact differs from its input")
         return receipt
@@ -795,7 +807,13 @@ class S3ArchiveStore:
             if (
                 existing is not None
                 and _head_metadata(existing).get("archive-guidance-format") == format_name
-                and b"".join(self._iter_s3_stored_object(object_key)) == content
+                and b"".join(
+                    self._iter_s3_stored_object(
+                        object_key,
+                        version_id=_provider_version_id(existing),
+                    )
+                )
+                == content
             ):
                 continue
             self._client.put_object(
@@ -1225,6 +1243,11 @@ def _head_metadata(head: dict[str, Any]) -> dict[str, str]:
     if not isinstance(metadata, dict):
         return {}
     return {str(key).lower(): str(value) for key, value in metadata.items()}
+
+
+def _provider_version_id(head: dict[str, Any]) -> str | None:
+    value = head.get("VersionId")
+    return str(value) if value is not None else None
 
 
 def _validate_uploaded_archive_metadata(

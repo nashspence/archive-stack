@@ -91,6 +91,7 @@ class _FakeS3Client:
         self.version_objects: dict[tuple[str, str], dict[str, Any]] = {}
         self.version_sequence = 0
         self.restore_requests: list[tuple[str, str | None, object]] = []
+        self.get_requests: list[tuple[str, str | None]] = []
         self.aborted_uploads: list[tuple[str, str]] = []
         self.multipart_page_size: int | None = None
 
@@ -136,6 +137,7 @@ class _FakeS3Client:
         VersionId: str | None = None,
     ) -> dict[str, object]:
         del Bucket
+        self.get_requests.append((Key, VersionId))
         current = (
             self.version_objects[(Key, VersionId)] if VersionId is not None else self.objects[Key]
         )
@@ -319,7 +321,7 @@ def _seed_encrypted_object(
     )
 
 
-def test_proof_replacement_uses_the_canonical_encrypted_path(
+def test_proof_replacement_retry_recovers_the_exact_provider_version(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -346,6 +348,20 @@ def test_proof_replacement_uses_the_canonical_encrypted_path(
         archive_object_storage_format("proof")
     )
     assert receipt.version_id == client.objects[proof_path]["VersionId"]
+    persisted = store.read_archive_artifact(
+        collection_id=COLLECTION_ID,
+        object=ArchiveObjectIdentity(
+            object_id=receipt.object_id,
+            kind=receipt.kind,
+            object_path=receipt.object_path,
+            plaintext_bytes=receipt.plaintext_bytes,
+            stored_bytes=receipt.stored_bytes,
+            sha256=receipt.sha256,
+            stored_sha256=receipt.stored_sha256,
+            version_id=receipt.version_id,
+        ),
+    )
+    assert persisted.content == b"new-proof"
     versions_after_replace = set(client.versions[proof_path])
 
     retry = store.replace_archive_proof(
@@ -356,6 +372,7 @@ def test_proof_replacement_uses_the_canonical_encrypted_path(
 
     assert retry.version_id == receipt.version_id
     assert client.versions[proof_path] == versions_after_replace
+    assert (proof_path, receipt.version_id) in client.get_requests
 
 
 def test_collection_metadata_and_recovery_guidance_are_published(
@@ -570,6 +587,7 @@ def test_attestation_artifacts_are_plaintext_and_replaceable(
 
     assert retry.version_id == replaced.version_id
     assert client.versions[replaced.object_path] == versions_after_replace
+    assert (replaced.object_path, replaced.version_id) in client.get_requests
 
 
 def test_incomplete_multipart_sweep_and_prefix_discard_are_exact(

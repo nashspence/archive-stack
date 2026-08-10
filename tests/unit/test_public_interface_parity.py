@@ -240,6 +240,19 @@ def test_official_direct_ingress_callers_share_the_upload_runner() -> None:
     assert munchy_riverhog.upload_collection_units is upload_collection_units
 
 
+def test_direct_ingress_openapi_describes_the_binary_unit_body() -> None:
+    operation = create_riverhog_app().openapi()["paths"][
+        "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}"
+    ]["put"]
+    request_body = operation["requestBody"]
+
+    assert request_body["required"] is True
+    assert set(request_body["content"]) == {"application/octet-stream"}
+    schema = request_body["content"]["application/octet-stream"]["schema"]
+    assert schema["type"] == "string"
+    assert schema["format"] == "binary"
+
+
 @pytest.mark.parametrize(
     ("environment", "expected"),
     (

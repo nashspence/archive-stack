@@ -14,8 +14,9 @@ downstream.
 ## Safety
 
 - Treat configured archive stores as the durable authority.
-- Protect plaintext ingress with authenticated TLS. Keep final archive and retrieval-cache
-  objects encrypted whenever they leave a Riverhog process.
+- Default plaintext ingress to authenticated TLS. Permit plaintext HTTP only through an
+  explicit operator opt-in for a trusted single-tenant LAN. Keep final archive and
+  retrieval-cache objects encrypted whenever they leave a Riverhog process.
 - Preserve verified archive bytes, the encrypted manifest, and its proof together.
 - Preserve archive recovery without Riverhog or its database using standard tools;
   `riverhog/recovery` remains an independent reference implementation.
