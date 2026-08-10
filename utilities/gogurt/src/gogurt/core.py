@@ -192,10 +192,14 @@ def _resolve_command(
     actions_dir: Path | None,
 ) -> list[str]:
     config_dir = config_file.parent
-    command = [
-        token.replace("{config_dir}", str(config_dir)).replace("{mount_point}", str(mount_point))
-        for token in action.command
-    ]
+    command: list[str] = []
+    for token in action.command:
+        rendered = token.replace("{config_dir}", str(config_dir)).replace(
+            "{mount_point}", str(mount_point)
+        )
+        if "{config_dir}" in token:
+            rendered = str(Path(rendered).resolve())
+        command.append(rendered)
     if command[0] == "{python}":
         command[0] = sys.executable
     _resolve_executable(command, config_dir, actions_dir)
