@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
 def test_coordinated_version_application_updates_all_internal_ranges(tmp_path: Path) -> None:
     module = load_script()
     _copy_release_contract(module, tmp_path)
+    original_lock = tomllib.loads((tmp_path / "uv.lock").read_text(encoding="utf-8"))
 
     projects = module.apply_release_version(tmp_path, "1.0.0")
 
@@ -147,6 +149,32 @@ def test_coordinated_version_application_updates_all_internal_ranges(tmp_path: P
         for dependency in metadata.get("dependencies", []):
             if module._dependency_name(dependency) in internal_names:
                 assert dependency.endswith(">=1.0,<2.0")
+    updated_lock = tomllib.loads((tmp_path / "uv.lock").read_text(encoding="utf-8"))
+    original_external = [
+        package for package in original_lock["package"] if package["name"] not in internal_names
+    ]
+    updated_external = [
+        package for package in updated_lock["package"] if package["name"] not in internal_names
+    ]
+    assert updated_external == original_external
+    assert {
+        package["name"]: package["version"]
+        for package in updated_lock["package"]
+        if package["name"] in internal_names
+    } == dict.fromkeys(internal_names, "1.0.0")
+    for package in updated_lock["package"]:
+        for requirement in package.get("metadata", {}).get("requires-dist", []):
+            if requirement["name"] in internal_names and "specifier" in requirement:
+                assert requirement["specifier"] == ">=1.0,<2.0"
+
+    environment = os.environ.copy()
+    environment["UV_CACHE_DIR"] = str(tmp_path / "empty-uv-cache")
+    subprocess.run(
+        ["uv", "lock", "--offline", "--check"],
+        cwd=tmp_path,
+        check=True,
+        env=environment,
+    )
 
 
 def test_v1_release_rail_rejects_another_major() -> None:

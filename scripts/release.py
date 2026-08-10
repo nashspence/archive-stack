@@ -442,7 +442,67 @@ def apply_release_version(root: Path, version: str) -> list[Project]:
                 f'"{name}{target_range}"',
             )
         path.write_text(updated, encoding="utf-8")
+    _apply_release_version_to_lock(
+        root,
+        names=names,
+        current_version=current_version,
+        target_version=version,
+        current_range=current_range,
+        target_range=target_range,
+    )
     return projects
+
+
+def _apply_release_version_to_lock(
+    root: Path,
+    *,
+    names: set[str],
+    current_version: str,
+    target_version: str,
+    current_range: str,
+    target_range: str,
+) -> None:
+    path = root / "uv.lock"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    current_name: str | None = None
+    updated_names: set[str] = set()
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        newline = line[len(content) :]
+        if content == "[[package]]":
+            current_name = None
+            continue
+        name_match = re.fullmatch(r'name = "([^"]+)"', content)
+        if name_match is not None and current_name is None:
+            current_name = _normalize_name(name_match.group(1))
+            continue
+        if current_name not in names:
+            continue
+        version_match = re.fullmatch(r'version = "([^"]+)"', content)
+        if version_match is None:
+            continue
+        if version_match.group(1) != current_version:
+            raise ReleaseError(f"uv.lock has an unexpected {current_name} version")
+        lines[index] = f'version = "{target_version}"{newline}'
+        updated_names.add(current_name)
+    if updated_names != names:
+        missing = sorted(names - updated_names)
+        extra = sorted(updated_names - names)
+        raise ReleaseError(
+            "uv.lock release-unit inventory differs during versioning: "
+            f"missing={missing} extra={extra}"
+        )
+    if current_range != target_range:
+        for index, line in enumerate(lines):
+            if f'specifier = "{current_range}"' not in line:
+                continue
+            if any(f'name = "{name}"' in line for name in names):
+                lines[index] = line.replace(
+                    f'specifier = "{current_range}"',
+                    f'specifier = "{target_range}"',
+                )
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write("".join(lines))
 
 
 def _ensure_clean(root: Path) -> None:
