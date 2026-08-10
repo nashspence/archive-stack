@@ -273,7 +273,11 @@ def list_job_summaries_page(
         ).fetchall()
     job_ids = [str(row["job_id"]) for row in rows]
     jobs = [
-        processing_service.compact_job_response(job, include_queue=False)
+        processing_service.compact_job_response(
+            job,
+            include_queue=False,
+            refresh_progress=False,
+        )
         for job in state_store.load_jobs_by_ids(job_ids)
     ]
     return {

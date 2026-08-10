@@ -1031,23 +1031,38 @@ def upload_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def job_response(job: dict[str, Any], *, include_queue: bool = True) -> dict[str, Any]:
+def job_response(
+    job: dict[str, Any],
+    *,
+    include_queue: bool = True,
+    refresh_progress: bool = True,
+) -> dict[str, Any]:
     response = dict(job)
     if include_queue and (
         queue := scheduling_service.queue_info_for_job(str(job.get("job_id") or ""))
     ):
         response["queue"] = queue
-    if progress := upload_progress_for_job(job):
-        response["upload_progress"] = progress
-    if progress := encode_progress_for_job(job):
-        response["encode_progress"] = progress
-    if progress := handoff_service.current_handoff_progress(job):
-        response["handoff_progress"] = progress
+    if refresh_progress:
+        if progress := upload_progress_for_job(job):
+            response["upload_progress"] = progress
+        if progress := encode_progress_for_job(job):
+            response["encode_progress"] = progress
+        if progress := handoff_service.current_handoff_progress(job):
+            response["handoff_progress"] = progress
     return response
 
 
-def compact_job_response(job: dict[str, Any], *, include_queue: bool = True) -> dict[str, Any]:
-    response = job_response(job, include_queue=include_queue)
+def compact_job_response(
+    job: dict[str, Any],
+    *,
+    include_queue: bool = True,
+    refresh_progress: bool = True,
+) -> dict[str, Any]:
+    response = job_response(
+        job,
+        include_queue=include_queue,
+        refresh_progress=refresh_progress,
+    )
     keys = [
         "job_id",
         "state",
