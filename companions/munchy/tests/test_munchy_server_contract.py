@@ -130,8 +130,12 @@ def test_external_submission_identity_maps_to_confined_provenance_path(
 
     configured_root = (server.runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
     assert upload_root.parent == configured_root
+    assert upload_root.name == hashlib.sha256(b"../../outside").hexdigest()
     assert journal_path.parent == upload_root / ".riverhog" / "provenance" / "journals"
-    assert journal_path.name == f"{journal_id}.json-seq"
+    canonical_filename = f"{journal_id}.json-seq"
+    assert (
+        journal_path.name == f"{hashlib.sha256(canonical_filename.encode()).hexdigest()}.json-seq"
+    )
 
 
 def test_munchy_state_commands_report_and_verify_the_current_revision(

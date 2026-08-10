@@ -59,18 +59,13 @@ def tusd_data_path(upload_id: str) -> Path:
     )
 
 
-def safe_local_id(value: str) -> str:
-    cleaned = "".join(
-        ch if ch in domain_models.SAFE_GROUP_NAME_CHARS else "-" for ch in value
-    ).strip(".-_")
-    digest = hashlib.sha256(value.encode()).hexdigest()[:12]
-    prefix = (cleaned or "upload")[:96].strip(".-_") or "upload"
-    return f"{prefix}-{digest}"
+def opaque_local_id(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def shared_input_upload_root(upload_id: str) -> Path:
     root = (runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
-    candidate = (root / safe_local_id(upload_id)).resolve()
+    candidate = (root / opaque_local_id(upload_id)).resolve()
     if candidate.parent != root:
         raise RuntimeError("input upload path escaped its configured root")
     return candidate
@@ -78,10 +73,11 @@ def shared_input_upload_root(upload_id: str) -> Path:
 
 def input_provenance_journal_path(upload_id: str, journal_id: str) -> Path:
     try:
-        filename = provenance_journal_filename(journal_id)
+        canonical_filename = provenance_journal_filename(journal_id)
     except ValueError as exc:
         raise ServiceError(status_code=400, detail="invalid provenance journal id") from exc
     root = (shared_input_upload_root(upload_id) / ".riverhog" / "provenance" / "journals").resolve()
+    filename = f"{opaque_local_id(canonical_filename)}.json-seq"
     candidate = (root / filename).resolve()
     if candidate.parent != root:
         raise ServiceError(status_code=400, detail="invalid provenance journal path")

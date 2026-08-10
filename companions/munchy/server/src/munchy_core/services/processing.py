@@ -316,7 +316,7 @@ def run_review_sweep_job(
             group_config = groups[group_name]
             tasks = cast(list[domain_models.TaskName], list(route["tasks"]))
             route_input_root = (
-                gpu_job_root / "review-sweep-input" / upload_service.safe_local_id(route_id)
+                gpu_job_root / "review-sweep-input" / upload_service.opaque_local_id(route_id)
             )
             prepare_review_sweep_route_input(
                 upload=input_upload,
@@ -337,13 +337,13 @@ def run_review_sweep_job(
                 variant_archive_dir = (
                     gpu_job_root
                     / "review-sweep-archive"
-                    / upload_service.safe_local_id(route_id)
-                    / upload_service.safe_local_id(profile_id)
+                    / upload_service.opaque_local_id(route_id)
+                    / upload_service.opaque_local_id(profile_id)
                 )
                 variant_review_dir = (
                     review_dir
-                    / upload_service.safe_local_id(route_id)
-                    / upload_service.safe_local_id(profile_id)
+                    / upload_service.opaque_local_id(route_id)
+                    / upload_service.opaque_local_id(profile_id)
                 )
                 gpu_job_id = routing_service.gpu_group_job_id(job_id, f"{route_id}-{profile_id}")
                 gpu_payload = {
