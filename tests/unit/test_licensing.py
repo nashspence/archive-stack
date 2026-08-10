@@ -109,14 +109,25 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
         "munchy-av1-nvenc",
         "test",
     ]
-    assert bake.count('target "') == len(image_targets)
+    sbom_generator = (
+        "docker.io/docker/buildkit-syft-scanner:stable-1@"
+        "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+    )
+    assert bake.count('target "') == len(image_targets) + 1
+    assert 'target "image-common"' in bake
+    assert f'"type=sbom,generator={sbom_generator}"' in bake
     assert all(f'target "{target}"' in bake for target in image_targets)
-    assert 'docker buildx bake --file "$(BAKE_FILE)" --load --sbom=true' in makefile
+    assert bake.count('inherits   = ["image-common"]') == len(image_targets)
+    assert 'docker buildx bake --file "$(BAKE_FILE)" --load' in makefile
     image_steps = workflow["jobs"]["images"]["steps"]
     assert (
-        next(step for step in image_steps if step["name"] == "Build image")["with"]["sbom"] is True
+        next(step for step in image_steps if step["name"] == "Build image")["with"]["files"]
+        == "docker-bake.hcl"
     )
-    assert 'compose build --sbom=true "${service}"' in compose_helper
+    assert (
+        f'local sbom_generator="{sbom_generator}"' in compose_helper
+        and 'compose build --sbom="generator=${sbom_generator}" "${service}"' in compose_helper
+    )
 
 
 def test_entrypoint_documents_route_to_one_operational_disclaimer() -> None:

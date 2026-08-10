@@ -76,5 +76,6 @@ configure_compose_tty() {
 
 ensure_compose_image() {
   local service="$1"
-  compose build --sbom=true "${service}"
+  local sbom_generator="docker.io/docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+  compose build --sbom="generator=${sbom_generator}" "${service}"
 }

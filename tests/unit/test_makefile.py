@@ -17,6 +17,10 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
 COMPOSE_FILE = REPO_ROOT / "riverhog/server/compose.yaml"
+SBOM_GENERATOR = (
+    "docker.io/docker/buildkit-syft-scanner:stable-1@"
+    "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+)
 
 
 def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
@@ -567,9 +571,9 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(uv_log_path) == []
     docker_log = "\n".join(_read_log_lines(docker_log_path))
-    assert " build --sbom=true test" in docker_log
+    assert f" build --sbom=generator={SBOM_GENERATOR} test" in docker_log
     assert " up --detach garage" in docker_log
-    assert " build --sbom=true app" in docker_log
+    assert f" build --sbom=generator={SBOM_GENERATOR} app" in docker_log
     assert " up --detach --wait app" in docker_log
     assert " restart app" in docker_log
     assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
