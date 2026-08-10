@@ -124,7 +124,9 @@ jobs:
           version: v0.36.0
       - name: Resolve image metadata
         id: image-metadata
-        run: echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
       - name: Build image
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
         with:
@@ -135,6 +137,7 @@ jobs:
           set: |
             *.args.SOURCE_REVISION=${{ github.sha }}
             *.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}
+            *.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}
             *.args.RELEASE_VERSION=development
             *.cache-from=type=gha,scope=${{ matrix.target }}
             *.cache-to=type=gha,scope=${{ matrix.target }},mode=min,ignore-error=true

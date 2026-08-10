@@ -29,6 +29,16 @@ evidence = [
   "THIRD_PARTY_NOTICES.md",
 ]
 
+[signing]
+checksums = "SHA-256"
+signature = "minisign"
+key_owner = "The Riverhog release maintainer owns the offline release-signing key."
+secret_key = "The secret key remains outside the repository, GitHub, CI logs, and release artifacts."
+public_key = "The public key is distributed in the v1 documentation and every GitHub release."
+rotation = "Generate a new offline key and publish a transition signed by both old and new keys."
+compromise = "Stop publication, disclose and revoke affected evidence, and issue a new patch release without moving an existing tag."
+github_oidc = "Published GitHub artifacts also receive workflow identity attestations; they complement rather than replace the maintainer signature."
+
 [python]
 end_user_artifact = [
   "companions/jeb/client",

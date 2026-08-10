@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
 import sys
+import tarfile
 import tomllib
 from collections import Counter
 from pathlib import Path
@@ -24,7 +26,13 @@ def load_script() -> ModuleType:
 
 
 def _copy_release_contract(module: ModuleType, destination: Path) -> None:
-    for relative in ("pyproject.toml", "uv.lock", "release.toml", "docker-bake.hcl"):
+    for relative in (
+        "pyproject.toml",
+        "uv.lock",
+        "mise.lock",
+        "release.toml",
+        "docker-bake.hcl",
+    ):
         shutil.copy2(REPO_ROOT / relative, destination / relative)
     for source in module._workspace_pyprojects(REPO_ROOT):
         relative = source.relative_to(REPO_ROOT)
@@ -53,6 +61,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "riverhog-recover",
         "riverhog-server",
     }
+    signing = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["signing"]
+    assert signing["checksums"] == "SHA-256"
+    assert signing["signature"] == "minisign"
+    assert "outside the repository, GitHub, CI logs" in signing["secret_key"]
+    assert "signed by both old and new keys" in signing["rotation"]
+    assert "without moving an existing tag" in signing["compromise"]
 
 
 def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
@@ -125,3 +139,95 @@ def test_dry_run_trust_is_scoped_to_the_exact_sha_checkout(
     assert module._trusted_config_paths(tmp_path) == (
         f"{tmp_path}{module.os.pathsep}/already/trusted"
     )
+
+
+def test_source_archive_is_deterministic_and_commit_time_normalized(tmp_path: Path) -> None:
+    module = load_script()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "README.md").write_text("Riverhog\n", encoding="utf-8")
+    script = checkout / "run"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+    first = tmp_path / "first.tar.gz"
+    second = tmp_path / "second.tar.gz"
+
+    module._write_source_archive(checkout, first, version="1.0.0", source_epoch=1234567890)
+    module._write_source_archive(checkout, second, version="1.0.0", source_epoch=1234567890)
+
+    assert first.read_bytes() == second.read_bytes()
+    with tarfile.open(first, mode="r:gz") as archive:
+        members = archive.getmembers()
+    assert [member.name for member in members] == [
+        "riverhog-1.0.0",
+        "riverhog-1.0.0/README.md",
+        "riverhog-1.0.0/run",
+    ]
+    assert all(member.mtime == 1234567890 for member in members)
+    assert all(member.uid == 0 and member.gid == 0 for member in members)
+    assert members[-1].mode == 0o755
+
+
+def test_release_evidence_is_complete_and_minisign_verified(tmp_path: Path) -> None:
+    module = load_script()
+    output = tmp_path / "evidence"
+    output.mkdir()
+    payload = output / "artifact.whl"
+    payload.write_bytes(b"release artifact\n")
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    public_key = keys / "release.pub"
+    signing_key = keys / "release.key"
+    subprocess.run(
+        [
+            "minisign",
+            "-G",
+            "-W",
+            "-p",
+            str(public_key),
+            "-s",
+            str(signing_key),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    records = [
+        {
+            "kind": "wheel",
+            "name": "artifact.whl",
+            "sha256": module._sha256_file(payload),
+            "size": payload.stat().st_size,
+            "distribution": "riverhog-client",
+            "version": "1.0.0",
+            "license": "CAL-1.0",
+            "dependencies": [],
+            "_components": [
+                {
+                    "kind": "python",
+                    "name": "riverhog-protocol",
+                    "version": "1.0.0",
+                    "license": "CAL-1.0",
+                }
+            ],
+        }
+    ]
+
+    verification = module._generate_release_evidence(
+        REPO_ROOT,
+        output,
+        records,
+        version="1.0.0",
+        source_sha="1" * 40,
+        spdx_created="2009-02-13T23:31:30Z",
+        signing_key=signing_key,
+        public_key=public_key,
+    )
+
+    assert verification["subjects"] == 1
+    assert verification["signature_verified"] is True
+    assert (output / "SHA256SUMS.minisig").is_file()
+    assert (output / records[0]["sbom"]).is_file()
+    manifest = module.json.loads((output / "release-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["published"] is False
+    assert manifest["subjects"] == records

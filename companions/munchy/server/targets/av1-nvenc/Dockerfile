@@ -1,10 +1,12 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS ffmpeg-build
 
+ARG SOURCE_DATE_EPOCH=0
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
 ARG NV_CODEC_HEADERS_REF=33a9ede8d9914299d9262539c576a15bd0a19621
 ARG FFMPEG_CUDA_FLAGS="--cuda-gpu-arch=sm_120 -O2"
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates clang-20 git make pkg-config yasm nasm \
@@ -57,8 +59,10 @@ RUN git init ffmpeg \
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-build
 
+ARG SOURCE_DATE_EPOCH=0
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 WORKDIR /workspace

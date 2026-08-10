@@ -97,8 +97,10 @@ def _bake_graph() -> dict[str, object]:
     assert common_match is not None
     common_body = common_match.group("body")
     platforms_match = re.search(r"platforms\s*=\s*\[(.*?)\]", common_body, re.DOTALL)
+    epoch_match = re.search(r'SOURCE_DATE_EPOCH\s*=\s*"([^"]+)"', common_body)
     attest_match = re.search(r"attest\s*=\s*\[(.*?)\]", common_body, re.DOTALL)
     assert platforms_match is not None
+    assert epoch_match is not None
     assert attest_match is not None
 
     targets: dict[str, dict[str, object]] = {}
@@ -132,6 +134,7 @@ def _bake_graph() -> dict[str, object]:
         "group": {"default": {"targets": group_targets}},
         "common": {
             "platforms": re.findall(r'"([^"]+)"', platforms_match.group(1)),
+            "args": {"SOURCE_DATE_EPOCH": epoch_match.group(1)},
             "attest": re.findall(r'"([^"]+)"', attest_match.group(1)),
         },
         "target": targets,
@@ -144,6 +147,7 @@ def test_bake_graph_is_the_canonical_image_build_contract() -> None:
     assert graph["group"] == {"default": {"targets": list(IMAGE_CONTRACTS)}}
     assert graph["common"] == {
         "platforms": ["linux/amd64"],
+        "args": {"SOURCE_DATE_EPOCH": "0"},
         "attest": [f"type=sbom,generator={SBOM_GENERATOR}"],
     }
     assert set(graph["target"]) == set(IMAGE_CONTRACTS)
@@ -158,6 +162,8 @@ def test_bake_graph_is_the_canonical_image_build_contract() -> None:
             "args": {"SOURCE_REVISION": "unknown"},
         }
         dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        assert "ARG SOURCE_DATE_EPOCH=0" in dockerfile
+        assert "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" in dockerfile
         assert "ARG BUILD_CREATED=1970-01-01T00:00:00Z" in dockerfile
         assert "ARG RELEASE_VERSION=development" in dockerfile
         assert "ARG SOURCE_REVISION=unknown" in dockerfile
@@ -246,7 +252,10 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
     assert steps["Resolve image metadata"] == {
         "name": "Resolve image metadata",
         "id": "image-metadata",
-        "run": 'echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"',
+        "run": (
+            'echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"\n'
+            'echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"\n'
+        ),
     }
     assert steps["Build image"] == {
         "name": "Build image",
@@ -259,6 +268,7 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
             "set": (
                 "*.args.SOURCE_REVISION=${{ github.sha }}\n"
                 "*.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}\n"
+                "*.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}\n"
                 "*.args.RELEASE_VERSION=development\n"
                 "*.cache-from=type=gha,scope=${{ matrix.target }}\n"
                 "*.cache-to=type=gha,scope=${{ matrix.target }},mode=min,ignore-error=true\n"

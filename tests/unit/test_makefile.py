@@ -383,6 +383,23 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "python scripts/release.py dry-run --version 1.0.0",
         ),
         (
+            "release-evidence",
+            (
+                "RELEASE_VERSION=1.0.0",
+                "RELEASE_OUTPUT=/tmp/evidence",
+                "RELEASE_SIGNING_KEY=/tmp/release.key",
+                "RELEASE_PUBLIC_KEY=/tmp/release.pub",
+            ),
+            "python scripts/release.py evidence --version 1.0.0 --output /tmp/evidence "
+            "--signing-key /tmp/release.key --public-key /tmp/release.pub",
+        ),
+        (
+            "release-verify",
+            ("RELEASE_OUTPUT=/tmp/evidence", "RELEASE_PUBLIC_KEY=/tmp/release.pub"),
+            "python scripts/release.py verify --directory /tmp/evidence "
+            "--public-key /tmp/release.pub",
+        ),
+        (
             "tus-throughput",
             ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
             "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
@@ -479,6 +496,13 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
+    epoch = subprocess.run(
+        ["git", "show", "-s", "--format=%ct", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     targets = (
         "riverhog",
         "jeb",
@@ -491,6 +515,7 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "|buildx bake --file docker-bake.hcl --load "
         f"--set {target}.args.SOURCE_REVISION={revision} "
         f"--set {target}.args.BUILD_CREATED={created} "
+        f"--set {target}.args.SOURCE_DATE_EPOCH={epoch} "
         f"--set {target}.args.RELEASE_VERSION=development {target}"
         for target in targets
     ]

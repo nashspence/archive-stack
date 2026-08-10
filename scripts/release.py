@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
 import tomllib
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import UTC, datetime
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +69,16 @@ RUNTIME_IMAGE_TARGETS = {
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}
 RELEASE_IMAGE_PLATFORMS = ["linux/amd64"]
+SIGNING_POLICY_KEYS = {
+    "checksums",
+    "signature",
+    "key_owner",
+    "secret_key",
+    "public_key",
+    "rotation",
+    "compromise",
+    "github_oidc",
+}
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 PROJECT_VERSION_RE = re.compile(r'(?m)^version = "(?P<version>[^"]+)"$')
 
@@ -164,6 +181,49 @@ def _dependency_name(value: str) -> str:
     return _normalize_name(match.group())
 
 
+def _validate_locked_build_inputs(root: Path, uv_lock: dict[str, Any]) -> None:
+    mise_lock = tomllib.loads((root / "mise.lock").read_text(encoding="utf-8"))
+    tools = mise_lock.get("tools", {})
+    expected_provenance = {
+        "age": "github-attestations",
+        "minisign": "minisign",
+        "python": "github-attestations",
+        "uv": "github-attestations",
+    }
+    for name, provenance in expected_provenance.items():
+        entries = tools.get(name)
+        if not isinstance(entries, list) or len(entries) != 1:
+            raise ReleaseError(f"mise.lock must contain one {name} tool")
+        artifact = entries[0].get("platforms.linux-x64")
+        if not isinstance(artifact, dict) or artifact.get("provenance") != provenance:
+            raise ReleaseError(f"mise.lock lacks verified Linux provenance for {name}")
+        checksum = artifact.get("checksum")
+        if name != "minisign" and (
+            not isinstance(checksum, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", checksum) is None
+        ):
+            raise ReleaseError(f"mise.lock lacks a Linux SHA-256 checksum for {name}")
+    exiftool_entries = tools.get("http:exiftool")
+    if not isinstance(exiftool_entries, list) or len(exiftool_entries) != 1:
+        raise ReleaseError("mise.lock must contain one exiftool input")
+    exiftool = exiftool_entries[0].get("platforms.linux-x64")
+    if (
+        not isinstance(exiftool, dict)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(exiftool.get("checksum", ""))) is None
+    ):
+        raise ReleaseError("mise.lock lacks a Linux SHA-256 checksum for exiftool")
+    for package in uv_lock["package"]:
+        if "registry" not in package.get("source", {}):
+            continue
+        artifacts = list(package.get("wheels", []))
+        if package.get("sdist") is not None:
+            artifacts.append(package["sdist"])
+        if not artifacts or any(
+            re.fullmatch(r"sha256:[0-9a-f]{64}", str(item.get("hash", ""))) is None
+            for item in artifacts
+        ):
+            raise ReleaseError(f"uv.lock lacks SHA-256 artifacts for {package['name']}")
+
+
 def validate_release_contract(root: Path, *, expected_version: str | None = None) -> list[Project]:
     config = _load_config(root)
     if config.get("schema") != RELEASE_SCHEMA:
@@ -244,6 +304,7 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
                 )
 
     locked = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    _validate_locked_build_inputs(root, locked)
     locked_versions = {
         _normalize_name(str(item["name"])): str(item["version"])
         for item in locked["package"]
@@ -292,6 +353,13 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release.toml lacks the complete v1 compatibility policy")
     if any(not str(value).strip() for value in compatibility.values()):
         raise ReleaseError("v1 compatibility promises must be visible")
+    signing = config.get("signing")
+    if not isinstance(signing, dict) or set(signing) != SIGNING_POLICY_KEYS:
+        raise ReleaseError("release.toml lacks the complete release-signing policy")
+    if signing["checksums"] != "SHA-256" or signing["signature"] != "minisign":
+        raise ReleaseError("release evidence requires SHA-256 and minisign")
+    if any(not str(value).strip() for value in signing.values()):
+        raise ReleaseError("release-signing ownership and response policy must be visible")
     return projects
 
 
@@ -461,37 +529,1004 @@ def apply_command(root: Path, version: str, *, allow_dirty: bool) -> None:
     validate_release_contract(root, expected_version=version)
 
 
-def dry_run(root: Path, version: str) -> dict[str, Any]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _source_time(root: Path, source_sha: str) -> tuple[int, str, str]:
+    epoch_text = _git_output(root, "show", "-s", "--format=%ct", source_sha)
+    created = _git_output(root, "show", "-s", "--format=%cI", source_sha)
+    if not epoch_text.isdigit():
+        raise ReleaseError("Git did not return a source commit epoch")
+    epoch = int(epoch_text)
+    spdx_created = datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return epoch, created, spdx_created
+
+
+def _write_source_archive(
+    checkout: Path,
+    destination: Path,
+    *,
+    version: str,
+    source_epoch: int,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f"riverhog-{version}"
+    with destination.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=source_epoch) as compressed:
+            with tarfile.open(
+                fileobj=compressed,
+                mode="w",
+                format=tarfile.PAX_FORMAT,
+            ) as archive:
+                root_info = tarfile.TarInfo(prefix)
+                root_info.type = tarfile.DIRTYPE
+                root_info.mode = 0o755
+                root_info.uid = root_info.gid = 0
+                root_info.uname = root_info.gname = "root"
+                root_info.mtime = source_epoch
+                archive.addfile(root_info)
+                for path in sorted(checkout.rglob("*"), key=lambda item: item.as_posix()):
+                    relative = path.relative_to(checkout)
+                    info = archive.gettarinfo(path, arcname=f"{prefix}/{relative.as_posix()}")
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = "root"
+                    info.mtime = source_epoch
+                    if info.isdir():
+                        info.mode = 0o755
+                    elif info.isfile():
+                        info.mode = 0o755 if info.mode & 0o111 else 0o644
+                    if info.isfile():
+                        with path.open("rb") as stream:
+                            archive.addfile(info, stream)
+                    else:
+                        archive.addfile(info)
+
+
+def _distribution_metadata(path: Path) -> tuple[str, str, set[str]]:
+    if path.suffix == ".whl":
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+            if len(names) != 1:
+                raise ReleaseError(f"wheel has no unique METADATA: {path.name}")
+            body = archive.read(names[0])
+    else:
+        with tarfile.open(path, mode="r:gz") as archive:
+            members = [
+                member
+                for member in archive.getmembers()
+                if member.isfile() and PurePosixPath(member.name).name == "PKG-INFO"
+            ]
+            if len(members) != 1:
+                raise ReleaseError(f"sdist has no unique PKG-INFO: {path.name}")
+            stream = archive.extractfile(members[0])
+            if stream is None:
+                raise ReleaseError(f"cannot read sdist PKG-INFO: {path.name}")
+            body = stream.read()
+    metadata = BytesParser(policy=policy.default).parsebytes(body)
+    name = str(metadata.get("Name", ""))
+    version = str(metadata.get("Version", ""))
+    dependencies = {
+        _dependency_name(str(value)) for value in (metadata.get_all("Requires-Dist") or [])
+    }
+    return _normalize_name(name), version, dependencies
+
+
+def _project_dependency_graph(
+    root: Path,
+    projects: list[Project],
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, str]]:
+    project_names = {project.name for project in projects}
+    internal: dict[str, set[str]] = {}
+    direct: dict[str, set[str]] = {}
+    licenses: dict[str, str] = {}
+    for project in projects:
+        metadata = _project_metadata(root / project.path / "pyproject.toml")
+        dependencies = {_dependency_name(str(value)) for value in metadata.get("dependencies", [])}
+        direct[project.name] = dependencies
+        internal[project.name] = dependencies & project_names
+        licenses[project.name] = str(metadata.get("license", "NOASSERTION"))
+    return internal, direct, licenses
+
+
+def _dependency_closure(graph: dict[str, set[str]], root: str) -> set[str]:
+    pending = [root]
+    result: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in result:
+            continue
+        result.add(name)
+        pending.extend(graph[name] - result)
+    return result
+
+
+def _locked_versions(root: Path) -> dict[str, str]:
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    versions = {
+        _normalize_name(str(item["name"])): str(item["version"]) for item in lock["package"]
+    }
+    if len(versions) != len(lock["package"]):
+        raise ReleaseError("uv.lock contains ambiguous package versions")
+    return versions
+
+
+def _validate_distribution_artifacts(
+    root: Path,
+    projects: list[Project],
+    *,
+    version: str,
+) -> dict[str, tuple[Project, set[str]]]:
+    expected: dict[str, Project] = {}
+    for project in projects:
+        artifact_name = project.name.replace("-", "_")
+        expected[f"{artifact_name}-{version}-py3-none-any.whl"] = project
+        expected[f"{artifact_name}-{version}.tar.gz"] = project
+    dist = root / "dist"
+    actual = {path.name for path in dist.iterdir() if path.is_file()}
+    if actual != set(expected):
+        raise ReleaseError(
+            "distribution artifact set differs from the release-unit inventory: "
+            f"missing={sorted(set(expected) - actual)} extra={sorted(actual - set(expected))}"
+        )
+    _internal, direct, _licenses = _project_dependency_graph(root, projects)
+    validated: dict[str, tuple[Project, set[str]]] = {}
+    for name, project in expected.items():
+        artifact_name, artifact_version, dependencies = _distribution_metadata(dist / name)
+        if artifact_name != project.name or artifact_version != version:
+            raise ReleaseError(f"artifact identity differs from its release unit: {name}")
+        if dependencies != direct[project.name]:
+            raise ReleaseError(f"artifact dependencies differ from {project.name}: {name}")
+        validated[name] = project, dependencies
+    return validated
+
+
+def _spdx_id(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9.-]+", "-", value).strip("-.")
+    return f"SPDXRef-{normalized or 'Artifact'}"
+
+
+def _spdx_document(
+    *,
+    name: str,
+    version: str,
+    digest: str | None,
+    license_expression: str,
+    purpose: str,
+    components: list[dict[str, str]],
+    source_sha: str,
+    created: str,
+    relationship: str,
+) -> dict[str, Any]:
+    subject_id = "SPDXRef-Subject"
+    subject: dict[str, Any] = {
+        "SPDXID": subject_id,
+        "name": name,
+        "versionInfo": version,
+        "downloadLocation": "NOASSERTION",
+        "filesAnalyzed": False,
+        "licenseConcluded": license_expression,
+        "licenseDeclared": license_expression,
+        "supplier": "Organization: Riverhog",
+        "primaryPackagePurpose": purpose,
+    }
+    if digest is not None:
+        subject["checksums"] = [{"algorithm": "SHA256", "checksumValue": digest}]
+    packages = [subject]
+    relationships: list[dict[str, str]] = []
+    for index, component in enumerate(
+        sorted(components, key=lambda item: (item["kind"], item["name"], item["version"])),
+        start=1,
+    ):
+        component_id = _spdx_id(f"Component-{index}-{component['kind']}-{component['name']}")
+        packages.append(
+            {
+                "SPDXID": component_id,
+                "name": component["name"],
+                "versionInfo": component["version"],
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": component.get("license", "NOASSERTION"),
+                "licenseDeclared": component.get("license", "NOASSERTION"),
+                "supplier": "NOASSERTION",
+                "primaryPackagePurpose": (
+                    "OPERATING_SYSTEM" if component["kind"] == "deb" else "LIBRARY"
+                ),
+            }
+        )
+        relationships.append(
+            {
+                "spdxElementId": subject_id,
+                "relationshipType": relationship,
+                "relatedSpdxElement": component_id,
+            }
+        )
+    namespace_name = re.sub(r"[^A-Za-z0-9.-]+", "-", name).strip("-.")
+    namespace_digest = digest or source_sha
+    return {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"{name} SBOM",
+        "documentNamespace": (
+            "https://github.com/nashspence/riverhog/releases/"
+            f"v{version}/sbom/{namespace_name}-{namespace_digest}"
+        ),
+        "creationInfo": {
+            "created": created,
+            "creators": ["Tool: Riverhog release.py"],
+        },
+        "documentDescribes": [subject_id],
+        "packages": packages,
+        "relationships": relationships,
+    }
+
+
+IMAGE_INVENTORY_PROGRAM = (
+    "import importlib.metadata,json;"
+    "print(json.dumps(sorted((d.metadata['Name'],d.version) "
+    "for d in importlib.metadata.distributions())))"
+)
+
+
+def _docker_image_exists(reference: str, *, cwd: Path) -> bool:
+    result = subprocess.run(
+        ["docker", "image", "inspect", reference],
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _remove_release_image_tags(tags: list[str], *, cwd: Path) -> None:
+    if not tags:
+        return
+    subprocess.run(
+        ["docker", "image", "rm", *tags],
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _build_release_images(
+    root: Path,
+    projects: list[Project],
+    *,
+    version: str,
+    source_sha: str,
+    source_epoch: int,
+    created: str,
+    cleanup_tags: list[str],
+) -> list[dict[str, Any]]:
+    config = _load_config(root)
+    graph, _direct, licenses = _project_dependency_graph(root, projects)
+    project_versions = {project.name: project.version for project in projects}
+    project_names = set(project_versions)
+    bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    records: list[dict[str, Any]] = []
+    for target, image in config["images"]["runtime"].items():
+        distribution = _normalize_name(str(image["distribution"]))
+        local_repository = f"riverhog-release-dry-run-{source_sha[:12]}/{target}"
+        local_version_tag = f"{local_repository}:{version}"
+        local_sha_tag = f"{local_repository}:sha-{source_sha}"
+        if _docker_image_exists(local_version_tag, cwd=root) or _docker_image_exists(
+            local_sha_tag, cwd=root
+        ):
+            raise ReleaseError(f"temporary release image tag already exists: {local_repository}")
+        cleanup_tags.extend((local_version_tag, local_sha_tag))
+        _run(
+            [
+                "docker",
+                "buildx",
+                "bake",
+                "--file",
+                "docker-bake.hcl",
+                "--load",
+                "--set",
+                f"{target}.tags={local_version_tag}",
+                "--set",
+                f"{target}.args.SOURCE_REVISION={source_sha}",
+                "--set",
+                f"{target}.args.BUILD_CREATED={created}",
+                "--set",
+                f"{target}.args.SOURCE_DATE_EPOCH={source_epoch}",
+                "--set",
+                f"{target}.args.RELEASE_VERSION={version}",
+                target,
+            ],
+            cwd=root,
+            env={"SOURCE_DATE_EPOCH": str(source_epoch)},
+        )
+        _run(["docker", "tag", local_version_tag, local_sha_tag], cwd=root)
+        inspect = cast(
+            list[dict[str, Any]],
+            json.loads(
+                _run(
+                    ["docker", "image", "inspect", local_version_tag],
+                    cwd=root,
+                    capture=True,
+                ).stdout
+            ),
+        )
+        if len(inspect) != 1:
+            raise ReleaseError(f"Docker returned no unique image: {target}")
+        image_data = inspect[0]
+        second_id = _run(
+            ["docker", "image", "inspect", local_sha_tag, "--format", "{{.Id}}"],
+            cwd=root,
+            capture=True,
+        ).stdout.strip()
+        digest = str(image_data.get("Id", ""))
+        if not digest.startswith("sha256:") or second_id != digest:
+            raise ReleaseError(f"semantic and source image tags differ: {target}")
+        labels = cast(dict[str, str], image_data.get("Config", {}).get("Labels") or {})
+        expected_labels = {
+            "org.opencontainers.image.source": "https://github.com/nashspence/riverhog",
+            "org.opencontainers.image.revision": source_sha,
+            "org.opencontainers.image.version": version,
+            "org.opencontainers.image.created": created,
+            "org.opencontainers.image.documentation": ("https://nashspence.github.io/riverhog/v1/"),
+        }
+        if any(labels.get(key) != value for key, value in expected_labels.items()):
+            raise ReleaseError(f"release image labels differ from the release plan: {target}")
+        if image_data.get("Os") != "linux" or image_data.get("Architecture") != "amd64":
+            raise ReleaseError(f"release image has an unqualified platform: {target}")
+        installed_raw = _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network=none",
+                "--entrypoint",
+                "/opt/venv/bin/python",
+                local_version_tag,
+                "-c",
+                IMAGE_INVENTORY_PROGRAM,
+            ],
+            cwd=root,
+            capture=True,
+        ).stdout
+        installed_pairs = cast(list[list[str]], json.loads(installed_raw))
+        installed = {_normalize_name(name): value for name, value in installed_pairs}
+        expected_internal = _dependency_closure(graph, distribution)
+        installed_internal = set(installed) & project_names
+        if installed_internal != expected_internal:
+            raise ReleaseError(
+                f"image {target} release-unit closure differs: "
+                f"missing={sorted(expected_internal - installed_internal)} "
+                f"extra={sorted(installed_internal - expected_internal)}"
+            )
+        if any(installed[name] != project_versions[name] for name in expected_internal):
+            raise ReleaseError(f"image {target} contains another release-unit version")
+        os_inventory = _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network=none",
+                "--entrypoint",
+                "/bin/sh",
+                local_version_tag,
+                "-c",
+                "dpkg-query -W -f='${binary:Package}\\t${Version}\\t${Architecture}\\n'",
+            ],
+            cwd=root,
+            capture=True,
+        ).stdout
+        components = [
+            {
+                "kind": "python",
+                "name": name,
+                "version": package_version,
+                "license": licenses.get(name, "NOASSERTION"),
+            }
+            for name, package_version in installed.items()
+        ]
+        for line in os_inventory.splitlines():
+            name, separator, remainder = line.partition("\t")
+            package_version, separator_two, architecture = remainder.partition("\t")
+            if not separator or not separator_two:
+                raise ReleaseError(f"cannot parse Debian inventory in image {target}")
+            components.append(
+                {
+                    "kind": "deb",
+                    "name": f"{name}:{architecture}",
+                    "version": package_version,
+                    "license": "NOASSERTION",
+                }
+            )
+        repository = str(image["repository"])
+        dockerfile_match = re.search(
+            rf'target "{re.escape(target)}" \{{.*?dockerfile\s*=\s*"([^"]+)"',
+            bake,
+            re.DOTALL,
+        )
+        if dockerfile_match is None:
+            raise ReleaseError(f"release image target has no Dockerfile: {target}")
+        records.append(
+            {
+                "kind": "image",
+                "name": repository,
+                "sha256": digest.removeprefix("sha256:"),
+                "size": int(image_data.get("Size", 0)),
+                "distribution": distribution,
+                "version": version,
+                "license": labels.get("org.opencontainers.image.licenses", "NOASSERTION"),
+                "platforms": list(config["images"]["platforms"]),
+                "tags": [f"{repository}:{version}", f"{repository}:sha-{source_sha}"],
+                "dependencies": [
+                    {"name": name, "version": project_versions[name]}
+                    for name in sorted(expected_internal - {distribution})
+                ],
+                "dockerfile": dockerfile_match.group(1),
+                "_components": components,
+            }
+        )
+    return records
+
+
+def _write_subject_sboms(
+    output: Path,
+    records: list[dict[str, Any]],
+    *,
+    source_sha: str,
+    created: str,
+) -> None:
+    for record in records:
+        slug = re.sub(r"[^A-Za-z0-9.-]+", "-", str(record["name"])).strip("-.")
+        sbom_relative = f"sbom/{record['kind']}-{slug}.spdx.json"
+        components = cast(list[dict[str, str]], record.pop("_components", []))
+        purpose = {
+            "image": "CONTAINER",
+            "source": "SOURCE",
+            "wheel": "LIBRARY",
+            "sdist": "ARCHIVE",
+        }[str(record["kind"])]
+        relationship = "CONTAINS" if record["kind"] in {"image", "source"} else "DEPENDS_ON"
+        _write_json(
+            output / sbom_relative,
+            _spdx_document(
+                name=str(record["name"]),
+                version=str(record["version"]),
+                digest=str(record["sha256"]),
+                license_expression=str(record["license"]),
+                purpose=purpose,
+                components=components,
+                source_sha=source_sha,
+                created=created,
+                relationship=relationship,
+            ),
+        )
+        record["sbom"] = sbom_relative
+
+
+def _write_release_spdx(
+    output: Path,
+    records: list[dict[str, Any]],
+    *,
+    version: str,
+    source_sha: str,
+    created: str,
+) -> None:
+    components = [
+        {
+            "kind": str(record["kind"]),
+            "name": str(record["name"]),
+            "version": str(record["version"]),
+            "license": str(record["license"]),
+        }
+        for record in records
+    ]
+    _write_json(
+        output / "release.spdx.json",
+        _spdx_document(
+            name="Riverhog",
+            version=version,
+            digest=None,
+            license_expression="CAL-1.0 AND Apache-2.0",
+            purpose="APPLICATION",
+            components=components,
+            source_sha=source_sha,
+            created=created,
+            relationship="CONTAINS",
+        ),
+    )
+
+
+def _write_release_provenance(
+    root: Path,
+    output: Path,
+    records: list[dict[str, Any]],
+    *,
+    version: str,
+    source_sha: str,
+    created: str,
+) -> None:
+    common_materials = [
+        {
+            "uri": f"git+https://github.com/nashspence/riverhog@{source_sha}",
+            "digest": {"gitCommit": source_sha},
+        },
+        {
+            "uri": "uv.lock",
+            "digest": {"sha256": _sha256_file(root / "uv.lock")},
+        },
+        {
+            "uri": "mise.lock",
+            "digest": {"sha256": _sha256_file(root / "mise.lock")},
+        },
+    ]
+    statements = []
+    for record in sorted(records, key=lambda item: (str(item["kind"]), str(item["name"]))):
+        materials = list(common_materials)
+        if record["kind"] == "image":
+            dockerfile = root / str(record["dockerfile"])
+            materials.append(
+                {
+                    "uri": str(record["dockerfile"]),
+                    "digest": {"sha256": _sha256_file(dockerfile)},
+                }
+            )
+        statements.append(
+            {
+                "_type": "https://in-toto.io/Statement/v1",
+                "subject": [
+                    {
+                        "name": str(record["name"]),
+                        "digest": {"sha256": str(record["sha256"])},
+                    }
+                ],
+                "predicateType": "https://slsa.dev/provenance/v1",
+                "predicate": {
+                    "buildDefinition": {
+                        "buildType": (
+                            "https://github.com/nashspence/riverhog/blob/main/scripts/release.py#v1"
+                        ),
+                        "externalParameters": {
+                            "kind": record["kind"],
+                            "version": version,
+                            "sourceSha": source_sha,
+                            "platforms": record.get("platforms", []),
+                            "tags": record.get("tags", []),
+                        },
+                        "internalParameters": {
+                            "releaseUnitClosure": record.get("dependencies", [])
+                        },
+                        "resolvedDependencies": materials,
+                    },
+                    "runDetails": {
+                        "builder": {
+                            "id": (
+                                "https://github.com/nashspence/riverhog/"
+                                "blob/main/scripts/release.py"
+                            )
+                        },
+                        "metadata": {
+                            "invocationId": f"riverhog-v{version}-{source_sha}",
+                            "startedOn": created,
+                            "finishedOn": created,
+                        },
+                        "byproducts": [
+                            {
+                                "name": str(record["sbom"]),
+                                "digest": {"sha256": _sha256_file(output / str(record["sbom"]))},
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+    provenance = output / "release.intoto.jsonl"
+    provenance.write_text(
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in statements),
+        encoding="utf-8",
+    )
+
+
+def _write_checksums(output: Path) -> None:
+    excluded = {"SHA256SUMS", "SHA256SUMS.minisig"}
+    files = sorted(
+        path
+        for path in output.rglob("*")
+        if path.is_file() and path.relative_to(output).as_posix() not in excluded
+    )
+    (output / "SHA256SUMS").write_text(
+        "".join(f"{_sha256_file(path)}  {path.relative_to(output).as_posix()}\n" for path in files),
+        encoding="utf-8",
+    )
+
+
+def _sign_checksums(
+    output: Path,
+    *,
+    signing_key: Path,
+    version: str,
+    source_sha: str,
+) -> None:
+    _run(
+        [
+            "minisign",
+            "-S",
+            "-s",
+            str(signing_key),
+            "-m",
+            str(output / "SHA256SUMS"),
+            "-x",
+            str(output / "SHA256SUMS.minisig"),
+            "-t",
+            f"Riverhog v{version} checksums",
+            "-c",
+            f"source {source_sha}",
+        ],
+        cwd=output,
+    )
+
+
+def verify_release_evidence(
+    root: Path,
+    output: Path,
+    *,
+    public_key: Path,
+) -> dict[str, Any]:
+    config = _load_config(root)
+    required = set(config["artifacts"]["evidence"])
+    absent = sorted(name for name in required if not (output / name).is_file())
+    if absent:
+        raise ReleaseError(f"release evidence is absent: {absent}")
+    entries: dict[str, str] = {}
+    for line in (output / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+        digest, separator, name = line.partition("  ")
+        relative = PurePosixPath(name)
+        if (
+            not separator
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or name in entries
+        ):
+            raise ReleaseError("SHA256SUMS contains an invalid or repeated entry")
+        path = output.joinpath(*relative.parts)
+        if not path.is_file() or _sha256_file(path) != digest:
+            raise ReleaseError(f"release checksum does not verify: {name}")
+        entries[name] = digest
+    expected_entries = {
+        path.relative_to(output).as_posix()
+        for path in output.rglob("*")
+        if path.is_file() and path.name not in {"SHA256SUMS", "SHA256SUMS.minisig"}
+    }
+    if set(entries) != expected_entries:
+        raise ReleaseError("SHA256SUMS does not cover every release artifact and evidence file")
+    _run(
+        [
+            "minisign",
+            "-V",
+            "-p",
+            str(public_key),
+            "-m",
+            str(output / "SHA256SUMS"),
+            "-x",
+            str(output / "SHA256SUMS.minisig"),
+        ],
+        cwd=output,
+        capture=True,
+    )
+    manifest = cast(
+        dict[str, Any],
+        json.loads((output / "release-manifest.json").read_text(encoding="utf-8")),
+    )
+    if manifest.get("schema") != RELEASE_SCHEMA:
+        raise ReleaseError("release manifest uses another schema")
+    subjects = cast(list[dict[str, Any]], manifest.get("subjects"))
+    if not subjects:
+        raise ReleaseError("release manifest contains no subjects")
+    subject_keys = {(str(item["name"]), str(item["sha256"])) for item in subjects}
+    if len(subject_keys) != len(subjects):
+        raise ReleaseError("release manifest repeats a subject")
+    for subject in subjects:
+        sbom_path = output / str(subject["sbom"])
+        sbom = cast(dict[str, Any], json.loads(sbom_path.read_text(encoding="utf-8")))
+        if sbom.get("spdxVersion") != "SPDX-2.3" or not sbom.get("documentDescribes"):
+            raise ReleaseError(f"artifact SBOM is invalid: {subject['sbom']}")
+        if subject["kind"] != "image":
+            if entries.get(str(subject["name"])) != subject["sha256"]:
+                raise ReleaseError(f"manifest digest differs from checksums: {subject['name']}")
+    provenance_subjects: set[tuple[str, str]] = set()
+    for line in (output / "release.intoto.jsonl").read_text(encoding="utf-8").splitlines():
+        statement = cast(dict[str, Any], json.loads(line))
+        if statement.get("predicateType") != "https://slsa.dev/provenance/v1":
+            raise ReleaseError("release provenance uses another predicate")
+        statement_subject = statement["subject"]
+        if not isinstance(statement_subject, list) or len(statement_subject) != 1:
+            raise ReleaseError("release provenance statement has no unique subject")
+        provenance_subjects.add(
+            (
+                str(statement_subject[0]["name"]),
+                str(statement_subject[0]["digest"]["sha256"]),
+            )
+        )
+    if provenance_subjects != subject_keys:
+        raise ReleaseError("release provenance does not cover every manifest subject")
+    release_spdx = cast(
+        dict[str, Any],
+        json.loads((output / "release.spdx.json").read_text(encoding="utf-8")),
+    )
+    if release_spdx.get("spdxVersion") != "SPDX-2.3":
+        raise ReleaseError("release-wide SBOM is not SPDX 2.3")
+    return {
+        "subjects": len(subjects),
+        "files": len(entries),
+        "signature_verified": True,
+    }
+
+
+def _prepare_file_subjects(
+    root: Path,
+    output: Path,
+    projects: list[Project],
+    validated: dict[str, tuple[Project, set[str]]],
+    *,
+    version: str,
+    source_archive: Path,
+) -> list[dict[str, Any]]:
+    graph, _direct, licenses = _project_dependency_graph(root, projects)
+    locked_versions = _locked_versions(root)
+    project_versions = {project.name: project.version for project in projects}
+    records: list[dict[str, Any]] = []
+    python_output = output / "python"
+    python_output.mkdir(parents=True, exist_ok=True)
+    for name, (project, dependencies) in sorted(validated.items()):
+        destination = python_output / name
+        shutil.copy2(root / "dist" / name, destination)
+        relative = destination.relative_to(output).as_posix()
+        components = [
+            {
+                "kind": "python",
+                "name": dependency,
+                "version": locked_versions[dependency],
+                "license": licenses.get(dependency, "NOASSERTION"),
+            }
+            for dependency in sorted(dependencies)
+        ]
+        internal_closure = _dependency_closure(graph, project.name)
+        records.append(
+            {
+                "kind": "wheel" if name.endswith(".whl") else "sdist",
+                "name": relative,
+                "sha256": _sha256_file(destination),
+                "size": destination.stat().st_size,
+                "distribution": project.name,
+                "version": version,
+                "license": licenses[project.name],
+                "dependencies": [
+                    {"name": dependency, "version": project_versions[dependency]}
+                    for dependency in sorted(internal_closure - {project.name})
+                ],
+                "_components": components,
+            }
+        )
+    source_relative = source_archive.relative_to(output).as_posix()
+    records.append(
+        {
+            "kind": "source",
+            "name": source_relative,
+            "sha256": _sha256_file(source_archive),
+            "size": source_archive.stat().st_size,
+            "version": version,
+            "license": "CAL-1.0 AND Apache-2.0",
+            "dependencies": [
+                {"name": project.name, "version": project.version}
+                for project in sorted(projects, key=lambda item: item.name)
+            ],
+            "_components": [
+                {
+                    "kind": "python",
+                    "name": project.name,
+                    "version": project.version,
+                    "license": licenses[project.name],
+                }
+                for project in projects
+            ],
+        }
+    )
+    return records
+
+
+def _generate_release_evidence(
+    root: Path,
+    output: Path,
+    records: list[dict[str, Any]],
+    *,
+    version: str,
+    source_sha: str,
+    spdx_created: str,
+    signing_key: Path,
+    public_key: Path,
+) -> dict[str, Any]:
+    shutil.copy2(root / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
+    _write_subject_sboms(output, records, source_sha=source_sha, created=spdx_created)
+    _write_release_spdx(
+        output,
+        records,
+        version=version,
+        source_sha=source_sha,
+        created=spdx_created,
+    )
+    config = _load_config(root)
+    manifest = {
+        "schema": RELEASE_SCHEMA,
+        "version": version,
+        "tag": config["tag_template"].format(version=version),
+        "source_sha": source_sha,
+        "created": spdx_created,
+        "platforms": config["images"]["platforms"],
+        "subjects": sorted(records, key=lambda item: (str(item["kind"]), str(item["name"]))),
+        "evidence": config["artifacts"]["evidence"],
+        "signing": config["signing"],
+        "published": False,
+    }
+    _write_json(output / "release-manifest.json", manifest)
+    _write_release_provenance(
+        root,
+        output,
+        records,
+        version=version,
+        source_sha=source_sha,
+        created=spdx_created,
+    )
+    _write_checksums(output)
+    _sign_checksums(
+        output,
+        signing_key=signing_key,
+        version=version,
+        source_sha=source_sha,
+    )
+    return verify_release_evidence(root, output, public_key=public_key)
+
+
+def build_release_evidence(
+    root: Path,
+    version: str,
+    output: Path,
+    *,
+    signing_key: Path,
+    public_key: Path,
+) -> dict[str, Any]:
     _ensure_clean(root)
     source_sha = _source_sha(root)
+    source_epoch, image_created, spdx_created = _source_time(root, source_sha)
+    if output.exists() and any(output.iterdir()):
+        raise ReleaseError(f"release evidence output is not empty: {output}")
+    output.mkdir(parents=True, exist_ok=True)
     archive = subprocess.run(
         ["git", "archive", "--format=tar", source_sha],
         cwd=root,
         check=True,
         stdout=subprocess.PIPE,
     ).stdout
-    with tempfile.TemporaryDirectory(prefix="riverhog-release-dry-run.") as temporary:
-        checkout = Path(temporary) / "riverhog"
-        checkout.mkdir()
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
-            stream.extractall(checkout, filter="data")
-        apply_release_version(checkout, version)
-        _run(["uv", "lock", "--offline"], cwd=checkout)
-        projects = validate_release_contract(checkout, expected_version=version)
-        _run(
-            ["make", "dist-smoke"],
-            cwd=checkout,
-            env={"MISE_TRUSTED_CONFIG_PATHS": _trusted_config_paths(checkout)},
-        )
+    cleanup_tags: list[str] = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="riverhog-release-build.") as temporary:
+            checkout = Path(temporary) / "riverhog"
+            checkout.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
+                stream.extractall(checkout, filter="data")
+            apply_release_version(checkout, version)
+            _run(["uv", "lock", "--offline"], cwd=checkout)
+            projects = validate_release_contract(checkout, expected_version=version)
+            source_name = _load_config(checkout)["artifacts"]["source"].format(version=version)
+            source_archive = output / source_name
+            _write_source_archive(
+                checkout,
+                source_archive,
+                version=version,
+                source_epoch=source_epoch,
+            )
+            _run(
+                ["make", "dist-smoke"],
+                cwd=checkout,
+                env={
+                    "MISE_TRUSTED_CONFIG_PATHS": _trusted_config_paths(checkout),
+                    "SOURCE_DATE_EPOCH": str(source_epoch),
+                },
+            )
+            validated = _validate_distribution_artifacts(
+                checkout,
+                projects,
+                version=version,
+            )
+            records = _prepare_file_subjects(
+                checkout,
+                output,
+                projects,
+                validated,
+                version=version,
+                source_archive=source_archive,
+            )
+            records.extend(
+                _build_release_images(
+                    checkout,
+                    projects,
+                    version=version,
+                    source_sha=source_sha,
+                    source_epoch=source_epoch,
+                    created=image_created,
+                    cleanup_tags=cleanup_tags,
+                )
+            )
+            verification = _generate_release_evidence(
+                checkout,
+                output,
+                records,
+                version=version,
+                source_sha=source_sha,
+                spdx_created=spdx_created,
+                signing_key=signing_key,
+                public_key=public_key,
+            )
+    finally:
+        _remove_release_image_tags(cleanup_tags, cwd=root)
     return {
         "schema": RELEASE_SCHEMA,
         "version": version,
         "tag": f"v{version}",
         "source_sha": source_sha,
         "python_distributions": len(projects),
+        "runtime_images": len(RUNTIME_IMAGE_TARGETS),
+        "evidence_subjects": verification["subjects"],
+        "evidence_files": verification["files"],
+        "signature_verified": verification["signature_verified"],
         "published": False,
-        "validation": ["uv lock --offline", "make dist-smoke"],
+        "validation": [
+            "uv lock --offline",
+            "make dist-smoke",
+            "runtime image release-unit closure",
+            "SHA-256 checksums",
+            "SPDX 2.3 SBOMs",
+            "SLSA provenance",
+            "minisign signature",
+        ],
     }
+
+
+def dry_run(root: Path, version: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="riverhog-release-dry-run.") as temporary:
+        scratch = Path(temporary)
+        keys = scratch / "keys"
+        keys.mkdir()
+        public_key = keys / "release.pub"
+        signing_key = keys / "release.key"
+        _run(
+            [
+                "minisign",
+                "-G",
+                "-W",
+                "-p",
+                str(public_key),
+                "-s",
+                str(signing_key),
+            ],
+            cwd=keys,
+        )
+        return build_release_evidence(
+            root,
+            version,
+            scratch / "evidence",
+            signing_key=signing_key,
+            public_key=public_key,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -512,9 +1547,25 @@ def _parser() -> argparse.ArgumentParser:
 
     dry = subparsers.add_parser(
         "dry-run",
-        help="Apply the version in a temporary exact-SHA checkout and run distribution smoke.",
+        help="Build and verify exact-SHA release evidence with an ephemeral key; publish nothing.",
     )
     dry.add_argument("--version", required=True)
+
+    evidence = subparsers.add_parser(
+        "evidence",
+        help="Build exact-SHA release evidence with an external maintainer key; publish nothing.",
+    )
+    evidence.add_argument("--version", required=True)
+    evidence.add_argument("--output", required=True, type=Path)
+    evidence.add_argument("--signing-key", required=True, type=Path)
+    evidence.add_argument("--public-key", required=True, type=Path)
+
+    verify = subparsers.add_parser(
+        "verify",
+        help="Verify checksums, signature, manifest, SBOMs, and provenance for release evidence.",
+    )
+    verify.add_argument("--directory", required=True, type=Path)
+    verify.add_argument("--public-key", required=True, type=Path)
     return parser
 
 
@@ -541,8 +1592,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
         elif args.command == "apply":
             apply_command(ROOT, args.version, allow_dirty=args.allow_dirty)
-        else:
+        elif args.command == "dry-run":
             payload = dry_run(ROOT, args.version)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif args.command == "evidence":
+            payload = build_release_evidence(
+                ROOT,
+                args.version,
+                args.output.resolve(),
+                signing_key=args.signing_key.resolve(),
+                public_key=args.public_key.resolve(),
+            )
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            payload = verify_release_evidence(
+                ROOT,
+                args.directory.resolve(),
+                public_key=args.public_key.resolve(),
+            )
             print(json.dumps(payload, indent=2, sort_keys=True))
     except (OSError, ReleaseError, subprocess.CalledProcessError) as exc:
         raise SystemExit(f"release error: {exc}") from exc

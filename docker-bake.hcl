@@ -12,6 +12,9 @@ group "default" {
 // Update a readable image version and its digest together, then run `make build`.
 target "image-common" {
   platforms = ["linux/amd64"]
+  args = {
+    SOURCE_DATE_EPOCH = "0"
+  }
   attest = [
     "type=sbom,generator=docker.io/docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68",
   ]

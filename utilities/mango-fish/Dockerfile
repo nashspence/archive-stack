@@ -1,7 +1,9 @@
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
 
+ARG SOURCE_DATE_EPOCH=0
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 WORKDIR /workspace
