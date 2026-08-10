@@ -16,6 +16,8 @@ from munchy_api_client.client import (
     JobTerminalDuringUpload,
     MunchyClient,
     SubmissionInputFile,
+    SubmissionPreflightInputFile,
+    SubmissionPreflightRequest,
     SubmissionUploadRequest,
     compact_job_failure,
     is_transient_upload_error,
@@ -96,19 +98,12 @@ class MunchyTargetAdapter:
                 "target_config": config,
             }
         target = context.target_by_name(source.target)
-        request = SubmissionUploadRequest(
-            submission_id=f"preflight-{source.id}",
+        request = SubmissionPreflightRequest(
             template_id=str(config["template_id"]),
             files=tuple(
-                SubmissionInputFile(
-                    source=item.path,
+                SubmissionPreflightInputFile(
                     rel_path=item.target_path,
                     bytes=item.bytes,
-                    sha256="",
-                    provenance={
-                        "status": "omitted",
-                        "omission_reason": "target preflight does not relinquish custody",
-                    },
                 )
                 for item in files
             ),

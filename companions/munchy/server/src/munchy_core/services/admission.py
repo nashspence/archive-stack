@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import logging.config
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -173,7 +174,9 @@ def storage_group_hint_is_eager_archive_only(group: domain_models.StorageGroupHi
     return set(str(task) for task in group.tasks) == {"archive_video"}
 
 
-def eager_archive_admission_bytes(files: list[domain_models.InputFileSpec]) -> int:
+def eager_archive_admission_bytes(
+    files: Sequence[domain_models.PreflightInputFileSpec],
+) -> int:
     if not files:
         return 0
     concurrent_files = (
@@ -186,7 +189,7 @@ def eager_archive_admission_bytes(files: list[domain_models.InputFileSpec]) -> i
 
 
 def gpu_scratch_admission_required_bytes(
-    files: list[domain_models.InputFileSpec],
+    files: Sequence[domain_models.PreflightInputFileSpec],
     hint: domain_models.InputUploadStorageHint,
 ) -> int:
     multiplier = storage_hint_scratch_extra_multiplier(hint)
@@ -199,7 +202,7 @@ def gpu_scratch_admission_required_bytes(
     ):
         return gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
 
-    eager_files: list[domain_models.InputFileSpec] = []
+    eager_files: list[domain_models.PreflightInputFileSpec] = []
     non_eager_gpu_bytes = 0
     for item in files:
         group = storage_group_hint_for_path(item.path, hint)
@@ -219,7 +222,7 @@ def gpu_scratch_admission_required_bytes(
 
 
 def require_input_upload_capacity(
-    files: list[domain_models.InputFileSpec],
+    files: Sequence[domain_models.PreflightInputFileSpec],
     storage_hint: domain_models.InputUploadStorageHint,
 ) -> None:
     active_uploads = scheduling_service.active_input_uploads()

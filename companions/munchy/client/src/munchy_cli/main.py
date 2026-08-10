@@ -27,6 +27,7 @@ from munchy_api_client.client import (
     job_finished_cleanly,
     keep_system_awake,
     server_url_setting,
+    submission_preflight_request,
 )
 from munchy_api_client.local_routing import routing_plan_files
 from munchy_api_client.routing import (
@@ -1427,7 +1428,7 @@ def submit(
         client = _track_client(MunchyClient(resolved_server_url))
         terminal_failure = False
         try:
-            preflight = client.preflight_submission(request)
+            preflight = client.preflight_submission(submission_preflight_request(request))
             if dry_run:
                 plan = _submission_plan_payload(
                     request,

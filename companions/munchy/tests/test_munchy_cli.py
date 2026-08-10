@@ -920,7 +920,7 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             assert base_url == "https://munchy.test"
 
         def preflight_submission(self, request):  # type: ignore[no-untyped-def]
-            seen["request"] = request
+            seen["preflight_request"] = request
             return {
                 "accepted": True,
                 "template_id": request.template_id,
@@ -931,6 +931,7 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             }
 
         def create_submission(self, request):  # type: ignore[no-untyped-def]
+            seen["upload_request"] = request
             return {
                 "submission_id": request.submission_id,
                 "upload": {"state": "uploading"},
@@ -978,15 +979,16 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
     )
 
     assert result.exit_code == 0
-    request = seen["request"]
-    assert request.template_id == "camera-archive"
-    assert request.inputs == {"route": "camera-main"}
-    assert request.run_id == "20260621T120000.123456Z"
-    assert [item.rel_path for item in request.files] == ["clip.mp4"]
-    assert seen["uploaded"] == request.submission_id
+    preflight_request = seen["preflight_request"]
+    upload_request = seen["upload_request"]
+    assert preflight_request.template_id == "camera-archive"
+    assert preflight_request.inputs == {"route": "camera-main"}
+    assert preflight_request.run_id == "20260621T120000.123456Z"
+    assert [item.rel_path for item in preflight_request.files] == ["clip.mp4"]
+    assert seen["uploaded"] == upload_request.submission_id
     assert awake_reasons == ["munchy submit"]
     payload = json.loads(result.stdout)
-    assert payload["submission_id"] == request.submission_id
+    assert payload["submission_id"] == upload_request.submission_id
     assert payload["job"]["state"] == "succeeded"
 
 
@@ -1005,7 +1007,7 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
             assert base_url == "https://munchy.test"
 
         def preflight_submission(self, request):  # type: ignore[no-untyped-def]
-            seen["request"] = request
+            seen["preflight_request"] = request
             return {
                 "accepted": True,
                 "template_id": request.template_id,
@@ -1036,8 +1038,8 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
     )
 
     assert result.exit_code == 0
-    request = seen["request"]
-    assert [item.rel_path for item in request.files] == ["IMG_0001.MOV"]
+    preflight_request = seen["preflight_request"]
+    assert [item.rel_path for item in preflight_request.files] == ["IMG_0001.MOV"]
     payload = json.loads(result.stdout)
     assert payload["status"] == "would_submit"
     assert payload["template_id"] == "phone-review"

@@ -56,7 +56,7 @@ def submission_request_digest(req: domain_models.SubmissionSpec) -> str:
 
 
 def resolved_submission(
-    req: domain_models.SubmissionSpec,
+    req: domain_models.SubmissionPreflightRequest,
     *,
     submission_id: str,
 ) -> tuple[dict[str, Any], domain_models.CreateJobRequest, domain_models.InputUploadStorageHint]:
@@ -83,7 +83,13 @@ def resolved_submission(
         raise ServiceError(status_code=400, detail=str(exc)) from exc
     storage_hint = admission_service.storage_hint_for_job_request(job_request)
     try:
-        domain_models.CreateInputUploadRequest(files=req.files, storage_hint=storage_hint)
+        domain_models.PreflightInputUploadRequest(
+            files=[
+                domain_models.PreflightInputFileSpec(path=item.path, bytes=item.bytes)
+                for item in req.files
+            ],
+            storage_hint=storage_hint,
+        )
     except ValidationError as exc:
         raise ServiceError(status_code=400, detail=str(exc)) from exc
     return template, job_request, storage_hint

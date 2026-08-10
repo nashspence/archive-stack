@@ -621,8 +621,6 @@ def test_submission_preflight_resolves_template_without_creating_state(
                     {
                         "path": "video/a.mp4",
                         "bytes": 4,
-                        "sha256": "a" * 64,
-                        "provenance": omitted_test_provenance(),
                     }
                 ],
             },

@@ -17,6 +17,8 @@ from munchy_api_client.client import (
     MunchyHttpError,
     RichProgressRenderer,
     SubmissionInputFile,
+    SubmissionPreflightInputFile,
+    SubmissionPreflightRequest,
     SubmissionUploadRequest,
     UploadProgress,
     UploadRetryReporter,
@@ -878,6 +880,43 @@ def test_submission_preflight_failure_uses_submission_scoped_endpoint() -> None:
         "path": "/v1/submissions/preflight-failures",
         "payload": payload,
         "expect": {202},
+    }
+
+
+def test_submission_preflight_sends_only_admission_facts() -> None:
+    client = MunchyClient("https://munchy.test")
+    seen: dict[str, object] = {}
+    request = SubmissionPreflightRequest(
+        template_id="camera-archive",
+        inputs={"route": "camera-main"},
+        run_id="20260101T000000.123456Z",
+        files=(
+            SubmissionPreflightInputFile(
+                rel_path="camera/clip.mp4",
+                bytes=123,
+            ),
+        ),
+    )
+
+    def fake_retry(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        seen.update(method=method, path=path, **kwargs)
+        return {"accepted": True}
+
+    client._json_with_transient_retries = fake_retry  # type: ignore[method-assign]
+
+    assert client.preflight_submission(request) == {"accepted": True}
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/submissions/preflight",
+        "payload": {
+            "template_id": "camera-archive",
+            "inputs": {"route": "camera-main"},
+            "files": [{"path": "camera/clip.mp4", "bytes": 123}],
+            "handoff_on_failure": "preserve_for_resume",
+            "run_id": "20260101T000000.123456Z",
+        },
+        "label": "submission preflight",
+        "timeout": 300.0,
     }
 
 

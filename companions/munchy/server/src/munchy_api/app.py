@@ -558,7 +558,7 @@ def delete_job_template(template_id: str, expected_revision: int) -> dict[str, A
     "/v1/submissions/preflight",
     responses=error_responses(429, 507),
 )
-def preflight_submission(req: domain_models.SubmissionSpec) -> dict[str, Any]:
+def preflight_submission(req: domain_models.SubmissionPreflightRequest) -> dict[str, Any]:
     provisional_id = f"preflight-{uuid.uuid4().hex}"
     template, job_request, storage_hint = job_service.resolved_submission(
         req,

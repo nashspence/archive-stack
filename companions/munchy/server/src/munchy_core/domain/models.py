@@ -172,11 +172,11 @@ class InputFileProvenanceSpec(BaseModel):
         return self
 
 
-class InputFileSpec(BaseModel):
+class PreflightInputFileSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     path: str = Field(min_length=1, max_length=4096)
     bytes: int = Field(ge=0)
-    sha256: str = Field(min_length=64, max_length=64)
-    provenance: InputFileProvenanceSpec
 
     @field_validator("path")
     @classmethod
@@ -185,6 +185,11 @@ class InputFileSpec(BaseModel):
         if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
             raise ValueError("path must be relative and normalized")
         return normalized
+
+
+class InputFileSpec(PreflightInputFileSpec):
+    sha256: str = Field(min_length=64, max_length=64)
+    provenance: InputFileProvenanceSpec
 
     @field_validator("sha256")
     @classmethod
@@ -744,14 +749,17 @@ class RoutingConfig(BaseModel):
         return self
 
 
-class CreateInputUploadRequest(BaseModel):
-    input_upload_id: str | None = Field(default=None, min_length=1, max_length=160)
-    files: list[InputFileSpec]
+class PreflightInputUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: Sequence[PreflightInputFileSpec]
     storage_hint: InputUploadStorageHint
 
     @field_validator("files")
     @classmethod
-    def require_files(cls, value: list[InputFileSpec]) -> list[InputFileSpec]:
+    def require_files(
+        cls, value: Sequence[PreflightInputFileSpec]
+    ) -> Sequence[PreflightInputFileSpec]:
         if not value:
             raise ValueError("at least one file is required")
         paths = [item.path for item in value]
@@ -760,12 +768,17 @@ class CreateInputUploadRequest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_path_shape(self) -> CreateInputUploadRequest:
+    def validate_path_shape(self) -> PreflightInputUploadRequest:
         if self.storage_hint.structured_routing:
             return self
         for item in self.files:
             input_path_group(item.path)
         return self
+
+
+class CreateInputUploadRequest(PreflightInputUploadRequest):
+    input_upload_id: str | None = Field(default=None, min_length=1, max_length=160)
+    files: list[InputFileSpec]
 
 
 class CreateJobRequest(BaseModel):
@@ -888,12 +901,12 @@ class JobTemplateEnabledRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
-class SubmissionSpec(BaseModel):
+class SubmissionPreflightRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     template_id: str = Field(min_length=1, max_length=160)
     inputs: dict[str, str] = Field(default_factory=dict)
-    files: list[InputFileSpec]
+    files: Sequence[PreflightInputFileSpec]
     run_id: str | None = Field(default=None, min_length=1, max_length=64)
     handoff_on_failure: HandoffFailureAction = "preserve_for_resume"
     event_context: dict[str, Any] | None = None
@@ -908,7 +921,9 @@ class SubmissionSpec(BaseModel):
 
     @field_validator("files")
     @classmethod
-    def require_files(cls, value: list[InputFileSpec]) -> list[InputFileSpec]:
+    def require_files(
+        cls, value: Sequence[PreflightInputFileSpec]
+    ) -> Sequence[PreflightInputFileSpec]:
         if not value:
             raise ValueError("at least one file is required")
         paths = [item.path for item in value]
@@ -926,6 +941,10 @@ class SubmissionSpec(BaseModel):
                 raise ValueError(f"invalid submission input name: {raw_name}")
             normalized[name] = str(raw_value).strip()
         return normalized
+
+
+class SubmissionSpec(SubmissionPreflightRequest):
+    files: list[InputFileSpec]
 
 
 class CreateSubmissionRequest(SubmissionSpec):

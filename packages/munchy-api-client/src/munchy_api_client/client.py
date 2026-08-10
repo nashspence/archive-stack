@@ -73,6 +73,22 @@ class SubmissionInputFile:
 
 
 @dataclass(frozen=True)
+class SubmissionPreflightInputFile:
+    rel_path: str
+    bytes: int
+
+
+@dataclass(frozen=True)
+class SubmissionPreflightRequest:
+    template_id: str
+    files: tuple[SubmissionPreflightInputFile, ...]
+    inputs: dict[str, str] = field(default_factory=dict)
+    run_id: str | None = None
+    handoff_on_failure: str = "preserve_for_resume"
+    event_context: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SubmissionUploadRequest:
     submission_id: str
     template_id: str
@@ -90,6 +106,22 @@ class SubmissionUploadRequest:
 
 
 UploadRequest = SubmissionUploadRequest
+
+
+def submission_preflight_request(
+    request: SubmissionUploadRequest,
+) -> SubmissionPreflightRequest:
+    return SubmissionPreflightRequest(
+        template_id=request.template_id,
+        files=tuple(
+            SubmissionPreflightInputFile(rel_path=item.rel_path, bytes=item.bytes)
+            for item in request.files
+        ),
+        inputs=dict(request.inputs),
+        run_id=request.run_id,
+        handoff_on_failure=request.handoff_on_failure,
+        event_context=dict(request.event_context),
+    )
 
 
 def server_url_setting(
@@ -163,6 +195,26 @@ def submission_payload(
     for key, value in (("run_id", request.run_id),):
         if value is not None:
             payload[key] = value
+    if request.event_context:
+        payload["event_context"] = request.event_context
+    return payload
+
+
+def submission_preflight_payload(request: SubmissionPreflightRequest) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "template_id": request.template_id,
+        "inputs": request.inputs,
+        "files": [
+            {
+                "path": item.rel_path,
+                "bytes": item.bytes,
+            }
+            for item in request.files
+        ],
+        "handoff_on_failure": request.handoff_on_failure,
+    }
+    if request.run_id is not None:
+        payload["run_id"] = request.run_id
     if request.event_context:
         payload["event_context"] = request.event_context
     return payload
@@ -1505,11 +1557,11 @@ class MunchyClient:
             expect={202},
         )
 
-    def preflight_submission(self, request: SubmissionUploadRequest) -> dict[str, Any]:
+    def preflight_submission(self, request: SubmissionPreflightRequest) -> dict[str, Any]:
         return self._json_with_transient_retries(
             "POST",
             "/v1/submissions/preflight",
-            payload=submission_payload(request, include_id=False),
+            payload=submission_preflight_payload(request),
             label="submission preflight",
             timeout=300.0,
         )
