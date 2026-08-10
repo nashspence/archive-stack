@@ -61,6 +61,7 @@ RUNTIME_IMAGE_TARGETS = {
     },
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}
+RELEASE_IMAGE_PLATFORMS = ["linux/amd64"]
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 PROJECT_VERSION_RE = re.compile(r'(?m)^version = "(?P<version>[^"]+)"$')
 
@@ -253,8 +254,17 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     if any(value != current_version for value in locked_versions.values()):
         raise ReleaseError("uv.lock release-unit versions differ from pyproject metadata")
 
-    runtime_images = config.get("images", {}).get("runtime", {})
-    test_images = config.get("images", {}).get("test_only", {})
+    images_config = config.get("images")
+    if not isinstance(images_config, dict) or set(images_config) != {
+        "platforms",
+        "runtime",
+        "test_only",
+    }:
+        raise ReleaseError("release.toml lacks the complete image release contract")
+    if images_config["platforms"] != RELEASE_IMAGE_PLATFORMS:
+        raise ReleaseError("v1 release images must target the qualified Linux/amd64 platform")
+    runtime_images = images_config["runtime"]
+    test_images = images_config["test_only"]
     if runtime_images != RUNTIME_IMAGE_TARGETS or test_images != TEST_IMAGE_TARGETS:
         raise ReleaseError("release image inventory differs from the canonical bake graph")
     if set(runtime_images) | set(test_images) != _bake_targets(root):
@@ -387,6 +397,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
                 "target": target,
                 "distribution": value["distribution"],
                 "repository": repository,
+                "platforms": list(config["images"]["platforms"]),
                 "tags": [f"{repository}:{version}", f"{repository}:sha-{source_sha}"],
             }
         )

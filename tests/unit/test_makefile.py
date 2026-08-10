@@ -468,6 +468,13 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
+    created = subprocess.run(
+        ["git", "show", "-s", "--format=%cI", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     targets = (
         "riverhog",
         "jeb",
@@ -477,8 +484,10 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "test",
     )
     assert _read_log_lines(docker_log_path) == [
-        "|buildx bake --file docker-bake.hcl --load --sbom=true "
-        f"--set {target}.args.SOURCE_REVISION={revision} {target}"
+        "|buildx bake --file docker-bake.hcl --load "
+        f"--set {target}.args.SOURCE_REVISION={revision} "
+        f"--set {target}.args.BUILD_CREATED={created} "
+        f"--set {target}.args.RELEASE_VERSION=development {target}"
         for target in targets
     ]
 

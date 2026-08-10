@@ -1,9 +1,9 @@
-FROM python:3.12-slim AS build
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
@@ -20,18 +20,23 @@ COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package riverhog-server --no-dev --no-editable
 
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-ARG AGE_VERSION=v1.3.1
+ARG BUILD_CREATED=1970-01-01T00:00:00Z
+ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Riverhog" \
       org.opencontainers.image.licenses="CAL-1.0" \
-      org.opencontainers.image.revision="${SOURCE_REVISION}"
+      org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${RELEASE_VERSION}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
@@ -41,19 +46,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates minisign \
     && rm -rf /var/lib/apt/lists/*
 
-RUN arch="$(dpkg --print-architecture)" \
-    && case "${arch}" in \
-    amd64) age_arch="amd64" ;; \
-    arm64) age_arch="arm64" ;; \
-    armhf) age_arch="arm" ;; \
-    *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;; \
-    esac \
-    && url="https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-${age_arch}.tar.gz" \
-    && AGE_URL="${url}" python -c "import os, urllib.request; urllib.request.urlretrieve(os.environ['AGE_URL'], '/tmp/age.tar.gz')" \
-    && age_dir="$(tar -tzf /tmp/age.tar.gz | head -1 | cut -d/ -f1)" \
-    && tar -xzf /tmp/age.tar.gz -C /tmp \
-    && cp "/tmp/${age_dir}/age" "/tmp/${age_dir}/age-keygen" "/tmp/${age_dir}/age-plugin-batchpass" /usr/local/bin/ \
-    && rm -rf /tmp/age.tar.gz "/tmp/${age_dir}"
+COPY mise.lock /usr/local/share/riverhog/mise.lock
+COPY scripts/install_locked_age.py /usr/local/libexec/riverhog/install_locked_age.py
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && python /usr/local/libexec/riverhog/install_locked_age.py \
+      --lock /usr/local/share/riverhog/mise.lock \
+      --destination /usr/local/bin
 
 COPY --from=build /opt/venv /opt/venv
 

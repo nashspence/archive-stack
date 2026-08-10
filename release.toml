@@ -71,6 +71,9 @@ internal_build_unit = [
 ]
 test_only_artifact = []
 
+[images]
+platforms = ["linux/amd64"]
+
 [images.runtime]
 riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
 jeb = { distribution = "jeb-server", repository = "ghcr.io/nashspence/riverhog-jeb" }

@@ -8,11 +8,17 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BAKE_FILE = REPO_ROOT / "docker-bake.hcl"
 CI_FILE = REPO_ROOT / ".github/workflows/ci.yml"
+SBOM_GENERATOR = (
+    "docker.io/docker/buildkit-syft-scanner:stable-1@"
+    "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
+)
 
 IMAGE_CONTRACTS = {
     "riverhog": {
         "dockerfile": "riverhog/server/Dockerfile",
         "tag": "riverhog-app:dev",
+        "title": "Riverhog",
+        "license": "CAL-1.0",
         "compose": (
             ("riverhog/server/compose.yaml", "state"),
             ("riverhog/server/compose.yaml", "app"),
@@ -21,6 +27,8 @@ IMAGE_CONTRACTS = {
     "jeb": {
         "dockerfile": "companions/jeb/server/Dockerfile",
         "tag": "jeb:dev",
+        "title": "Jeb",
+        "license": "CAL-1.0",
         "compose": (
             ("companions/jeb/server/compose.yaml", "jeb-state"),
             ("companions/jeb/server/compose.yaml", "jeb"),
@@ -29,11 +37,15 @@ IMAGE_CONTRACTS = {
     "mango-fish": {
         "dockerfile": "utilities/mango-fish/Dockerfile",
         "tag": "mango-fish:dev",
+        "title": "Mango Fish",
+        "license": "Apache-2.0",
         "compose": (),
     },
     "munchy-server": {
         "dockerfile": "companions/munchy/server/Dockerfile",
         "tag": "munchy-server:dev",
+        "title": "Munchy Server",
+        "license": "CAL-1.0",
         "compose": (
             ("companions/munchy/server/compose.yaml", "munchy-state"),
             ("companions/munchy/server/compose.yaml", "munchy-server"),
@@ -42,6 +54,8 @@ IMAGE_CONTRACTS = {
     "munchy-av1-nvenc": {
         "dockerfile": "companions/munchy/server/targets/av1-nvenc/Dockerfile",
         "tag": "munchy-av1-nvenc-target:dev",
+        "title": "Munchy AV1 NVENC Target",
+        "license": "CAL-1.0",
         "compose_tag": "${MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:dev}",
         "compose": (
             (
@@ -53,8 +67,17 @@ IMAGE_CONTRACTS = {
     "test": {
         "dockerfile": "tests/Dockerfile",
         "tag": "riverhog-test:dev",
+        "title": "Riverhog Test Suite",
+        "license": "CAL-1.0 AND Apache-2.0",
         "compose": (("riverhog/server/compose.yaml", "test"),),
     },
+}
+
+PINNED_EXTERNAL_IMAGES = {
+    "python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203",
+    "ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36",
+    "nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
+    "nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3",
 }
 
 
@@ -70,13 +93,24 @@ def _bake_graph() -> dict[str, object]:
     assert group_targets_match is not None
     group_targets = re.findall(r'"([^"]+)"', group_targets_match.group("targets"))
 
+    common_match = re.search(r'target "image-common" \{(?P<body>.*?)\n\}', text, re.DOTALL)
+    assert common_match is not None
+    common_body = common_match.group("body")
+    platforms_match = re.search(r"platforms\s*=\s*\[(.*?)\]", common_body, re.DOTALL)
+    attest_match = re.search(r"attest\s*=\s*\[(.*?)\]", common_body, re.DOTALL)
+    assert platforms_match is not None
+    assert attest_match is not None
+
     targets: dict[str, dict[str, object]] = {}
     for match in re.finditer(
         r'target "(?P<name>[^"]+)" \{(?P<body>.*?)\n\}',
         text,
         re.DOTALL,
     ):
+        if match.group("name") == "image-common":
+            continue
         body = match.group("body")
+        inherits_match = re.search(r"inherits\s*=\s*\[(.*?)\]", body)
         context_match = re.search(r'context\s*=\s*"([^"]+)"', body)
         dockerfile_match = re.search(r'dockerfile\s*=\s*"([^"]+)"', body)
         tags_match = re.search(r"tags\s*=\s*\[(.*?)\]", body)
@@ -85,33 +119,94 @@ def _bake_graph() -> dict[str, object]:
         assert dockerfile_match is not None
         assert tags_match is not None
         assert revision_match is not None
+        assert inherits_match is not None
         targets[match.group("name")] = {
+            "inherits": re.findall(r'"([^"]+)"', inherits_match.group(1)),
             "context": context_match.group(1),
             "dockerfile": dockerfile_match.group(1),
             "tags": re.findall(r'"([^"]+)"', tags_match.group(1)),
             "args": {"SOURCE_REVISION": revision_match.group(1)},
         }
 
-    return {"group": {"default": {"targets": group_targets}}, "target": targets}
+    return {
+        "group": {"default": {"targets": group_targets}},
+        "common": {
+            "platforms": re.findall(r'"([^"]+)"', platforms_match.group(1)),
+            "attest": re.findall(r'"([^"]+)"', attest_match.group(1)),
+        },
+        "target": targets,
+    }
 
 
 def test_bake_graph_is_the_canonical_image_build_contract() -> None:
     graph = _bake_graph()
 
     assert graph["group"] == {"default": {"targets": list(IMAGE_CONTRACTS)}}
+    assert graph["common"] == {
+        "platforms": ["linux/amd64"],
+        "attest": [f"type=sbom,generator={SBOM_GENERATOR}"],
+    }
     assert set(graph["target"]) == set(IMAGE_CONTRACTS)
 
     for name, contract in IMAGE_CONTRACTS.items():
         target = graph["target"][name]
         assert target == {
+            "inherits": ["image-common"],
             "context": ".",
             "dockerfile": contract["dockerfile"],
             "tags": [contract["tag"]],
             "args": {"SOURCE_REVISION": "unknown"},
         }
         dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        assert "ARG BUILD_CREATED=1970-01-01T00:00:00Z" in dockerfile
+        assert "ARG RELEASE_VERSION=development" in dockerfile
         assert "ARG SOURCE_REVISION=unknown" in dockerfile
+        assert f'org.opencontainers.image.title="{contract["title"]}"' in dockerfile
+        assert f'org.opencontainers.image.licenses="{contract["license"]}"' in dockerfile
+        assert (
+            'org.opencontainers.image.source="https://github.com/nashspence/riverhog"' in dockerfile
+        )
         assert 'org.opencontainers.image.revision="${SOURCE_REVISION}"' in dockerfile
+        assert 'org.opencontainers.image.version="${RELEASE_VERSION}"' in dockerfile
+        assert 'org.opencontainers.image.created="${BUILD_CREATED}"' in dockerfile
+        assert (
+            'org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"'
+            in dockerfile
+        )
+
+
+def test_every_external_image_input_is_versioned_and_digest_pinned() -> None:
+    observed: set[str] = set()
+    for contract in IMAGE_CONTRACTS.values():
+        dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        observed.update(re.findall(r"(?m)^FROM (\S+)", dockerfile))
+        observed.update(
+            reference
+            for reference in re.findall(r"(?m)^COPY --from=(\S+)", dockerfile)
+            if "/" in reference
+        )
+
+    assert observed == PINNED_EXTERNAL_IMAGES
+
+
+def test_age_installation_reuses_the_provenance_locked_toolchain_artifact() -> None:
+    for name in ("riverhog", "test"):
+        dockerfile = (REPO_ROOT / IMAGE_CONTRACTS[name]["dockerfile"]).read_text(encoding="utf-8")
+        assert "COPY mise.lock /usr/local/share/riverhog/mise.lock" in dockerfile
+        assert (
+            "COPY scripts/install_locked_age.py /usr/local/libexec/riverhog/install_locked_age.py"
+        ) in dockerfile
+        assert "--lock /usr/local/share/riverhog/mise.lock" in dockerfile
+        assert "--destination /usr/local/bin" in dockerfile
+
+
+def test_av1_source_builds_verify_the_exact_requested_commits() -> None:
+    dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["munchy-av1-nvenc"]["dockerfile"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert 'test "$(git rev-parse HEAD)" = "${NV_CODEC_HEADERS_REF}"' in dockerfile
+    assert 'test "$(git rev-parse HEAD)" = "${FFMPEG_REF}"' in dockerfile
 
 
 def test_compose_build_services_match_the_canonical_bake_graph() -> None:
@@ -148,6 +243,11 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
         "uses": "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
         "with": {"version": "v0.36.0"},
     }
+    assert steps["Resolve image metadata"] == {
+        "name": "Resolve image metadata",
+        "id": "image-metadata",
+        "run": 'echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"',
+    }
     assert steps["Build image"] == {
         "name": "Build image",
         "uses": "docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b",
@@ -156,9 +256,10 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
             "files": "docker-bake.hcl",
             "targets": "${{ matrix.target }}",
             "load": True,
-            "sbom": True,
             "set": (
                 "*.args.SOURCE_REVISION=${{ github.sha }}\n"
+                "*.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}\n"
+                "*.args.RELEASE_VERSION=development\n"
                 "*.cache-from=type=gha,scope=${{ matrix.target }}\n"
                 "*.cache-to=type=gha,scope=${{ matrix.target }},mode=min,ignore-error=true\n"
             ),

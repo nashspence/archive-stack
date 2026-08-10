@@ -1,4 +1,4 @@
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS ffmpeg-build
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS ffmpeg-build
 
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
 ARG NV_CODEC_HEADERS_REF=33a9ede8d9914299d9262539c576a15bd0a19621
@@ -19,6 +19,7 @@ RUN git init nv-codec-headers \
  && git remote add origin https://code.ffmpeg.org/FFmpeg/nv-codec-headers.git \
  && git -c http.version=HTTP/1.1 fetch --depth 1 origin "${NV_CODEC_HEADERS_REF}" \
  && git checkout --detach FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${NV_CODEC_HEADERS_REF}" \
  && make install
 
 RUN git init ffmpeg \
@@ -26,6 +27,7 @@ RUN git init ffmpeg \
  && git remote add origin https://code.ffmpeg.org/FFmpeg/FFmpeg.git \
  && git -c http.version=HTTP/1.1 fetch --depth 1 origin "${FFMPEG_REF}" \
  && git checkout --detach FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${FFMPEG_REF}" \
  && PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure \
       --prefix=/opt/ffmpeg \
       --pkg-config-flags=--static \
@@ -53,12 +55,12 @@ RUN git init ffmpeg \
  && sh /build/verify-ffmpeg /opt/ffmpeg/bin/ffmpeg
 
 
-FROM python:3.12-slim AS python-build
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-build
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
@@ -78,7 +80,7 @@ COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable
 
 
-FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
+FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -97,10 +99,16 @@ COPY --from=ffmpeg-build /opt/ffmpeg /usr/local
 
 COPY --from=python-build /opt/venv /opt/venv
 
+ARG BUILD_CREATED=1970-01-01T00:00:00Z
+ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Munchy AV1 NVENC Target" \
       org.opencontainers.image.licenses="CAL-1.0" \
-      org.opencontainers.image.revision="${SOURCE_REVISION}"
+      org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${RELEASE_VERSION}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt

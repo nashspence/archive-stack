@@ -41,6 +41,7 @@ MYPY_SOURCES = \
 	riverhog/client/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
+	scripts/install_locked_age.py \
 	scripts/release.py \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
@@ -59,8 +60,11 @@ endef
 
 define BAKE_IMAGE
 	@revision="$$(git rev-parse --verify HEAD)"; \
-	docker buildx bake --file "$(BAKE_FILE)" --load --sbom=true \
-		--set "$(1).args.SOURCE_REVISION=$$revision" "$(1)"
+	created="$$(git show -s --format=%cI HEAD)"; \
+	docker buildx bake --file "$(BAKE_FILE)" --load \
+		--set "$(1).args.SOURCE_REVISION=$$revision" \
+		--set "$(1).args.BUILD_CREATED=$$created" \
+		--set "$(1).args.RELEASE_VERSION=development" "$(1)"
 endef
 
 help:
