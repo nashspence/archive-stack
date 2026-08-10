@@ -103,8 +103,9 @@ jobs:
     timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_SUMMARY: release-qualification/release.json
-      GOVERNANCE_SUMMARY: release-qualification/governance.json
+      QUALIFICATION_DIR: ${{ runner.temp }}/release-qualification
+      RELEASE_SUMMARY: ${{ runner.temp }}/release-qualification/release.json
+      GOVERNANCE_SUMMARY: ${{ runner.temp }}/release-qualification/governance.json
       SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
       SOURCE_REF: ${{ needs.resolve.outputs.ref }}
       RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
@@ -165,11 +166,11 @@ jobs:
               github_governance: "passed",
               release_evidence: "passed",
               published: false
-            }' > release-qualification/qualification.json
+            }' > "$QUALIFICATION_DIR/qualification.json"
       - name: Upload SHA-bound summaries
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qualification-${{ needs.resolve.outputs.sha }}
-          path: release-qualification/*.json
+          path: ${{ runner.temp }}/release-qualification/*.json
           if-no-files-found: error
           retention-days: 30
