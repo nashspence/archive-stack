@@ -3,9 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import yaml
 from gogurt.core import load_gogurt_actions
-from jeb_api.composition import config_from_env
 from mango_fish.relay import load_config as load_mango_fish_config
 from munchy_workflows.job_authoring import (
     build_review_sweep_plan,
@@ -16,7 +14,6 @@ from munchy_workflows.profiles import load_encode_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FILES = {
-    REPO_ROOT / "companions/jeb/server/config/jeb.env",
     REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml",
     REPO_ROOT / "companions/munchy/config/examples/av1-nvenc-profile.yaml",
     REPO_ROOT / "companions/munchy/config/examples/job.yaml",
@@ -26,15 +23,6 @@ EXAMPLE_FILES = {
 }
 
 
-def _parse_env_example(path: Path) -> dict[str, str]:
-    lines = (
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    return dict(line.split("=", 1) for line in lines)
-
-
 def test_every_checked_example_runs_through_its_real_consumer(
     tmp_path: Path,
     monkeypatch,
@@ -42,7 +30,6 @@ def test_every_checked_example_runs_through_its_real_consumer(
     checked_files = {
         path
         for root in (
-            REPO_ROOT / "companions/jeb/server/config",
             REPO_ROOT / "utilities/mango-fish/config",
             REPO_ROOT / "companions/munchy/config/examples",
             REPO_ROOT / "utilities/gogurt/config/examples",
@@ -64,15 +51,6 @@ def test_every_checked_example_runs_through_its_real_consumer(
         text=True,
     )
     assert "archive example-camera" in completed.stdout
-
-    jeb_env = _parse_env_example(REPO_ROOT / "companions/jeb/server/config/jeb.env")
-    assert jeb_env == {"JEB_FTP_PUBLIC_HOST": "127.0.0.1"}
-    jeb_config = config_from_env(jeb_env)
-    assert jeb_config.targets["munchy"].url == "http://munchy-server:8080"
-    compose = yaml.safe_load((REPO_ROOT / "companions/jeb/server/compose.yaml").read_text())
-    assert compose["services"]["jeb-ftp"]["environment"]["JEB_FTP_PUBLIC_HOST"] == (
-        "${JEB_FTP_PUBLIC_HOST:-127.0.0.1}"
-    )
 
     for name in (
         "RIVERHOG_EVENT_TOKEN",

@@ -7,12 +7,9 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     image: jeb:dev
     restart: "no"
-    env_file:
-      - ./config/jeb.env
     environment:
-      JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
-      JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/files/}
-      JEB_MUNCHY_TOKEN: ${JEB_MUNCHY_TOKEN:-}
+      JEB_STATE_DIR: /state
+      JEB_STATE_DB: /state/jeb.sqlite3
     command: ["jeb-service", "state", "upgrade"]
     volumes:
       - type: bind
@@ -33,15 +30,31 @@ services:
     depends_on:
       jeb-state:
         condition: service_completed_successfully
-    env_file:
-      - ./config/jeb.env
     environment:
       JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
       JEB_HOST: 0.0.0.0
       JEB_PORT: "8081"
+      JEB_LOG_LEVEL: ${JEB_LOG_LEVEL:-INFO}
+      JEB_LANDING_DIR: /landing
+      JEB_STATE_DIR: /state
+      JEB_STATE_DB: /state/jeb.sqlite3
+      JEB_BATCH_DIR: /landing/.jeb-batches
+      JEB_INTERVAL: ${JEB_INTERVAL:-300s}
+      JEB_PREFLIGHT_REPAIR: ${JEB_PREFLIGHT_REPAIR:-safe_remux}
+      JEB_PREFLIGHT_REPAIR_ORIGINAL: ${JEB_PREFLIGHT_REPAIR_ORIGINAL:-keep_corrupt}
+      JEB_PREFLIGHT_REPAIR_CORRUPT_DIR: /landing/_corrupt
+      JEB_PREFLIGHT_REPAIR_FFMPEG: ${JEB_PREFLIGHT_REPAIR_FFMPEG:-ffmpeg}
       JEB_TUSD_BASE_URL: ${JEB_TUSD_BASE_URL:-http://jeb-tusd:1080/files/}
+      JEB_TUS_STAGING_DIR: /landing/.ingress/tus
       JEB_TUS_INCOMPLETE_MAX_AGE: ${JEB_TUS_INCOMPLETE_MAX_AGE:-14d}
+      JEB_FTP_PROJECTION: /state/ingress/ftp/passwd
+      JEB_FTP_UID: ${JEB_FTP_UID:-1000}
+      JEB_FTP_GID: ${JEB_FTP_GID:-1000}
+      JEB_MUNCHY_URL: ${JEB_MUNCHY_URL:-http://munchy-server:8080}
       JEB_MUNCHY_TOKEN: ${JEB_MUNCHY_TOKEN:-}
+      JEB_MUNCHY_UPLOAD_WORKERS: ${JEB_MUNCHY_UPLOAD_WORKERS:-4}
+      JEB_MUNCHY_UPLOAD_CHUNK_MIB: ${JEB_MUNCHY_UPLOAD_CHUNK_MIB:-64}
+      JEB_MUNCHY_WAIT_FOR_SAFE_DELETE: ${JEB_MUNCHY_WAIT_FOR_SAFE_DELETE:-true}
       JEB_EVENT_SOURCE: ${JEB_EVENT_SOURCE:-urn:jeb}
       JEB_UPSTREAM_EVENT_POLL_SECONDS: ${JEB_UPSTREAM_EVENT_POLL_SECONDS:-5}
       JEB_EVENT_CONTEXT_RETENTION: ${JEB_EVENT_CONTEXT_RETENTION:-30d}
@@ -104,10 +117,12 @@ services:
   jeb-ingress-init:
     image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
     restart: "no"
+    environment:
+      JEB_TUS_STAGING_DIR: /landing/.ingress/tus
     command:
       - sh
       - -c
-      - install -d -o 1000 -g 1000 -m 770 /landing/.ingress /landing/.ingress/tus
+      - install -d -o 1000 -g 1000 -m 770 /landing/.ingress "$${JEB_TUS_STAGING_DIR}"
     volumes:
       - type: bind
         source: ${JEB_LANDING_HOST_DIR:-./runtime/landing}
@@ -138,6 +153,9 @@ services:
       - "${JEB_INGRESS_BIND_ADDR:-127.0.0.1}:${JEB_FTP_PASSIVE_PORT_START:-30000}-${JEB_FTP_PASSIVE_PORT_END:-30039}:30000-30039"
     environment:
       FTP_PASSIVE_PORTS: ${JEB_FTP_PASSIVE_PORT_START:-30000}:${JEB_FTP_PASSIVE_PORT_END:-30039}
+      JEB_FTP_MAX_CLIENTS: ${JEB_FTP_MAX_CLIENTS:-40}
+      JEB_FTP_MAX_CONNECTIONS: ${JEB_FTP_MAX_CONNECTIONS:-8}
+      JEB_FTP_PROJECTION: /state/ingress/ftp/passwd
       JEB_FTP_PUBLIC_HOST: ${JEB_FTP_PUBLIC_HOST:-127.0.0.1}
     volumes:
       - type: bind

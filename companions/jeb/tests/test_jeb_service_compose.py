@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -9,6 +11,43 @@ from jeb_api.composition import config_from_env
 from jeb_core.domain.models import parse_duration
 
 REPO = Path(__file__).resolve().parents[3]
+
+
+def test_jeb_compose_exposes_every_runtime_setting() -> None:
+    compose = yaml.safe_load((REPO / "companions/jeb/server/compose.yaml").read_text())
+    services = compose["services"]
+    environment = set(services["jeb"]["environment"])
+    runtime_settings: set[str] = set()
+    for source in (REPO / "companions/jeb/server/src").rglob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        runtime_settings.update(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and re.fullmatch(r"JEB_[A-Z0-9_]+", node.value)
+        )
+
+    assert runtime_settings <= environment
+
+    adapter = (REPO / "companions/jeb/server/adapters/ftp/run-adapter.sh").read_text(
+        encoding="utf-8"
+    )
+    adapter_settings = set(re.findall(r"\$\{(JEB_[A-Z0-9_]+)", adapter))
+    assert adapter_settings <= set(services["jeb-ftp"]["environment"])
+
+    assert services["jeb-state"]["environment"] == {
+        "JEB_STATE_DIR": services["jeb"]["environment"]["JEB_STATE_DIR"],
+        "JEB_STATE_DB": services["jeb"]["environment"]["JEB_STATE_DB"],
+    }
+    assert (
+        services["jeb-ftp"]["environment"]["JEB_FTP_PROJECTION"]
+        == services["jeb"]["environment"]["JEB_FTP_PROJECTION"]
+    )
+    staging = services["jeb"]["environment"]["JEB_TUS_STAGING_DIR"]
+    tusd_command = services["jeb-tusd"]["command"]
+    assert tusd_command[tusd_command.index("-upload-dir") + 1] == staging
+    assert services["jeb-ingress-init"]["environment"]["JEB_TUS_STAGING_DIR"] == staging
 
 
 def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
