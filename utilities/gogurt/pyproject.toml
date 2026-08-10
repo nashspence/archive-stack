@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "config-validation>=0.1,<0.2",
   "riverhog-cli-support>=0.1,<0.2",
-  "typer>=0.12,<1.0",
+  "typer>=0.27.1,<1.0",
 ]
 
 [project.scripts]
