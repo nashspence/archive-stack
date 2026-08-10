@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -511,20 +512,20 @@ def _parse_age_state(value: object, *, plaintext_bytes: int) -> None:
         raise RecoveryError("volume age state format is unsupported")
     if _required_nonnegative_int(value, "plaintext_size") != plaintext_bytes:
         raise RecoveryError("volume age state plaintext size mismatch")
-    if not _decode_base64url(value.get("header_b64")):
+    if not _decode_base64(value.get("header_b64")):
         raise RecoveryError("volume age state header is empty")
-    if len(_decode_base64url(value.get("payload_nonce_b64"))) != 16:
+    if len(_decode_base64(value.get("payload_nonce_b64"))) != 16:
         raise RecoveryError("volume age state payload nonce is invalid")
 
 
-def _decode_base64url(value: object) -> bytes:
+def _decode_base64(value: object) -> bytes:
     if not isinstance(value, str) or not value:
         raise RecoveryError("volume age state base64 value is invalid")
     try:
-        decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-    except (TypeError, ValueError) as exc:
+        decoded = base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
+    except (binascii.Error, TypeError, ValueError) as exc:
         raise RecoveryError("volume age state base64 value is invalid") from exc
-    if base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=") != value:
+    if base64.b64encode(decoded).decode("ascii").rstrip("=") != value:
         raise RecoveryError("volume age state base64 value is not canonical")
     return decoded
 
