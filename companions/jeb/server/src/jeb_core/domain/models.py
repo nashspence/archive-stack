@@ -175,6 +175,7 @@ class TargetConfig:
     name: str
     url: str = ""
     token: str = ""
+    allow_insecure_http: bool = False
     upload_workers: int = 4
     upload_chunk_bytes: int = 64 * 1024 * 1024
     wait_for_safe_delete: bool = True

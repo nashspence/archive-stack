@@ -99,6 +99,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
             or "http://munchy-server:8080"
         ).rstrip("/"),
         token=env_value_from(values, "JEB_MUNCHY_TOKEN", "") or "",
+        allow_insecure_http=env_bool(values, "JEB_MUNCHY_ALLOW_INSECURE_HTTP", False),
         upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
         upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64)) * 1024 * 1024,
         wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),

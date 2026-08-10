@@ -92,11 +92,19 @@ class SubmissionUploadRequest:
 UploadRequest = SubmissionUploadRequest
 
 
-def server_url_setting(server_url: str | None = None) -> str:
+def server_url_setting(
+    server_url: str | None = None,
+    *,
+    allow_insecure_http: bool | None = None,
+) -> str:
     return safe_http_base_url(
         server_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL,
         setting=BASE_URL_ENV,
-        allow_insecure_http=_bool_env("MUNCHY_ALLOW_INSECURE_HTTP", False),
+        allow_insecure_http=(
+            _bool_env("MUNCHY_ALLOW_INSECURE_HTTP", False)
+            if allow_insecure_http is None
+            else allow_insecure_http
+        ),
     )
 
 
@@ -1394,8 +1402,17 @@ class MunchyClient:
         *,
         token: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        allow_insecure_http: bool | None = None,
     ) -> None:
-        self.base_url = server_url_setting(base_url)
+        self.allow_insecure_http = (
+            _bool_env("MUNCHY_ALLOW_INSECURE_HTTP", False)
+            if allow_insecure_http is None
+            else allow_insecure_http
+        )
+        self.base_url = server_url_setting(
+            base_url,
+            allow_insecure_http=self.allow_insecure_http,
+        )
         self.token = token_setting(token)
         self.http2 = _bool_env("MUNCHY_HTTP2", True)
         self.timeout_seconds = _http_timeout_seconds()
@@ -2100,8 +2117,18 @@ class MunchyClient:
 
 
 class MunchyAdminClient(MunchyClient):
-    def __init__(self, base_url: str | None = None, *, token: str | None = None) -> None:
-        super().__init__(base_url, token=admin_token_setting(token))
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        token: str | None = None,
+        allow_insecure_http: bool | None = None,
+    ) -> None:
+        super().__init__(
+            base_url,
+            token=admin_token_setting(token),
+            allow_insecure_http=allow_insecure_http,
+        )
 
     def get_scheduler_status(self) -> dict[str, Any]:
         return self.json("GET", "/v1/admin/scheduler")

@@ -38,6 +38,14 @@ LOG = logging.getLogger("jeb.adapters.munchy")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+def _munchy_client(target: TargetConfig) -> MunchyClient:
+    return MunchyClient(
+        target.url,
+        token=target.token,
+        allow_insecure_http=target.allow_insecure_http,
+    )
+
+
 class MunchyTargetAdapter:
     """Deliver Jeb attempts to Munchy and translate their resulting events."""
 
@@ -106,7 +114,7 @@ class MunchyTargetAdapter:
             ),
             run_id=run_id_for(),
         )
-        with closing(MunchyClient(target.url, token=target.token)) as client:
+        with closing(_munchy_client(target)) as client:
             try:
                 result = client.preflight_submission(request)
             except Exception as exc:
@@ -164,7 +172,7 @@ class MunchyTargetAdapter:
         if attempt["state"] == "target_complete":
             return
         target = context.target_by_name(str(attempt["target_name"]))
-        with closing(MunchyClient(target.url, token=target.token)) as client:
+        with closing(_munchy_client(target)) as client:
             request = self.submission_request(context, attempt_id, target)
             state = str(attempt["state"])
             if state == "preflighted":
@@ -206,7 +214,7 @@ class MunchyTargetAdapter:
                 f"active target delivery has no cancellation identity: {attempt_id}"
             )
         target = context.target_by_name(str(attempt["target_name"]))
-        with closing(MunchyClient(target.url, token=target.token)) as client:
+        with closing(_munchy_client(target)) as client:
             client.cancel_job(submission_id, cleanup=True)
 
     def submission_request(
@@ -259,7 +267,7 @@ class MunchyTargetAdapter:
 
     def consume_events_forever(self, context: TargetContext) -> None:
         target = context.target_by_name(self.name)
-        with closing(MunchyClient(target.url, token=target.token)) as client:
+        with closing(_munchy_client(target)) as client:
             while True:
                 try:
                     if self.consume_events_once(context, client):

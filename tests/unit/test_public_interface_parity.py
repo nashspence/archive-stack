@@ -251,6 +251,21 @@ def test_official_clients_allow_explicit_remote_cleartext_transport(
         client.close()
 
 
+@pytest.mark.parametrize("client_type", (ApiClient, MunchyClient, JebApiClient))
+def test_official_clients_accept_a_scoped_remote_cleartext_opt_in(
+    client_type: type[Any],
+) -> None:
+    client = client_type(
+        base_url="http://api.example.test",
+        allow_insecure_http=True,
+    )
+    try:
+        assert client.base_url == "http://api.example.test"
+        assert client.allow_insecure_http is True
+    finally:
+        client.close()
+
+
 def test_official_direct_ingress_callers_share_the_upload_runner() -> None:
     assert riverhog_cli.upload_collection_units is upload_collection_units
     assert munchy_riverhog.upload_collection_units is upload_collection_units

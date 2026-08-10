@@ -263,3 +263,17 @@ def test_jeb_ingress_uses_the_shared_explicit_cleartext_opt_in(
         assert client.base_url == "http://ingress.example.test"
     finally:
         client.close()
+
+
+def test_jeb_ingress_accepts_a_scoped_cleartext_opt_in() -> None:
+    client = JebIngressClient(
+        source="camera",
+        password="secret",
+        base_url="http://ingress.example.test",
+        allow_insecure_http=True,
+    )
+    try:
+        assert client.base_url == "http://ingress.example.test"
+        assert client.allow_insecure_http is True
+    finally:
+        client.close()

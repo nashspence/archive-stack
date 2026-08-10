@@ -58,11 +58,22 @@ def _timeout() -> float:
 
 
 class JebApiClient:
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        *,
+        allow_insecure_http: bool | None = None,
+    ) -> None:
+        self.allow_insecure_http = (
+            _bool_env("JEB_ALLOW_INSECURE_HTTP", False)
+            if allow_insecure_http is None
+            else allow_insecure_http
+        )
         self.base_url = safe_http_base_url(
             base_url or os.getenv("JEB_BASE_URL") or "http://127.0.0.1:8081",
             setting="JEB_BASE_URL",
-            allow_insecure_http=_bool_env("JEB_ALLOW_INSECURE_HTTP", False),
+            allow_insecure_http=self.allow_insecure_http,
         )
         self.token = token or os.getenv("JEB_TOKEN")
         self.http2 = _bool_env("JEB_HTTP2", True)
@@ -382,15 +393,21 @@ class JebIngressClient:
         password: str,
         base_url: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        allow_insecure_http: bool | None = None,
     ) -> None:
         if not source.strip() or source != source.strip():
             raise ValueError("Jeb ingress source must be a non-empty canonical value")
         if not password:
             raise ValueError("Jeb ingress password is required")
+        self.allow_insecure_http = (
+            _bool_env("JEB_ALLOW_INSECURE_HTTP", False)
+            if allow_insecure_http is None
+            else allow_insecure_http
+        )
         self.base_url = safe_http_base_url(
             base_url or os.getenv("JEB_INGRESS_URL") or DEFAULT_INGRESS_URL,
             setting="JEB_INGRESS_URL",
-            allow_insecure_http=_bool_env("JEB_ALLOW_INSECURE_HTTP", False),
+            allow_insecure_http=self.allow_insecure_http,
         )
         self.source = source
         self._http = httpx.Client(

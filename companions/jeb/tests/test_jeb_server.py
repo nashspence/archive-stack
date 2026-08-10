@@ -98,9 +98,16 @@ class CompleteAdapter(MunchyTargetAdapter):
 @pytest.fixture(autouse=True)
 def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeMunchyClient:
-        def __init__(self, url: str, *, token: str = "") -> None:
+        def __init__(
+            self,
+            url: str,
+            *,
+            token: str = "",
+            allow_insecure_http: bool = False,
+        ) -> None:
             self.url = url
             self.token = token
+            self.allow_insecure_http = allow_insecure_http
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request
@@ -394,6 +401,24 @@ def test_env_config_loads_lifecycle_event_settings(tmp_path: Path) -> None:
     assert config.events.context_retention_seconds == 2 * 86_400
 
 
+def test_munchy_target_uses_its_explicit_cleartext_transport_opt_in(tmp_path: Path) -> None:
+    config = config_from_env(
+        {
+            **env_for(tmp_path, sources=""),
+            "JEB_MUNCHY_ALLOW_INSECURE_HTTP": "true",
+        }
+    )
+
+    target = config.targets["munchy"]
+    client = munchy_adapter_module._munchy_client(target)
+    try:
+        assert target.allow_insecure_http is True
+        assert client.url == "http://munchy.test"
+        assert client.allow_insecure_http is True
+    finally:
+        client.close()
+
+
 def test_source_registry_requires_safe_source_ids(tmp_path: Path) -> None:
     services = services_from_env(env_for(tmp_path, sources=""))
 
@@ -530,9 +555,16 @@ def test_archive_plan_target_preflight_does_not_record_failure(
     services = services_from_env(env_for(tmp_path, sources="camera"))
 
     class RejectingMunchyClient:
-        def __init__(self, url: str, *, token: str = "") -> None:
+        def __init__(
+            self,
+            url: str,
+            *,
+            token: str = "",
+            allow_insecure_http: bool = False,
+        ) -> None:
             self.url = url
             self.token = token
+            self.allow_insecure_http = allow_insecure_http
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request

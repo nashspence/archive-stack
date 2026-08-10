@@ -59,6 +59,9 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["environment"]["JEB_API_TOKEN"] == (
         "${JEB_API_TOKEN:-jeb-development-api-token}"
     )
+    assert service["environment"]["JEB_MUNCHY_ALLOW_INSECURE_HTTP"] == (
+        "${JEB_MUNCHY_ALLOW_INSECURE_HTTP:-false}"
+    )
     assert service["ports"] == ["${JEB_API_BIND_ADDR:-127.0.0.1}:${JEB_API_PORT:-8081}:8081"]
     runtime = config_from_env(
         {

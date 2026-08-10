@@ -40,9 +40,16 @@ def enroll(env: dict[str, str]) -> dict[str, str]:
 @pytest.fixture(autouse=True)
 def accept_target_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeMunchyClient:
-        def __init__(self, url: str, *, token: str = "") -> None:
+        def __init__(
+            self,
+            url: str,
+            *,
+            token: str = "",
+            allow_insecure_http: bool = False,
+        ) -> None:
             self.url = url
             self.token = token
+            self.allow_insecure_http = allow_insecure_http
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request
@@ -121,9 +128,16 @@ def test_jeb_archive_now_dry_run_fails_rejected_target_preflight(
     write_stable_file(tmp_path / "landing" / "phone" / "note.txt")
 
     class RejectingMunchyClient:
-        def __init__(self, url: str, *, token: str = "") -> None:
+        def __init__(
+            self,
+            url: str,
+            *,
+            token: str = "",
+            allow_insecure_http: bool = False,
+        ) -> None:
             self.url = url
             self.token = token
+            self.allow_insecure_http = allow_insecure_http
 
         def preflight_submission(self, request: object) -> dict[str, object]:
             _ = request

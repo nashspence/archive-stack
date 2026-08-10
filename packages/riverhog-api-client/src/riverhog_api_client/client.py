@@ -73,12 +73,18 @@ class _HttpApiClient:
         token: str | None = None,
         *,
         token_env: str,
+        allow_insecure_http: bool | None = None,
     ) -> None:
+        self.allow_insecure_http = (
+            _bool_env("RIVERHOG_ALLOW_INSECURE_HTTP", False)
+            if allow_insecure_http is None
+            else allow_insecure_http
+        )
         try:
             self.base_url = safe_http_base_url(
                 base_url or os.getenv("RIVERHOG_BASE_URL") or "http://127.0.0.1:8000",
                 setting="RIVERHOG_BASE_URL",
-                allow_insecure_http=_bool_env("RIVERHOG_ALLOW_INSECURE_HTTP", False),
+                allow_insecure_http=self.allow_insecure_http,
             )
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
@@ -241,15 +247,30 @@ class _HttpApiClient:
 
 
 class ApiClient(_HttpApiClient):
-    def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
-        super().__init__(base_url, token, token_env="RIVERHOG_TOKEN")
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        *,
+        allow_insecure_http: bool | None = None,
+    ) -> None:
+        super().__init__(
+            base_url,
+            token,
+            token_env="RIVERHOG_TOKEN",
+            allow_insecure_http=allow_insecure_http,
+        )
         self.upload_timeout_seconds = _timeout_seconds(
             "RIVERHOG_UPLOAD_TIMEOUT_SECONDS",
             _UPLOAD_TIMEOUT_SECONDS,
         )
 
     def spawn(self) -> ApiClient:
-        worker = ApiClient(base_url=self.base_url, token=self.token)
+        worker = ApiClient(
+            base_url=self.base_url,
+            token=self.token,
+            allow_insecure_http=self.allow_insecure_http,
+        )
         worker.host_header = self.host_header
         worker.http2 = self.http2
         worker.timeout_seconds = self.timeout_seconds
