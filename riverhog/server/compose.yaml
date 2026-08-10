@@ -82,13 +82,13 @@ x-riverhog-environment: &riverhog-environment
 
 services:
   garage:
-    image: dxflrs/garage:b72b090a097c8ee2711c8fb065d250ed68dcd0bf
+    image: dxflrs/garage:b72b090a097c8ee2711c8fb065d250ed68dcd0bf@sha256:f22f09abe741e54ab244e95638310e040b81eda41e2c6ab9b7373cda4b9e955c
     volumes:
       - garage-data:/var/lib/garage
       - ../../tests/harness/garage.toml:/etc/garage.toml:ro
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-riverhog}
       POSTGRES_USER: ${POSTGRES_USER:-riverhog}

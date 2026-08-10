@@ -80,6 +80,15 @@ PINNED_EXTERNAL_IMAGES = {
     "nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3",
 }
 
+PINNED_EXTERNAL_COMPOSE_IMAGES = {
+    "alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce",
+    "dxflrs/garage:b72b090a097c8ee2711c8fb065d250ed68dcd0bf@sha256:f22f09abe741e54ab244e95638310e040b81eda41e2c6ab9b7373cda4b9e955c",
+    "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
+    "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    "stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8",
+    "tusproject/tusd:v2.8.0@sha256:060f117d224d057a5f25be79b4a4535168a0901515cc20cd02f62d0b8e623f5f",
+}
+
 
 def _bake_graph() -> dict[str, object]:
     text = BAKE_FILE.read_text(encoding="utf-8")
@@ -193,6 +202,17 @@ def test_every_external_image_input_is_versioned_and_digest_pinned() -> None:
         )
 
     assert observed == PINNED_EXTERNAL_IMAGES
+
+
+def test_every_external_compose_image_is_versioned_and_digest_pinned() -> None:
+    observed: set[str] = set()
+    for compose_path in REPO_ROOT.rglob("compose.yaml"):
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        for service in compose.get("services", {}).values():
+            if "build" not in service:
+                observed.add(str(service["image"]))
+
+    assert observed == PINNED_EXTERNAL_COMPOSE_IMAGES
 
 
 def test_age_installation_reuses_the_provenance_locked_toolchain_artifact() -> None:

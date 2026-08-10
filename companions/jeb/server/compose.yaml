@@ -72,7 +72,7 @@ services:
         target: /state
 
   jeb-tusd:
-    image: tusproject/tusd:v2.8.0
+    image: tusproject/tusd:v2.8.0@sha256:060f117d224d057a5f25be79b4a4535168a0901515cc20cd02f62d0b8e623f5f
     restart: unless-stopped
     depends_on:
       jeb:
@@ -102,7 +102,7 @@ services:
         target: /landing
 
   jeb-ingress-init:
-    image: alpine:3.22
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
     restart: "no"
     command:
       - sh
@@ -114,7 +114,7 @@ services:
         target: /landing
 
   jeb-tus:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     depends_on:
       - jeb
@@ -128,7 +128,7 @@ services:
         read_only: true
 
   jeb-ftp:
-    image: stilliard/pure-ftpd:trixie-latest
+    image: stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8
     restart: unless-stopped
     depends_on:
       jeb:

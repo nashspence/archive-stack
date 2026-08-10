@@ -113,7 +113,7 @@ services:
       start_period: 20s
 
   munchy-server-tusd:
-    image: tusproject/tusd:v2.8.0
+    image: tusproject/tusd:v2.8.0@sha256:060f117d224d057a5f25be79b4a4535168a0901515cc20cd02f62d0b8e623f5f
     container_name: munchy-server-tusd
     network_mode: host
     user: "0:0"
@@ -137,7 +137,7 @@ services:
       - ${MUNCHY_TUSD_HOST_DIR:-./runtime/tusd}:/uploads
 
   munchy-server-lan-gateway:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: munchy-server-lan-gateway
     network_mode: host
     restart: unless-stopped
