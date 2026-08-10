@@ -36,7 +36,7 @@ required_checks = [
 
 [governance.main]
 delivery = "authorized direct fast-forward push followed by exact-SHA GitHub check validation"
-protection = "Enforced administrators, linear history, and no force-push or deletion; no pull-request or pre-push status gate."
+protection = "An active no-bypass ruleset requires linear history and rejects force-push and deletion; it has no pull-request or pre-push status gate."
 
 [governance.release]
 delivery = "Pull requests into release/v1 with every required check passing against the current head."

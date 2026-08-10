@@ -12,6 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-github-governance/v1"
+MAIN_RULESET = "Protect main"
 RELEASE_RULESET = "Protect release/v1"
 TAG_RULESET = "Protect v1 tags"
 
@@ -41,11 +42,6 @@ def _git_sha() -> str:
     ).stdout.strip()
 
 
-def _enabled(payload: dict[str, Any], name: str) -> bool:
-    value = payload.get(name)
-    return isinstance(value, dict) and value.get("enabled") is True
-
-
 def _rule(ruleset: dict[str, Any], rule_type: str) -> dict[str, Any]:
     matching = [rule for rule in ruleset.get("rules", []) if rule.get("type") == rule_type]
     if len(matching) != 1:
@@ -53,19 +49,20 @@ def _rule(ruleset: dict[str, Any], rule_type: str) -> dict[str, Any]:
     return matching[0]
 
 
-def _check_main(protection: dict[str, Any]) -> None:
-    required = (
-        "enforce_admins",
+def _check_main_ruleset(ruleset: dict[str, Any]) -> None:
+    if ruleset.get("target") != "branch" or ruleset.get("enforcement") != "active":
+        raise GovernanceError("main ruleset must actively target branches")
+    if ruleset.get("bypass_actors"):
+        raise GovernanceError("main ruleset must not have bypass actors")
+    ref_name = ruleset.get("conditions", {}).get("ref_name", {})
+    if ref_name != {"exclude": [], "include": ["refs/heads/main"]}:
+        raise GovernanceError("main ruleset must target only main")
+    if {rule.get("type") for rule in ruleset.get("rules", [])} != {
+        "deletion",
+        "non_fast_forward",
         "required_linear_history",
-    )
-    if any(not _enabled(protection, name) for name in required):
-        raise GovernanceError("main must enforce administrators and linear history")
-    if _enabled(protection, "allow_force_pushes") or _enabled(protection, "allow_deletions"):
-        raise GovernanceError("main must reject force-push and deletion")
-    if protection.get("required_status_checks") is not None:
-        raise GovernanceError("main direct delivery must not have a pre-push status gate")
-    if protection.get("required_pull_request_reviews") is not None:
-        raise GovernanceError("main direct delivery must not require pull requests")
+    }:
+        raise GovernanceError("main rules differ from the direct-delivery contract")
 
 
 def _check_release_ruleset(
@@ -172,15 +169,15 @@ def check() -> dict[str, Any]:
     governance = config["governance"]
     repository = str(governance["repository"])
     required_checks = list(governance["required_checks"])
-    _check_main(_gh(f"repos/{repository}/branches/main/protection"))
-
     summaries = _gh(f"repos/{repository}/rulesets")
     by_name = {item["name"]: item for item in summaries}
-    expected_names = {RELEASE_RULESET, TAG_RULESET}
+    expected_names = {MAIN_RULESET, RELEASE_RULESET, TAG_RULESET}
     if not expected_names <= set(by_name):
-        raise GovernanceError("GitHub lacks the release/v1 or v1 tag ruleset")
+        raise GovernanceError("GitHub lacks a declared main, release/v1, or v1 tag ruleset")
+    main_ruleset = _gh(f"repos/{repository}/rulesets/{by_name[MAIN_RULESET]['id']}")
     release_ruleset = _gh(f"repos/{repository}/rulesets/{by_name[RELEASE_RULESET]['id']}")
     tag_ruleset = _gh(f"repos/{repository}/rulesets/{by_name[TAG_RULESET]['id']}")
+    _check_main_ruleset(main_ruleset)
     _check_release_ruleset(
         release_ruleset,
         required_checks,

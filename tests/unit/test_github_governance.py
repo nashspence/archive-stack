@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -74,18 +75,23 @@ def test_release_ruleset_rejects_check_name_drift() -> None:
 
 def test_main_policy_preserves_authorized_direct_delivery() -> None:
     module = load_script()
-    protection = {
-        "enforce_admins": {"enabled": True},
-        "required_linear_history": {"enabled": True},
-        "allow_force_pushes": {"enabled": False},
-        "allow_deletions": {"enabled": False},
+    ruleset: dict[str, Any] = {
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [],
+        "conditions": {"ref_name": {"exclude": [], "include": ["refs/heads/main"]}},
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "required_linear_history"},
+        ],
     }
 
-    module._check_main(protection)
+    module._check_main_ruleset(ruleset)
 
-    protection["required_status_checks"] = {"checks": [{"context": "make unit"}]}
-    with pytest.raises(module.GovernanceError, match="pre-push status gate"):
-        module._check_main(protection)
+    ruleset["rules"].append({"type": "required_status_checks"})
+    with pytest.raises(module.GovernanceError, match="direct-delivery contract"):
+        module._check_main_ruleset(ruleset)
 
 
 def test_v1_tag_policy_is_immutable() -> None:
