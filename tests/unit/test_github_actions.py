@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
+MISE_LOCK = REPO_ROOT / "mise.lock"
 
 
 def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
@@ -84,9 +86,27 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "jdx/mise-action",
     ]
     assert observers["steps"][0]["with"]["persist-credentials"] == "false"
+    assert observers["steps"][1]["with"] == {"install_args": "python uv"}
     assert [step["run"] for step in observers["steps"] if "run" in step] == [
         "mise x -- uv run --locked --all-packages --group dev "
         "python -m pytest -q "
         "packages/riverhog-provenance/tests/test_platform_live.py"
     ]
     assert "secrets." not in text
+
+
+def test_provenance_observer_toolchain_is_locked_for_every_matrix_os() -> None:
+    lock = tomllib.loads(MISE_LOCK.read_text(encoding="utf-8"))
+
+    for tool in ("python", "uv"):
+        entries = lock["tools"][tool]
+        assert len(entries) == 1
+        platforms = {
+            key.removeprefix("platforms."): value
+            for key, value in entries[0].items()
+            if key.startswith("platforms.")
+        }
+        assert set(platforms) == {"linux-x64", "macos-arm64", "windows-x64"}
+        windows = platforms["windows-x64"]
+        assert windows["url"].startswith("https://github.com/")
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", windows["checksum"])
