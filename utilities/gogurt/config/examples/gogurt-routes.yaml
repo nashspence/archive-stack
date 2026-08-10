@@ -2,9 +2,15 @@ schema_version: 1
 kind: gogurt.routes
 routes:
   example-camera-card:
-    script: fake-archive-device
-    args:
+    command:
+      - "{python}"
+      - "{config_dir}/scripts/fake_archive_device.py"
+      - "{mount_point}"
       - example-camera
   disabled-example:
     enabled: false
-    script: fake-archive-device
+    command:
+      - "{python}"
+      - "{config_dir}/scripts/fake_archive_device.py"
+      - "{mount_point}"
+      - disabled

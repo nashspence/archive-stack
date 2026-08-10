@@ -13,8 +13,12 @@
   <dict>
     <key>GOGURT_MARKER_NAME</key>
     <string>__MARKER_NAME__</string>
-    <key>GOGURT_TRIGGERS_DIR</key>
-    <string>__TRIGGERS_DIR__</string>
+    <key>GOGURT_EXECUTABLE</key>
+    <string>__GOGURT_EXECUTABLE__</string>
+    <key>GOGURT_CONFIG</key>
+    <string>__GOGURT_CONFIG__</string>
+    <key>GOGURT_ACTIONS_DIR</key>
+    <string>__GOGURT_ACTIONS_DIR__</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

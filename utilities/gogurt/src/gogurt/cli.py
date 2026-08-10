@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -12,13 +13,16 @@ from riverhog_cli_support.output import json_text
 from gogurt.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,
     DEFAULT_GOGURT_MARKER_NAME,
+    GOGURT_EMOJI,
+    execute_gogurt_action,
     load_gogurt_actions,
+    plan_gogurt_action,
     plan_gogurt_marker,
-    render_gogurt_triggers,
     write_gogurt_marker,
 )
+from gogurt.mounts import discover_mount_points, iter_new_mounts
 
-app = typer.Typer(help="Gogurt route and trigger utility.")
+app = typer.Typer(help="Portable mounted-volume marker actions.")
 
 
 def _version_callback(value: bool) -> None:
@@ -40,7 +44,7 @@ def _root(
         ),
     ] = False,
 ) -> None:
-    """Route and trigger utility commands."""
+    """Portable mounted-volume marker actions."""
 
 
 def emit(payload: object, *, json_mode: bool) -> None:
@@ -61,40 +65,176 @@ def list_cmd(
     """List configured Gogurt routes."""
 
     actions = load_gogurt_actions(config)
-    payload = [
-        {"route": action.route, "script": action.script, "args": list(action.args)}
-        for action in actions
-    ]
+    payload = [{"route": action.route, "command": list(action.command)} for action in actions]
     if json_mode:
         emit(payload, json_mode=True)
         return
     for action in actions:
-        args = " ".join(action.args)
-        suffix = f" {args}" if args else ""
-        typer.echo(f"{action.route}: {action.script}{suffix}")
+        typer.echo(f"{action.route}: {json.dumps(action.command)}")
 
 
-@app.command("render")
-def render_cmd(
+def _run_mount(
+    mount_point: Path,
+    *,
+    config: Path,
+    actions_dir: Path | None,
+    marker_name: str,
+    autorun: bool,
+    dry_run: bool,
+) -> int:
+    plan = plan_gogurt_action(
+        config,
+        mount_point,
+        actions_dir=actions_dir,
+        marker_name=marker_name,
+    )
+    if plan["status"] == "unmarked":
+        return 0
+
+    route = str(plan["route"])
+    raw_command = plan["command"]
+    if not isinstance(raw_command, list):
+        raise RuntimeError("Gogurt returned an invalid action plan")
+    command = [str(token) for token in raw_command]
+    typer.echo(
+        f"{GOGURT_EMOJI} gogurt action available: route={route} mount={mount_point}",
+        err=True,
+    )
+    if dry_run:
+        typer.echo(f"{GOGURT_EMOJI} gogurt would run: {json.dumps(command)}", err=True)
+        return 0
+    if not autorun:
+        if not sys.stdin.isatty():
+            typer.echo(
+                f"{GOGURT_EMOJI} gogurt action awaiting confirmation; "
+                "use --autorun for unattended execution.",
+                err=True,
+            )
+            return 0
+        if not typer.confirm(f"{GOGURT_EMOJI} gogurt run this action?", default=False):
+            typer.echo(f"{GOGURT_EMOJI} gogurt action declined", err=True)
+            return 0
+
+    typer.echo(f"{GOGURT_EMOJI} gogurt launching: route={route} mount={mount_point}", err=True)
+    return execute_gogurt_action(plan).returncode
+
+
+@app.command("run")
+def run_cmd(
+    mount_point: Annotated[Path, typer.Argument(help="Mounted volume root.")],
     config: Annotated[
         Path,
         typer.Option("--config", help="Gogurt route YAML file."),
     ] = Path(DEFAULT_GOGURT_CONFIG_FILENAME),
-    dest_dir: Annotated[
-        Path,
-        typer.Option("--dest-dir", help="Directory where trigger scripts are written."),
-    ] = Path("gogurt-triggers"),
-    scripts_dir: Annotated[
-        Path,
-        typer.Option("--scripts-dir", help="Directory containing action scripts."),
-    ] = Path("scripts"),
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+    actions_dir: Annotated[
+        Path | None,
+        typer.Option("--actions-dir", help="Directory containing configured action commands."),
+    ] = None,
+    marker_name: Annotated[
+        str,
+        typer.Option("--marker-name", help="Marker file name at the mount root."),
+    ] = DEFAULT_GOGURT_MARKER_NAME,
+    autorun: Annotated[
+        bool,
+        typer.Option("--autorun", help="Explicitly allow unattended action execution."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Resolve and report the action without executing it."),
+    ] = False,
 ) -> None:
-    """Render executable trigger scripts from Gogurt routes."""
+    """Run the configured action for one marked mounted volume."""
 
-    written = render_gogurt_triggers(config, dest_dir, scripts_dir)
-    payload = [str(path) for path in written]
-    emit(payload if json_mode else "\n".join(payload), json_mode=json_mode)
+    return_code = _run_mount(
+        mount_point,
+        config=config,
+        actions_dir=actions_dir,
+        marker_name=marker_name,
+        autorun=autorun,
+        dry_run=dry_run,
+    )
+    if return_code:
+        raise typer.Exit(return_code)
+
+
+@app.command("mounts")
+def mounts_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """List mounted roots observed through the native platform adapter."""
+
+    mount_points = [str(path) for path in discover_mount_points()]
+    if json_mode:
+        emit(mount_points, json_mode=True)
+        return
+    for mount_point in mount_points:
+        typer.echo(mount_point)
+
+
+@app.command("watch")
+def watch_cmd(
+    config: Annotated[
+        Path,
+        typer.Option("--config", help="Gogurt route YAML file."),
+    ] = Path(DEFAULT_GOGURT_CONFIG_FILENAME),
+    actions_dir: Annotated[
+        Path | None,
+        typer.Option("--actions-dir", help="Directory containing configured action commands."),
+    ] = None,
+    marker_name: Annotated[
+        str,
+        typer.Option("--marker-name", help="Marker file name at each mount root."),
+    ] = DEFAULT_GOGURT_MARKER_NAME,
+    interval_seconds: Annotated[
+        float,
+        typer.Option("--interval", min=0.1, help="Mount polling interval in seconds."),
+    ] = 2.0,
+    include_existing: Annotated[
+        bool,
+        typer.Option("--include-existing", help="Inspect existing mounts before watching."),
+    ] = False,
+    autorun: Annotated[
+        bool,
+        typer.Option("--autorun", help="Explicitly allow unattended action execution."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Resolve and report actions without executing them."),
+    ] = False,
+) -> None:
+    """Watch for newly mounted volumes and apply their configured routes."""
+
+    typer.echo(f"{GOGURT_EMOJI} gogurt watcher started", err=True)
+    try:
+        for mount_point in iter_new_mounts(
+            interval_seconds=interval_seconds,
+            include_existing=include_existing,
+        ):
+            try:
+                return_code = _run_mount(
+                    mount_point,
+                    config=config,
+                    actions_dir=actions_dir,
+                    marker_name=marker_name,
+                    autorun=autorun,
+                    dry_run=dry_run,
+                )
+            except (
+                ConfigError,
+                FileNotFoundError,
+                NotADirectoryError,
+                PermissionError,
+                UnicodeError,
+            ) as exc:
+                typer.echo(f"{GOGURT_EMOJI} gogurt skipped {mount_point}: {exc}", err=True)
+                continue
+            if return_code:
+                typer.echo(
+                    f"{GOGURT_EMOJI} gogurt action failed: mount={mount_point} exit={return_code}",
+                    err=True,
+                )
+    except KeyboardInterrupt:
+        typer.echo(f"{GOGURT_EMOJI} gogurt watcher stopped", err=True)
 
 
 @app.command("write")
@@ -157,7 +297,13 @@ def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
 def main() -> None:
     try:
         app()
-    except (ConfigError, FileExistsError, FileNotFoundError, NotADirectoryError) as exc:
+    except (
+        ConfigError,
+        FileExistsError,
+        FileNotFoundError,
+        NotADirectoryError,
+        PermissionError,
+    ) as exc:
         _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
         raise typer.Exit(1) from None
 

@@ -21,6 +21,9 @@ required_checks = [
   "build munchy-server",
   "build riverhog",
   "build test",
+  "client platform (macos-15)",
+  "client platform (ubuntu-24.04)",
+  "client platform (windows-2025)",
   "make c2sp-vectors",
   "make compile",
   "make compose-smoke",
@@ -29,9 +32,6 @@ required_checks = [
   "make postgres-concurrency",
   "make spec",
   "make unit",
-  "provenance observer (macos-15)",
-  "provenance observer (ubuntu-24.04)",
-  "provenance observer (windows-2025)",
 ]
 
 [governance.main]
@@ -139,6 +139,10 @@ internal_build_unit = [
   "packages/time-formats",
 ]
 test_only_artifact = []
+
+[platforms]
+end_user_artifacts = ["linux-x64", "macos-arm64", "windows-x64"]
+deployed_implementations = ["linux/amd64"]
 
 [images]
 platforms = ["linux/amd64"]

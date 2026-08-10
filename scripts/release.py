@@ -69,6 +69,7 @@ RUNTIME_IMAGE_TARGETS = {
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}
 RELEASE_IMAGE_PLATFORMS = ["linux/amd64"]
+END_USER_ARTIFACT_PLATFORMS = ["linux-x64", "macos-arm64", "windows-x64"]
 SIGNING_POLICY_KEYS = {
     "checksums",
     "signature",
@@ -372,6 +373,17 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("uv.lock does not contain every release distribution exactly once")
     if any(value != current_version for value in locked_versions.values()):
         raise ReleaseError("uv.lock release-unit versions differ from pyproject metadata")
+
+    platforms_config = config.get("platforms")
+    if not isinstance(platforms_config, dict) or set(platforms_config) != {
+        "end_user_artifacts",
+        "deployed_implementations",
+    }:
+        raise ReleaseError("release.toml lacks the complete platform support contract")
+    if platforms_config["end_user_artifacts"] != END_USER_ARTIFACT_PLATFORMS:
+        raise ReleaseError("v1 end-user artifacts must support Linux, macOS, and Windows")
+    if platforms_config["deployed_implementations"] != RELEASE_IMAGE_PLATFORMS:
+        raise ReleaseError("v1 deployed implementations must target the release image platforms")
 
     images_config = config.get("images")
     if not isinstance(images_config, dict) or set(images_config) != {

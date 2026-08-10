@@ -38,8 +38,9 @@ published HTTP and CloudEvents contracts.
   local materialization and its rebuildable views.
 - A companion server owns its workflows and adapters; its separately packaged client uses
   the public API. A Munchy execution target implements a server-owned target contract.
-- Utilities remain platform agnostic. Downstream configuration supplies private policy and
-  deployment identity.
+- End-user clients and utilities support Linux, macOS, and Windows. Server applications ship
+  as Linux OCI images; hardware-bound execution targets may declare a narrower platform.
+  Downstream configuration supplies private policy and deployment identity.
 
 Workspace dependency and import checks enforce the implementation-owner boundaries.
 
@@ -55,6 +56,6 @@ Workspace dependency and import checks enforce the implementation-owner boundari
   packaged server and client.
 - [`companions/munchy/server/targets`](../companions/munchy/server/targets/) contains
   server-owned execution targets, not standalone companion applications.
-- [`utilities`](../utilities/) contains platform-agnostic operator and event tools.
+- [`utilities`](../utilities/) contains portable operator and event tools.
 - [`packages`](../packages/) contains focused reusable libraries and protocol, client,
   configuration, event, transport, and CLI primitives.

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gogurt"
 version = "0.1.0"
-description = "Mounted-volume marker actions for macOS operators."
+description = "Portable mounted-volume marker actions for operators."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

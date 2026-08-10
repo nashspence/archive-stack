@@ -80,6 +80,11 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "release": "release-publication",
         "pages": "github-pages",
     }
+    platforms = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["platforms"]
+    assert platforms == {
+        "end_user_artifacts": ["linux-x64", "macos-arm64", "windows-x64"],
+        "deployed_implementations": ["linux/amd64"],
+    }
 
 
 def test_dry_run_can_write_the_same_sha_bound_summary_it_prints(

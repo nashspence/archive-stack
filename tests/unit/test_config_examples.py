@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-from gogurt.core import load_gogurt_actions
+from gogurt.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
 from mango_fish.relay import load_config as load_mango_fish_config
 from munchy_workflows.job_authoring import (
     build_review_sweep_plan,
@@ -19,7 +18,7 @@ EXAMPLE_FILES = {
     REPO_ROOT / "companions/munchy/config/examples/job.yaml",
     REPO_ROOT / "companions/munchy/config/examples/review-sweep-job.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
-    REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake-archive-device",
+    REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake_archive_device.py",
 }
 
 
@@ -35,7 +34,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
             REPO_ROOT / "utilities/gogurt/config/examples",
         )
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and "__pycache__" not in path.parts
     }
     assert checked_files == EXAMPLE_FILES
 
@@ -43,13 +42,12 @@ def test_every_checked_example_runs_through_its_real_consumer(
     actions = load_gogurt_actions(gogurt_root / "gogurt-routes.yaml")
     assert [action.route for action in actions] == ["example-camera-card"]
 
-    script = gogurt_root / "scripts/fake-archive-device"
-    completed = subprocess.run(
-        [str(script), str(tmp_path / "mounted-device"), "example-camera"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    mounted_device = tmp_path / "mounted-device"
+    mounted_device.mkdir()
+    (mounted_device / ".gogurt").write_text("example-camera-card\n", encoding="utf-8")
+    action_plan = plan_gogurt_action(gogurt_root / "gogurt-routes.yaml", mounted_device)
+    completed = execute_gogurt_action(action_plan, capture_output=True)
+    assert completed.returncode == 0
     assert "archive example-camera" in completed.stdout
 
     for name in (

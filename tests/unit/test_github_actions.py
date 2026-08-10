@@ -36,7 +36,7 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
 
     assert set(workflow["jobs"]) == {
         "repository",
-        "provenance-observers",
+        "client-platforms",
         "images",
     }
     job = workflow["jobs"]["repository"]
@@ -96,24 +96,25 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     assert [step["run"] for step in steps if "run" in step] == ['make "$CI_TARGET"']
     assert steps[-1]["env"] == {"CI_TARGET": "${{ matrix.target }}"}
 
-    observers = workflow["jobs"]["provenance-observers"]
-    assert observers["strategy"] == {
+    client_platforms = workflow["jobs"]["client-platforms"]
+    assert client_platforms["strategy"] == {
         "fail-fast": "false",
         "matrix": {
             "os": ["ubuntu-24.04", "macos-15", "windows-2025"],
         },
     }
-    assert observers["runs-on"] == "${{ matrix.os }}"
-    assert [step["uses"].split("@", 1)[0] for step in observers["steps"] if "uses" in step] == [
-        "actions/checkout",
-        "jdx/mise-action",
-    ]
-    assert observers["steps"][0]["with"]["persist-credentials"] == "false"
-    assert observers["steps"][1]["with"] == {"install_args": "python uv"}
-    assert [step["run"] for step in observers["steps"] if "run" in step] == [
+    assert client_platforms["runs-on"] == "${{ matrix.os }}"
+    assert [
+        step["uses"].split("@", 1)[0] for step in client_platforms["steps"] if "uses" in step
+    ] == ["actions/checkout", "jdx/mise-action"]
+    assert client_platforms["steps"][0]["with"]["persist-credentials"] == "false"
+    assert client_platforms["steps"][1]["with"] == {"install_args": "python uv"}
+    assert [step["run"] for step in client_platforms["steps"] if "run" in step] == [
         "mise x -- uv run --locked --all-packages --group dev "
         "python -m pytest -q "
-        "packages/riverhog-provenance/tests/test_platform_live.py"
+        "packages/riverhog-provenance/tests/test_platform_live.py "
+        "utilities/gogurt/tests "
+        "tests/platform/test_end_user_artifacts.py"
     ]
     assert "secrets." not in text
 
@@ -197,7 +198,7 @@ def test_release_required_check_names_are_derived_from_stable_job_names() -> Non
     release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
     repository = workflow["jobs"]["repository"]
     images = workflow["jobs"]["images"]
-    observers = workflow["jobs"]["provenance-observers"]
+    client_platforms = workflow["jobs"]["client-platforms"]
     actual = {
         *(
             repository["name"].replace("${{ matrix.target }}", entry["target"])
@@ -208,8 +209,8 @@ def test_release_required_check_names_are_derived_from_stable_job_names() -> Non
             for target in images["strategy"]["matrix"]["target"]
         ),
         *(
-            observers["name"].replace("${{ matrix.os }}", os_name)
-            for os_name in observers["strategy"]["matrix"]["os"]
+            client_platforms["name"].replace("${{ matrix.os }}", os_name)
+            for os_name in client_platforms["strategy"]["matrix"]["os"]
         ),
         "Analyze (actions)",
         "Analyze (python)",
@@ -218,7 +219,7 @@ def test_release_required_check_names_are_derived_from_stable_job_names() -> Non
     assert release["governance"]["required_checks"] == sorted(actual)
 
 
-def test_provenance_observer_toolchain_is_locked_for_every_matrix_os() -> None:
+def test_client_platform_toolchain_is_locked_for_every_matrix_os() -> None:
     lock = tomllib.loads(MISE_LOCK.read_text(encoding="utf-8"))
 
     for tool in ("python", "uv"):
