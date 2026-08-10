@@ -31,6 +31,19 @@ OPERATION_ERROR_STATUSES = {
         "preflight_submission": {"429", "507"},
     },
 }
+SUPPORTED_CLIENT_HELPERS = {
+    "riverhog": {"catalog_changes", "close", "spawn"},
+    "munchy": {
+        "close",
+        "json",
+        "request",
+        "upload_file",
+        "upload_files",
+        "wait_for_job",
+        "wait_for_submission",
+    },
+    "jeb": {"close", "wait_for_attempt", "wait_for_operation"},
+}
 
 
 def public_operations(app: FastAPI) -> list[tuple[str, str]]:
@@ -72,6 +85,30 @@ def test_every_public_api_operation_has_an_official_client_method(
         f"{application} OpenAPI operation IDs must be unique: {operation_ids}"
     )
     assert uncovered == {}, f"{application} OpenAPI operations missing from its client: {uncovered}"
+
+
+@pytest.mark.parametrize(
+    ("application", "app_factory", "client_types"),
+    (
+        ("riverhog", create_riverhog_app, (ApiClient,)),
+        ("munchy", lambda: munchy_app, (MunchyClient, MunchyAdminClient)),
+        ("jeb", create_jeb_app, (JebApiClient,)),
+    ),
+)
+def test_every_official_client_method_is_current_or_a_supported_helper(
+    application: str,
+    app_factory: Callable[[], FastAPI],
+    client_types: tuple[type[Any], ...],
+) -> None:
+    operation_ids = {operation_id for operation_id, _route in public_operations(app_factory())}
+    client_methods = {
+        name
+        for client_type in client_types
+        for name in dir(client_type)
+        if not name.startswith("_") and callable(getattr(client_type, name))
+    }
+
+    assert client_methods - operation_ids == SUPPORTED_CLIENT_HELPERS[application]
 
 
 @pytest.mark.parametrize(
