@@ -210,6 +210,42 @@ class _VolumeAttributesFailureMacOSNative(FakeMacOSNative):
         raise OSError(5, "mock I/O failure")
 
 
+class _EmptyVolumeTextMacOSNative(FakeMacOSNative):
+    def filesystem_info(self, fd: int) -> DarwinFileSystemInfo:
+        info = super().filesystem_info(fd)
+        return DarwinFileSystemInfo(
+            fs_type="",
+            mount_point=info.mount_point,
+            mounted_from=b"",
+            fsid=info.fsid,
+            flags=info.flags,
+            subtype=info.subtype,
+            io_size=info.io_size,
+            block_size=info.block_size,
+        )
+
+
+def test_macos_omits_unavailable_empty_volume_observations(tmp_path: Path, urn_factory) -> None:
+    payload = tmp_path / "empty-volume-fields.dat"
+    payload.write_bytes(b"payload")
+    result = MacOSFileStateObserver(
+        native=_EmptyVolumeTextMacOSNative(), enforce_platform=False
+    ).observe(ObservationRequest(path=payload, lineage_id=urn_factory(), host_id=urn_factory()))
+
+    filesystem = result.environment["filesystem"]
+    assert filesystem["type"] == "unknown"
+    assert all(item["value"] for item in filesystem["volume_identifiers"])
+    assert {item["scheme"] for item in filesystem["volume_identifiers"]} == {
+        "darwin-fsid",
+        "volume-uuid",
+    }
+    volume_context = next(
+        item for item in result.extensions if item["property"].endswith("/macos-volume-context")
+    )
+    assert volume_context["value"]["data"]["filesystem_type"] == "unknown"
+    validate_graph_fragment(result.graph_fragment())
+
+
 def test_macos_volume_attribute_failure_retains_fstatfs_context(
     tmp_path: Path, urn_factory
 ) -> None:

@@ -707,7 +707,7 @@ class MacOSBackend(PlatformBackend):
         result.environment = self._environment(fs_info, volume_attrs, request)
         if fs_info is not None:
             volume_context: dict[str, Any] = {
-                "filesystem_type": fs_info.fs_type,
+                "filesystem_type": fs_info.fs_type or "unknown",
                 "mount_point": portable_text_from_bytes(fs_info.mount_point),
                 "mounted_from": portable_text_from_bytes(fs_info.mounted_from),
                 "fsid": [fs_info.fsid[0], fs_info.fsid[1]],
@@ -1237,7 +1237,7 @@ class MacOSBackend(PlatformBackend):
         if build:
             os_info["build"] = build
         filesystem: JsonObject = {
-            "type": fs_info.fs_type if fs_info else "unknown",
+            "type": (fs_info.fs_type or "unknown") if fs_info else "unknown",
             "name_normalization": "implementation_defined",
         }
         if fs_info is not None:
@@ -1253,14 +1253,18 @@ class MacOSBackend(PlatformBackend):
                     value=f"{fs_info.fsid[0]}:{fs_info.fsid[1]}",
                     scope="host",
                     authority_id=request.host_id,
-                ),
-                identifier(
-                    scheme="darwin-mounted-from",
-                    value=portable_text_from_bytes(fs_info.mounted_from),
-                    scope="host",
-                    authority_id=request.host_id,
-                ),
+                )
             ]
+            mounted_from = portable_text_from_bytes(fs_info.mounted_from)
+            if mounted_from:
+                volume_ids.append(
+                    identifier(
+                        scheme="darwin-mounted-from",
+                        value=mounted_from,
+                        scope="host",
+                        authority_id=request.host_id,
+                    )
+                )
             if volume_attrs.get("uuid"):
                 volume_ids.append(
                     identifier(
