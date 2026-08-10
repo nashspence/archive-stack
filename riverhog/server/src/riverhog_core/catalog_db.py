@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,8 +13,11 @@ from state_schema import StateSchema, StateStatus
 
 from riverhog_core.catalog_base import Base
 
+SessionFactory = sessionmaker[Session]
+
 STATE_VERSION_TABLE = "state_schema_revision"
 STATE_MIGRATIONS = Path(__file__).with_name("state_migrations")
+_ENGINE_FINALIZER_ATTRIBUTE = "_riverhog_engine_finalizer"
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -300,13 +304,33 @@ def validate_db(database_url: str) -> StateStatus:
     return catalog_state_schema(database_url).validate()
 
 
-def make_session_factory(database_url: str) -> sessionmaker[Session]:
+def make_session_factory(database_url: str) -> SessionFactory:
     engine = create_catalog_engine(database_url)
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    session_factory = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+    finalizer = weakref.finalize(session_factory, engine.dispose)
+    setattr(session_factory, _ENGINE_FINALIZER_ATTRIBUTE, finalizer)
+    return session_factory
+
+
+def dispose_session_factory(session_factory: SessionFactory) -> None:
+    """Release pooled connections owned by a catalog session factory."""
+
+    finalizer = getattr(session_factory, _ENGINE_FINALIZER_ATTRIBUTE, None)
+    if isinstance(finalizer, weakref.finalize):
+        finalizer()
+        return
+    bind = session_factory.kw.get("bind")
+    if isinstance(bind, Engine):
+        bind.dispose()
 
 
 @contextmanager
-def session_scope(session_factory: sessionmaker[Session]) -> Iterator[Session]:
+def session_scope(session_factory: SessionFactory) -> Iterator[Session]:
     session = session_factory()
     try:
         yield session

@@ -13,7 +13,7 @@ from time_formats import format_utc_timestamp, utc_now
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
@@ -64,11 +64,16 @@ class SqlAlchemyCollectionDeletionService:
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
         retrieval_cache: RetrievalCache | None,
+        *,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._archive_stores = archive_stores
         self._retrieval_cache = retrieval_cache
-        self._session_factory = make_session_factory(config.database_url)
-        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=self._session_factory,
+        )
 
     def plan(self, collection_id: int) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)

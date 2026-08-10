@@ -12,7 +12,7 @@ from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyRecord,
     ArchiveDownloadReservationRecord,
@@ -34,8 +34,9 @@ class SqlAlchemyDownloadAllowance:
         config: RuntimeConfig,
         *,
         clock: Callable[[], datetime] = utc_now,
+        session_factory: SessionFactory | None = None,
     ) -> None:
-        self._session_factory = make_session_factory(config.database_url)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
         self._clock = clock
         self._policies = {
             name: store

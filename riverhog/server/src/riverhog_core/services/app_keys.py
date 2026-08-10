@@ -25,7 +25,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
     normalize_access,
 )
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
     AppKeyRecord,
@@ -99,9 +99,17 @@ def _page_metadata(
 
 
 class SqlAlchemyAppKeyService:
-    def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(config.database_url)
-        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=self._session_factory,
+        )
 
     def authenticate(self, token: str) -> ApplicationPrincipal | None:
         if not token:

@@ -7,7 +7,12 @@ from typing import Annotated
 from fastapi import Depends
 from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import validate_db
+from riverhog_core.catalog_db import (
+    SessionFactory,
+    dispose_session_factory,
+    make_session_factory,
+    validate_db,
+)
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
@@ -73,6 +78,10 @@ class ServiceContainer:
     retrieval: RetrievalService
     lifecycle_events: LifecycleEventService
     download_quotas: DownloadAllowance
+    session_factory: SessionFactory
+
+    def close(self) -> None:
+        dispose_session_factory(self.session_factory)
 
 
 @lru_cache(maxsize=1)
@@ -80,8 +89,12 @@ def default_container() -> ServiceContainer:
     config = load_runtime_config()
     validate_db(config.database_url)
     ensure_bucket_exists(config)
+    session_factory = make_session_factory(config.database_url)
     retrieval_cache = S3RetrievalCache(config) if config.retrieval_cache is not None else None
-    download_allowance = SqlAlchemyDownloadAllowance(config)
+    download_allowance = SqlAlchemyDownloadAllowance(
+        config,
+        session_factory=session_factory,
+    )
     archive_stores = ArchiveStoreRegistry(
         {
             name: S3ArchiveStore(
@@ -107,37 +120,45 @@ def default_container() -> ServiceContainer:
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
     return ServiceContainer(
-        app_keys=SqlAlchemyAppKeyService(config),
-        collection_access=SqlAlchemyCollectionAccessService(config),
-        tags=SqlAlchemyTagService(config),
-        collections=SqlAlchemyCollectionService(config),
+        app_keys=SqlAlchemyAppKeyService(config, session_factory=session_factory),
+        collection_access=SqlAlchemyCollectionAccessService(
+            config,
+            session_factory=session_factory,
+        ),
+        tags=SqlAlchemyTagService(config, session_factory=session_factory),
+        collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             archive_stores,
             archive_ingress_stores,
             proof_stamper=proof_stamper,
+            session_factory=session_factory,
         ),
-        provenance=SqlAlchemyProvenanceService(config),
+        provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
             archive_stores,
             retrieval_cache,
+            session_factory=session_factory,
         ),
-        search=SqlAlchemySearchService(config),
+        search=SqlAlchemySearchService(config, session_factory=session_factory),
         archive_maintenance=SqlAlchemyArchiveMaintenanceService(
             config,
             archive_stores,
+            session_factory=session_factory,
         ),
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,
             archive_ingress_stores,
+            session_factory=session_factory,
         ),
         proof_maturations=SqlAlchemyProofMaturationService(
             config,
             archive_stores,
             proof_upgrader=proof_upgrader,
             proof_verifier=proof_verifier,
+            session_factory=session_factory,
         ),
         archive_attestations=SqlAlchemyArchiveAttestationService(
             config,
@@ -145,14 +166,17 @@ def default_container() -> ServiceContainer:
             proof_stamper=proof_stamper,
             proof_upgrader=proof_upgrader,
             proof_verifier=proof_verifier,
+            session_factory=session_factory,
         ),
         archive_copy_retirements=SqlAlchemyArchiveCopyRetirementService(
             config,
             archive_stores,
+            session_factory=session_factory,
         ),
         archive_stores=SqlAlchemyArchiveStoreService(
             config,
             download_allowance=download_allowance,
+            session_factory=session_factory,
         ),
         retrieval=SqlAlchemyRetrievalService(
             config,
@@ -160,9 +184,14 @@ def default_container() -> ServiceContainer:
             archive_ingress_stores,
             retrieval_cache,
             download_allowance=download_allowance,
+            session_factory=session_factory,
         ),
-        lifecycle_events=SqlAlchemyLifecycleEventService(config),
+        lifecycle_events=SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=session_factory,
+        ),
         download_quotas=download_allowance,
+        session_factory=session_factory,
     )
 
 

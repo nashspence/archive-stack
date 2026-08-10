@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from riverhog_core.catalog_db import (
     STATE_VERSION_TABLE,
     Base,
     create_catalog_engine,
+    dispose_session_factory,
     initialize_db,
+    make_session_factory,
     validate_db,
 )
 from sqlalchemy import inspect
@@ -161,6 +166,39 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 def test_create_catalog_engine_rejects_bare_database_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="SQLAlchemy URL"):
         create_catalog_engine(str(tmp_path / "catalog.sqlite3"))
+
+
+def test_session_factory_disposes_its_owned_engine_when_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_catalog_engine(sqlite_url(tmp_path / "catalog.sqlite3"))
+    dispose = Mock(wraps=engine.dispose)
+    monkeypatch.setattr(engine, "dispose", dispose)
+    monkeypatch.setattr("riverhog_core.catalog_db.create_catalog_engine", lambda _: engine)
+
+    session_factory = make_session_factory("sqlite+pysqlite://")
+    reference = weakref.ref(session_factory)
+    del session_factory
+    gc.collect()
+
+    assert reference() is None
+    dispose.assert_called_once_with()
+
+
+def test_session_factory_can_be_disposed_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_catalog_engine(sqlite_url(tmp_path / "catalog.sqlite3"))
+    dispose = Mock(wraps=engine.dispose)
+    monkeypatch.setattr(engine, "dispose", dispose)
+    monkeypatch.setattr("riverhog_core.catalog_db.create_catalog_engine", lambda _: engine)
+    session_factory = make_session_factory("sqlite+pysqlite://")
+
+    dispose_session_factory(session_factory)
+
+    dispose.assert_called_once_with()
 
 
 def test_validate_db_preserves_the_current_catalog_schema(tmp_path: Path) -> None:

@@ -292,6 +292,7 @@ def create_app(
     config = load_runtime_config()
     _configure_logging(config.log_level)
     app_container: ServiceContainer | None = container
+    owns_app_container = container is None and container_provider is None
     app_container_lock = threading.Lock()
     archive_sweep_interval = (
         timedelta(seconds=archive_upload_reaper_interval)
@@ -371,6 +372,9 @@ def create_app(
                 await retrieval_task
             with contextlib.suppress(asyncio.CancelledError):
                 await proof_maturation_task
+            if owns_app_container and app_container is not None:
+                app_container.close()
+                default_container.cache_clear()
 
     app = FastAPI(
         title="riverhog API",

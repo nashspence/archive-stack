@@ -9,7 +9,7 @@ from sqlalchemy import String, asc, cast, desc, func, literal, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
@@ -52,8 +52,13 @@ def _order_expressions(
 
 
 class SqlAlchemySearchService:
-    def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(config.database_url)
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        self._session_factory = session_factory or make_session_factory(config.database_url)
 
     def search(
         self,

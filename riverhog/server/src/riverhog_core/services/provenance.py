@@ -25,7 +25,7 @@ from riverhog_core.app_permissions import (
     PROVENANCE_READ,
     ApplicationPrincipal,
 )
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
@@ -40,8 +40,13 @@ _SORT_FIELDS = {"path", "bytes", "status"}
 
 
 class SqlAlchemyProvenanceService:
-    def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(config.database_url)
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        self._session_factory = session_factory or make_session_factory(config.database_url)
 
     def list_files(
         self,

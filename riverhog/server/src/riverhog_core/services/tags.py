@@ -22,7 +22,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
     tag_resource,
 )
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
@@ -75,9 +75,17 @@ def canonical_tag(value: str) -> str:
 
 
 class SqlAlchemyTagService:
-    def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(config.database_url)
-        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=self._session_factory,
+        )
 
     def create(
         self,

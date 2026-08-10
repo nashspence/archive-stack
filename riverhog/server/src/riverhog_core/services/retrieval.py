@@ -17,7 +17,7 @@ from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
@@ -72,14 +72,19 @@ class SqlAlchemyRetrievalService:
         archive_ingress_stores: ArchiveIngressStoreRegistry,
         retrieval_cache: RetrievalCache | None,
         download_allowance: DownloadAllowance | None = None,
+        *,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
         self._archive_ingress_stores = archive_ingress_stores
         self._cache = retrieval_cache
         self._download_allowance = download_allowance
-        self._session_factory = make_session_factory(config.database_url)
-        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=self._session_factory,
+        )
 
     def collection_manifest(
         self,

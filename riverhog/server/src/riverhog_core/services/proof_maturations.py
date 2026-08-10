@@ -7,7 +7,7 @@ from sqlalchemy import and_, select, update
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CollectionArchiveCopyRecord,
@@ -38,12 +38,13 @@ class SqlAlchemyProofMaturationService:
         *,
         proof_upgrader: ProofUpgrader | None = None,
         proof_verifier: ProofVerifier | None = None,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
         self._proof_upgrader = proof_upgrader or CommandProofUpgrader(config.ots_upgrade_command)
         self._proof_verifier = proof_verifier or CommandProofVerifier(config.ots_verify_command)
-        self._session_factory = make_session_factory(config.database_url)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
 
     def requeue_interrupted_for_startup(self) -> int:
         now = format_utc_timestamp(utc_now())

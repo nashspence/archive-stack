@@ -21,7 +21,7 @@ from riverhog_core.archive_formats import (
 )
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyObjectUploadRecord,
@@ -86,12 +86,17 @@ class SqlAlchemyArchiveCopyService:
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
         archive_ingress_stores: ArchiveIngressStoreRegistry,
+        *,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
         self._archive_ingress_stores = archive_ingress_stores
-        self._session_factory = make_session_factory(config.database_url)
-        self._lifecycle_events = SqlAlchemyLifecycleEventService(config)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._lifecycle_events = SqlAlchemyLifecycleEventService(
+            config,
+            session_factory=self._session_factory,
+        )
 
     def requeue_interrupted_copies_for_startup(self, *, limit: int = 100) -> int:
         if limit < 1:

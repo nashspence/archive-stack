@@ -5,7 +5,7 @@ from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
@@ -39,10 +39,14 @@ class SqlAlchemyArchiveStoreService:
         config: RuntimeConfig,
         *,
         download_allowance: DownloadAllowance | None = None,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._config = config
-        self._session_factory = make_session_factory(config.database_url)
-        self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(config)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(
+            config,
+            session_factory=self._session_factory,
+        )
         self._read_priorities = {
             name: priority for priority, name in enumerate(config.archive_read_order, start=1)
         }

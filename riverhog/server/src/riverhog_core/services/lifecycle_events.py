@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ApplicationPrincipal
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionTagRecord,
@@ -45,9 +45,14 @@ def terminal_context_expiry(config: RuntimeConfig, *, terminal_at: str | None = 
 
 
 class SqlAlchemyLifecycleEventService:
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
         self._config = config
-        self._session_factory = make_session_factory(config.database_url)
+        self._session_factory = session_factory or make_session_factory(config.database_url)
 
     def emit(
         self,

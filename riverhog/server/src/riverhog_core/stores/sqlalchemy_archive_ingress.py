@@ -5,7 +5,7 @@ from typing import Protocol, TypeVar
 
 from sqlalchemy import select
 
-from riverhog_core.catalog_db import make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionArchiveObjectUploadRecord
 from riverhog_core.domain.archive import StoredPartReceipt
 from riverhog_core.pack_upload import PackUploadCheckpoint, merge_pack_upload_checkpoints
@@ -29,8 +29,13 @@ _CheckpointT = TypeVar("_CheckpointT", bound=_IngressCheckpoint)
 class SqlAlchemyArchiveIngressCheckpointStore:
     """Persist multipart progress in the upload row that owns an immutable volume plan."""
 
-    def __init__(self, config: RuntimeConfig) -> None:
-        self._session_factory = make_session_factory(config.database_url)
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        *,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
+        self._session_factory = session_factory or make_session_factory(config.database_url)
 
     def load_pack_upload_checkpoint(self, *, collection_id: int, volume_id: str) -> str | None:
         return self._load(collection_id=collection_id, volume_id=volume_id, kind="pack")
