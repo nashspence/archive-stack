@@ -144,6 +144,28 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert audit["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.sha }}"
     assert audit["env"]["SOURCE_REF"] == "${{ needs.resolve.outputs.ref }}"
     assert audit["env"]["RIVERHOG_RELEASE_GHA_CACHE"] == "true"
+    resolve_source = next(
+        step
+        for step in workflow["jobs"]["resolve"]["steps"]
+        if step["name"] == "Resolve the selected ref once"
+    )
+    assert resolve_source["env"]["WORKFLOW_REF"] == "${{ github.ref }}"
+    assert '[[ "$WORKFLOW_REF" != refs/heads/main ]]' in resolve_source["run"]
+    audit_checkout = next(
+        step for step in audit["steps"] if step["name"] == "Check out workflow authority"
+    )
+    assert audit_checkout["with"] == {
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
+    exact_checkout = next(
+        step for step in audit["steps"] if step["name"] == "Check out verified exact source"
+    )
+    assert exact_checkout["run"] == (
+        'git fetch --force --no-tags origin "$SOURCE_SHA"\n'
+        'git checkout --detach "$SOURCE_SHA"\n'
+        'test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"\n'
+    )
     assert all(
         re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"])
         for step in workflow["jobs"]["resolve"]["steps"] + audit["steps"]

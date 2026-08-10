@@ -47,7 +47,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_REF: ${{ inputs.ref }}
           REQUESTED_VERSION: ${{ inputs.version }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
+          if [[ "$WORKFLOW_REF" != refs/heads/main ]]; then
+            printf 'Release qualification workflow authority must be main: %s\n' "$WORKFLOW_REF" >&2
+            exit 2
+          fi
           ref="$REQUESTED_REF"
           version="$REQUESTED_VERSION"
           if [[ "$EVENT_NAME" == "schedule" ]]; then
@@ -105,11 +110,16 @@ jobs:
       RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
       RIVERHOG_RELEASE_GHA_CACHE: "true"
     steps:
-      - name: Check out exact source
+      - name: Check out workflow authority
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Check out verified exact source
+        run: |
+          git fetch --force --no-tags origin "$SOURCE_SHA"
+          git checkout --detach "$SOURCE_SHA"
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
       - name: Configure Docker engine
