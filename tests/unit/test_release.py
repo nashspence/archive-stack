@@ -167,6 +167,36 @@ def test_dry_run_trust_is_scoped_to_the_exact_sha_checkout(
     )
 
 
+def test_dry_run_removes_each_temporary_image_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    tags = ["dry-run/riverhog:1.0.0", "dry-run/riverhog:sha-example"]
+    remaining = set(tags)
+    removed: list[str] = []
+
+    monkeypatch.setattr(
+        module,
+        "_docker_image_exists",
+        lambda tag, *, cwd: cwd == tmp_path and tag in remaining,
+    )
+
+    def remove(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[:3] == ["docker", "image", "rm"]
+        tag = command[3]
+        remaining.remove(tag)
+        removed.append(tag)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", remove)
+
+    module._remove_release_image_tags(tags, cwd=tmp_path)
+
+    assert removed == list(reversed(tags))
+    assert remaining == set()
+
+
 def test_source_archive_is_deterministic_and_commit_time_normalized(tmp_path: Path) -> None:
     module = load_script()
     checkout = tmp_path / "checkout"

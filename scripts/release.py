@@ -848,15 +848,19 @@ def _docker_image_exists(reference: str, *, cwd: Path) -> bool:
 
 
 def _remove_release_image_tags(tags: list[str], *, cwd: Path) -> None:
-    if not tags:
-        return
-    subprocess.run(
-        ["docker", "image", "rm", *tags],
-        cwd=cwd,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    for tag in reversed(tags):
+        if not _docker_image_exists(tag, cwd=cwd):
+            continue
+        subprocess.run(
+            ["docker", "image", "rm", tag],
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    remaining = [tag for tag in tags if _docker_image_exists(tag, cwd=cwd)]
+    if remaining:
+        raise ReleaseError("could not remove temporary release image tags: " + ", ".join(remaining))
 
 
 def _build_release_images(
