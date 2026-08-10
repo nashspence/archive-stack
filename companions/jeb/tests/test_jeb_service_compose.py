@@ -5,10 +5,12 @@ import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 from jeb_api.cli import api_host, api_port
 from jeb_api.composition import config_from_env
 from jeb_core.domain.models import parse_duration
+from munchy_api_client.client import DEFAULT_BASE_URL as DEFAULT_MUNCHY_BASE_URL
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -62,12 +64,15 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["environment"]["JEB_MUNCHY_ALLOW_INSECURE_HTTP"] == (
         "${JEB_MUNCHY_ALLOW_INSECURE_HTTP:-false}"
     )
+    assert service["environment"]["JEB_MUNCHY_URL"] == (
+        "${JEB_MUNCHY_URL:?JEB_MUNCHY_URL is required}"
+    )
     assert service["ports"] == ["${JEB_API_BIND_ADDR:-127.0.0.1}:${JEB_API_PORT:-8081}:8081"]
     runtime = config_from_env(
         {
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
-            "JEB_MUNCHY_URL": "http://munchy.invalid",
+            "JEB_MUNCHY_URL": "https://munchy.invalid",
         }
     )
     assert service["environment"]["JEB_TUSD_BASE_URL"] == (
@@ -86,6 +91,30 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert healthcheck["test"][:3] == ["CMD", "python", "-c"]
     assert "/health/ready" in healthcheck["test"][3]
     assert healthcheck["interval"] == "15s"
+
+
+def test_jeb_native_default_uses_the_munchy_client_loopback_contract(tmp_path: Path) -> None:
+    runtime = config_from_env(
+        {
+            "JEB_LANDING_DIR": str(tmp_path / "landing"),
+            "JEB_STATE_DIR": str(tmp_path / "state"),
+        }
+    )
+
+    assert runtime.targets["munchy"].url == DEFAULT_MUNCHY_BASE_URL
+
+
+def test_jeb_munchy_target_validates_cleartext_transport_during_configuration(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        config_from_env(
+            {
+                "JEB_LANDING_DIR": str(tmp_path / "landing"),
+                "JEB_STATE_DIR": str(tmp_path / "state"),
+                "JEB_MUNCHY_URL": "http://munchy.example.test",
+            }
+        )
 
 
 def test_jeb_api_defaults_to_loopback_and_accepts_an_explicit_container_bind(

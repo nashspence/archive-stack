@@ -29,7 +29,7 @@ def env_for(tmp_path: Path, *, sources: str = "camera,phone") -> dict[str, str]:
         "TEST_SOURCE_IDS": sources,
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
-        "JEB_MUNCHY_URL": "http://munchy.test",
+        "JEB_MUNCHY_URL": "https://munchy.test",
         "JEB_FTP_UID": str(os.getuid()),
         "JEB_FTP_GID": str(os.getgid()),
     }
@@ -405,6 +405,7 @@ def test_munchy_target_uses_its_explicit_cleartext_transport_opt_in(tmp_path: Pa
     config = config_from_env(
         {
             **env_for(tmp_path, sources=""),
+            "JEB_MUNCHY_URL": "http://munchy.test",
             "JEB_MUNCHY_ALLOW_INSECURE_HTTP": "true",
         }
     )

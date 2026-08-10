@@ -58,7 +58,7 @@ def test_jeb_v1_fixture_reaches_head_with_sources_summaries_and_cursors(
         {
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
-            "JEB_MUNCHY_URL": "http://munchy.invalid",
+            "JEB_MUNCHY_URL": "https://munchy.invalid",
         }
     )
     _restore_sqlite(FIXTURES / "jeb.sqlite.sql", config.service.state_db)

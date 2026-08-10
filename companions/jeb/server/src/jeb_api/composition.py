@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from http_api_contracts import safe_http_base_url
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.domain.models import EligibleFile, JebConfig, TargetConfig, current_time
 from jeb_core.domain.sources import SourceConfig
@@ -30,6 +31,8 @@ from jeb_core.services.events import JebEventService
 from jeb_core.services.operations import JebServiceOperations
 from jeb_core.services.sources import JebSourceService
 from lifecycle_events import SQLiteEventCursorStore, SQLiteLifecycleEventLog
+
+DEFAULT_MUNCHY_BASE_URL = "http://127.0.0.1:8092"
 
 
 @dataclass(slots=True)
@@ -92,14 +95,17 @@ class JebServices:
 
 def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
     values = os.environ if env is None else env
+    allow_insecure_http = env_bool(values, "JEB_MUNCHY_ALLOW_INSECURE_HTTP", False)
     target = TargetConfig(
         name="munchy",
-        url=(
-            env_value_from(values, "JEB_MUNCHY_URL", "http://munchy-server:8080")
-            or "http://munchy-server:8080"
-        ).rstrip("/"),
+        url=safe_http_base_url(
+            env_value_from(values, "JEB_MUNCHY_URL", DEFAULT_MUNCHY_BASE_URL)
+            or DEFAULT_MUNCHY_BASE_URL,
+            setting="JEB_MUNCHY_URL",
+            allow_insecure_http=allow_insecure_http,
+        ),
         token=env_value_from(values, "JEB_MUNCHY_TOKEN", "") or "",
-        allow_insecure_http=env_bool(values, "JEB_MUNCHY_ALLOW_INSECURE_HTTP", False),
+        allow_insecure_http=allow_insecure_http,
         upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
         upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64)) * 1024 * 1024,
         wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),

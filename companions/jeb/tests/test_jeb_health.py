@@ -86,7 +86,7 @@ def jeb_env(tmp_path: Path) -> dict[str, str]:
     return {
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
-        "JEB_MUNCHY_URL": "http://munchy.invalid",
+        "JEB_MUNCHY_URL": "https://munchy.invalid",
         "JEB_FTP_UID": str(os.getuid()),
         "JEB_FTP_GID": str(os.getgid()),
     }
