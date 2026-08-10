@@ -490,7 +490,13 @@ def test_archive_object_verification_read_and_deletion_cover_the_identity_set(
         kind="manifest",
         content=b"{}",
     )
-    identity = CollectionArchiveIdentity(objects=(pack, manifest))
+    provenance_index = _seed_encrypted_object(
+        client,
+        path=f"{ARCHIVE_PREFIX}/provenance/index.json.age",
+        kind="provenance-index",
+        content=b"{}",
+    )
+    identity = CollectionArchiveIdentity(objects=(pack, manifest, provenance_index))
 
     store.verify_collection_archive(collection_id=COLLECTION_ID, archive=identity)
     assert b"".join(store.iter_archive_object(collection_id=COLLECTION_ID, object=pack)) == (
@@ -517,6 +523,7 @@ def test_archive_object_verification_read_and_deletion_cover_the_identity_set(
     store.delete_collection_archive(collection_id=COLLECTION_ID, objects=identity.objects)
     assert pack.object_path not in client.objects
     assert manifest.object_path not in client.objects
+    assert provenance_index.object_path not in client.objects
 
 
 def test_attestation_artifacts_are_plaintext_and_replaceable(

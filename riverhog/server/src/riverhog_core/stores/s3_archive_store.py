@@ -340,10 +340,10 @@ class S3ArchiveStore:
             raise ValueError("collection archive has no objects")
         object_paths = tuple(current.object_path for current in objects)
         archive_root = f"{archive_store_object_path(self._store.prefix, 'archives')}/"
-        archive_prefixes = {_archive_storage_prefix(path) for path in object_paths}
-        if len(archive_prefixes) != 1 or any(
-            not path.startswith(archive_root) for path in object_paths
-        ):
+        archive_prefixes = {
+            _archive_storage_prefix(path, archive_root=archive_root) for path in object_paths
+        }
+        if len(archive_prefixes) != 1:
             raise ValueError("collection archive paths are outside one owned archive prefix")
         for path in object_paths:
             delete_exact_object(self._client, bucket=self._bucket, key=path)
@@ -1175,11 +1175,13 @@ def _combine_archive_read_statuses(
     )
 
 
-def _archive_storage_prefix(object_path: str) -> str:
-    for marker in ("/volumes/", "/objects/"):
-        if marker in object_path:
-            return object_path.split(marker, 1)[0]
-    return object_path.rsplit("/", 1)[0]
+def _archive_storage_prefix(object_path: str, *, archive_root: str) -> str:
+    if not object_path.startswith(archive_root):
+        raise ValueError("collection archive paths are outside one owned archive prefix")
+    archive_id, separator, artifact_path = object_path.removeprefix(archive_root).partition("/")
+    if not archive_id or not separator or not artifact_path:
+        raise ValueError("collection archive paths are outside one owned archive prefix")
+    return f"{archive_root}{archive_id}"
 
 
 def _bucket_recovery_readme() -> str:
