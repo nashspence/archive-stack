@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
+FROM python:3.14-slim@sha256:a7fb1e634c4a578f9e0bd6327f11a3cde11b7a9395f48e24360c0988bcc5c2bc AS build
 
 ARG SOURCE_DATE_EPOCH=0
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -29,7 +29,7 @@ COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-server --no-dev --no-editable
 
 
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+FROM python:3.14-slim@sha256:a7fb1e634c4a578f9e0bd6327f11a3cde11b7a9395f48e24360c0988bcc5c2bc
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
