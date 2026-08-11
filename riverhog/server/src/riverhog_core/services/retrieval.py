@@ -61,7 +61,11 @@ from riverhog_core.services.lifecycle_events import (
     event_context_json,
 )
 from riverhog_core.streaming_age import ResumableAgeSessionCache
-from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
+from riverhog_core.throughput import (
+    ArchiveThroughputTuning,
+    ArchiveTransferResources,
+    log_transfer_timing,
+)
 
 _DATA_KINDS = {"pack", "segment"}
 
@@ -570,6 +574,7 @@ class SqlAlchemyRetrievalService:
                 read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
                 resources=self._resources,
                 session_cache=self._age_sessions,
+                timing_observer=log_transfer_timing,
                 policy=PackRangeRetrievalPolicy.from_env(
                     os.environ,
                     store_name=source_store,
@@ -611,6 +616,7 @@ class SqlAlchemyRetrievalService:
                     read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
                     resources=self._resources,
                     session_cache=self._age_sessions,
+                    timing_observer=log_transfer_timing,
                 )
             ).iter_file(sources)
             return chunks, expected_bytes, expected_sha256

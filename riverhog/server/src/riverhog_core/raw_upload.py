@@ -5,7 +5,6 @@ import json
 import re
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 
 from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan, UploadState
@@ -35,7 +34,7 @@ from riverhog_core.streaming_age import (
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
     DEFAULT_AGE_SESSION_CACHE_ENTRIES,
-    DEFAULT_S3_PART_CONCURRENCY,
+    DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
     DEFAULT_SOURCE_READ_CHUNK_BYTES,
     DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
     DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
@@ -49,7 +48,6 @@ RAW_UPLOAD_CHECKPOINT_SCHEMA = "raw-upload-checkpoint/v1"
 RAW_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.raw-segment+age"
 _SEGMENT_ID_RE = re.compile(r"segment-[0-9]{12}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-RawPlaintextFactory = Callable[[int], Iterable[bytes]]
 TransferTimingObserver = Callable[[TransferTiming], None]
 
 
@@ -227,7 +225,6 @@ class RawVolumeUploader:
         checkpoint_store: RawUploadCheckpointStore,
         passphrase: str,
         scrypt_log_n: int,
-        part_concurrency: int = DEFAULT_S3_PART_CONCURRENCY,
         max_inflight_bytes: int = DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
         source_read_chunk_bytes: int = DEFAULT_SOURCE_READ_CHUNK_BYTES,
         prepare_concurrency: int = DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
@@ -243,15 +240,12 @@ class RawVolumeUploader:
     ) -> None:
         if not passphrase:
             raise ValueError("archive passphrase must not be empty")
-        if part_concurrency < 1:
-            raise ValueError("raw part concurrency must be positive")
         if source_read_chunk_bytes < 64 * 1024:
             raise ValueError("source read chunk must be at least 64 KiB")
         self._object_store = object_store
         self._checkpoint_store = checkpoint_store
         self._passphrase = passphrase
         self._scrypt_log_n = scrypt_log_n
-        self._part_concurrency = part_concurrency
         self._source_read_chunk_bytes = source_read_chunk_bytes
         if resources is not None and (
             byte_budget is not None
@@ -275,7 +269,7 @@ class RawVolumeUploader:
         self._request_gate = (
             resources.upload_requests
             if resources is not None
-            else request_gate or TransferConcurrencyGate(part_concurrency)
+            else request_gate or TransferConcurrencyGate(DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY)
         )
         self._timing_observer = timing_observer
         self._derivation_gate = (
@@ -459,71 +453,6 @@ class RawVolumeUploader:
         if len(checkpoint.parts) == len(planned):
             return self._complete(checkpoint)
         return checkpoint
-
-    def upload_parts_concurrently(
-        self,
-        *,
-        plan: RawVolumePlan,
-        checkpoint: RawUploadCheckpoint,
-        plaintext_factory: RawPlaintextFactory,
-        concurrency: int | None = None,
-    ) -> RawUploadCheckpoint:
-        """Upload missing raw parts with bounded parallel source and S3 work."""
-
-        self._validate(plan, checkpoint)
-        if checkpoint.completed is not None:
-            return checkpoint
-        planned = self._planned_parts(plan, checkpoint)
-        existing = {current.number for current in checkpoint.parts}
-        missing = iter(current for current in planned if current.part_number not in existing)
-        workers = concurrency or self._part_concurrency
-        if workers < 1:
-            raise ValueError("raw part concurrency must be positive")
-        current = checkpoint
-        pending: dict[Future[_UploadedRawPart], int] = {}
-        exhausted = False
-
-        def fill(executor: ThreadPoolExecutor) -> None:
-            nonlocal exhausted
-            while not exhausted and len(pending) < workers:
-                try:
-                    part = next(missing)
-                except StopIteration:
-                    exhausted = True
-                    return
-                plaintext = plaintext_factory(part.part_number)
-                pending[
-                    executor.submit(
-                        self._prepare_and_upload_part,
-                        plan=plan,
-                        checkpoint=checkpoint,
-                        part=part,
-                        plaintext_chunks=plaintext,
-                    )
-                ] = part.part_number
-
-        with ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="riverhog-raw-part",
-        ) as executor:
-            fill(executor)
-            try:
-                while pending:
-                    done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        pending.pop(future)
-                        uploaded = future.result()
-                        current, checkpoint_seconds = self._record_part(
-                            current,
-                            uploaded.receipt,
-                        )
-                        self._observe(uploaded, checkpoint_seconds=checkpoint_seconds)
-                    fill(executor)
-            except BaseException:
-                for future in pending:
-                    future.cancel()
-                raise
-        return self._complete(current)
 
     def sealed_receipt(self, checkpoint: RawUploadCheckpoint) -> SealedRawVolume:
         self._validate(_checkpoint_plan(checkpoint), checkpoint)

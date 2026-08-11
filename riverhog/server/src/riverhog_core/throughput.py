@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
 import threading
 import time
@@ -8,14 +10,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
-DEFAULT_CLIENT_UPLOAD_CONCURRENCY = 8
-DEFAULT_CLIENT_UPLOAD_WINDOW = 16
-DEFAULT_CLIENT_UPLOAD_CHUNK_BYTES = 50 * 1024 * 1024
-DEFAULT_CLIENT_DOWNLOAD_CONCURRENCY = 4
-DEFAULT_CLIENT_DOWNLOAD_WINDOW = 8
-DEFAULT_CLIENT_DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
-DEFAULT_INGRESS_VOLUME_CONCURRENCY = 8
-DEFAULT_INGRESS_VOLUME_WINDOW = 16
 DEFAULT_UPLOAD_PREPARE_CONCURRENCY = 8
 DEFAULT_S3_PART_CONCURRENCY = 4
 DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY = 4
@@ -27,14 +21,9 @@ DEFAULT_RETRIEVAL_READ_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_SOURCE_READ_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_AGE_SESSION_CACHE_ENTRIES = 128
 DEFAULT_AGE_DERIVATION_CONCURRENCY = 4
-DEFAULT_S3_CONTROL_CONNECTION_MARGIN = 8
-MAX_CLIENT_UPLOAD_CONCURRENCY = 64
-MAX_CLIENT_UPLOAD_WINDOW = 256
 MAX_WORKER_CONCURRENCY = 128
-RawVerificationMode = Literal["part_manifest", "remote_reread"]
-RAW_VERIFICATION_PART_MANIFEST: RawVerificationMode = "part_manifest"
-RAW_VERIFICATION_REMOTE_REREAD: RawVerificationMode = "remote_reread"
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
+_TRANSFER_LOG = logging.getLogger("riverhog.transfer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,64 +112,18 @@ class ArchiveThroughputTuning:
     this class can be changed between collections without changing archive semantics.
     """
 
-    client_upload_concurrency: int = DEFAULT_CLIENT_UPLOAD_CONCURRENCY
-    client_upload_window: int = DEFAULT_CLIENT_UPLOAD_WINDOW
-    client_upload_chunk_bytes: int = DEFAULT_CLIENT_UPLOAD_CHUNK_BYTES
-    client_download_concurrency: int = DEFAULT_CLIENT_DOWNLOAD_CONCURRENCY
-    client_download_window: int = DEFAULT_CLIENT_DOWNLOAD_WINDOW
-    client_download_chunk_bytes: int = DEFAULT_CLIENT_DOWNLOAD_CHUNK_BYTES
-    ingress_volume_concurrency: int = DEFAULT_INGRESS_VOLUME_CONCURRENCY
-    ingress_volume_window: int = DEFAULT_INGRESS_VOLUME_WINDOW
     upload_prepare_concurrency: int = DEFAULT_UPLOAD_PREPARE_CONCURRENCY
     s3_part_concurrency: int = DEFAULT_S3_PART_CONCURRENCY
     s3_upload_request_concurrency: int = DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY
-    s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     upload_max_inflight_bytes: int = DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES
     source_read_chunk_bytes: int = DEFAULT_SOURCE_READ_CHUNK_BYTES
     retrieval_request_concurrency: int = DEFAULT_RETRIEVAL_REQUEST_CONCURRENCY
     retrieval_max_inflight_bytes: int = DEFAULT_RETRIEVAL_MAX_INFLIGHT_BYTES
     retrieval_read_chunk_bytes: int = DEFAULT_RETRIEVAL_READ_CHUNK_BYTES
-    raw_verification_mode: RawVerificationMode = RAW_VERIFICATION_PART_MANIFEST
     age_session_cache_entries: int = DEFAULT_AGE_SESSION_CACHE_ENTRIES
     age_derivation_concurrency: int = DEFAULT_AGE_DERIVATION_CONCURRENCY
 
     def __post_init__(self) -> None:
-        _bounded_int(
-            self.client_upload_concurrency,
-            name="client upload concurrency",
-            minimum=1,
-            maximum=MAX_CLIENT_UPLOAD_CONCURRENCY,
-        )
-        _bounded_int(
-            self.client_upload_window,
-            name="client upload window",
-            minimum=self.client_upload_concurrency,
-            maximum=MAX_CLIENT_UPLOAD_WINDOW,
-        )
-        _bounded_int(
-            self.client_download_concurrency,
-            name="client download concurrency",
-            minimum=1,
-            maximum=MAX_CLIENT_UPLOAD_CONCURRENCY,
-        )
-        _bounded_int(
-            self.client_download_window,
-            name="client download window",
-            minimum=self.client_download_concurrency,
-            maximum=MAX_CLIENT_UPLOAD_WINDOW,
-        )
-        _bounded_int(
-            self.ingress_volume_concurrency,
-            name="ingress volume concurrency",
-            minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
-        )
-        _bounded_int(
-            self.ingress_volume_window,
-            name="ingress volume window",
-            minimum=self.ingress_volume_concurrency,
-            maximum=512,
-        )
         _bounded_int(
             self.upload_prepare_concurrency,
             name="archive preparation concurrency",
@@ -199,15 +142,7 @@ class ArchiveThroughputTuning:
             minimum=1,
             maximum=MAX_WORKER_CONCURRENCY,
         )
-        _bounded_int(
-            self.s3_max_pool_connections,
-            name="S3 maximum pool connections",
-            minimum=1,
-            maximum=4096,
-        )
         for name, value in (
-            ("client upload chunk bytes", self.client_upload_chunk_bytes),
-            ("client download chunk bytes", self.client_download_chunk_bytes),
             ("upload maximum in-flight bytes", self.upload_max_inflight_bytes),
             ("source read chunk bytes", self.source_read_chunk_bytes),
             ("retrieval maximum in-flight bytes", self.retrieval_max_inflight_bytes),
@@ -232,269 +167,12 @@ class ArchiveThroughputTuning:
             minimum=1,
             maximum=MAX_WORKER_CONCURRENCY,
         )
-        if self.raw_verification_mode not in {
-            RAW_VERIFICATION_PART_MANIFEST,
-            RAW_VERIFICATION_REMOTE_REREAD,
-        }:
-            raise ValueError("raw verification mode is invalid")
-
-    @property
-    def recommended_s3_pool_connections(self) -> int:
-        """Connections needed to avoid the botocore pool throttling configured workers."""
-
-        return (
-            self.s3_upload_request_concurrency
-            + self.retrieval_request_concurrency
-            + DEFAULT_S3_CONTROL_CONNECTION_MARGIN
-        )
-
-    @property
-    def s3_pool_is_likely_constraining(self) -> bool:
-        return self.s3_max_pool_connections < self.recommended_s3_pool_connections
-
-    def assess_capacity(
-        self,
-        *,
-        upload_part_stored_bytes: int,
-        retrieval_request_stored_bytes: int,
-        retrieval_request_plaintext_bytes: int | None = None,
-        upload_parts_per_volume: int | None = None,
-        active_upload_volumes: int | None = None,
-        active_client_uploads: int | None = None,
-        active_retrieval_requests: int | None = None,
-        active_client_downloads: int | None = None,
-        control_connection_margin: int = DEFAULT_S3_CONTROL_CONNECTION_MARGIN,
-    ) -> ArchiveTransferCapacity:
-        """Calculate the effective request parallelism before starting a transfer.
-
-        The result is deliberately conservative: it assumes uploads and retrievals may be
-        active together and reserves pool connections for control traffic. This makes a
-        mis-sized botocore pool or byte budget visible instead of allowing silent queuing.
-        """
-
-        if upload_part_stored_bytes < 1 or retrieval_request_stored_bytes < 1:
-            raise ValueError("capacity assessment transfer sizes must be positive")
-        if retrieval_request_plaintext_bytes is None:
-            retrieval_request_plaintext_bytes = retrieval_request_stored_bytes
-        if retrieval_request_plaintext_bytes < 0:
-            raise ValueError("retrieval plaintext bytes must be non-negative")
-        if control_connection_margin < 0:
-            raise ValueError("S3 control connection margin must be non-negative")
-        if upload_parts_per_volume is None:
-            upload_parts_per_volume = self.s3_part_concurrency
-        if upload_parts_per_volume < 1 or upload_parts_per_volume > self.s3_part_concurrency:
-            raise ValueError("upload parts per volume must be between 1 and part concurrency")
-        active_upload_volumes = _active_slots(
-            active_upload_volumes,
-            configured=self.ingress_volume_concurrency,
-            name="active upload volumes",
-        )
-        active_client_uploads = _active_slots(
-            active_client_uploads,
-            configured=self.client_upload_concurrency,
-            name="active client uploads",
-        )
-        active_retrieval_requests = _active_slots(
-            active_retrieval_requests,
-            configured=self.retrieval_request_concurrency,
-            name="active retrieval requests",
-        )
-        active_client_downloads = _active_slots(
-            active_client_downloads,
-            configured=self.client_download_concurrency,
-            name="active client downloads",
-        )
-
-        upload_workers = active_upload_volumes * upload_parts_per_volume
-        upload_prepare_slots = min(
-            upload_workers,
-            self.upload_prepare_concurrency,
-        )
-        upload_working_bytes = upload_part_stored_bytes + self.source_read_chunk_bytes + 64 * 1024
-        retrieval_working_bytes = retrieval_request_plaintext_bytes + min(
-            retrieval_request_stored_bytes,
-            self.retrieval_read_chunk_bytes,
-        )
-        upload_memory_slots = self.upload_max_inflight_bytes // upload_working_bytes
-        retrieval_memory_slots = self.retrieval_max_inflight_bytes // max(
-            1, retrieval_working_bytes
-        )
-        upload_pool_slots = max(
-            0,
-            self.s3_max_pool_connections - active_retrieval_requests - control_connection_margin,
-        )
-        retrieval_pool_slots = max(
-            0,
-            self.s3_max_pool_connections
-            - min(self.s3_upload_request_concurrency, upload_workers)
-            - control_connection_margin,
-        )
-        effective_prepare = min(
-            upload_prepare_slots,
-            upload_memory_slots,
-        )
-        effective_upload = min(
-            upload_workers,
-            upload_memory_slots,
-            self.s3_upload_request_concurrency,
-            upload_pool_slots,
-        )
-        effective_retrieval = min(
-            active_retrieval_requests,
-            retrieval_memory_slots,
-            retrieval_pool_slots,
-        )
-        warnings: list[str] = []
-        if effective_prepare < min(
-            upload_workers,
-            self.s3_upload_request_concurrency,
-        ):
-            warnings.append(
-                "archive preparation concurrency or upload byte budget may not feed the "
-                "configured final-store request concurrency"
-            )
-        if upload_memory_slots < upload_workers:
-            warnings.append(
-                "upload byte budget permits fewer in-flight parts than the configured "
-                "volume × part workers"
-            )
-        if upload_pool_slots < self.s3_upload_request_concurrency:
-            warnings.append(
-                "S3 connection pool permits fewer upload requests after retrieval/control "
-                "reservations than the configured upload request gate"
-            )
-        if retrieval_memory_slots < active_retrieval_requests:
-            warnings.append(
-                "retrieval byte budget permits fewer in-flight ranges than the configured "
-                "request workers"
-            )
-        if retrieval_pool_slots < active_retrieval_requests:
-            warnings.append(
-                "S3 connection pool permits fewer retrieval requests after upload/control "
-                "reservations than the configured retrieval workers"
-            )
-        upload_buffer_slots = max(
-            0,
-            min(upload_workers, upload_memory_slots) - effective_upload,
-        )
-        pipeline_overlap_possible = (
-            effective_upload > 0
-            and active_client_uploads > effective_upload
-            and upload_buffer_slots > 0
-        )
-        if not pipeline_overlap_possible:
-            warnings.append(
-                "client/server preparation capacity does not exceed final-store request "
-                "capacity; the client-to-server and server-to-S3 legs may phase-lock "
-                "instead of overlapping"
-            )
-        if self.age_session_cache_entries < self.ingress_volume_concurrency:
-            warnings.append(
-                "age session cache is smaller than volume concurrency and may repeat scrypt "
-                "derivations under object churn"
-            )
-        return ArchiveTransferCapacity(
-            client_upload_slots=active_client_uploads,
-            upload_worker_slots=upload_workers,
-            upload_prepare_slots=upload_prepare_slots,
-            effective_prepare_slots=effective_prepare,
-            upload_memory_slots=upload_memory_slots,
-            upload_request_slots=self.s3_upload_request_concurrency,
-            upload_pool_slots=upload_pool_slots,
-            upload_buffer_slots=upload_buffer_slots,
-            effective_upload_slots=effective_upload,
-            pipeline_overlap_possible=pipeline_overlap_possible,
-            end_to_end_upload_slots=min(
-                active_client_uploads,
-                effective_upload,
-            ),
-            client_download_slots=active_client_downloads,
-            retrieval_worker_slots=active_retrieval_requests,
-            retrieval_memory_slots=retrieval_memory_slots,
-            retrieval_pool_slots=retrieval_pool_slots,
-            effective_retrieval_slots=effective_retrieval,
-            end_to_end_retrieval_slots=min(
-                active_client_downloads,
-                effective_retrieval,
-            ),
-            upload_working_bytes_per_request=upload_working_bytes,
-            retrieval_working_bytes_per_request=retrieval_working_bytes,
-            warnings=tuple(warnings),
-        )
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "client_upload_concurrency": self.client_upload_concurrency,
-            "client_upload_window": self.client_upload_window,
-            "client_upload_chunk_bytes": self.client_upload_chunk_bytes,
-            "client_download_concurrency": self.client_download_concurrency,
-            "client_download_window": self.client_download_window,
-            "client_download_chunk_bytes": self.client_download_chunk_bytes,
-            "ingress_volume_concurrency": self.ingress_volume_concurrency,
-            "ingress_volume_window": self.ingress_volume_window,
-            "upload_prepare_concurrency": self.upload_prepare_concurrency,
-            "s3_part_concurrency": self.s3_part_concurrency,
-            "s3_upload_request_concurrency": self.s3_upload_request_concurrency,
-            "s3_max_pool_connections": self.s3_max_pool_connections,
-            "upload_max_inflight_bytes": self.upload_max_inflight_bytes,
-            "source_read_chunk_bytes": self.source_read_chunk_bytes,
-            "retrieval_request_concurrency": self.retrieval_request_concurrency,
-            "retrieval_max_inflight_bytes": self.retrieval_max_inflight_bytes,
-            "retrieval_read_chunk_bytes": self.retrieval_read_chunk_bytes,
-            "raw_verification_mode": self.raw_verification_mode,
-            "age_session_cache_entries": self.age_session_cache_entries,
-            "age_derivation_concurrency": self.age_derivation_concurrency,
-            "recommended_s3_pool_connections": self.recommended_s3_pool_connections,
-        }
 
     @classmethod
     def from_env(cls, values: Mapping[str, str]) -> ArchiveThroughputTuning:
         """Load the complete operator tuning surface from environment-like values."""
 
-        client_concurrency = _env_int(
-            values,
-            "RIVERHOG_UPLOAD_FILE_CONCURRENCY",
-            DEFAULT_CLIENT_UPLOAD_CONCURRENCY,
-        )
-        volume_concurrency = _env_int(
-            values,
-            "RIVERHOG_INGRESS_VOLUME_CONCURRENCY",
-            DEFAULT_INGRESS_VOLUME_CONCURRENCY,
-        )
-        download_concurrency = _env_int(
-            values,
-            "RIVERHOG_DOWNLOAD_FILE_CONCURRENCY",
-            DEFAULT_CLIENT_DOWNLOAD_CONCURRENCY,
-        )
         return cls(
-            client_upload_concurrency=client_concurrency,
-            client_upload_window=_env_int(
-                values,
-                "RIVERHOG_UPLOAD_FILE_WINDOW",
-                min(client_concurrency * 2, MAX_CLIENT_UPLOAD_WINDOW),
-            ),
-            client_upload_chunk_bytes=_env_bytes(
-                values,
-                "RIVERHOG_UPLOAD_CHUNK_BYTES",
-                DEFAULT_CLIENT_UPLOAD_CHUNK_BYTES,
-            ),
-            client_download_concurrency=download_concurrency,
-            client_download_window=_env_int(
-                values,
-                "RIVERHOG_DOWNLOAD_FILE_WINDOW",
-                min(download_concurrency * 2, MAX_CLIENT_UPLOAD_WINDOW),
-            ),
-            client_download_chunk_bytes=_env_bytes(
-                values,
-                "RIVERHOG_DOWNLOAD_CHUNK_BYTES",
-                DEFAULT_CLIENT_DOWNLOAD_CHUNK_BYTES,
-            ),
-            ingress_volume_concurrency=volume_concurrency,
-            ingress_volume_window=_env_int(
-                values,
-                "RIVERHOG_INGRESS_VOLUME_WINDOW",
-                min(volume_concurrency * 2, 512),
-            ),
             upload_prepare_concurrency=_env_int(
                 values,
                 "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY",
@@ -509,11 +187,6 @@ class ArchiveThroughputTuning:
                 values,
                 "RIVERHOG_ARCHIVE_UPLOAD_REQUEST_CONCURRENCY",
                 DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
-            ),
-            s3_max_pool_connections=_env_int(
-                values,
-                "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
-                DEFAULT_S3_MAX_POOL_CONNECTIONS,
             ),
             upload_max_inflight_bytes=_env_bytes(
                 values,
@@ -540,12 +213,6 @@ class ArchiveThroughputTuning:
                 "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
                 DEFAULT_RETRIEVAL_READ_CHUNK_BYTES,
             ),
-            raw_verification_mode=_raw_verification_mode(
-                values.get(
-                    "RIVERHOG_RAW_VERIFICATION_MODE",
-                    RAW_VERIFICATION_PART_MANIFEST,
-                )
-            ),
             age_session_cache_entries=_env_int(
                 values,
                 "RIVERHOG_AGE_SESSION_CACHE_ENTRIES",
@@ -557,58 +224,6 @@ class ArchiveThroughputTuning:
                 DEFAULT_AGE_DERIVATION_CONCURRENCY,
             ),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveTransferCapacity:
-    client_upload_slots: int
-    upload_worker_slots: int
-    upload_prepare_slots: int
-    effective_prepare_slots: int
-    upload_memory_slots: int
-    upload_request_slots: int
-    upload_pool_slots: int
-    upload_buffer_slots: int
-    effective_upload_slots: int
-    pipeline_overlap_possible: bool
-    end_to_end_upload_slots: int
-    client_download_slots: int
-    retrieval_worker_slots: int
-    retrieval_memory_slots: int
-    retrieval_pool_slots: int
-    effective_retrieval_slots: int
-    end_to_end_retrieval_slots: int
-    upload_working_bytes_per_request: int
-    retrieval_working_bytes_per_request: int
-    warnings: tuple[str, ...]
-
-    @property
-    def constrained(self) -> bool:
-        return bool(self.warnings)
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "client_upload_slots": self.client_upload_slots,
-            "upload_worker_slots": self.upload_worker_slots,
-            "upload_prepare_slots": self.upload_prepare_slots,
-            "effective_prepare_slots": self.effective_prepare_slots,
-            "upload_memory_slots": self.upload_memory_slots,
-            "upload_request_slots": self.upload_request_slots,
-            "upload_pool_slots": self.upload_pool_slots,
-            "upload_buffer_slots": self.upload_buffer_slots,
-            "effective_upload_slots": self.effective_upload_slots,
-            "pipeline_overlap_possible": self.pipeline_overlap_possible,
-            "end_to_end_upload_slots": self.end_to_end_upload_slots,
-            "client_download_slots": self.client_download_slots,
-            "retrieval_worker_slots": self.retrieval_worker_slots,
-            "retrieval_memory_slots": self.retrieval_memory_slots,
-            "retrieval_pool_slots": self.retrieval_pool_slots,
-            "effective_retrieval_slots": self.effective_retrieval_slots,
-            "end_to_end_retrieval_slots": self.end_to_end_retrieval_slots,
-            "upload_working_bytes_per_request": self.upload_working_bytes_per_request,
-            "retrieval_working_bytes_per_request": (self.retrieval_working_bytes_per_request),
-            "warnings": list(self.warnings),
-        }
 
 
 class TransferConcurrencyGate:
@@ -771,21 +386,31 @@ class TransferTiming:
         return max(phases, key=phases.__getitem__)
 
 
-def _active_slots(value: int | None, *, configured: int, name: str) -> int:
-    if value is None:
-        return configured
-    if isinstance(value, bool) or value < 1:
-        raise ValueError(f"{name} must be positive")
-    return min(value, configured)
+def log_transfer_timing(timing: TransferTiming) -> None:
+    """Emit phase-separated, identity-safe evidence after one payload operation."""
 
-
-def _raw_verification_mode(value: str) -> RawVerificationMode:
-    normalized = value.strip().casefold().replace("-", "_")
-    if normalized == RAW_VERIFICATION_PART_MANIFEST:
-        return RAW_VERIFICATION_PART_MANIFEST
-    if normalized == RAW_VERIFICATION_REMOTE_REREAD:
-        return RAW_VERIFICATION_REMOTE_REREAD
-    raise ValueError("RIVERHOG_RAW_VERIFICATION_MODE must be part_manifest or remote_reread")
+    identity_sha256 = hashlib.sha256(timing.identity.encode()).hexdigest()
+    _TRANSFER_LOG.info(
+        "transfer operation=%s identity_sha256=%s plaintext_bytes=%d stored_bytes=%d "
+        "queue_seconds=%.6f source_seconds=%.6f crypto_seconds=%.6f "
+        "remote_seconds=%.6f checkpoint_seconds=%.6f downstream_seconds=%.6f "
+        "elapsed_seconds=%.6f plaintext_mib_per_second=%.3f "
+        "remote_mib_per_second=%.3f bottleneck=%s",
+        timing.operation,
+        identity_sha256,
+        timing.plaintext_bytes,
+        timing.stored_bytes,
+        timing.queue_wait_seconds,
+        timing.source_seconds,
+        timing.crypto_seconds,
+        timing.remote_seconds,
+        timing.checkpoint_seconds,
+        timing.downstream_seconds,
+        timing.elapsed_seconds,
+        timing.plaintext_mib_per_second,
+        timing.remote_mib_per_second,
+        timing.likely_bottleneck(),
+    )
 
 
 def _bounded_int(value: int, *, name: str, minimum: int, maximum: int) -> int:

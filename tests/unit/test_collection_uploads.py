@@ -38,6 +38,7 @@ from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
+from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
 from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_provenance import (
@@ -94,6 +95,7 @@ def _service_with_ingress(
     *,
     proof_stamper: ProofStamper | None = None,
     policy: CollectionVolumePolicy | None = None,
+    throughput_tuning: ArchiveThroughputTuning | None = None,
 ) -> tuple[
     SqlAlchemyCollectionUploadService,
     RuntimeConfig,
@@ -126,11 +128,29 @@ def _service_with_ingress(
             ArchiveIngressStoreRegistry({"archive": ingress}),
             proof_stamper=proof_stamper or FixtureProofStamper(),
             policy=policy,
+            throughput_tuning=throughput_tuning,
         ),
         config,
         multipart,
         root,
     )
+
+
+def test_collection_ingress_uses_the_configured_source_read_chunk(
+    tmp_path: Path,
+) -> None:
+    tuning = ArchiveThroughputTuning(source_read_chunk_bytes=256 * 1024)
+    service, _config, multipart, _root = _service_with_ingress(
+        tmp_path,
+        throughput_tuning=tuning,
+    )
+
+    pack_uploader = service._pack_uploader(multipart)
+    raw_uploader = service._raw_uploader(multipart)
+    assert pack_uploader._source_read_chunk_bytes == 256 * 1024
+    assert raw_uploader._source_read_chunk_bytes == 256 * 1024
+    assert pack_uploader._timing_observer is log_transfer_timing
+    assert raw_uploader._timing_observer is log_transfer_timing
 
 
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(

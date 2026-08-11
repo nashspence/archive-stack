@@ -102,7 +102,11 @@ from riverhog_core.stores.sqlalchemy_archive_ingress import (
     SqlAlchemyArchiveIngressCheckpointStore,
 )
 from riverhog_core.streaming_age import ResumableAgeSessionCache
-from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
+from riverhog_core.throughput import (
+    ArchiveThroughputTuning,
+    ArchiveTransferResources,
+    log_transfer_timing,
+)
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PROOF_RELATIVE_PATH = "manifest.json.ots.age"
@@ -151,6 +155,7 @@ class SqlAlchemyCollectionUploadService:
             session_factory=self._session_factory,
         )
         tuning = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
+        self._throughput = tuning
         self._resources = transfer_resources or ArchiveTransferResources.from_tuning(tuning)
         self._age_sessions = ResumableAgeSessionCache(
             config.archive_passphrase,
@@ -882,7 +887,9 @@ class SqlAlchemyCollectionUploadService:
             checkpoint_store=self._checkpoints,
             passphrase=self._config.archive_passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
+            source_read_chunk_bytes=self._throughput.source_read_chunk_bytes,
             resources=self._resources,
+            timing_observer=log_transfer_timing,
             session_cache=self._age_sessions,
         )
 
@@ -892,7 +899,9 @@ class SqlAlchemyCollectionUploadService:
             checkpoint_store=self._checkpoints,
             passphrase=self._config.archive_passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
+            source_read_chunk_bytes=self._throughput.source_read_chunk_bytes,
             resources=self._resources,
+            timing_observer=log_transfer_timing,
             session_cache=self._age_sessions,
         )
 

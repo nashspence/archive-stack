@@ -5,7 +5,6 @@ import json
 import re
 import time
 from collections.abc import Callable, Iterable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 
 from riverhog_age import (
@@ -42,7 +41,7 @@ from riverhog_core.streaming_age import (
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
     DEFAULT_AGE_SESSION_CACHE_ENTRIES,
-    DEFAULT_S3_PART_CONCURRENCY,
+    DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
     DEFAULT_SOURCE_READ_CHUNK_BYTES,
     DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
     DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
@@ -56,7 +55,6 @@ PACK_UPLOAD_CHECKPOINT_SCHEMA = "pack-upload-checkpoint/v1"
 PACK_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.pack+age"
 _PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
 TransferTimingObserver = Callable[[TransferTiming], None]
-PackPayloadFactory = Callable[[int], Iterable[bytes]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +200,6 @@ class PackVolumeUploader:
         checkpoint_store: PackUploadCheckpointStore,
         passphrase: str,
         scrypt_log_n: int,
-        part_concurrency: int = DEFAULT_S3_PART_CONCURRENCY,
         max_inflight_bytes: int = DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
         source_read_chunk_bytes: int = DEFAULT_SOURCE_READ_CHUNK_BYTES,
         prepare_concurrency: int = DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
@@ -218,15 +215,12 @@ class PackVolumeUploader:
     ) -> None:
         if not passphrase:
             raise ValueError("archive passphrase must not be empty")
-        if part_concurrency < 1:
-            raise ValueError("pack part concurrency must be positive")
         if source_read_chunk_bytes < 64 * 1024:
             raise ValueError("source read chunk must be at least 64 KiB")
         self._object_store = object_store
         self._checkpoint_store = checkpoint_store
         self._passphrase = passphrase
         self._scrypt_log_n = scrypt_log_n
-        self._part_concurrency = part_concurrency
         self._source_read_chunk_bytes = source_read_chunk_bytes
         if resources is not None and (
             byte_budget is not None
@@ -250,7 +244,7 @@ class PackVolumeUploader:
         self._request_gate = (
             resources.upload_requests
             if resources is not None
-            else request_gate or TransferConcurrencyGate(part_concurrency)
+            else request_gate or TransferConcurrencyGate(DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY)
         )
         self._timing_observer = timing_observer
         self._derivation_gate = (
@@ -415,80 +409,6 @@ class PackVolumeUploader:
         if len(checkpoint.parts) == len(plan.units):
             return self._complete(plan=plan, checkpoint=checkpoint)
         return checkpoint
-
-    def upload_units_concurrently(
-        self,
-        *,
-        plan: PackVolumePlan,
-        checkpoint: PackUploadCheckpoint,
-        payload_factory: PackPayloadFactory,
-        concurrency: int | None = None,
-    ) -> PackUploadCheckpoint:
-        """Upload all missing units with bounded parallel preparation and S3 requests.
-
-        At most ``concurrency`` source iterators and ciphertext part bodies exist at once.
-        Checkpoint merges happen on the calling thread after each completed worker.
-        """
-
-        self._validate_checkpoint(
-            collection_id=checkpoint.collection_id,
-            plan=plan,
-            checkpoint=checkpoint,
-            object_path=checkpoint.object_path,
-            relative_path=checkpoint.relative_path,
-        )
-        if checkpoint.completed is not None:
-            return checkpoint
-        completed_numbers = {current.number for current in checkpoint.parts}
-        missing = iter(unit.unit for unit in plan.units if unit.unit + 1 not in completed_numbers)
-        workers = concurrency or self._part_concurrency
-        if workers < 1:
-            raise ValueError("pack part concurrency must be positive")
-        current = checkpoint
-        pending: dict[Future[_UploadedPackPart], int] = {}
-        exhausted = False
-
-        def fill(executor: ThreadPoolExecutor) -> None:
-            nonlocal exhausted
-            while not exhausted and len(pending) < workers:
-                try:
-                    unit_number = next(missing)
-                except StopIteration:
-                    exhausted = True
-                    return
-                payload = payload_factory(unit_number)
-                pending[
-                    executor.submit(
-                        self._prepare_and_upload_unit,
-                        plan=plan,
-                        checkpoint=checkpoint,
-                        unit_number=unit_number,
-                        payload_chunks=payload,
-                    )
-                ] = unit_number
-
-        with ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="riverhog-pack-part",
-        ) as executor:
-            fill(executor)
-            try:
-                while pending:
-                    done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        pending.pop(future)
-                        uploaded = future.result()
-                        current, checkpoint_seconds = self._record_part(
-                            current,
-                            uploaded.receipt,
-                        )
-                        self._observe(uploaded, checkpoint_seconds=checkpoint_seconds)
-                    fill(executor)
-            except BaseException:
-                for future in pending:
-                    future.cancel()
-                raise
-        return self._complete(plan=plan, checkpoint=current)
 
     def sealed_receipt(
         self,
