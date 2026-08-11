@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import replace
@@ -125,7 +126,11 @@ def _service(
     return config, archive, source, destination, service
 
 
-def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) -> None:
+def test_archive_copy_preserves_the_independent_object_manifest(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="riverhog.transfer")
     config, archive, source, destination, service = _service(tmp_path / "catalog.sqlite3")
 
     requested = service.create_or_resume(
@@ -189,6 +194,11 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
         "completed",
     ]
     assert events[-1].data["context"] == {"workflow": "promotion"}
+    transfer_messages = [message for message in caplog.messages if "transfer operation=" in message]
+    assert any("operation=archive_copy_part" in message for message in transfer_messages)
+    assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 2
+    assert all("integrity_seconds=" in message for message in transfer_messages)
+    assert all("pack-000000000000" not in message for message in transfer_messages)
 
 
 def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(

@@ -51,7 +51,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -98,6 +98,7 @@ help:
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
+		'  make transfer-profile  Profile a supported transfer command with secret-free JSON.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
 		'  make dist              Build every Python distribution independently.' \
 		'  make dist-smoke        Install and exercise the Riverhog server and client wheels.' \
@@ -125,6 +126,7 @@ help:
 		'  RELEASE_SIGNING_KEY=/path Offline minisign secret key for release-evidence.' \
 		'  RELEASE_PUBLIC_KEY=/path Minisign public key for release-evidence or release-verify.' \
 		'  TUS_URL=https://...    TUS creation URL for make tus-throughput.' \
+		'  TUS throughput args require scenario, workload, and same-path raw baseline.' \
 		'  TUS_BENCHMARK_USER/PASSWORD Optional benchmark Basic-auth credentials.' \
 		'  MISE_BIN=/abs/path/to/mise Use a specific mise binary instead of mise on PATH.' \
 		'  COMPOSE_ENV_FILE=/abs/path/to/overrides.env' \
@@ -205,6 +207,9 @@ tus-throughput:
 		exit 2; \
 	fi
 	$(call UV_CMD,python scripts/tus_throughput.py "$(TUS_URL)" $(args))
+
+transfer-profile:
+	$(call UV_CMD,python scripts/transfer_profile.py $(args))
 
 stop-spec:
 	@./scripts/stop_spec.sh

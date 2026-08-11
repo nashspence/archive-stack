@@ -401,6 +401,12 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
             "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
         ),
+        (
+            "transfer-profile",
+            ("args=--scenario reference-recovery --workload large-file --payload-bytes 1 -- true",),
+            "python scripts/transfer_profile.py --scenario reference-recovery "
+            "--workload large-file --payload-bytes 1 -- true",
+        ),
     ],
 )
 def test_atomic_local_targets_run_in_locked_uv_environment(
@@ -838,6 +844,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make stop-spec" in completed.stdout
     assert "make test" in completed.stdout
     assert "make tus-throughput" in completed.stdout
+    assert "make transfer-profile" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "FILES='...'" in completed.stdout
     assert "PYTHON_PATHS='...'" in completed.stdout

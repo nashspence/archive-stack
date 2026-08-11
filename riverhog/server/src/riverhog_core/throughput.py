@@ -361,6 +361,8 @@ class TransferTiming:
     checkpoint_seconds: float
     elapsed_seconds: float
     downstream_seconds: float = 0.0
+    integrity_seconds: float = 0.0
+    processing_seconds: float = 0.0
 
     @property
     def plaintext_mib_per_second(self) -> float:
@@ -378,7 +380,9 @@ class TransferTiming:
         phases = {
             "queue": self.queue_wait_seconds,
             "source": self.source_seconds,
+            "integrity": self.integrity_seconds,
             "crypto": self.crypto_seconds,
+            "processing": self.processing_seconds,
             "remote": self.remote_seconds,
             "checkpoint": self.checkpoint_seconds,
             "downstream": self.downstream_seconds,
@@ -392,8 +396,9 @@ def log_transfer_timing(timing: TransferTiming) -> None:
     identity_sha256 = hashlib.sha256(timing.identity.encode()).hexdigest()
     _TRANSFER_LOG.info(
         "transfer operation=%s identity_sha256=%s plaintext_bytes=%d stored_bytes=%d "
-        "queue_seconds=%.6f source_seconds=%.6f crypto_seconds=%.6f "
-        "remote_seconds=%.6f checkpoint_seconds=%.6f downstream_seconds=%.6f "
+        "queue_seconds=%.6f source_seconds=%.6f integrity_seconds=%.6f "
+        "crypto_seconds=%.6f processing_seconds=%.6f remote_seconds=%.6f "
+        "checkpoint_seconds=%.6f downstream_seconds=%.6f "
         "elapsed_seconds=%.6f plaintext_mib_per_second=%.3f "
         "remote_mib_per_second=%.3f bottleneck=%s",
         timing.operation,
@@ -402,7 +407,9 @@ def log_transfer_timing(timing: TransferTiming) -> None:
         timing.stored_bytes,
         timing.queue_wait_seconds,
         timing.source_seconds,
+        timing.integrity_seconds,
         timing.crypto_seconds,
+        timing.processing_seconds,
         timing.remote_seconds,
         timing.checkpoint_seconds,
         timing.downstream_seconds,

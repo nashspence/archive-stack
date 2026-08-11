@@ -4,9 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from riverhog_age import UploadState
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
@@ -59,7 +60,12 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
-from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
+from riverhog_core.throughput import (
+    ArchiveThroughputTuning,
+    ArchiveTransferResources,
+    TransferTiming,
+    log_transfer_timing,
+)
 
 _LOG = logging.getLogger(__name__)
 _SORT_FIELDS = {
@@ -81,6 +87,12 @@ class _CopiedObject:
     version_id: str | None
     completed_at: str
     part_receipts_json: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CopiedPart:
+    receipt: MultipartPartReceipt
+    timing: TransferTiming
 
 
 class SqlAlchemyArchiveCopyService:
@@ -850,14 +862,18 @@ class SqlAlchemyArchiveCopyService:
         )
         source_buffer = bytearray()
         rows = iter(part_rows)
-        pending: dict[Future[MultipartPartReceipt], dict[str, object]] = {}
+        pending: dict[Future[_CopiedPart], dict[str, object]] = {}
         committed: dict[int, MultipartPartReceipt] = {}
         exhausted = False
+        retrieval_wait_seconds = 0.0
+        retrieval_wait_recorded = False
 
-        def read_part(row: Mapping[str, object]) -> tuple[bytes, int]:
+        def read_part(row: Mapping[str, object]) -> tuple[bytes, int, float, float]:
+            nonlocal retrieval_wait_recorded
             reserved = _part_int(row, "stored_bytes")
-            self._resources.upload_bytes.acquire(reserved)
+            byte_wait_seconds = self._resources.upload_bytes.acquire(reserved)
             try:
+                source_started = time.perf_counter()
                 while len(source_buffer) < reserved:
                     try:
                         chunk = bytes(next(source_chunks))
@@ -869,28 +885,63 @@ class SqlAlchemyArchiveCopyService:
                         source_buffer.extend(chunk)
                 content = bytes(source_buffer[:reserved])
                 del source_buffer[:reserved]
-                return content, reserved
+                source_seconds = time.perf_counter() - source_started
+                queue_wait_seconds = byte_wait_seconds
+                if not retrieval_wait_recorded:
+                    queue_wait_seconds += retrieval_wait_seconds
+                    retrieval_wait_recorded = True
+                return content, reserved, queue_wait_seconds, source_seconds
             except BaseException:
                 self._resources.upload_bytes.release(reserved)
                 raise
 
-        def upload_part(row: Mapping[str, object], content: bytes) -> MultipartPartReceipt:
+        def upload_part(
+            row: Mapping[str, object],
+            content: bytes,
+            queue_wait_seconds: float,
+            source_seconds: float,
+        ) -> _CopiedPart:
             number = _part_int(row, "number")
+            integrity_started = time.perf_counter()
             if hashlib.sha256(content).hexdigest() != str(row["stored_sha256"]):
                 raise Conflict(f"source archive volume part {number} failed verification")
+            integrity_seconds = time.perf_counter() - integrity_started
             receipt = remote_parts.get(number)
+            remote_seconds = 0.0
             if receipt is None:
-                with self._resources.upload_requests.reserve():
+                with self._resources.upload_requests.reserve() as request_wait_seconds:
+                    queue_wait_seconds += request_wait_seconds
+                    remote_started = time.perf_counter()
                     receipt = destination_object_store.upload_part(
                         upload=upload,
                         number=number,
                         content=content,
                     )
+                    remote_seconds = time.perf_counter() - remote_started
             if receipt.bytes != len(content):
                 raise Conflict("archive copy multipart part byte count changed")
-            return receipt
+            return _CopiedPart(
+                receipt=receipt,
+                timing=TransferTiming(
+                    operation="archive_copy_part",
+                    identity=f"{source.object_id}:{number}",
+                    plaintext_bytes=len(content),
+                    stored_bytes=len(content),
+                    queue_wait_seconds=queue_wait_seconds,
+                    source_seconds=source_seconds,
+                    integrity_seconds=integrity_seconds,
+                    crypto_seconds=0.0,
+                    processing_seconds=0.0,
+                    remote_seconds=remote_seconds,
+                    checkpoint_seconds=0.0,
+                    elapsed_seconds=(
+                        queue_wait_seconds + source_seconds + integrity_seconds + remote_seconds
+                    ),
+                ),
+            )
 
-        with self._resources.retrieval_requests.reserve():
+        with self._resources.retrieval_requests.reserve() as current_retrieval_wait_seconds:
+            retrieval_wait_seconds = current_retrieval_wait_seconds
             with ThreadPoolExecutor(
                 max_workers=worker_count,
                 thread_name_prefix="riverhog-archive-copy-part",
@@ -908,15 +959,21 @@ class SqlAlchemyArchiveCopyService:
                                     "source archive volume has bytes beyond its part receipts"
                                 ) from None
                             return
-                        content, reserved = read_part(row)
+                        content, reserved, queue_wait_seconds, source_seconds = read_part(row)
                         try:
-                            future = executor.submit(upload_part, row, content)
+                            future = executor.submit(
+                                upload_part,
+                                row,
+                                content,
+                                queue_wait_seconds,
+                                source_seconds,
+                            )
                         except BaseException:
                             self._resources.upload_bytes.release(reserved)
                             raise
 
                         def release_buffer(
-                            _future: Future[MultipartPartReceipt],
+                            _future: Future[_CopiedPart],
                             amount: int = reserved,
                         ) -> None:
                             self._resources.upload_bytes.release(amount)
@@ -928,10 +985,13 @@ class SqlAlchemyArchiveCopyService:
                 try:
                     while pending:
                         done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                        completed_parts: list[_CopiedPart] = []
                         for future in done:
                             row = pending.pop(future)
-                            receipt = future.result()
-                            committed[_part_int(row, "number")] = receipt
+                            result = future.result()
+                            committed[_part_int(row, "number")] = result.receipt
+                            completed_parts.append(result)
+                        checkpoint_started = time.perf_counter()
                         self._record_copy_part(
                             collection_id=collection_id,
                             destination_store=destination_store_name,
@@ -939,6 +999,18 @@ class SqlAlchemyArchiveCopyService:
                             parts=tuple(committed[number] for number in sorted(committed)),
                             total_parts=len(part_rows),
                         )
+                        checkpoint_seconds = time.perf_counter() - checkpoint_started
+                        checkpoint_share = checkpoint_seconds / len(completed_parts)
+                        for result in completed_parts:
+                            log_transfer_timing(
+                                replace(
+                                    result.timing,
+                                    checkpoint_seconds=checkpoint_share,
+                                    elapsed_seconds=(
+                                        result.timing.elapsed_seconds + checkpoint_share
+                                    ),
+                                )
+                            )
                         fill()
                 except BaseException:
                     for future in pending:
@@ -958,39 +1030,66 @@ class SqlAlchemyArchiveCopyService:
         source: CollectionArchiveObjectRecord,
         identity: ArchiveObjectIdentity,
     ) -> _CopiedObject:
-        content = b"".join(
-            source_store.iter_stored_archive_object(
-                collection_id=collection_id,
-                object=identity,
+        started = time.perf_counter()
+        reserve_bytes = min(max(1, source.stored_bytes), self._resources.upload_bytes.capacity)
+        with self._resources.upload_bytes.reserve(reserve_bytes) as byte_wait:
+            with self._resources.retrieval_requests.reserve() as retrieval_wait:
+                source_started = time.perf_counter()
+                content = b"".join(
+                    source_store.iter_stored_archive_object(
+                        collection_id=collection_id,
+                        object=identity,
+                    )
+                )
+                source_seconds = time.perf_counter() - source_started
+            if len(content) != source.stored_bytes:
+                raise Conflict("source archive artifact byte count changed")
+            integrity_started = time.perf_counter()
+            stored_sha256 = hashlib.sha256(content).hexdigest()
+            integrity_seconds = time.perf_counter() - integrity_started
+            if source.stored_sha256 and stored_sha256 != source.stored_sha256:
+                raise Conflict("source archive artifact sha256 changed")
+            destination_path = _destination_object_path(
+                source=source,
+                destination_storage_prefix=destination_storage_prefix,
             )
-        )
-        if len(content) != source.stored_bytes:
-            raise Conflict("source archive artifact byte count changed")
-        stored_sha256 = hashlib.sha256(content).hexdigest()
-        if source.stored_sha256 and stored_sha256 != source.stored_sha256:
-            raise Conflict("source archive artifact sha256 changed")
-        destination_path = _destination_object_path(
-            source=source,
-            destination_storage_prefix=destination_storage_prefix,
-        )
-        content_type = {
-            "manifest": "application/vnd.riverhog.collection-manifest+age",
-            "proof": "application/vnd.riverhog.collection-manifest-proof+age",
-            "provenance-index": "application/vnd.riverhog.provenance-index+age",
-            "provenance-bundle": "application/vnd.riverhog.provenance-bundle+age",
-        }[source.kind]
-        receipt = destination_store.put_immutable_object(
-            object_path=destination_path,
-            content=content,
-            content_type=content_type,
-            identity_metadata={
-                "riverhog-format": archive_object_storage_format(source.kind),
-                "riverhog-plaintext-bytes": str(source.plaintext_bytes),
-                "riverhog-plaintext-sha256": source.sha256 or "",
-            },
-        )
+            content_type = {
+                "manifest": "application/vnd.riverhog.collection-manifest+age",
+                "proof": "application/vnd.riverhog.collection-manifest-proof+age",
+                "provenance-index": "application/vnd.riverhog.provenance-index+age",
+                "provenance-bundle": "application/vnd.riverhog.provenance-bundle+age",
+            }[source.kind]
+            with self._resources.upload_requests.reserve() as upload_wait:
+                remote_started = time.perf_counter()
+                receipt = destination_store.put_immutable_object(
+                    object_path=destination_path,
+                    content=content,
+                    content_type=content_type,
+                    identity_metadata={
+                        "riverhog-format": archive_object_storage_format(source.kind),
+                        "riverhog-plaintext-bytes": str(source.plaintext_bytes),
+                        "riverhog-plaintext-sha256": source.sha256 or "",
+                    },
+                )
+                remote_seconds = time.perf_counter() - remote_started
         if receipt.stored_sha256 != stored_sha256:
             raise Conflict("destination archive artifact sha256 changed")
+        log_transfer_timing(
+            TransferTiming(
+                operation="archive_copy_object",
+                identity=source.object_id,
+                plaintext_bytes=source.plaintext_bytes,
+                stored_bytes=source.stored_bytes,
+                queue_wait_seconds=byte_wait + retrieval_wait + upload_wait,
+                source_seconds=source_seconds,
+                integrity_seconds=integrity_seconds,
+                crypto_seconds=0.0,
+                processing_seconds=0.0,
+                remote_seconds=remote_seconds,
+                checkpoint_seconds=0.0,
+                elapsed_seconds=time.perf_counter() - started,
+            )
+        )
         return _CopiedObject(
             source.object_id,
             receipt.object_path,

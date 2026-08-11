@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from typing import Any
 
@@ -76,7 +77,9 @@ class _FakeS3Client:
 
 def test_multipart_cache_hydration_overlaps_bounded_part_uploads(
     monkeypatch: Any,
+    caplog: Any,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="riverhog.transfer")
     content = b"a" * _PART_BYTES + b"b" * _PART_BYTES + b"tail"
     fake = _FakeS3Client()
     config = RuntimeConfig(
@@ -119,3 +122,7 @@ def test_multipart_cache_hydration_overlaps_bounded_part_uploads(
     assert receipt.version_id == "version-1"
     assert receipt.stored_bytes == len(content)
     assert receipt.stored_sha256 == hashlib.sha256(content).hexdigest()
+    message = caplog.messages[-1]
+    assert "operation=retrieval_cache_hydration" in message
+    assert "integrity_seconds=" in message
+    assert "raw-000001" not in message

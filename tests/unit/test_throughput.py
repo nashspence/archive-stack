@@ -85,6 +85,8 @@ def test_transfer_timing_log_separates_phases_without_raw_identity(
             remote_seconds=0.4,
             checkpoint_seconds=0.5,
             downstream_seconds=0.6,
+            integrity_seconds=0.7,
+            processing_seconds=0.8,
             elapsed_seconds=2.1,
         )
     )
@@ -93,7 +95,9 @@ def test_transfer_timing_log_separates_phases_without_raw_identity(
     assert "operation=pack_upload_part" in message
     assert "identity_sha256=" in message
     assert "source_seconds=0.200000" in message
+    assert "integrity_seconds=0.700000" in message
     assert "crypto_seconds=0.300000" in message
+    assert "processing_seconds=0.800000" in message
     assert "remote_seconds=0.400000" in message
     assert "checkpoint_seconds=0.500000" in message
     assert "downstream_seconds=0.600000" in message
