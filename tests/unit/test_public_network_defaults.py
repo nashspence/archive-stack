@@ -56,13 +56,16 @@ def test_public_munchy_host_network_services_default_to_loopback() -> None:
     assert tusd["command"][host_argument] == "127.0.0.1"
 
     gateway = compose["services"]["munchy-server-lan-gateway"]
-    assert _defaults(gateway["environment"]["MUNCHY_GATEWAY_BIND_ADDR"]) == "127.0.0.1"
+    gateway_environment = gateway["environment"]
+    assert _defaults(gateway_environment["MUNCHY_GATEWAY_BIND_ADDR"]) == "127.0.0.1"
+    assert _defaults(gateway_environment["MUNCHY_GATEWAY_API_PORT"]) == "8092"
+    assert _defaults(gateway_environment["MUNCHY_GATEWAY_TUSD_PORT"]) == "8093"
 
     nginx = (ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
         encoding="utf-8"
     )
-    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8092;" in nginx
-    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:8093;" in nginx
+    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:${MUNCHY_GATEWAY_API_PORT};" in nginx
+    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:${MUNCHY_GATEWAY_TUSD_PORT};" in nginx
 
 
 def test_public_munchy_uses_the_shared_direct_ingress_transfer_defaults() -> None:

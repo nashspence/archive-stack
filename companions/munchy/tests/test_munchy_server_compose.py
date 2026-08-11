@@ -75,10 +75,29 @@ def test_server_and_lan_gateway_share_the_tusd_signing_contract() -> None:
 
 
 def test_lan_gateway_keeps_parallel_transfers_observable_and_unbuffered() -> None:
+    compose = yaml.safe_load(
+        (REPO_ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
+    )
+    gateway_environment = compose["services"]["munchy-server-lan-gateway"]["environment"]
     nginx = (REPO_ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
         encoding="utf-8"
     )
 
+    assert gateway_environment["MUNCHY_GATEWAY_BIND_ADDR"] == (
+        "${MUNCHY_GATEWAY_BIND_ADDR:-127.0.0.1}"
+    )
+    assert gateway_environment["MUNCHY_GATEWAY_API_PORT"] == ("${MUNCHY_GATEWAY_API_PORT:-8092}")
+    assert gateway_environment["MUNCHY_GATEWAY_TUSD_PORT"] == ("${MUNCHY_GATEWAY_TUSD_PORT:-8093}")
+    assert gateway_environment["MUNCHY_GATEWAY_API_UPSTREAM_ADDR"] == (
+        "${MUNCHY_GATEWAY_API_UPSTREAM_ADDR:-127.0.0.1:8092}"
+    )
+    assert gateway_environment["MUNCHY_GATEWAY_TUSD_UPSTREAM_ADDR"] == (
+        "${MUNCHY_GATEWAY_TUSD_UPSTREAM_ADDR:-127.0.0.1:8093}"
+    )
+    assert (
+        "MUNCHY_GATEWAY_(BIND_ADDR|API_PORT|TUSD_PORT|API_UPSTREAM_ADDR|TUSD_UPSTREAM_ADDR)"
+        in (gateway_environment["NGINX_ENVSUBST_FILTER"])
+    )
     assert "worker_processes auto;" in nginx
     assert "worker_connections 1024;" in nginx
     assert "access_log /dev/stdout riverhog_transfer;" in nginx
@@ -86,3 +105,7 @@ def test_lan_gateway_keeps_parallel_transfers_observable_and_unbuffered() -> Non
     assert "rt=$request_time urt=$upstream_response_time" in nginx
     assert "proxy_request_buffering off;" in nginx
     assert "proxy_buffering off;" in nginx
+    assert "server ${MUNCHY_GATEWAY_API_UPSTREAM_ADDR};" in nginx
+    assert "server ${MUNCHY_GATEWAY_TUSD_UPSTREAM_ADDR};" in nginx
+    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:${MUNCHY_GATEWAY_API_PORT};" in nginx
+    assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:${MUNCHY_GATEWAY_TUSD_PORT};" in nginx
