@@ -1708,11 +1708,7 @@ class MunchyClient:
         return upload
 
     def _job_status(self, request: UploadRequest) -> dict[str, Any]:
-        submission = self.get_submission(request.submission_id)
-        job = submission.get("job")
-        if not isinstance(job, dict):
-            raise RuntimeError(f"submission returned invalid job state: {submission}")
-        return job
+        return self.get_job(request.submission_id, compact=True)
 
     def upload_files(self, request: UploadRequest) -> dict[str, Any]:
         with keep_system_awake("munchy upload"):

@@ -8791,6 +8791,60 @@ def test_list_jobs_uses_persisted_progress_snapshots(
     assert summary["handoff_progress"] == persisted_handoff
 
 
+def test_compact_job_read_uses_persisted_progress_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    persisted_upload = {"files_uploaded": 7, "files_total": 10}
+    persisted_encode = {"files_encoded": 3, "files_total": 10}
+    persisted_handoff = {"files_uploaded": 2, "files_total": 10}
+    persisted_handoff_state = {"destination": "riverhog", "state": "transferring"}
+    server.state_store.save_job(
+        {
+            "job_id": "running",
+            "state": "running",
+            "phase": "uploading",
+            "input_upload_id": "upload-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "handoff": persisted_handoff_state,
+            "upload_progress": persisted_upload,
+            "encode_progress": persisted_encode,
+            "handoff_progress": persisted_handoff,
+        }
+    )
+
+    def refresh_handoff(job: dict[str, object]) -> None:
+        job["handoff"] = {"destination": "riverhog", "state": "complete"}
+
+    monkeypatch.setattr(server.handoff_service, "refresh_handoff", refresh_handoff)
+    monkeypatch.setattr(
+        server.processing_service,
+        "upload_progress_for_job",
+        lambda _job: {"files_uploaded": 8, "files_total": 10},
+    )
+    monkeypatch.setattr(
+        server.processing_service,
+        "encode_progress_for_job",
+        lambda _job: {"files_encoded": 4, "files_total": 10},
+    )
+    monkeypatch.setattr(
+        server.handoff_service,
+        "current_handoff_progress",
+        lambda _job: {"files_uploaded": 3, "files_total": 10},
+    )
+
+    compact = server.get_job("running", compact=True)
+
+    assert compact["handoff"] == persisted_handoff_state
+    assert compact["upload_progress"] == persisted_upload
+    assert compact["encode_progress"] == persisted_encode
+    assert compact["handoff_progress"] == persisted_handoff
+
+
 def test_acquire_job_gpu_reuses_persisted_lease_token(
     tmp_path: Path,
     monkeypatch,

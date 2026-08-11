@@ -779,6 +779,25 @@ def test_wait_for_job_polls_compact_status() -> None:
     assert calls == [True]
 
 
+def test_upload_progress_polls_bounded_compact_job_status() -> None:
+    client = MunchyClient("https://munchy.test")
+    request = SubmissionUploadRequest(
+        submission_id="submission-1",
+        template_id="test-template",
+        files=(),
+    )
+    calls: list[tuple[str, bool]] = []
+
+    def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
+        calls.append((job_id, compact))
+        return {"job_id": job_id, "state": "uploading", "phase": "waiting_for_upload"}
+
+    client.get_job = fake_get_job  # type: ignore[method-assign]
+
+    assert client._job_status(request)["state"] == "uploading"
+    assert calls == [("submission-1", True)]
+
+
 def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:
     client = MunchyClient("https://munchy.test")
     responses: list[dict[str, object]] = [
@@ -1386,7 +1405,7 @@ def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) 
     assert upload["state"] == "uploaded"
 
 
-def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
+def test_upload_files_tolerates_compact_status_timeout(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
     file = SubmissionInputFile(
@@ -1405,6 +1424,7 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
     client = MunchyClient("https://munchy.test")
     uploaded: list[str] = []
     submission_gets = 0
+    job_gets = 0
 
     def fake_upload_file(
         upload_id: str,
@@ -1423,21 +1443,28 @@ def test_upload_files_retries_final_status_timeout(tmp_path: Path) -> None:
         submission_gets += 1
         if submission_gets == 1:
             upload = {"state": "uploading", "files": []}
-        elif submission_gets == 2:
-            raise TimeoutError("timed out")
         else:
             upload = {"state": "uploaded", "files": [{"path": file.rel_path, "complete": True}]}
         return {"job": {"state": "uploading"}, "upload": upload}
 
+    def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
+        nonlocal job_gets
+        assert job_id == "submission-1"
+        assert compact is True
+        job_gets += 1
+        raise TimeoutError("timed out")
+
     client.upload_file = fake_upload_file  # type: ignore[method-assign]
     client.get_submission = fake_get_submission  # type: ignore[method-assign]
+    client.get_job = fake_get_job  # type: ignore[method-assign]
 
     with patch("munchy_api_client.client.time.sleep"):
         upload = client.upload_files(request)
 
     assert uploaded == [file.rel_path]
     assert upload["state"] == "uploaded"
-    assert submission_gets == 3
+    assert submission_gets == 2
+    assert job_gets == 1
 
 
 def test_upload_progress_can_merge_remote_upload_and_encode_progress() -> None:

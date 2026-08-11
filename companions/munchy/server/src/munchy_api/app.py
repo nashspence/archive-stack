@@ -738,12 +738,13 @@ def list_jobs(
 @app.get("/v1/jobs/{job_id}")
 def get_job(job_id: str, compact: bool = False) -> dict[str, Any]:
     job = state_store.load_job(job_id)
+    if compact:
+        return processing_service.compact_job_response(
+            job,
+            refresh_progress=False,
+        )
     handoff_service.refresh_handoff(job)
-    return (
-        processing_service.compact_job_response(job)
-        if compact
-        else processing_service.job_response(job)
-    )
+    return processing_service.job_response(job)
 
 
 @app.get("/v1/admin/job-diagnostics", response_model=JobDiagnosticPageResponse)
