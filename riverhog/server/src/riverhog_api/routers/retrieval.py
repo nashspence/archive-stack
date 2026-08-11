@@ -157,7 +157,12 @@ def download_retrieval_file(
     if returned_bytes != total_bytes or returned_sha256 != sha256:
         raise RuntimeError("retrieval content metadata changed")
     return StreamingResponse(
-        _iter_range(chunks, start=start, size=content_length),
+        _iter_range(
+            chunks,
+            start=start,
+            size=content_length,
+            exhaust_source=range_header is None,
+        ),
         status_code=status_code,
         headers=headers,
         media_type="application/octet-stream",
@@ -190,10 +195,17 @@ def _parse_range(value: str | None, total_bytes: int) -> tuple[int, int]:
     return start, end
 
 
-def _iter_range(chunks: Iterable[bytes], *, start: int, size: int) -> Iterator[bytes]:
+def _iter_range(
+    chunks: Iterable[bytes],
+    *,
+    start: int,
+    size: int,
+    exhaust_source: bool = False,
+) -> Iterator[bytes]:
     skip = start
     remaining = size
-    for chunk in chunks:
+    source = iter(chunks)
+    for chunk in source:
         if skip >= len(chunk):
             skip -= len(chunk)
             continue
@@ -203,6 +215,10 @@ def _iter_range(chunks: Iterable[bytes], *, start: int, size: int) -> Iterator[b
             yield current
             remaining -= len(current)
         if remaining == 0:
+            if exhaust_source:
+                for trailing in source:
+                    if trailing:
+                        raise RuntimeError("retrieval stream exceeded the declared file size")
             return
     if remaining:
         raise RuntimeError("retrieval stream ended before the requested range")
