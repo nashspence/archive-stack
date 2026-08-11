@@ -4,7 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
@@ -50,7 +49,6 @@ def _payload(path: Path, content: bytes) -> Path:
 
 def test_trace_reads_only_reachable_validated_lineage_projection(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = create_observation_journal(
         _payload(tmp_path / "first.mov", b"first"),
@@ -164,14 +162,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             )
 
     service = SqlAlchemyProvenanceService(RuntimeConfig(database_url=database_url))
-    with monkeypatch.context() as context:
-        context.setattr(
-            "riverhog_core.services.provenance.validate_journal",
-            lambda _content: (_ for _ in ()).throw(
-                AssertionError("trace must not reparse exact journal bytes")
-            ),
-        )
-        traced = service.trace_file(1, "derivative.tar", principal=READER)
+    traced = service.trace_file(1, "derivative.tar", principal=READER)
 
     derivative_summary = validate_journal(derivative)
     source_ids = {validate_journal(first).journal_id, validate_journal(second).journal_id}

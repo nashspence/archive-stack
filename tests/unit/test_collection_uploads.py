@@ -156,7 +156,6 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
 
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, config, _multipart, root = _service_with_ingress(tmp_path)
     contents = {
@@ -350,17 +349,10 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         "captured",
         "omitted",
     ]
-    with monkeypatch.context() as context:
-        context.setattr(
-            "riverhog_core.services.provenance.validate_journal",
-            lambda _content: (_ for _ in ()).throw(
-                AssertionError("ordinary provenance reads must use the validated projection")
-            ),
-        )
-        shown = provenance_service.show_file(collection_id, "captured.bin", principal=reader)
-        assert shown["journal"]["journal_id"] == summary.journal_id
-        traced = provenance_service.trace_file(collection_id, "captured.bin", principal=reader)
-        assert [item["journal_id"] for item in traced["journals"]] == [summary.journal_id]
+    shown = provenance_service.show_file(collection_id, "captured.bin", principal=reader)
+    assert shown["journal"]["journal_id"] == summary.journal_id
+    traced = provenance_service.trace_file(collection_id, "captured.bin", principal=reader)
+    assert [item["journal_id"] for item in traced["journals"]] == [summary.journal_id]
     exported, exported_sha256 = provenance_service.export_journal(
         collection_id,
         summary.journal_id,

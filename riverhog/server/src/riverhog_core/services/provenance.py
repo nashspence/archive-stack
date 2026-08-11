@@ -13,7 +13,6 @@ from riverhog_protocol.paths import (
 from riverhog_provenance import (
     FileProvenanceBinding,
     build_provenance_archive,
-    validate_journal,
     validate_provenance_archive,
 )
 from sqlalchemy import asc, delete, desc, func, select
@@ -345,7 +344,7 @@ class SqlAlchemyProvenanceService:
                 item.journal_id: provenance_journal_projection(
                     collection_id=collection_id,
                     journal_id=item.journal_id,
-                    summary=validate_journal(item.journal_bytes),
+                    summary=archive.journal_summaries[item.journal_id],
                 )
                 for item in journals
             }

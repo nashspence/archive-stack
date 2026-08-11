@@ -53,6 +53,7 @@ class ProvenanceArchive:
     index_bytes: bytes
     identity: str
     bundles: tuple[ProvenanceBundle, ...]
+    journal_summaries: dict[str, JournalSummary]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +110,7 @@ def build_provenance_archive(
         index_bytes=index_bytes,
         identity=hashlib.sha256(index_bytes).hexdigest(),
         bundles=bundles,
+        journal_summaries=summaries,
     )
 
 

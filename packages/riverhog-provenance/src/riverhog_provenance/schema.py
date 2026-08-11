@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
+from functools import cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import Any, cast
@@ -46,6 +47,24 @@ def graph_fragment_schema() -> dict[str, Any]:
     }
 
 
+@cache
+def _journal_entry_validator() -> Draft202012Validator:
+    return Draft202012Validator(load_journal_entry_schema(), format_checker=FormatChecker())
+
+
+@cache
+def _graph_fragment_validator() -> Draft202012Validator:
+    return Draft202012Validator(graph_fragment_schema(), format_checker=FormatChecker())
+
+
+@cache
+def _observer_validators() -> dict[str, Draft202012Validator]:
+    return {
+        schema_id: Draft202012Validator(schema, format_checker=FormatChecker())
+        for schema_id, schema in load_observer_schemas().items()
+    }
+
+
 def _json_nodes(value: Any, path: tuple[Any, ...] = ()) -> Iterable[tuple[tuple[Any, ...], Any]]:
     yield path, value
     if isinstance(value, dict):
@@ -64,16 +83,15 @@ def _format_path(path: Iterable[Any]) -> str:
 def validate_embedded_typed_values(fragment: Mapping[str, Any]) -> None:
     """Validate every package-defined ``type: json`` value against its schema."""
 
-    schemas = load_observer_schemas()
+    validators = _observer_validators()
     findings: list[str] = []
     for path, node in _json_nodes(fragment):
         if not isinstance(node, dict) or node.get("type") != "json":
             continue
         schema_id = node.get("schema")
-        schema = schemas.get(schema_id) if isinstance(schema_id, str) else None
-        if schema is None:
+        validator = validators.get(schema_id) if isinstance(schema_id, str) else None
+        if validator is None:
             continue
-        validator = Draft202012Validator(schema, format_checker=FormatChecker())
         for error in sorted(validator.iter_errors(node.get("data")), key=lambda e: list(e.path)):
             findings.append(
                 f"{_format_path(path + ('data',) + tuple(error.absolute_path))}: {error.message}"
@@ -119,7 +137,7 @@ def validate_graph_fragment(fragment: Mapping[str, Any]) -> None:
     Riverhog provenance v1 application validator remains authoritative for a complete journal.
     """
 
-    validator = Draft202012Validator(graph_fragment_schema(), format_checker=FormatChecker())
+    validator = _graph_fragment_validator()
     errors = sorted(validator.iter_errors(dict(fragment)), key=lambda e: list(e.path))
     if errors:
         lines = []
@@ -139,7 +157,7 @@ def validate_entry_document(document: Mapping[str, Any]) -> None:
     asserted here.
     """
 
-    validator = Draft202012Validator(load_journal_entry_schema(), format_checker=FormatChecker())
+    validator = _journal_entry_validator()
     errors = sorted(validator.iter_errors(dict(document)), key=lambda e: list(e.path))
     if errors:
         lines = []

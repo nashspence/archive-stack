@@ -56,6 +56,7 @@ def test_archive_index_and_bundle_round_trip_deterministically(tmp_path: Path, u
 
     assert first == second
     assert first.bundles[0].relative_path == "provenance/bundle-000000000000.tar.age"
+    assert first.journal_summaries == {summary.journal_id: summary}
     validated = validate_provenance_archive(
         first.index_bytes,
         {first.bundles[0].bundle_id: first.bundles[0].content},
