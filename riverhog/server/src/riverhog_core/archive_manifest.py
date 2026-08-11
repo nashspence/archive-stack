@@ -13,6 +13,7 @@ from riverhog_protocol.paths import normalize_relpath
 from riverhog_core.domain.archive import (
     ArchiveFile,
     PackVolumePlan,
+    RawVolumePlan,
     SealedPackVolume,
     SealedProvenanceObject,
     SealedRawVolume,
@@ -35,25 +36,27 @@ class CollectionTreeIdentity(TypedDict):
     sha256: str
 
 
-def build_collection_archive_manifest(
+def validate_collection_archive_plan(
     *,
     files: Sequence[ArchiveFile],
-    packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
-    raw_volumes: Sequence[SealedRawVolume] = (),
-    verified_raw_files: Sequence[VerifiedRawFile] = (),
-    provenance_identity: str | None = None,
-    provenance_objects: Sequence[SealedProvenanceObject] = (),
-) -> bytes:
+    packs: Sequence[PackVolumePlan],
+    raw_volumes: Sequence[RawVolumePlan | SealedRawVolume] = (),
+) -> tuple[ArchiveFile, ...]:
+    """Require volume plans to cover the exact immutable collection tree once."""
+
     normalized_files = _normalized_files(files)
     expected_by_path = {current.path: current for current in normalized_files}
     coverage: dict[str, list[tuple[int, int, str]]] = {
         current.path: [] for current in normalized_files
     }
-    volume_rows: list[dict[str, object]] = []
+    plans = sorted((*packs, *raw_volumes), key=lambda current: current.sequence)
+    if [current.sequence for current in plans] != list(range(len(plans))):
+        raise ValueError("archive volume plan sequence must be canonical and contiguous")
+    if len({current.volume_id for current in plans}) != len(plans):
+        raise ValueError("archive volume plan ids must be unique")
 
-    for plan, pack_receipt in packs:
-        _validate_pack_receipt(plan, pack_receipt)
-        for member in plan.members:
+    for pack_plan in packs:
+        for member in pack_plan.members:
             expected = expected_by_path.get(member.path)
             if (
                 expected is None
@@ -63,7 +66,46 @@ def build_collection_archive_manifest(
                 raise ValueError(
                     f"pack plan does not match collection file identity: {member.path}"
                 )
-            coverage[member.path].append((0, member.bytes, pack_receipt.volume_id))
+            coverage[member.path].append((0, member.bytes, pack_plan.volume_id))
+
+    for raw_plan in raw_volumes:
+        source_path = normalize_relpath(raw_plan.source_path)
+        expected = expected_by_path.get(source_path)
+        if expected is None:
+            raise ValueError(f"raw volume references an unknown collection path: {source_path}")
+        if raw_plan.file_offset < 0 or raw_plan.plaintext_bytes < 0:
+            raise ValueError("raw volume placement is invalid")
+        if raw_plan.file_bytes != expected.bytes or raw_plan.file_sha256 != expected.sha256:
+            raise ValueError(f"raw volume file identity mismatch: {source_path}")
+        if raw_plan.file_offset + raw_plan.plaintext_bytes > expected.bytes:
+            raise ValueError(f"raw volume exceeds its collection file: {source_path}")
+        coverage[source_path].append(
+            (raw_plan.file_offset, raw_plan.plaintext_bytes, raw_plan.volume_id)
+        )
+
+    _validate_file_coverage(normalized_files, coverage)
+    return normalized_files
+
+
+def build_collection_archive_manifest(
+    *,
+    files: Sequence[ArchiveFile],
+    packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
+    raw_volumes: Sequence[SealedRawVolume] = (),
+    verified_raw_files: Sequence[VerifiedRawFile] = (),
+    provenance_identity: str | None = None,
+    provenance_objects: Sequence[SealedProvenanceObject] = (),
+) -> bytes:
+    normalized_files = validate_collection_archive_plan(
+        files=files,
+        packs=tuple(plan for plan, _receipt in packs),
+        raw_volumes=raw_volumes,
+    )
+    expected_by_path = {current.path: current for current in normalized_files}
+    volume_rows: list[dict[str, object]] = []
+
+    for plan, pack_receipt in packs:
+        _validate_pack_receipt(plan, pack_receipt)
         volume_rows.append(_pack_volume_row(plan, pack_receipt))
 
     verified_by_path = _verified_raw_files(verified_raw_files)
@@ -98,16 +140,8 @@ def build_collection_archive_manifest(
             raw_receipt.parts,
             plaintext_bytes=raw_receipt.plaintext_bytes,
         )
-        coverage[source_path].append(
-            (
-                raw_receipt.file_offset,
-                raw_receipt.plaintext_bytes,
-                raw_receipt.volume_id,
-            )
-        )
         volume_rows.append(_raw_volume_row(raw_receipt))
 
-    _validate_file_coverage(normalized_files, coverage)
     volume_rows.sort(key=lambda row: _stored_int(row["sequence"], "volume sequence"))
     if [_stored_int(row["sequence"], "volume sequence") for row in volume_rows] != list(
         range(len(volume_rows))

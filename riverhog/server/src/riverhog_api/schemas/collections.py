@@ -231,7 +231,7 @@ class CollectionUploadUnitSourceOut(RiverhogModel):
     path: str
     offset: int
     bytes: int
-    sha256: str | None = None
+    sha256: str
 
 
 class CollectionUploadUnitOut(RiverhogModel):

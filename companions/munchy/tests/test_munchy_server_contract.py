@@ -18,7 +18,11 @@ from fastapi.testclient import TestClient
 from munchy_target_support.metadata_projection import project_immich_metadata
 from munchy_target_support.uvicorn_logging import DropHealthAccessLogFilter
 from riverhog_api_client import Conflict, NotFound
-from riverhog_provenance import create_observation_journal, validate_journal
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    create_observation_journal,
+    validate_journal,
+)
 from time_formats import utc_timestamp_now
 
 SERVER_MODULES = {
@@ -1411,9 +1415,17 @@ def test_routing_manifest_records_actual_route_and_output(
 
     server.routing_service.write_routing_manifest(job, routed, groups, archive_dir)
 
-    manifest = json.loads(
-        (archive_dir / server.runtime_config.ROUTING_MANIFEST_FILENAME).read_text()
-    )
+    manifest_path = archive_dir / server.runtime_config.ROUTING_MANIFEST_FILENAME
+    first_bytes = manifest_path.read_bytes()
+    first_mtime_ns = manifest_path.stat().st_mtime_ns
+    restarted_job = dict(job)
+    restarted_job.pop("routing_manifest_created_at")
+    server.routing_service.write_routing_manifest(restarted_job, routed, groups, archive_dir)
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest_path.read_bytes() == first_bytes
+    assert manifest_path.stat().st_mtime_ns == first_mtime_ns
+    assert restarted_job["routing_manifest_created_at"] == manifest["created_at"]
     assert manifest["schema"] == "munchy_api_client.routing-manifest"
     assert manifest["job_id"] == "job-1"
     assert manifest["files"] == [
@@ -3926,6 +3938,116 @@ def test_munchy_continues_source_history_and_registers_it_before_the_output(
 
     assert calls == ["provenance", "binding"]
     assert registered["registered_files"] == 1
+
+
+def test_riverhog_resume_validation_requires_exact_remote_source_identities(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    source = archive_dir / "video" / "source.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"canonical output")
+    sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    binding = FileProvenanceBinding(
+        path="video/source.mkv",
+        bytes=source.stat().st_size,
+        sha256=sha256,
+        status="omitted",
+        omission_reason="test fixture",
+    )
+    job = {
+        "job_id": "job-1",
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {
+            "collection_id": 41,
+            "files": {
+                binding.path: {
+                    "path": binding.path,
+                    "bytes": binding.bytes,
+                    "sha256": binding.sha256,
+                    "state": "registered",
+                }
+            },
+        },
+    }
+    monkeypatch.setattr(
+        server.riverhog,
+        "munchy_output_provenance",
+        lambda *_args: (None, (binding,), {}),
+    )
+
+    class FakeApi:
+        source_sha256 = sha256
+
+        def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 41
+            return {
+                "volumes": [
+                    {
+                        "units": [
+                            {
+                                "sources": [
+                                    {
+                                        "path": binding.path,
+                                        "offset": 0,
+                                        "bytes": binding.bytes,
+                                        "sha256": self.source_sha256,
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    api = FakeApi()
+    assert server.riverhog.validate_riverhog_resume_sources(job, api, archive_dir) == {
+        "validated_files": 1,
+        "validated_units": 1,
+        "validated_volumes": 1,
+    }
+
+    api.source_sha256 = "b" * 64
+    with pytest.raises(
+        server.domain_errors.HandoffFailed,
+        match="archive plan differs from registered source identities",
+    ):
+        server.riverhog.validate_riverhog_resume_sources(job, api, archive_dir)
+
+    api.source_sha256 = sha256
+    binding_bytes = binding.bytes
+
+    def partial_volume_plan(collection_id: int) -> dict[str, object]:
+        assert collection_id == 41
+        return {
+            "volumes": [
+                {
+                    "units": [
+                        {
+                            "sources": [
+                                {
+                                    "path": binding.path,
+                                    "offset": 0,
+                                    "bytes": binding_bytes - 1,
+                                    "sha256": sha256,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
+    api.list_collection_upload_session_volumes = partial_volume_plan  # type: ignore[method-assign]
+    with pytest.raises(
+        server.domain_errors.HandoffFailed,
+        match="archive plan does not cover every registered source byte",
+    ):
+        server.riverhog.validate_riverhog_resume_sources(job, api, archive_dir)
 
 
 def test_riverhog_event_maps_to_the_latest_job_started_before_the_event(
@@ -6913,6 +7035,14 @@ def test_riverhog_handoff_resumes_archive_units_after_session_completion(
 
     fake = ResumableRiverhogApi()
     monkeypatch.setattr(server.riverhog, "ApiClient", lambda: fake)
+    monkeypatch.setattr(
+        server.riverhog,
+        "validate_riverhog_resume_sources",
+        lambda *_args: (
+            calls.append("validate")
+            or {"validated_files": 1, "validated_units": 1, "validated_volumes": 1}
+        ),
+    )
     monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         server.handoff_service,
@@ -6926,7 +7056,17 @@ def test_riverhog_handoff_resumes_archive_units_after_session_completion(
     assert result["external_id"] == 42
     assert result["metrics"]["remote_state_before"] == "uploading"
     assert result["metrics"]["post_registration_resume_state"] == "uploading"
-    assert calls == ["status", "volumes", "unit", "volumes", "status", "status", "close"]
+    assert result["metrics"]["validated_files"] == 1
+    assert calls == [
+        "status",
+        "validate",
+        "volumes",
+        "unit",
+        "volumes",
+        "status",
+        "status",
+        "close",
+    ]
     assert not source.exists()
 
 

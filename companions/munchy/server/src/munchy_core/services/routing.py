@@ -858,6 +858,27 @@ def write_routing_manifest(
 ) -> None:
     if not isinstance(job.get("routing"), dict):
         return
+    manifest_path = archive_dir / runtime_config.ROUTING_MANIFEST_FILENAME
+    created_at = str(job.get("routing_manifest_created_at") or "")
+    if not created_at and manifest_path.is_file():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            existing = None
+        if (
+            isinstance(existing, dict)
+            and existing.get("schema") == "munchy_api_client.routing-manifest"
+            and existing.get("schema_version") == 1
+            and existing.get("job_id") == str(job.get("job_id") or "")
+            and existing.get("input_upload_id") == str(job.get("input_upload_id") or "")
+            and existing.get("run_id") == str(job.get("run_id") or "")
+            and isinstance(existing.get("created_at"), str)
+            and existing["created_at"]
+        ):
+            created_at = str(existing["created_at"])
+    if not created_at:
+        created_at = utc_timestamp_now()
+    job["routing_manifest_created_at"] = created_at
     files = [
         routing_manifest_file_entry(
             file_state,
@@ -871,17 +892,16 @@ def write_routing_manifest(
     payload = {
         "schema": "munchy_api_client.routing-manifest",
         "schema_version": 1,
-        "created_at": utc_timestamp_now(),
+        "created_at": created_at,
         "job_id": str(job.get("job_id") or ""),
         "input_upload_id": str(job.get("input_upload_id") or ""),
         **template_service.submission_template_summary(job),
         "run_id": str(job.get("run_id") or ""),
         "files": sorted(files, key=lambda item: str(item["source"]["path"])),
     }
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    (archive_dir / runtime_config.ROUTING_MANIFEST_FILENAME).write_text(
+    write_atomic_text(
+        manifest_path,
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
 

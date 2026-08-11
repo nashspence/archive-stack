@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,12 @@ from riverhog_core.catalog_models import (
     CollectionProvenanceJournalRecord,
     CollectionUploadRecord,
     TagRecord,
+)
+from riverhog_core.collection_plan import CollectionVolumePolicy
+from riverhog_core.domain.archive import ArchiveFile
+from riverhog_core.incremental_plan import (
+    incremental_volume_planner_checkpoint_bytes,
+    parse_incremental_volume_planner_checkpoint,
 )
 from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
@@ -86,6 +93,7 @@ def _service_with_ingress(
     tmp_path: Path,
     *,
     proof_stamper: ProofStamper | None = None,
+    policy: CollectionVolumePolicy | None = None,
 ) -> tuple[
     SqlAlchemyCollectionUploadService,
     RuntimeConfig,
@@ -117,6 +125,7 @@ def _service_with_ingress(
             ArchiveStoreRegistry({"archive": as_archive_store(archive_store)}),
             ArchiveIngressStoreRegistry({"archive": ingress}),
             proof_stamper=proof_stamper or FixtureProofStamper(),
+            policy=policy,
         ),
         config,
         multipart,
@@ -474,6 +483,108 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
         )
+
+
+def test_completion_requires_volume_plans_to_match_registered_file_identities(
+    tmp_path: Path,
+) -> None:
+    service, config = _service(tmp_path)
+    content = b"current registered payload\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="stale-plan-upload",
+        tags=(),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture does not exercise source observation",
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        checkpoint = parse_incremental_volume_planner_checkpoint(upload.planner_checkpoint_json)
+        upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
+            replace(
+                checkpoint,
+                pending_pack_files=(
+                    ArchiveFile(
+                        path="document.txt",
+                        bytes=len(content),
+                        sha256="b" * 64,
+                    ),
+                ),
+            )
+        ).decode("utf-8")
+
+    with pytest.raises(Conflict, match="volume plans differ from registered files"):
+        service.complete(
+            collection_id,
+            files_total=1,
+            content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+        )
+
+
+def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) -> None:
+    part_bytes = 5 * 1024 * 1024
+    policy = CollectionVolumePolicy(
+        pack_source_bytes=1,
+        pack_files=1,
+        pack_member_bytes=1,
+        pack_part_plaintext_bytes=part_bytes,
+        raw_volume_plaintext_bytes=part_bytes,
+        raw_part_plaintext_bytes=part_bytes,
+    )
+    service, _config, _multipart, _root = _service_with_ingress(tmp_path, policy=policy)
+    content = b"raw payload"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="raw-source-identity",
+        tags=(),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture does not exercise source observation",
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        (
+            {
+                "path": "media.bin",
+                "bytes": len(content),
+                "sha256": sha256,
+                "raw_parts": {
+                    "part_plaintext_bytes": part_bytes,
+                    "sha256s": [sha256],
+                },
+            },
+        ),
+    )
+    service.complete(
+        collection_id,
+        files_total=1,
+        content_etag=collection_content_etag((("media.bin", len(content), sha256),)),
+    )
+
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    assert volume["kind"] == "segment"
+    assert volume["units"][0]["sources"] == [
+        {
+            "path": "media.bin",
+            "offset": 0,
+            "bytes": len(content),
+            "sha256": sha256,
+        }
+    ]
 
 
 def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint(

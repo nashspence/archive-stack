@@ -1258,6 +1258,107 @@ def complete_riverhog_session(
     return _upload_riverhog_units(job, api, archive_dir, payload)
 
 
+def validate_riverhog_resume_sources(
+    job: dict[str, Any],
+    api: ApiClient,
+    archive_dir: Path,
+) -> dict[str, int]:
+    try:
+        _provenance, bindings, _journals = munchy_output_provenance(job, archive_dir)
+    except Exception as exc:
+        raise domain_errors.HandoffFailed(
+            "riverhog handoff sources changed after provenance preparation"
+        ) from exc
+    records = state_store.dict_or_empty(riverhog_session_state(job).get("files"))
+    bindings_by_path = {binding.path: binding for binding in bindings}
+    expected_paths = set(bindings_by_path)
+    if expected_paths != set(records):
+        raise domain_errors.HandoffFailed(
+            "riverhog handoff registration differs from prepared provenance"
+        )
+    local_paths = {
+        path.relative_to(archive_dir).as_posix()
+        for path in routing_service.archive_dir_artifact_paths(archive_dir)
+    }
+    if local_paths != expected_paths:
+        raise domain_errors.HandoffFailed(
+            "riverhog handoff sources differ from prepared provenance"
+        )
+    for path, binding in bindings_by_path.items():
+        record = records.get(path)
+        if (
+            not isinstance(record, Mapping)
+            or record.get("bytes") != binding.bytes
+            or record.get("sha256") != binding.sha256
+        ):
+            raise domain_errors.HandoffFailed(
+                "riverhog handoff registration differs from prepared provenance"
+            )
+    collection_id = riverhog_collection_id_for_job(job)
+    if collection_id is None:
+        raise domain_errors.HandoffFailed("riverhog handoff has no remote session")
+    payload = api.list_collection_upload_session_volumes(collection_id)
+    volumes = payload.get("volumes")
+    if not isinstance(volumes, list):
+        raise domain_errors.HandoffFailed("riverhog handoff returned an invalid volume plan")
+    coverage: dict[str, list[tuple[int, int]]] = {path: [] for path in expected_paths}
+    units_total = 0
+    for volume in volumes:
+        if not isinstance(volume, Mapping) or not isinstance(volume.get("units"), list):
+            raise domain_errors.HandoffFailed("riverhog handoff returned an invalid volume plan")
+        for unit in volume["units"]:
+            if not isinstance(unit, Mapping) or not isinstance(unit.get("sources"), list):
+                raise domain_errors.HandoffFailed(
+                    "riverhog handoff returned an invalid upload unit"
+                )
+            units_total += 1
+            for source in unit["sources"]:
+                if not isinstance(source, Mapping):
+                    raise domain_errors.HandoffFailed(
+                        "riverhog handoff returned an invalid upload unit source"
+                    )
+                source_path = source.get("path")
+                offset = source.get("offset")
+                byte_count = source.get("bytes")
+                sha256 = source.get("sha256")
+                record = records.get(source_path) if isinstance(source_path, str) else None
+                record_bytes = record.get("bytes") if isinstance(record, Mapping) else None
+                if (
+                    not isinstance(record, Mapping)
+                    or not isinstance(offset, int)
+                    or offset < 0
+                    or not isinstance(byte_count, int)
+                    or byte_count < 0
+                    or isinstance(record_bytes, bool)
+                    or not isinstance(record_bytes, int)
+                    or offset + byte_count > record_bytes
+                    or not isinstance(sha256, str)
+                    or sha256 != str(record.get("sha256") or "")
+                ):
+                    raise domain_errors.HandoffFailed(
+                        "riverhog archive plan differs from registered source identities"
+                    )
+                assert isinstance(source_path, str)
+                coverage[source_path].append((offset, offset + byte_count))
+    for path, ranges in coverage.items():
+        cursor = 0
+        for start, end in sorted(ranges):
+            if start != cursor:
+                raise domain_errors.HandoffFailed(
+                    "riverhog archive plan does not cover every registered source byte"
+                )
+            cursor = end
+        if cursor != bindings_by_path[path].bytes:
+            raise domain_errors.HandoffFailed(
+                "riverhog archive plan does not cover every registered source byte"
+            )
+    return {
+        "validated_files": len(coverage),
+        "validated_units": units_total,
+        "validated_volumes": len(volumes),
+    }
+
+
 def _upload_riverhog_units(
     job: dict[str, Any],
     api: ApiClient,
@@ -1410,12 +1511,32 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
             remote_state = str(payload.get("state") or "") if payload is not None else ""
             metrics["remote_state_before"] = remote_state or "not_started"
             if remote_state in {"uploading", "finalizing", "finalized"}:
+                assert payload is not None
                 metrics["post_registration_resume_started_at"] = utc_timestamp_now()
                 metrics["post_registration_resume_state"] = remote_state
+                if remote_state == "uploading":
+                    validation_started = time.monotonic()
+                    metrics["source_validation_started_at"] = utc_timestamp_now()
+                    validation = validate_riverhog_resume_sources(job, api, archive_dir)
+                    metrics.update(validation)
+                    metrics["source_validation_finished_at"] = utc_timestamp_now()
+                    metrics["source_validation_elapsed_seconds"] = round(
+                        max(0.0, time.monotonic() - validation_started),
+                        6,
+                    )
                 payload = _upload_riverhog_units(job, api, archive_dir, payload)
             elif remote_state == "failed":
                 metrics["post_registration_resume_started_at"] = utc_timestamp_now()
                 metrics["post_registration_resume_state"] = remote_state
+                validation_started = time.monotonic()
+                metrics["source_validation_started_at"] = utc_timestamp_now()
+                validation = validate_riverhog_resume_sources(job, api, archive_dir)
+                metrics.update(validation)
+                metrics["source_validation_finished_at"] = utc_timestamp_now()
+                metrics["source_validation_elapsed_seconds"] = round(
+                    max(0.0, time.monotonic() - validation_started),
+                    6,
+                )
                 payload = complete_riverhog_session(job, api, archive_dir)
             elif remote_state not in {"", "open"}:
                 raise domain_errors.HandoffFailed(

@@ -84,7 +84,7 @@ def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> 
         "sources",
         "state",
     }
-    assert set(source["required"]) == {"path", "offset", "bytes"}
+    assert set(source["required"]) == {"path", "offset", "bytes", "sha256"}
     assert source["properties"]["sha256"]
 
 

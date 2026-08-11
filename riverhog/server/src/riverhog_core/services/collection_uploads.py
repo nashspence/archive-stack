@@ -36,6 +36,7 @@ from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincip
 from riverhog_core.archive_catalog import build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
 from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
+from riverhog_core.archive_manifest import validate_collection_archive_plan
 from riverhog_core.archive_provenance import (
     ArchiveProvenancePublisher,
     SealedArchiveProvenance,
@@ -499,6 +500,26 @@ class SqlAlchemyCollectionUploadService:
                 upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
                     batch.checkpoint
                 ).decode("utf-8")
+            try:
+                pack_plans: list[PackVolumePlan] = []
+                raw_plans: list[RawVolumePlan] = []
+                for record in sorted(upload.archive_objects, key=lambda item: item.sequence):
+                    if record.kind == "pack":
+                        pack_plans.append(parse_pack_volume_plan(record.plan_json))
+                    else:
+                        raw_plans.append(parse_raw_volume_plan(record.plan_json))
+                validate_collection_archive_plan(
+                    files=tuple(
+                        ArchiveFile(path=row.path, bytes=row.bytes, sha256=row.sha256)
+                        for row in rows
+                    ),
+                    packs=pack_plans,
+                    raw_volumes=raw_plans,
+                )
+            except ValueError as exc:
+                raise Conflict(
+                    "collection upload volume plans differ from registered files"
+                ) from exc
             upload.state = "uploading"
             upload.provenance_etag = actual_provenance_etag
             upload.closed_at = utc_timestamp_now()
@@ -1917,6 +1938,7 @@ def _volume_work_payload(record: CollectionArchiveObjectUploadRecord) -> dict[st
                             "path": raw_plan.source_path,
                             "offset": raw_plan.file_offset + unit * raw_part_bytes,
                             "bytes": byte_count,
+                            "sha256": raw_plan.file_sha256,
                         }
                     ],
                     "state": "committed" if unit in committed else "pending",
