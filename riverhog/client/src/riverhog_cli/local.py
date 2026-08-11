@@ -12,6 +12,12 @@ from typing import Annotated, Any
 
 import typer
 from riverhog_api_client.client import ApiClient
+from riverhog_api_client.downloads import (
+    RetrievalDownload,
+    configured_download_concurrency,
+    configured_download_window,
+    download_retrieval_files,
+)
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
@@ -456,24 +462,36 @@ def _download_job(
     staging_root = transfer_root / "files"
     shutil.rmtree(transfer_root, ignore_errors=True)
     try:
+        downloads: list[RetrievalDownload] = []
         for (collection_id, path), (expected_bytes, expected_sha256) in expected.items():
             staging = _output_path(staging_root, collection_id, path)
             staging.parent.mkdir(parents=True, exist_ok=True)
-            api.download_retrieval_file(
-                str(job["id"]),
-                collection_id=collection_id,
-                path=path,
-                output=staging,
-                expected_bytes=expected_bytes,
-                expected_sha256=expected_sha256,
+            downloads.append(
+                RetrievalDownload(
+                    collection_id=collection_id,
+                    path=path,
+                    output=staging,
+                    expected_bytes=expected_bytes,
+                    expected_sha256=expected_sha256,
+                )
             )
+        concurrency = configured_download_concurrency()
+        download_retrieval_files(
+            api,
+            str(job["id"]),
+            downloads,
+            concurrency=concurrency,
+            window=configured_download_window(concurrency=concurrency),
+        )
+        for download in downloads:
             if not _matches(
-                staging,
-                byte_count=expected_bytes,
-                sha256=expected_sha256,
+                download.output,
+                byte_count=download.expected_bytes,
+                sha256=download.expected_sha256,
             ):
                 raise InvalidState(
-                    f"retrieved file did not match its catalog identity: {collection_id}/{path}"
+                    "retrieved file did not match its catalog identity: "
+                    f"{download.collection_id}/{download.path}"
                 )
 
         for collection_id, path in expected:

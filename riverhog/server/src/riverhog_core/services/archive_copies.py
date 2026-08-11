@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
 from riverhog_age import UploadState
@@ -57,6 +59,7 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 
 _LOG = logging.getLogger(__name__)
 _SORT_FIELDS = {
@@ -88,11 +91,17 @@ class SqlAlchemyArchiveCopyService:
         archive_ingress_stores: ArchiveIngressStoreRegistry,
         *,
         session_factory: SessionFactory | None = None,
+        throughput_tuning: ArchiveThroughputTuning | None = None,
+        transfer_resources: ArchiveTransferResources | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
         self._archive_ingress_stores = archive_ingress_stores
         self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._throughput = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
+        self._resources = transfer_resources or ArchiveTransferResources.from_tuning(
+            self._throughput
+        )
         self._lifecycle_events = SqlAlchemyLifecycleEventService(
             config,
             session_factory=self._session_factory,
@@ -793,40 +802,20 @@ class SqlAlchemyArchiveCopyService:
         }
         if set(remote_parts) - {_part_int(current, "number") for current in part_rows}:
             raise Conflict("archive copy multipart upload has unexpected parts")
-        committed: list[MultipartPartReceipt] = []
-        source_chunks = source_store.iter_stored_archive_object(
+        committed = self._copy_volume_parts(
             collection_id=collection_id,
-            object=identity,
+            destination_store_name=destination_store_name,
+            source_store=source_store,
+            destination_object_store=destination_object_store,
+            source=source,
+            identity=identity,
+            upload=upload,
+            part_rows=part_rows,
+            remote_parts=remote_parts,
         )
-        for row, content in zip(
-            part_rows,
-            _iter_exact_parts(source_chunks, part_rows),
-            strict=True,
-        ):
-            number = _part_int(row, "number")
-            if hashlib.sha256(content).hexdigest() != str(row["stored_sha256"]):
-                raise Conflict(f"source archive volume part {number} failed verification")
-            self._require_copy_active(collection_id, destination_store_name)
-            receipt = remote_parts.get(number)
-            if receipt is None:
-                receipt = destination_object_store.upload_part(
-                    upload=upload,
-                    number=number,
-                    content=content,
-                )
-            if receipt.bytes != len(content):
-                raise Conflict("archive copy multipart part byte count changed")
-            committed.append(receipt)
-            self._record_copy_part(
-                collection_id=collection_id,
-                destination_store=destination_store_name,
-                object_id=source.object_id,
-                parts=committed,
-                total_parts=len(part_rows),
-            )
         completed = destination_object_store.complete_multipart_upload(
             upload=upload,
-            parts=tuple(committed),
+            parts=committed,
             expected_bytes=source.stored_bytes,
             expected_metadata=metadata,
         )
@@ -837,6 +826,127 @@ class SqlAlchemyArchiveCopyService:
             completed.completed_at,
             _part_rows_json(part_rows, committed),
         )
+
+    def _copy_volume_parts(
+        self,
+        *,
+        collection_id: int,
+        destination_store_name: str,
+        source_store: ArchiveStore,
+        destination_object_store: ArchiveMultipartObjectStore,
+        source: CollectionArchiveObjectRecord,
+        identity: ArchiveObjectIdentity,
+        upload: MultipartUpload,
+        part_rows: Sequence[dict[str, object]],
+        remote_parts: Mapping[int, MultipartPartReceipt],
+    ) -> tuple[MultipartPartReceipt, ...]:
+        worker_count = min(self._throughput.s3_part_concurrency, len(part_rows))
+        window = min(len(part_rows), worker_count * 2)
+        source_chunks = iter(
+            source_store.iter_stored_archive_object(
+                collection_id=collection_id,
+                object=identity,
+            )
+        )
+        source_buffer = bytearray()
+        rows = iter(part_rows)
+        pending: dict[Future[MultipartPartReceipt], dict[str, object]] = {}
+        committed: dict[int, MultipartPartReceipt] = {}
+        exhausted = False
+
+        def read_part(row: Mapping[str, object]) -> tuple[bytes, int]:
+            reserved = _part_int(row, "stored_bytes")
+            self._resources.upload_bytes.acquire(reserved)
+            try:
+                while len(source_buffer) < reserved:
+                    try:
+                        chunk = bytes(next(source_chunks))
+                    except StopIteration as exc:
+                        raise Conflict(
+                            "source archive volume ended before its part receipts"
+                        ) from exc
+                    if chunk:
+                        source_buffer.extend(chunk)
+                content = bytes(source_buffer[:reserved])
+                del source_buffer[:reserved]
+                return content, reserved
+            except BaseException:
+                self._resources.upload_bytes.release(reserved)
+                raise
+
+        def upload_part(row: Mapping[str, object], content: bytes) -> MultipartPartReceipt:
+            number = _part_int(row, "number")
+            if hashlib.sha256(content).hexdigest() != str(row["stored_sha256"]):
+                raise Conflict(f"source archive volume part {number} failed verification")
+            receipt = remote_parts.get(number)
+            if receipt is None:
+                with self._resources.upload_requests.reserve():
+                    receipt = destination_object_store.upload_part(
+                        upload=upload,
+                        number=number,
+                        content=content,
+                    )
+            if receipt.bytes != len(content):
+                raise Conflict("archive copy multipart part byte count changed")
+            return receipt
+
+        with self._resources.retrieval_requests.reserve():
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="riverhog-archive-copy-part",
+            ) as executor:
+
+                def fill() -> None:
+                    nonlocal exhausted
+                    while not exhausted and len(pending) < window:
+                        try:
+                            row = next(rows)
+                        except StopIteration:
+                            exhausted = True
+                            if source_buffer or any(bytes(chunk) for chunk in source_chunks):
+                                raise Conflict(
+                                    "source archive volume has bytes beyond its part receipts"
+                                ) from None
+                            return
+                        content, reserved = read_part(row)
+                        try:
+                            future = executor.submit(upload_part, row, content)
+                        except BaseException:
+                            self._resources.upload_bytes.release(reserved)
+                            raise
+
+                        def release_buffer(
+                            _future: Future[MultipartPartReceipt],
+                            amount: int = reserved,
+                        ) -> None:
+                            self._resources.upload_bytes.release(amount)
+
+                        future.add_done_callback(release_buffer)
+                        pending[future] = row
+
+                fill()
+                try:
+                    while pending:
+                        done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                        for future in done:
+                            row = pending.pop(future)
+                            receipt = future.result()
+                            committed[_part_int(row, "number")] = receipt
+                        self._record_copy_part(
+                            collection_id=collection_id,
+                            destination_store=destination_store_name,
+                            object_id=source.object_id,
+                            parts=tuple(committed[number] for number in sorted(committed)),
+                            total_parts=len(part_rows),
+                        )
+                        fill()
+                except BaseException:
+                    for future in pending:
+                        future.cancel()
+                    raise
+        if set(committed) != {_part_int(row, "number") for row in part_rows}:
+            raise Conflict("archive copy part receipts do not cover the volume")
+        return tuple(committed[number] for number in sorted(committed))
 
     def _copy_small_immutable_object(
         self,

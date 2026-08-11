@@ -133,6 +133,8 @@ class SqlAlchemyCollectionUploadService:
         proof_stamper: ProofStamper,
         policy: CollectionVolumePolicy | None = None,
         session_factory: SessionFactory | None = None,
+        throughput_tuning: ArchiveThroughputTuning | None = None,
+        transfer_resources: ArchiveTransferResources | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
@@ -148,8 +150,8 @@ class SqlAlchemyCollectionUploadService:
             config,
             session_factory=self._session_factory,
         )
-        tuning = ArchiveThroughputTuning.from_env(os.environ)
-        self._resources = ArchiveTransferResources.from_tuning(tuning)
+        tuning = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
+        self._resources = transfer_resources or ArchiveTransferResources.from_tuning(tuning)
         self._age_sessions = ResumableAgeSessionCache(
             config.archive_passphrase,
             max_entries=tuning.age_session_cache_entries,

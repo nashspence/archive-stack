@@ -7352,16 +7352,10 @@ def test_riverhog_handoff_resumes_archive_units_after_session_completion(
     assert result["metrics"]["remote_state_before"] == "uploading"
     assert result["metrics"]["post_registration_resume_state"] == "uploading"
     assert result["metrics"]["validated_files"] == 1
-    assert calls == [
-        "status",
-        "validate",
-        "volumes",
-        "unit",
-        "volumes",
-        "status",
-        "status",
-        "close",
-    ]
+    assert calls.count("volumes") == 1
+    assert calls.count("unit") == 1
+    assert calls.index("validate") < calls.index("volumes") < calls.index("unit")
+    assert calls[-1] == "close"
     assert not source.exists()
 
 

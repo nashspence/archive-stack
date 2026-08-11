@@ -14,6 +14,8 @@ from munchy_cli import main as munchy_cli
 from munchy_core.adapters import riverhog as munchy_riverhog
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
+    configured_download_concurrency,
+    configured_download_window,
     configured_upload_concurrency,
     configured_upload_window,
     upload_collection_units,
@@ -369,3 +371,34 @@ def test_shared_direct_ingress_window_contract(
     expected: int,
 ) -> None:
     assert configured_upload_window(environment, concurrency=concurrency) == expected
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    (
+        ({}, 4),
+        ({"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY": "1"}, 1),
+        ({"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY": "64"}, 64),
+    ),
+)
+def test_shared_retrieval_download_concurrency_contract(
+    environment: dict[str, str],
+    expected: int,
+) -> None:
+    assert configured_download_concurrency(environment) == expected
+
+
+@pytest.mark.parametrize(
+    ("environment", "concurrency", "expected"),
+    (
+        ({}, 4, 8),
+        ({}, 16, 32),
+        ({"RIVERHOG_DOWNLOAD_FILE_WINDOW": "64"}, 16, 64),
+    ),
+)
+def test_shared_retrieval_download_window_contract(
+    environment: dict[str, str],
+    concurrency: int,
+    expected: int,
+) -> None:
+    assert configured_download_window(environment, concurrency=concurrency) == expected

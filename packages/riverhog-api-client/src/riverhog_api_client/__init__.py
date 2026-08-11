@@ -8,6 +8,12 @@ from riverhog_protocol import (
 )
 
 from riverhog_api_client.client import ApiClient
+from riverhog_api_client.downloads import (
+    RetrievalDownload,
+    configured_download_concurrency,
+    configured_download_window,
+    download_retrieval_files,
+)
 from riverhog_api_client.uploads import (
     configured_upload_concurrency,
     configured_upload_window,
@@ -23,6 +29,10 @@ __all__ = [
     "NotFound",
     "RiverhogError",
     "ServiceUnavailable",
+    "RetrievalDownload",
+    "configured_download_concurrency",
+    "configured_download_window",
+    "download_retrieval_files",
     "configured_upload_concurrency",
     "configured_upload_window",
     "put_collection_upload_unit",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated
@@ -57,6 +58,7 @@ from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStor
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
 from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.stores.s3_support import ensure_bucket_exists
+from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 
 
 @dataclass(slots=True)
@@ -119,6 +121,8 @@ def default_container() -> ServiceContainer:
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
+    throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
+    transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config, session_factory=session_factory),
         collection_access=SqlAlchemyCollectionAccessService(
@@ -133,6 +137,8 @@ def default_container() -> ServiceContainer:
             archive_ingress_stores,
             proof_stamper=proof_stamper,
             session_factory=session_factory,
+            throughput_tuning=throughput_tuning,
+            transfer_resources=transfer_resources,
         ),
         provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),
         collection_deletions=SqlAlchemyCollectionDeletionService(
@@ -152,6 +158,8 @@ def default_container() -> ServiceContainer:
             archive_stores,
             archive_ingress_stores,
             session_factory=session_factory,
+            throughput_tuning=throughput_tuning,
+            transfer_resources=transfer_resources,
         ),
         proof_maturations=SqlAlchemyProofMaturationService(
             config,
@@ -185,6 +193,8 @@ def default_container() -> ServiceContainer:
             retrieval_cache,
             download_allowance=download_allowance,
             session_factory=session_factory,
+            throughput_tuning=throughput_tuning,
+            transfer_resources=transfer_resources,
         ),
         lifecycle_events=SqlAlchemyLifecycleEventService(
             config,

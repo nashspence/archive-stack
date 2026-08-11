@@ -238,8 +238,9 @@ def _upload_work(
             return
         worker_api = resolved_factory()
         local.api = worker_api
-        with clients_lock:
-            clients.append(worker_api)
+        if worker_api is not api:
+            with clients_lock:
+                clients.append(worker_api)
 
     def upload_one(item: tuple[dict[str, object], dict[str, object]]) -> int:
         if cancel_check is not None:

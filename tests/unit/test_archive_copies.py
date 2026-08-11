@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from collections.abc import Sequence
 from dataclasses import replace
@@ -29,6 +31,7 @@ from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     as_archive_store,
     as_ingress_store,
+    make_archive,
     make_captured_provenance_archive,
     seed_archive_copy,
 )
@@ -39,6 +42,43 @@ INITIATOR = ApplicationPrincipal(
     key_id="operator-key",
     access=frozenset(),
 )
+
+
+def _multipart_archive(files: dict[str, bytes], *, parts: int = 4) -> FixtureArchive:
+    archive = make_archive(files)
+    ciphertext = archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
+    plaintext = archive.pack_plaintext
+
+    def split(content: bytes) -> list[bytes]:
+        return [
+            content[len(content) * index // parts : len(content) * (index + 1) // parts]
+            for index in range(parts)
+        ]
+
+    plaintext_parts = split(plaintext)
+    stored_parts = split(ciphertext)
+    plaintext_start = 0
+    receipts: list[dict[str, object]] = []
+    for number, (plain, stored) in enumerate(
+        zip(plaintext_parts, stored_parts, strict=True),
+        start=1,
+    ):
+        receipts.append(
+            {
+                "number": number,
+                "plaintext_start": plaintext_start,
+                "plaintext_bytes": len(plain),
+                "plaintext_sha256": hashlib.sha256(plain).hexdigest(),
+                "stored_bytes": len(stored),
+                "stored_sha256": hashlib.sha256(stored).hexdigest(),
+                "etag": f"source-part-{number}",
+            }
+        )
+        plaintext_start += len(plain)
+    return replace(
+        archive,
+        pack_parts_json=json.dumps(receipts, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _service(
@@ -149,6 +189,58 @@ def test_archive_copy_preserves_the_independent_object_manifest(tmp_path: Path) 
         "completed",
     ]
     assert events[-1].data["context"] == {"workflow": "promotion"}
+
+
+def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
+    tmp_path: Path,
+) -> None:
+    archive = _multipart_archive(FILES)
+
+    class ConcurrentDestination(MemoryArchiveStore):
+        def __init__(self) -> None:
+            super().__init__(backend="b2")
+            self.lock = threading.Lock()
+            self.rendezvous = threading.Barrier(2)
+            self.active = 0
+            self.maximum_active = 0
+
+        def upload_part(
+            self,
+            *,
+            upload: MultipartUpload,
+            number: int,
+            content: bytes,
+        ) -> MultipartPartReceipt:
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            if number <= 2:
+                self.rendezvous.wait(timeout=2)
+            try:
+                return super().upload_part(upload=upload, number=number, content=content)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    destination = ConcurrentDestination()
+    _config, archive, _source, destination, service = _service(
+        tmp_path / "catalog.sqlite3",
+        destination=destination,
+        archive=archive,
+    )
+    service.create_or_resume(
+        COLLECTION_ID,
+        source_store="deep",
+        destination_store="b2",
+        initiator=INITIATOR,
+    )
+
+    assert service.process_due(limit=1) == 1
+    assert destination.maximum_active >= 2
+    assert (
+        destination.objects[f"archives/b2/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age"]
+        == archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
+    )
 
 
 def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> None:

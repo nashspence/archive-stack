@@ -60,6 +60,8 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.streaming_age import ResumableAgeSessionCache
+from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 
 _DATA_KINDS = {"pack", "segment"}
 
@@ -74,6 +76,8 @@ class SqlAlchemyRetrievalService:
         download_allowance: DownloadAllowance | None = None,
         *,
         session_factory: SessionFactory | None = None,
+        throughput_tuning: ArchiveThroughputTuning | None = None,
+        transfer_resources: ArchiveTransferResources | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
@@ -81,6 +85,15 @@ class SqlAlchemyRetrievalService:
         self._cache = retrieval_cache
         self._download_allowance = download_allowance
         self._session_factory = session_factory or make_session_factory(config.database_url)
+        self._throughput = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
+        self._resources = transfer_resources or ArchiveTransferResources.from_tuning(
+            self._throughput
+        )
+        self._age_sessions = ResumableAgeSessionCache(
+            config.archive_passphrase,
+            max_entries=self._throughput.age_session_cache_entries,
+            derivation_gate=self._resources.age_derivations,
+        )
         self._lifecycle_events = SqlAlchemyLifecycleEventService(
             config,
             session_factory=self._session_factory,
@@ -554,6 +567,9 @@ class SqlAlchemyRetrievalService:
                     attribution=attribution,
                 ),
                 passphrase=self._config.archive_passphrase,
+                read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
+                resources=self._resources,
+                session_cache=self._age_sessions,
                 policy=PackRangeRetrievalPolicy.from_env(
                     os.environ,
                     store_name=source_store,
@@ -591,6 +607,10 @@ class SqlAlchemyRetrievalService:
                 RawVolumeRangeReader(
                     _DispatchArchiveRangeStore(range_stores),
                     passphrase=self._config.archive_passphrase,
+                    request_concurrency=self._throughput.retrieval_request_concurrency,
+                    read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
+                    resources=self._resources,
+                    session_cache=self._age_sessions,
                 )
             ).iter_file(sources)
             return chunks, expected_bytes, expected_sha256

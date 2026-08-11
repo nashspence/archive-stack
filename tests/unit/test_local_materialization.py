@@ -53,6 +53,10 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
 
     assert imports == {
         ("riverhog_api_client.client", "ApiClient"),
+        ("riverhog_api_client.downloads", "RetrievalDownload"),
+        ("riverhog_api_client.downloads", "configured_download_concurrency"),
+        ("riverhog_api_client.downloads", "configured_download_window"),
+        ("riverhog_api_client.downloads", "download_retrieval_files"),
         ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.errors", "NotFound"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
@@ -116,6 +120,9 @@ class FakeApi:
 
     def __exit__(self, *_args: object) -> None:
         return
+
+    def spawn(self) -> FakeApi:
+        return self
 
     def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
