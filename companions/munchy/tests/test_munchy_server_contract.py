@@ -2361,7 +2361,7 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     )
 
 
-def test_eager_projection_and_upload_setup_mutations_are_serialized(
+def test_eager_projection_does_not_block_upload_setup(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2475,7 +2475,7 @@ def test_eager_projection_and_upload_setup_mutations_are_serialized(
     assert metadata_started.wait(timeout=5)
     request_thread.start()
     assert request_started.wait(timeout=5)
-    assert not tusd_create_started.wait(timeout=0.25)
+    assert tusd_create_started.wait(timeout=5)
     release_metadata.set()
     metadata_thread.join(timeout=5)
     request_thread.join(timeout=5)
@@ -2661,6 +2661,149 @@ def test_completed_structured_file_can_route_by_probe_metadata(
         server.upload_service.upload_files_for_groups(routed, {"phone-video"})[0]["route_id"]
         == "iphone-4k"
     )
+
+
+def test_routing_probe_does_not_block_upload_setup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    upload_id = "upload-1"
+    source_path = "phone/IMG_0001.MOV"
+    pending_path = "other/pending.mp4"
+    shared_file = server.upload_service.shared_input_upload_root(upload_id) / source_path
+    shared_file.parent.mkdir(parents=True, exist_ok=True)
+    shared_file.write_bytes(b"video")
+    upload = server.upload_service.save_input_upload_raw(
+        {
+            "input_upload_id": upload_id,
+            "state": "uploading",
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "handoff_destination": "riverhog",
+                "structured_routing": True,
+                "groups": {
+                    "phone-video": {"output_mode": "video", "tasks": []},
+                    "other": {"output_mode": "preserve", "tasks": []},
+                },
+            },
+            "files": [
+                {
+                    "path": source_path,
+                    "bytes": 5,
+                    "file_upload_id": "phone-img-1",
+                    "input_upload_id": upload_id,
+                    "target_path": server.upload_service.target_path_for(upload_id, source_path),
+                    "structured_routing": True,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "a" * 64,
+                },
+                {
+                    "path": pending_path,
+                    "bytes": 7,
+                    "file_upload_id": "pending-1",
+                    "input_upload_id": upload_id,
+                    "target_path": server.upload_service.target_path_for(upload_id, pending_path),
+                    "structured_routing": True,
+                    "upload_url": None,
+                    "provenance": omitted_test_provenance(),
+                    "sha256": "b" * 64,
+                },
+            ],
+        }
+    )
+    job = {
+        "job_id": "job-1",
+        "input_upload_id": upload_id,
+        "routing": {
+            "routes": [
+                {
+                    "id": "iphone-4k",
+                    "group": "phone-video",
+                    "when": {
+                        "all": [
+                            {"path": {"prefix": "phone", "suffix": ".mov"}},
+                            {"fact": "video.long_edge", "min": 3000},
+                        ]
+                    },
+                },
+                {
+                    "id": "other",
+                    "group": "other",
+                    "when": {"path": {"prefix": "other"}},
+                },
+            ]
+        },
+    }
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    tusd_create_started = threading.Event()
+    errors: list[BaseException] = []
+
+    def blocking_ffprobe(path: Path) -> dict[str, object]:
+        assert path == shared_file
+        probe_started.set()
+        assert release_probe.wait(timeout=5)
+        return {
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "width": 3840,
+                    "height": 2160,
+                    "avg_frame_rate": "60000/1001",
+                }
+            ],
+        }
+
+    def fake_create_tusd_upload(target_path: str, _length: int) -> str:
+        tusd_create_started.set()
+        return f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
+
+    monkeypatch.setattr(server.routing_service, "ffprobe_for_routing", blocking_ffprobe)
+    monkeypatch.setattr(server.upload_service, "create_tusd_upload", fake_create_tusd_upload)
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: 0)
+
+    def route_source() -> None:
+        try:
+            server.routing_service.route_completed_input_files(
+                job,
+                upload,
+                {
+                    "phone-video": {"output_mode": "video", "tasks": []},
+                    "other": {"output_mode": "preserve", "tasks": []},
+                },
+            )
+        except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
+            errors.append(exc)
+
+    def create_pending_upload() -> None:
+        try:
+            server.job_service._create_or_resume_input_file_upload(upload_id, pending_path)
+        except BaseException as exc:  # pragma: no cover - re-raised by the parent thread
+            errors.append(exc)
+
+    routing_thread = threading.Thread(target=route_source)
+    request_thread = threading.Thread(target=create_pending_upload)
+    routing_thread.start()
+    assert probe_started.wait(timeout=5)
+    request_thread.start()
+    assert tusd_create_started.wait(timeout=5)
+    release_probe.set()
+    routing_thread.join(timeout=5)
+    request_thread.join(timeout=5)
+
+    assert errors == []
+    assert not routing_thread.is_alive()
+    assert not request_thread.is_alive()
+    stored = server.upload_service.load_input_upload(upload_id)
+    stored_by_path = {item["path"]: item for item in stored["files"]}
+    assert stored_by_path[source_path]["route_id"] == "iphone-4k"
+    assert stored_by_path[source_path]["resolved_group"] == "phone-video"
+    assert stored_by_path[pending_path]["upload_url"]
 
 
 def test_sidecar_evidence_is_not_probed_during_runner_routing(
@@ -7220,6 +7363,105 @@ def test_riverhog_handoff_resumes_archive_units_after_session_completion(
         "close",
     ]
     assert not source.exists()
+
+
+def test_riverhog_handoff_resumes_when_registration_races_archive_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir.mkdir(parents=True)
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "handoff_retrying",
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {"collection_id": 42, "files": {}},
+    }
+    server.state_store.save_job(job)
+    calls: list[str] = []
+
+    class RacingRiverhogApi:
+        status_calls = 0
+
+        def close(self) -> None:
+            calls.append("close")
+
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
+            self.status_calls += 1
+            calls.append(f"status:{self.status_calls}")
+            return {
+                "collection_id": 42,
+                "state": "open" if self.status_calls == 1 else "uploading",
+                "archive_phase": "uploading" if self.status_calls > 1 else "planning",
+            }
+
+    fake = RacingRiverhogApi()
+    monkeypatch.setattr(server.riverhog, "ApiClient", lambda: fake)
+
+    def race_registration(*_args: object) -> dict[str, object]:
+        calls.append("register")
+        raise server.riverhog.Conflict("collection upload does not accept provenance journals")
+
+    monkeypatch.setattr(server.riverhog, "register_riverhog_artifacts", race_registration)
+    monkeypatch.setattr(
+        server.riverhog,
+        "validate_riverhog_resume_sources",
+        lambda *_args: (
+            calls.append("validate")
+            or {"validated_files": 1, "validated_units": 1, "validated_volumes": 1}
+        ),
+    )
+    monkeypatch.setattr(
+        server.riverhog,
+        "_upload_riverhog_units",
+        lambda *_args: (
+            calls.append("units")
+            or {"collection_id": 42, "state": "finalized", "archive_phase": "complete"}
+        ),
+    )
+    monkeypatch.setattr(
+        server.riverhog,
+        "wait_for_riverhog_finalized",
+        lambda *_args: (
+            calls.append("finalized")
+            or {"collection_id": 42, "state": "finalized", "archive_phase": "complete"}
+        ),
+    )
+    monkeypatch.setattr(
+        server.riverhog,
+        "_remove_finalized_riverhog_artifacts",
+        lambda *_args: calls.append("remove"),
+    )
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.handoff_service,
+        "retry_handoff_until_success",
+        lambda _job, **kwargs: kwargs["operation"](),
+    )
+
+    result = server.riverhog.upload_to_riverhog(job, archive_dir)
+
+    assert result["destination"] == "riverhog"
+    assert result["metrics"]["remote_state_before"] == "open"
+    assert result["metrics"]["registration_phase_race_state"] == "uploading"
+    assert result["metrics"]["post_registration_resume_state"] == "uploading"
+    assert result["metrics"]["validated_units"] == 1
+    assert calls == [
+        "status:1",
+        "register",
+        "status:2",
+        "validate",
+        "units",
+        "finalized",
+        "remove",
+        "close",
+    ]
 
 
 def test_expected_riverhog_primary_files_total_counts_archive_outputs(

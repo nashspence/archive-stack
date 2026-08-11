@@ -475,15 +475,17 @@ def run_job(job_id: str) -> None:
                 input_upload_id = str(input_upload["input_upload_id"])
                 with execution_runtime.input_upload_state_lock(input_upload_id):
                     input_upload = upload_service.load_input_upload(input_upload_id)
-                    preserve_source_artifacts = (
-                        upload_service.build_preserve_group_source_artifacts(
-                            input_upload,
-                            group_name=group_name,
-                            source_root=input_dir / group_name,
-                            output_root=archive_dir / group_name,
-                        )
-                    )
-                    input_upload = upload_service.save_input_upload_raw(input_upload)
+                preserve_source_artifacts = upload_service.build_preserve_group_source_artifacts(
+                    input_upload,
+                    group_name=group_name,
+                    source_root=input_dir / group_name,
+                    output_root=archive_dir / group_name,
+                )
+                input_upload = upload_service.merge_input_upload_file_fields(
+                    input_upload_id,
+                    input_upload.get("files", []),
+                    fields=("source_artifacts",),
+                )
                 group_results[group_name] = {
                     **group_results.get(group_name, {}),
                     "preserve_copied": True,
@@ -553,18 +555,20 @@ def run_job(job_id: str) -> None:
                             input_upload,
                             {group_name},
                         )
-                        container_metadata, container_metadata_changed = (
-                            routing_service.container_metadata_for_gpu_payload(
-                                job,
-                                input_upload,
-                                group_file_states,
-                                group_name=group_name,
-                                group_config=group_config,
-                                tasks=tasks,
-                            )
+                    container_metadata, container_metadata_changed = (
+                        routing_service.container_metadata_for_gpu_payload(
+                            job,
+                            input_upload,
+                            group_file_states,
+                            group_name=group_name,
+                            group_config=group_config,
+                            tasks=tasks,
                         )
-                        if container_metadata_changed:
-                            input_upload = upload_service.save_input_upload_raw(input_upload)
+                    )
+                    input_upload = upload_service.merge_input_upload_projection_metadata(
+                        input_upload_id,
+                        group_file_states if container_metadata_changed else (),
+                    )
                     gpu_job_id = routing_service.gpu_group_job_id(job_id, group_name)
                     job["phase"] = f"gpu:{group_name}"
                     state_store.save_job(job)

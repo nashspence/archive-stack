@@ -437,28 +437,65 @@ def route_completed_input_files(
 ) -> dict[str, Any]:
     upload_id = str(upload["input_upload_id"])
     with execution_runtime.input_upload_state_lock(upload_id):
-        return route_completed_input_files_locked(
-            job,
-            upload_service.load_input_upload(upload_id),
-            groups,
-        )
+        snapshot = upload_service.load_input_upload(upload_id)
+    decisions = completed_input_file_routing_decisions(job, snapshot, groups)
+    if not decisions:
+        return snapshot
+
+    with execution_runtime.input_upload_state_lock(upload_id):
+        current = upload_service.load_input_upload_raw(upload_id)
+        changed = False
+        for file_state in current.get("files", []):
+            decision = decisions.get(str(file_state["path"]))
+            if decision is not None:
+                changed = apply_routing_decision(file_state, decision) or changed
+        if not changed:
+            return upload_service.refresh_input_upload(current)
+
+        group_counts: dict[str, int] = {}
+        route_counts: dict[str, int] = {}
+        left_count = 0
+        for file_state in current.get("files", []):
+            group = file_state.get("resolved_group")
+            route_id = file_state.get("route_id")
+            if file_state.get("route_action") == "leave":
+                left_count += 1
+            if isinstance(group, str) and group:
+                group_counts[group] = group_counts.get(group, 0) + 1
+            if isinstance(route_id, str) and route_id:
+                route_counts[route_id] = route_counts.get(route_id, 0) + 1
+        job["routing_result"] = {
+            "updated_at": utc_timestamp_now(),
+            "files": sum(group_counts.values()),
+            "left_files": left_count,
+            "groups": group_counts,
+            "routes": route_counts,
+        }
+        adapter = handoff_service.optional_handoff_adapter(job)
+        job["handoff_expected_primary_files_total"] = (
+            adapter.expected_primary_files_total(current, groups, None)
+            if adapter is not None
+            else 0
+        ) or 0
+        current = upload_service.save_input_upload_raw(current)
+        state_store.save_job(job)
+        return upload_service.refresh_input_upload(current)
 
 
-def route_completed_input_files_locked(
+def completed_input_file_routing_decisions(
     job: dict[str, Any],
     upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+) -> dict[str, Mapping[str, Any]]:
     if not isinstance(job.get("routing"), dict):
-        return upload
-    changed = False
+        return {}
     pending_files = [
         file_state
         for file_state in upload.get("files", [])
         if not file_state.get("resolved_group") and file_state.get("route_action") != "leave"
     ]
     if not pending_files:
-        return upload
+        return {}
     routing = cast(Mapping[str, Any], job["routing"])
     complete_files = [
         file_state
@@ -466,14 +503,14 @@ def route_completed_input_files_locked(
         if upload_service.upload_file_status(file_state)["complete"]
     ]
     if not complete_files:
-        return upload
+        return {}
     files_to_route = completed_routing_files_to_route(
         routing,
         pending_files,
         complete_files,
     )
     if not files_to_route:
-        return upload
+        return {}
     path_facts_by_path = {
         str(file_state["path"]): routing_file_facts(str(file_state["path"]))
         for file_state in files_to_route
@@ -528,38 +565,7 @@ def route_completed_input_files_locked(
         raise domain_errors.RoutingFailed(
             f"routing failed for {first.get('path') or 'input upload'}: {reason}"
         )
-    decisions = {item["path"]: item for item in [*plan.matches, *plan.left]}
-    for file_state in files_to_route:
-        changed = apply_routing_decision(file_state, decisions[str(file_state["path"])]) or changed
-    if not changed:
-        return upload
-
-    group_counts: dict[str, int] = {}
-    route_counts: dict[str, int] = {}
-    left_count = 0
-    for file_state in upload.get("files", []):
-        group = file_state.get("resolved_group")
-        route_id = file_state.get("route_id")
-        if file_state.get("route_action") == "leave":
-            left_count += 1
-        if isinstance(group, str) and group:
-            group_counts[group] = group_counts.get(group, 0) + 1
-        if isinstance(route_id, str) and route_id:
-            route_counts[route_id] = route_counts.get(route_id, 0) + 1
-    job["routing_result"] = {
-        "updated_at": utc_timestamp_now(),
-        "files": sum(group_counts.values()),
-        "left_files": left_count,
-        "groups": group_counts,
-        "routes": route_counts,
-    }
-    adapter = handoff_service.optional_handoff_adapter(job)
-    job["handoff_expected_primary_files_total"] = (
-        adapter.expected_primary_files_total(upload, groups, None) if adapter is not None else 0
-    ) or 0
-    upload = upload_service.save_input_upload_raw(upload)
-    state_store.save_job(job)
-    return upload_service.refresh_input_upload(upload)
+    return {str(item["path"]): item for item in [*plan.matches, *plan.left]}
 
 
 def grouped_task_union(groups: dict[str, dict[str, Any]]) -> list[domain_models.TaskName]:
@@ -1461,15 +1467,16 @@ def write_metadata_projection_sidecars(
 ) -> dict[str, Any]:
     upload_id = str(upload["input_upload_id"])
     with execution_runtime.input_upload_state_lock(upload_id):
-        return write_metadata_projection_sidecars_locked(
-            job,
-            upload_service.load_input_upload_raw(upload_id),
-            groups,
-            archive_dir,
-        )
+        snapshot = upload_service.load_input_upload_raw(upload_id)
+    return write_metadata_projection_sidecars_from_snapshot(
+        job,
+        snapshot,
+        groups,
+        archive_dir,
+    )
 
 
-def write_metadata_projection_sidecars_locked(
+def write_metadata_projection_sidecars_from_snapshot(
     job: dict[str, Any],
     upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
@@ -1576,8 +1583,15 @@ def write_metadata_projection_sidecars_locked(
         "sidecars_written": sidecars_written,
         "groups": groups_written,
     }
-    if upload_changed:
-        upload = upload_service.save_input_upload_raw(upload)
+    upload = upload_service.merge_input_upload_file_fields(
+        str(upload["input_upload_id"]),
+        upload.get("files", []) if upload_changed else (),
+        fields=(
+            "metadata_projection_metadata",
+            "metadata_projection_captured_at",
+            "metadata_projection_sidecar",
+        ),
+    )
     state_store.save_job(job)
     return upload
 

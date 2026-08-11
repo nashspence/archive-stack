@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import errno
 import hashlib
 import json
@@ -413,6 +414,44 @@ def save_input_upload_raw(upload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(f"stale input upload state: {upload_id}") from exc
         conn.commit()
     return payload
+
+
+def merge_input_upload_file_fields(
+    upload_id: str,
+    prepared_file_states: Sequence[Mapping[str, Any]],
+    *,
+    fields: Sequence[str],
+) -> dict[str, Any]:
+    with execution_runtime.input_upload_state_lock(upload_id):
+        current = load_input_upload_raw(upload_id)
+        current_by_path = {
+            str(file_state["path"]): file_state for file_state in current.get("files", [])
+        }
+        changed = False
+        for prepared in prepared_file_states:
+            target = current_by_path[str(prepared["path"])]
+            for field in fields:
+                if field not in prepared or target.get(field) == prepared[field]:
+                    continue
+                target[field] = copy.deepcopy(prepared[field])
+                changed = True
+        if changed:
+            return save_input_upload_raw(current)
+        return current
+
+
+def merge_input_upload_projection_metadata(
+    upload_id: str,
+    prepared_file_states: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    return merge_input_upload_file_fields(
+        upload_id,
+        prepared_file_states,
+        fields=(
+            "metadata_projection_metadata",
+            "metadata_projection_captured_at",
+        ),
+    )
 
 
 def remove_input_upload_data(upload: dict[str, Any]) -> None:

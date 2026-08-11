@@ -656,16 +656,17 @@ def mark_existing_eager_outputs(
 ) -> tuple[dict[str, Any], bool]:
     upload_id = str(upload["input_upload_id"])
     with execution_runtime.input_upload_state_lock(upload_id):
-        return mark_existing_eager_outputs_locked(
-            job,
-            upload_service.load_input_upload_raw(upload_id),
-            groups,
-            eager_groups,
-            archive_dir,
-        )
+        snapshot = upload_service.load_input_upload_raw(upload_id)
+    return mark_existing_eager_outputs_from_snapshot(
+        job,
+        snapshot,
+        groups,
+        eager_groups,
+        archive_dir,
+    )
 
 
-def mark_existing_eager_outputs_locked(
+def mark_existing_eager_outputs_from_snapshot(
     job: dict[str, Any],
     upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
@@ -724,8 +725,10 @@ def mark_existing_eager_outputs_locked(
                 consume_paths.add(rel_path)
     if changed:
         state_store.save_job(job)
-    if upload_changed:
-        upload = upload_service.save_input_upload_raw(upload)
+    upload = upload_service.merge_input_upload_projection_metadata(
+        str(upload["input_upload_id"]),
+        upload.get("files", []) if upload_changed else (),
+    )
     if consume_paths:
         upload = consume_input_upload_files(str(upload["input_upload_id"]), consume_paths)
     return upload, changed or upload_changed or bool(consume_paths)
@@ -1380,36 +1383,43 @@ def prepare_eager_gpu_batch_input(
             / upload_service.materialized_input_rel_path(file_state)
             for file_state in [*file_states, *evidence_file_states]
         }
-        container_metadata, container_metadata_changed = (
-            routing_service.container_metadata_for_gpu_payload(
-                job,
-                upload,
-                file_states,
-                group_name=group_name,
-                group_config=group_config,
-                tasks=tasks,
-                source_paths_by_path=source_paths_by_path,
-            )
-        )
-        if container_metadata_changed:
-            upload = upload_service.save_input_upload_raw(upload)
-        source_artifacts_sidecars = upload_service.source_artifacts_sidecar_entries(
+    container_metadata, container_metadata_changed = (
+        routing_service.container_metadata_for_gpu_payload(
+            job,
             upload,
             file_states,
             group_name=group_name,
-            materialized_group_root=batch_root / group_name,
-            container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
-        )
-        payload = build_eager_gpu_payload(
-            job,
-            batch_id=batch_id,
-            group_name=group_name,
             group_config=group_config,
             tasks=tasks,
-            container_metadata=container_metadata,
-            source_artifacts_sidecars=source_artifacts_sidecars,
+            source_paths_by_path=source_paths_by_path,
         )
-        return upload, file_states, evidence_file_states, payload
+    )
+    upload = upload_service.merge_input_upload_projection_metadata(
+        upload_id,
+        file_states if container_metadata_changed else (),
+    )
+    current_by_path = {
+        str(file_state["path"]): file_state for file_state in upload.get("files", [])
+    }
+    file_states = [current_by_path[path] for path in paths]
+    evidence_file_states = upload_service.sidecar_evidence_files_for_primaries(upload, file_states)
+    source_artifacts_sidecars = upload_service.source_artifacts_sidecar_entries(
+        upload,
+        file_states,
+        group_name=group_name,
+        materialized_group_root=batch_root / group_name,
+        container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
+    )
+    payload = build_eager_gpu_payload(
+        job,
+        batch_id=batch_id,
+        group_name=group_name,
+        group_config=group_config,
+        tasks=tasks,
+        container_metadata=container_metadata,
+        source_artifacts_sidecars=source_artifacts_sidecars,
+    )
+    return upload, file_states, evidence_file_states, payload
 
 
 def start_eager_gpu_batch(
@@ -1508,22 +1518,38 @@ def start_eager_audio_batch(
             file_states = [files_by_path[path] for path in paths]
         except KeyError as exc:
             raise RuntimeError(f"unknown eager input file: {exc.args[0]}") from exc
-        upload_changed = False
-        for file_state in file_states:
-            if routing_service.ensure_file_projection_metadata(
-                upload,
-                file_state,
-                job=job,
-                group_config=group_config,
-            ):
-                upload_changed = True
-        if upload_changed:
-            upload = upload_service.save_input_upload_raw(upload)
+        evidence_file_states = upload_service.sidecar_evidence_files_for_primaries(
+            upload, file_states
+        )
         if batch_root.exists():
             shutil.rmtree(batch_root, ignore_errors=True)
         batch_root.mkdir(parents=True, exist_ok=True)
-        for file_state in file_states:
+        for file_state in [*file_states, *evidence_file_states]:
             upload_service.materialize_upload_file(file_state, batch_root)
+        source_paths_by_path = {
+            str(file_state["path"]): batch_root
+            / upload_service.materialized_input_rel_path(file_state)
+            for file_state in [*file_states, *evidence_file_states]
+        }
+    upload_changed = False
+    for file_state in file_states:
+        if routing_service.ensure_file_projection_metadata(
+            upload,
+            file_state,
+            job=job,
+            group_config=group_config,
+            source_path=source_paths_by_path[str(file_state["path"])],
+            sidecar_source_paths_by_path=source_paths_by_path,
+        ):
+            upload_changed = True
+    upload = upload_service.merge_input_upload_projection_metadata(
+        upload_id,
+        file_states if upload_changed else (),
+    )
+    current_by_path = {
+        str(file_state["path"]): file_state for file_state in upload.get("files", [])
+    }
+    file_states = [current_by_path[path] for path in paths]
 
     batch: dict[str, Any] = {
         "batch_id": batch_id,
