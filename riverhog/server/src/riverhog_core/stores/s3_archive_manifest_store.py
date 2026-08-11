@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 from typing import Any, cast
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ConnectionClosedError
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
@@ -121,6 +121,13 @@ class S3ImmutableArchiveObjectStore:
             return self._put_create_only_multipart(request)
         try:
             response = cast(dict[str, Any], self._client.put_object(**request))
+        except ConnectionClosedError:
+            # Some S3-compatible stores close the connection instead of returning
+            # an UnsupportedHeader response for conditional PutObject. Complete the
+            # same create-only request through multipart; If-None-Match on completion
+            # also resolves an ambiguous successful PutObject without overwriting it.
+            self._conditional_put_supported = False
+            return self._put_create_only_multipart(request)
         except ClientError as exc:
             status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
             code = str(exc.response.get("Error", {}).get("Code", ""))

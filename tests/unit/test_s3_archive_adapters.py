@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ConnectionClosedError
 from riverhog_core.ports.archive_ingress_store import ArchiveObjectIdentityConflict
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
@@ -34,11 +34,19 @@ class _Body(BytesIO):
 
 
 class _FakeClient:
-    def __init__(self, *, conditional_put_supported: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        conditional_put_supported: bool = True,
+        conditional_put_closes_connection: bool = False,
+        conditional_put_commits_before_close: bool = False,
+    ) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
         self.next_upload = 1
         self.conditional_put_supported = conditional_put_supported
+        self.conditional_put_closes_connection = conditional_put_closes_connection
+        self.conditional_put_commits_before_close = conditional_put_commits_before_close
         self.put_attempts = 0
 
     def create_multipart_upload(self, **request: Any) -> dict[str, str]:
@@ -89,10 +97,19 @@ class _FakeClient:
         key = str(request["Key"])
         if request.get("IfNoneMatch") != "*":
             raise AssertionError("immutable put must be create-only")
+        if self.conditional_put_closes_connection:
+            if self.conditional_put_commits_before_close:
+                self._store_put(request)
+            raise ConnectionClosedError(endpoint_url="https://object-store.invalid")
         if not self.conditional_put_supported:
             raise _client_error("NotImplemented", 501, "PutObject")
         if key in self.objects:
             raise _client_error("PreconditionFailed", 412, "PutObject")
+        self._store_put(request)
+        return {}
+
+    def _store_put(self, request: dict[str, Any]) -> None:
+        key = str(request["Key"])
         body = bytes(request["Body"])
         self.objects[key] = {
             "Body": body,
@@ -101,7 +118,6 @@ class _FakeClient:
             "ETag": '"put"',
             "LastModified": datetime(2026, 1, 1, tzinfo=UTC),
         }
-        return {}
 
     def head_object(self, **request: Any) -> dict[str, object]:
         key = str(request["Key"])
@@ -265,6 +281,43 @@ def test_immutable_adapter_uses_conditional_multipart_when_put_condition_is_unsu
     )
 
     assert client.put_attempts == 1
+    assert second == first
+    assert client.objects[first.object_path]["Body"] == b"ciphertext"
+    assert first.stored_sha256 == hashlib.sha256(b"ciphertext").hexdigest()
+
+
+@pytest.mark.parametrize("commits_before_close", [False, True])
+def test_immutable_adapter_uses_conditional_multipart_when_put_connection_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    commits_before_close: bool,
+) -> None:
+    client = _FakeClient(
+        conditional_put_closes_connection=True,
+        conditional_put_commits_before_close=commits_before_close,
+    )
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_archive_manifest_store.create_archive_s3_client",
+        lambda *_args, **_kwargs: client,
+    )
+    config = _config(tmp_path)
+    store = S3ImmutableArchiveObjectStore(config, config.archive_store("primary"))
+
+    first = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+    second = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"different randomized ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+
+    assert client.put_attempts == 1
+    assert not client.uploads
     assert second == first
     assert client.objects[first.object_path]["Body"] == b"ciphertext"
     assert first.stored_sha256 == hashlib.sha256(b"ciphertext").hexdigest()
