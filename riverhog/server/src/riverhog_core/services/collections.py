@@ -11,6 +11,7 @@ from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionTagRecord,
@@ -173,7 +174,9 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
         )
         .options(
             selectinload(CollectionRecord.archive_copies).selectinload(
-                CollectionArchiveCopyRecord.objects
+                CollectionArchiveCopyRecord.objects.and_(
+                    CollectionArchiveObjectRecord.object_id.in_(("manifest", "proof"))
+                )
             ),
             selectinload(CollectionRecord.tags),
         )

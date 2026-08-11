@@ -56,14 +56,16 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     last_verified_at=NOW,
                 )
             )
-            for order, object_id in enumerate(("manifest", "proof")):
+            for order, object_id in enumerate(
+                ("manifest", "proof", *(f"segment-{index}" for index in range(8)))
+            ):
                 session.add(
                     CollectionArchiveObjectRecord(
                         collection_id=collection_id,
                         store="archive",
                         object_id=object_id,
                         object_order=order,
-                        kind=object_id,
+                        kind=object_id if object_id in {"manifest", "proof"} else "segment",
                         object_path=f"archives/{collection_id}/{object_id}",
                         plaintext_bytes=1,
                         stored_bytes=1,
@@ -102,13 +104,25 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
     one_row_selects = select_count
     select_count = 0
 
-    page = service.list(page=1, per_page=12, q=None)
+    loaded_object_ids: list[str] = []
+
+    def record_loaded_object(target: CollectionArchiveObjectRecord, _context: object) -> None:
+        loaded_object_ids.append(target.object_id)
+
+    event.listen(CollectionArchiveObjectRecord, "load", record_loaded_object)
+    try:
+        page = service.list(page=1, per_page=12, q=None)
+    finally:
+        event.remove(CollectionArchiveObjectRecord, "load", record_loaded_object)
     twelve_row_selects = select_count
 
     assert len(page.collections) == 12
+    assert len(loaded_object_ids) == 24
+    assert set(loaded_object_ids) == {"manifest", "proof"}
     assert all(
         current.archive_copies[0].collection_manifest.proof_state == "uploaded"
         for current in page.collections
     )
+    assert all(current.archive_copies[0].object_count == 10 for current in page.collections)
     assert twelve_row_selects == one_row_selects
     engine.dispose()
