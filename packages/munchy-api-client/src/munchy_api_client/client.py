@@ -1474,7 +1474,12 @@ class MunchyClient:
             http2=self.http2,
         )
         tus_headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        self._tus = TusTransport(client=self._http, headers=tus_headers)
+        self._tus = TusTransport(
+            client=self._http,
+            patch_client=self._http if transport is not None else None,
+            headers=tus_headers,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def close(self) -> None:
         self._tus.close()

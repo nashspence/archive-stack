@@ -249,6 +249,8 @@ def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
         journal_request.headers["X-Riverhog-Provenance-SHA256"]
         == hashlib.sha256(journal).hexdigest()
     )
+    patch_request = next(request for request in requests if request.method == "PATCH")
+    assert patch_request.headers["Authorization"] == "Basic cGhvbmU6c2VjcmV0"
     assert [request.method for request in requests] == ["POST", "PUT", "PUT", "HEAD", "PATCH"]
 
 

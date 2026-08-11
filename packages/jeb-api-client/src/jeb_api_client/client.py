@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import http.client
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -416,7 +418,13 @@ class JebIngressClient:
             timeout=_timeout(),
             http2=_bool_env("JEB_HTTP2", True),
         )
-        self._tus = TusTransport(client=self._http)
+        authorization = base64.b64encode(f"{source}:{password}".encode()).decode("ascii")
+        self._tus = TusTransport(
+            client=self._http,
+            patch_client=self._http if transport is not None else None,
+            headers={"Authorization": f"Basic {authorization}"},
+            timeout_seconds=_timeout(),
+        )
 
     def close(self) -> None:
         self._tus.close()
@@ -492,7 +500,7 @@ class JebIngressClient:
                         content=content,
                         checksum_algorithm="sha256",
                     )
-                except httpx.TransportError:
+                except (OSError, http.client.HTTPException, httpx.TransportError):
                     resumed = self._tus.head_offset(upload_url)
                     if resumed < offset or resumed > offset + len(content):
                         raise RuntimeError("Jeb TUS retry returned an invalid offset") from None
