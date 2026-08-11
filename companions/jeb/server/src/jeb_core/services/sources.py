@@ -387,23 +387,10 @@ class JebSourceService:
                 terminate_tus_upload(self.config.ingress, str(upload["id"]))
             shutil.rmtree(Path(str(plan["landing_root"])), ignore_errors=True)
         with self.store.transaction() as conn:
-            attempt_rows = conn.execute(
-                """
-                SELECT a.id
-                FROM batch_attempts a JOIN batches b ON b.id = a.batch_id
-                WHERE b.source_id = ?
-                """,
-                (source_id,),
-            ).fetchall()
             batch_rows = conn.execute(
                 "SELECT id FROM batches WHERE source_id = ?",
                 (source_id,),
             ).fetchall()
-        for row in attempt_rows:
-            shutil.rmtree(
-                self.config.service.batch_dir / str(row["id"]),
-                ignore_errors=True,
-            )
         for row in batch_rows:
             shutil.rmtree(
                 self.config.service.batch_dir / str(row["id"]),

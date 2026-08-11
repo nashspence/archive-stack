@@ -88,7 +88,6 @@ class JebAttemptService:
         self.current_time = clock
         self.operation_lock = operation_lock
         self.target_context = target_context
-        self.batch_dir = config.service.batch_dir
 
     def archive_now(
         self,
@@ -386,8 +385,7 @@ class JebAttemptService:
             for file_row in file_rows:
                 target_path = str(file_row["target_path"])
                 staging = (
-                    self.config.service.batch_dir
-                    / attempt_id
+                    self.attempt_work_dir(batch_id, attempt_id)
                     / "input"
                     / PurePosixPath(target_path)
                 )
@@ -410,7 +408,10 @@ class JebAttemptService:
                 "UPDATE batches SET updated_at = ? WHERE id = ?",
                 (created_at, batch_id),
             )
-        shutil.rmtree(self.config.service.batch_dir / retryable_attempt_id, ignore_errors=True)
+        shutil.rmtree(
+            self.attempt_work_dir(batch_id, retryable_attempt_id),
+            ignore_errors=True,
+        )
         LOG.info(
             "created retry attempt %s for batch %s after attempt %s",
             attempt_id,
@@ -433,7 +434,7 @@ class JebAttemptService:
             batch_id, digest = self.batch_identity(source, files, period=period)
         target = self.sources.target_by_name(source.target)
         target_submission_id = f"jeb-{source.id}-{run_id.lower()}-{digest}"
-        batch_root = self.config.service.batch_dir / batch_id / "input"
+        batch_root = self.attempt_work_dir(batch_id, batch_id) / "input"
         created_at = event_timestamp()
         with self.store.transaction() as conn:
             exists = conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone()
@@ -515,6 +516,9 @@ class JebAttemptService:
         manifest = "\n".join(f"{item.target_path} {item.bytes} {item.mtime_ns}" for item in files)
         digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()[:12]
         return f"{run_id}__{source.id}__{digest}", digest
+
+    def attempt_work_dir(self, batch_id: str, attempt_id: str) -> Path:
+        return self.config.service.batch_dir / batch_id / "attempts" / attempt_id
 
     def attempt_process_lock_path(self, attempt_id: str) -> Path:
         digest = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:16]
@@ -1106,17 +1110,17 @@ class JebAttemptService:
 
     def cleanup_attempt(self, attempt_id: str) -> None:
         try:
+            attempt = self.store.load_attempt(attempt_id)
             rows = self.store.attempt_files(attempt_id)
             for row in rows:
                 input_path = Path(str(row["input_path"]))
                 input_path.unlink(missing_ok=True)
                 canonical_sidecar_path(input_path).unlink(missing_ok=True)
                 remove_ingress_provenance(input_path)
-            shutil.rmtree(self.config.service.batch_dir / attempt_id)
-            if rows:
-                batch_id = str(rows[0]["batch_id"])
-                if batch_id != attempt_id:
-                    shutil.rmtree(self.config.service.batch_dir / batch_id, ignore_errors=True)
+            shutil.rmtree(
+                self.config.service.batch_dir / str(attempt["batch_id"]),
+                ignore_errors=True,
+            )
         except FileNotFoundError:
             pass
         except Exception as exc:

@@ -415,6 +415,15 @@ def test_operator_can_cancel_and_explicitly_retry_an_unresolved_attempt(tmp_path
     services = services_from_env(env)
     attempt_id = services.attempts.archive_now(source_id="camera", process=False)
     assert attempt_id is not None
+    services.attempts.stage_attempt_files(attempt_id)
+    services.attempts.ensure_hashes(attempt_id)
+    services.attempts.ensure_provenance(attempt_id)
+    batch_root = services.config.service.batch_dir / attempt_id
+    first_attempt_root = batch_root / "attempts" / attempt_id
+    provenance_index = batch_root / "provenance" / "index.json"
+    provenance_bytes = provenance_index.read_bytes()
+
+    assert first_attempt_root.is_dir()
 
     canceled = services.attempts.cancel_attempt(attempt_id)
 
@@ -427,6 +436,25 @@ def test_operator_can_cancel_and_explicitly_retry_an_unresolved_attempt(tmp_path
     assert retried_id == f"{attempt_id}-r2"
     assert services.store.get_attempt(attempt_id)["state"] == "superseded"
     assert services.store.get_attempt(retried_id)["state"] == "batching"
+    retried_file = services.store.attempt_files(retried_id)[0]
+
+    assert Path(str(retried_file["staging_path"])).is_relative_to(
+        batch_root / "attempts" / retried_id / "input"
+    )
+    assert not first_attempt_root.exists()
+    assert provenance_index.read_bytes() == provenance_bytes
+
+    services.attempts.stage_attempt_files(retried_id)
+    services.attempts.ensure_hashes(retried_id)
+    services.attempts.ensure_provenance(retried_id)
+
+    assert services.store.get_attempt(retried_id)["state"] == "provenanced"
+    assert provenance_index.read_bytes() == provenance_bytes
+
+    services.attempts.cleanup_attempt(retried_id)
+
+    assert services.store.get_attempt(retried_id)["state"] == "cleanup_done"
+    assert not batch_root.exists()
 
 
 def test_cancel_wins_a_race_with_target_completion(tmp_path: Path) -> None:
