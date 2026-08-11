@@ -11,7 +11,13 @@ from dataclasses import dataclass
 
 from http_api_contracts import safe_http_base_url
 from jeb_core.adapters.munchy import MunchyTargetAdapter
-from jeb_core.domain.models import EligibleFile, JebConfig, TargetConfig, current_time
+from jeb_core.domain.models import (
+    DEFAULT_MUNCHY_UPLOAD_WORKERS,
+    EligibleFile,
+    JebConfig,
+    TargetConfig,
+    current_time,
+)
 from jeb_core.domain.sources import SourceConfig
 from jeb_core.persistence.schema import validate_state
 from jeb_core.persistence.source_registry import SourceRegistry
@@ -106,7 +112,10 @@ def config_from_env(env: Mapping[str, str] | None = None) -> JebConfig:
         ),
         token=env_value_from(values, "JEB_MUNCHY_TOKEN", "") or "",
         allow_insecure_http=allow_insecure_http,
-        upload_workers=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", 4)),
+        upload_workers=max(
+            1,
+            env_int(values, "JEB_MUNCHY_UPLOAD_WORKERS", DEFAULT_MUNCHY_UPLOAD_WORKERS),
+        ),
         upload_chunk_bytes=max(1, env_int(values, "JEB_MUNCHY_UPLOAD_CHUNK_MIB", 64)) * 1024 * 1024,
         wait_for_safe_delete=env_bool(values, "JEB_MUNCHY_WAIT_FOR_SAFE_DELETE", True),
     )

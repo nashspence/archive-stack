@@ -9,8 +9,13 @@ import pytest
 import yaml
 from jeb_api.cli import api_host, api_port
 from jeb_api.composition import config_from_env
-from jeb_core.domain.models import parse_duration
-from munchy_api_client.client import DEFAULT_BASE_URL as DEFAULT_MUNCHY_BASE_URL
+from jeb_core.domain.models import DEFAULT_MUNCHY_UPLOAD_WORKERS, parse_duration
+from munchy_api_client.client import (
+    DEFAULT_BASE_URL as DEFAULT_MUNCHY_BASE_URL,
+)
+from munchy_api_client.client import (
+    DEFAULT_UPLOAD_WORKERS as DEFAULT_MUNCHY_CLIENT_UPLOAD_WORKERS,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -77,6 +82,17 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     )
     assert service["environment"]["JEB_TUSD_BASE_URL"] == (
         "${JEB_TUSD_BASE_URL:-" + runtime.ingress.tusd_base_url + "}"
+    )
+    upload_workers_default = (
+        service["environment"]["JEB_MUNCHY_UPLOAD_WORKERS"]
+        .removeprefix("${JEB_MUNCHY_UPLOAD_WORKERS:-")
+        .removesuffix("}")
+    )
+    assert (
+        int(upload_workers_default)
+        == runtime.targets["munchy"].upload_workers
+        == DEFAULT_MUNCHY_UPLOAD_WORKERS
+        == DEFAULT_MUNCHY_CLIENT_UPLOAD_WORKERS
     )
     max_age_default = (
         service["environment"]["JEB_TUS_INCOMPLETE_MAX_AGE"]

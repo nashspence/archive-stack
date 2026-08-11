@@ -13,6 +13,8 @@ from media_preflight import (
 )
 from time_formats import format_utc_timestamp, utc_now
 
+DEFAULT_MUNCHY_UPLOAD_WORKERS = 12
+
 SOURCE_REMOVAL_TTL = timedelta(minutes=15)
 
 
@@ -176,7 +178,7 @@ class TargetConfig:
     url: str = ""
     token: str = ""
     allow_insecure_http: bool = False
-    upload_workers: int = 4
+    upload_workers: int = DEFAULT_MUNCHY_UPLOAD_WORKERS
     upload_chunk_bytes: int = 64 * 1024 * 1024
     wait_for_safe_delete: bool = True
 
