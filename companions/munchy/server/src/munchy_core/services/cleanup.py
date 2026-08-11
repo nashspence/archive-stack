@@ -130,6 +130,7 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
         "gpu_results",
         "gpu_statuses",
         "group_results",
+        "handoff_checkpoint",
         "handoff_adapter_state",
     ):
         if key in job:

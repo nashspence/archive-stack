@@ -357,6 +357,10 @@ def run_job(job_id: str) -> None:
         job.setdefault("started_at", utc_timestamp_now())
         state_store.save_job(job)
 
+        if handoff_service.handoff_source_ready(job):
+            complete_prepared_job_handoff(job)
+            return
+
         input_upload = upload_service.load_input_upload(str(job["input_upload_id"]))
         storage_hint = upload_service.input_upload_storage_hint(input_upload)
         gpu_job_root = runtime_config.GPU_RUNTIME_DIR / "jobs" / job_id
@@ -648,29 +652,9 @@ def run_job(job_id: str) -> None:
         if isinstance(job.get("routing"), dict):
             routing_service.write_routing_manifest(job, input_upload, groups, archive_dir)
 
-        workflow_mode = str(job.get("workflow_mode") or "collection_archive")
-        source_dir = review_dir if workflow_mode == "review" else archive_dir
-        source_label = "review" if workflow_mode == "review" else "collection archive"
-        job["phase"] = "handoff"
+        handoff_service.mark_handoff_source_ready(job)
         state_store.save_job(job)
-        job["handoff_receipt"] = handoff_service.advance_handoff(
-            job,
-            source_dir,
-            final=True,
-            source_label=source_label,
-        )
-        state_store.save_job(job)
-        state_store.raise_if_job_canceled(job_id)
-
-        job["phase"] = "done"
-        job["state"] = "succeeded"
-        job["finished_at"] = utc_timestamp_now()
-        state_store.save_job(job)
-        if cleanup_service.should_cleanup_local_work_on_success(job):
-            cleanup_service.cleanup_terminal_job(job)
-        cleanup_service.compact_terminal_job_state(job)
-        state_store.save_job(job)
-        event_service.emit_job_event(job, "job.succeeded", "Munchy job completed successfully.")
+        complete_prepared_job_handoff(job)
     except domain_errors.JobCanceled as exc:
         log.info("job %s canceled: %s", job_id, exc)
         try:
@@ -718,6 +702,33 @@ def run_job(job_id: str) -> None:
         with execution_runtime.state_lock:
             execution_runtime.active_jobs.discard(job_id)
         schedule_pending_jobs()
+
+
+def complete_prepared_job_handoff(job: dict[str, Any]) -> None:
+    if not handoff_service.handoff_source_ready(job):
+        raise RuntimeError("Munchy job has no completed handoff source checkpoint")
+    source_dir, source_label, _source_kind = handoff_service.handoff_source(job)
+    job_id = str(job["job_id"])
+    job["phase"] = "handoff"
+    state_store.save_job(job)
+    job["handoff_receipt"] = handoff_service.advance_handoff(
+        job,
+        source_dir,
+        final=True,
+        source_label=source_label,
+    )
+    state_store.save_job(job)
+    state_store.raise_if_job_canceled(job_id)
+
+    job["phase"] = "done"
+    job["state"] = "succeeded"
+    job["finished_at"] = utc_timestamp_now()
+    state_store.save_job(job)
+    if cleanup_service.should_cleanup_local_work_on_success(job):
+        cleanup_service.cleanup_terminal_job(job)
+    cleanup_service.compact_terminal_job_state(job)
+    state_store.save_job(job)
+    event_service.emit_job_event(job, "job.succeeded", "Munchy job completed successfully.")
 
 
 def schedule_job(

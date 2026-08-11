@@ -812,8 +812,19 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         job = state_store.load_job(job_id)
         if job.get("state") == "succeeded":
             return job
+        checkpoint_ready = handoff_service.handoff_source_ready(job)
+        retained_handoff = handoff_service.retained_handoff_sources_available(job)
+        preserve_handoff = checkpoint_ready and handoff_service.handoff_adapter(job).can_resume(job)
+        input_upload_id = str(job.get("input_upload_id") or "")
+        retained_input = bool(
+            input_upload_id and state_store.read_state("input-upload", input_upload_id) is not None
+        )
+        if not preserve_handoff and not retained_handoff and not retained_input:
+            raise ServiceError(
+                status_code=409,
+                detail="job retained work is no longer available; submit the source again",
+            )
         diagnostic_service.remove_job_diagnostic(job_id, missing_ok=True)
-        preserve_handoff = handoff_service.handoff_adapter(job).can_resume(job)
         if preserve_handoff:
             for key in (
                 "terminal_progress",
@@ -824,6 +835,11 @@ def resume_job(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]
         else:
             handoff_service.cancel_handoff(job, reason="job_resume_reset")
             cleanup_service.reset_resumable_job_runtime_state(job)
+            if not retained_handoff:
+                job.pop("handoff_checkpoint", None)
+        configured_handoff = handoff_service.handoff_config(job)
+        configured_handoff["state"] = "pending"
+        configured_handoff["safe_to_delete"] = False
         job["state"] = "queued"
         job["phase"] = "queued"
         job.pop("cancel_requested", None)

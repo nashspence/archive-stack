@@ -4458,6 +4458,13 @@ def test_resume_job_clears_failed_runtime_state(
         "cancel_riverhog_upload_session",
         lambda job, reason: canceled.append(f"{job['job_id']}:{reason}"),
     )
+    server.upload_service.save_input_upload_raw(
+        {
+            "input_upload_id": "upload-1",
+            "state": "uploaded",
+            "files": [],
+        }
+    )
     server.state_store.save_job(
         {
             "job_id": "job-1",
@@ -4530,6 +4537,9 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             },
         },
     }
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "ready.bin").write_bytes(b"ready")
     server.state_store.save_job(
         {
             "job_id": "job-1",
@@ -4542,6 +4552,12 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             "handoff": {"destination": "riverhog", "options": {}},
             "error": "old error",
             "finished_at": "2026-01-01T00:00:00Z",
+            "handoff_checkpoint": {
+                "stage": "handoff",
+                "source_kind": "collection_archive",
+                "source_label": "collection archive",
+                "ready_at": "2026-01-01T00:00:00Z",
+            },
             "eager_archive": {"files": {"camera/a.mp4": {"state": "encoded"}}},
             "handoff_adapter_state": riverhog_session,
         }
@@ -4565,6 +4581,142 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
     assert stored["eager_archive"]["files"] == {"camera/a.mp4": {"state": "encoded"}}
     assert stored["handoff_adapter_state"]["files"] == riverhog_session["files"]
     assert stored["handoff_resume_preserved_at"]
+
+
+def test_resume_job_uses_retained_handoff_checkpoint_without_input_upload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda _tasks: None)
+    canceled: list[str] = []
+    monkeypatch.setattr(
+        server.riverhog,
+        "cancel_riverhog_upload_session",
+        lambda job, reason: canceled.append(f"{job['job_id']}:{reason}"),
+    )
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "camera.webm").write_bytes(b"archive")
+    server.state_store.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "handoff",
+            "input_upload_id": "upload-1",
+            "workflow_mode": "collection_archive",
+            "handoff": {"destination": "riverhog", "options": {}},
+            "handoff_checkpoint": {
+                "stage": "handoff",
+                "source_kind": "collection_archive",
+                "source_label": "collection archive",
+                "ready_at": "2026-01-01T00:00:00Z",
+            },
+            "handoff_adapter_state": {
+                "collection_id": 43,
+                "files": {"camera.webm": {"state": "registered"}},
+            },
+        }
+    )
+
+    resumed = server.resume_job("job-1", server.BackgroundTasks())
+
+    assert resumed["state"] == "queued"
+    assert resumed["handoff"]["state"] == "pending"
+    assert resumed["handoff_checkpoint"]["stage"] == "handoff"
+    assert "handoff_adapter_state" not in resumed
+    assert canceled == ["job-1:job_resume_reset"]
+
+
+def test_resume_job_rejects_job_after_retained_work_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    server.state_store.save_job(
+        {
+            "job_id": "job-1",
+            "state": "failed",
+            "phase": "handoff",
+            "input_upload_id": "upload-1",
+            "handoff": {"destination": "riverhog", "options": {}},
+            "error": "handoff failed",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "cleanup_completed_at": "2026-01-02T00:00:00Z",
+        }
+    )
+    diagnostic = server.diagnostic_service.create_job_diagnostic(
+        server.state_store.load_job("job-1"),
+        reason="job_failed",
+    )
+    assert diagnostic is not None
+
+    with pytest.raises(server.ServiceError) as raised:
+        server.resume_job("job-1", server.BackgroundTasks())
+
+    assert raised.value.status_code == 409
+    stored = server.state_store.load_job("job-1")
+    assert stored["state"] == "failed"
+    assert stored["error"] == "handoff failed"
+    assert stored["cleanup_completed_at"] == "2026-01-02T00:00:00Z"
+    assert server.state_store.read_job_diagnostic("job-1") is not None
+
+
+def test_run_job_resumes_directly_from_handoff_checkpoint(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda: None)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.upload_service,
+        "load_input_upload",
+        lambda _upload_id: (_ for _ in ()).throw(
+            AssertionError("handoff resume must not reload consumed input")
+        ),
+    )
+    calls: list[tuple[Path, bool, str]] = []
+
+    def advance_handoff(job, source_dir, *, final, source_label, context=None):  # type: ignore[no-untyped-def]
+        del job, context
+        calls.append((source_dir, final, source_label))
+        return {"returncode": 0}
+
+    monkeypatch.setattr(server.handoff_service, "advance_handoff", advance_handoff)
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "camera.webm").write_bytes(b"archive")
+    server.state_store.save_job(
+        {
+            "job_id": "job-1",
+            "state": "queued",
+            "phase": "queued",
+            "input_upload_id": "upload-1",
+            "workflow_mode": "collection_archive",
+            "handoff": {"destination": "command", "options": {}, "safe_to_delete": False},
+            "handoff_checkpoint": {
+                "stage": "handoff",
+                "source_kind": "collection_archive",
+                "source_label": "collection archive",
+                "ready_at": "2026-01-01T00:00:00Z",
+            },
+        }
+    )
+
+    server.job_service.run_job("job-1")
+
+    stored = server.state_store.load_job("job-1")
+    assert stored["state"] == "succeeded"
+    assert stored["phase"] == "done"
+    assert calls == [(archive_dir, True, "collection archive")]
+    assert "handoff_checkpoint" not in stored
 
 
 def test_review_rclone_upload_excludes_platform_cruft(

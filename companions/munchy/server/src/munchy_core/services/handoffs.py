@@ -154,6 +154,56 @@ def handoff_config(job: dict[str, Any]) -> dict[str, Any]:
     return configured
 
 
+def handoff_source(job: Mapping[str, Any]) -> tuple[Path, str, str]:
+    job_id = str(job.get("job_id") or "")
+    workflow_mode = str(job.get("workflow_mode") or "collection_archive")
+    source_kind = "review" if workflow_mode == "review" else "collection_archive"
+    source_label = "review" if source_kind == "review" else "collection archive"
+    source_dir = (
+        runtime_config.GPU_RUNTIME_DIR
+        / "jobs"
+        / job_id
+        / ("review" if source_kind == "review" else "archive")
+    )
+    return source_dir, source_label, source_kind
+
+
+def mark_handoff_source_ready(job: dict[str, Any]) -> dict[str, Any]:
+    _source_dir, source_label, source_kind = handoff_source(job)
+    checkpoint = job.get("handoff_checkpoint")
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+        job["handoff_checkpoint"] = checkpoint
+    checkpoint.setdefault("ready_at", utc_timestamp_now())
+    checkpoint.update(
+        {
+            "stage": "handoff",
+            "source_kind": source_kind,
+            "source_label": source_label,
+        }
+    )
+    return checkpoint
+
+
+def handoff_source_ready(job: Mapping[str, Any]) -> bool:
+    checkpoint = job.get("handoff_checkpoint")
+    if not isinstance(checkpoint, Mapping) or checkpoint.get("stage") != "handoff":
+        return False
+    _source_dir, source_label, source_kind = handoff_source(job)
+    return (
+        checkpoint.get("source_kind") == source_kind
+        and checkpoint.get("source_label") == source_label
+        and bool(checkpoint.get("ready_at"))
+    )
+
+
+def retained_handoff_sources_available(job: Mapping[str, Any]) -> bool:
+    if not handoff_source_ready(job):
+        return False
+    source_dir, _source_label, _source_kind = handoff_source(job)
+    return source_dir.is_dir() and any(path.is_file() for path in source_dir.rglob("*"))
+
+
 def register_handoff_adapter(
     adapter: handoff_port.HandoffAdapter,
     *,
