@@ -1268,7 +1268,7 @@ def test_upload_file_reports_successful_tus_chunk_offsets(tmp_path: Path) -> Non
     assert offsets == [4, 8]
 
 
-def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
+def test_upload_files_resumes_each_file_from_its_server_offset(tmp_path: Path) -> None:
     files = []
     for index in range(3):
         source = tmp_path / f"clip{index}.mp4"
@@ -1290,7 +1290,6 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     )
     client = MunchyClient("https://munchy.test")
     uploaded: list[str] = []
-    submission_gets = 0
 
     def fake_upload_file(
         upload_id: str,
@@ -1303,31 +1302,21 @@ def test_upload_files_skips_completed_paths(tmp_path: Path) -> None:
     ) -> None:
         uploaded.append(item.rel_path)
 
-    def fake_get_submission(submission_id: str) -> dict[str, object]:
-        nonlocal submission_gets
-        assert submission_id == "submission-1"
-        submission_gets += 1
-        return {
-            "job": {"state": "uploading"},
-            "upload": {
-                "state": "uploaded" if submission_gets > 1 else "uploading",
-                "files": [
-                    {"path": files[0].rel_path, "complete": True},
-                    {"path": files[1].rel_path, "complete": True},
-                    {"path": files[2].rel_path, "complete": False},
-                ],
-            },
-        }
-
     client.upload_file = fake_upload_file  # type: ignore[method-assign]
-    client.get_submission = fake_get_submission  # type: ignore[method-assign]
 
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr):
-        client.upload_files(request)
+        upload = client.upload_files(request)
 
-    assert uploaded == [files[2].rel_path]
-    assert "skipped 2 already complete files" in stderr.getvalue()
+    assert sorted(uploaded) == sorted(item.rel_path for item in files)
+    assert upload == {
+        "state": "uploaded",
+        "files_total": 3,
+        "files_uploaded": 3,
+        "bytes_total": 15,
+        "uploaded_bytes": 15,
+    }
+    assert "with 3 workers, 9 MiB chunks" in stderr.getvalue()
 
 
 def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) -> None:
@@ -1357,7 +1346,6 @@ def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) 
     )
     client = MunchyClient("https://munchy.test")
     calls: list[str] = []
-    submission_gets = 0
 
     def put_journal(
         submission_id: str,
@@ -1373,19 +1361,6 @@ def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) 
         calls.append("provenance")
         return {"journal_id": journal_id}
 
-    def get_submission(submission_id: str) -> dict[str, object]:
-        nonlocal submission_gets
-        assert submission_id == request.submission_id
-        submission_gets += 1
-        complete = submission_gets > 1
-        return {
-            "job": {"state": "uploading"},
-            "upload": {
-                "state": "uploaded" if complete else "uploading",
-                "files": [{"path": item.rel_path, "complete": complete}],
-            },
-        }
-
     def upload_file(
         upload_id: str,
         requested: SubmissionInputFile,
@@ -1396,7 +1371,6 @@ def test_upload_files_publishes_exact_provenance_before_payload(tmp_path: Path) 
         calls.append("payload")
 
     client.put_submission_provenance_journal = put_journal  # type: ignore[method-assign]
-    client.get_submission = get_submission  # type: ignore[method-assign]
     client.upload_file = upload_file  # type: ignore[method-assign]
 
     upload = client.upload_files(request)
@@ -1423,7 +1397,6 @@ def test_upload_files_tolerates_compact_status_timeout(tmp_path: Path) -> None:
     )
     client = MunchyClient("https://munchy.test")
     uploaded: list[str] = []
-    submission_gets = 0
     job_gets = 0
 
     def fake_upload_file(
@@ -1437,16 +1410,6 @@ def test_upload_files_tolerates_compact_status_timeout(tmp_path: Path) -> None:
     ) -> None:
         uploaded.append(item.rel_path)
 
-    def fake_get_submission(submission_id: str) -> dict[str, object]:
-        nonlocal submission_gets
-        assert submission_id == "submission-1"
-        submission_gets += 1
-        if submission_gets == 1:
-            upload = {"state": "uploading", "files": []}
-        else:
-            upload = {"state": "uploaded", "files": [{"path": file.rel_path, "complete": True}]}
-        return {"job": {"state": "uploading"}, "upload": upload}
-
     def fake_get_job(job_id: str, *, compact: bool = False) -> dict[str, object]:
         nonlocal job_gets
         assert job_id == "submission-1"
@@ -1455,7 +1418,6 @@ def test_upload_files_tolerates_compact_status_timeout(tmp_path: Path) -> None:
         raise TimeoutError("timed out")
 
     client.upload_file = fake_upload_file  # type: ignore[method-assign]
-    client.get_submission = fake_get_submission  # type: ignore[method-assign]
     client.get_job = fake_get_job  # type: ignore[method-assign]
 
     with patch("munchy_api_client.client.time.sleep"):
@@ -1463,7 +1425,6 @@ def test_upload_files_tolerates_compact_status_timeout(tmp_path: Path) -> None:
 
     assert uploaded == [file.rel_path]
     assert upload["state"] == "uploaded"
-    assert submission_gets == 2
     assert job_gets == 1
 
 

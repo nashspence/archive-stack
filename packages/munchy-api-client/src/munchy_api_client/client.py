@@ -1700,13 +1700,6 @@ class MunchyClient:
                 time.sleep(retry_delay)
                 retry_delay = next_upload_retry_delay(retry_delay)
 
-    def _upload_status(self, request: UploadRequest) -> dict[str, Any]:
-        submission = self.get_submission(request.submission_id)
-        upload = submission.get("upload")
-        if not isinstance(upload, dict):
-            raise RuntimeError(f"submission {request.submission_id} no longer has upload state")
-        return upload
-
     def _job_status(self, request: UploadRequest) -> dict[str, Any]:
         return self.get_job(request.submission_id, compact=True)
 
@@ -1720,58 +1713,42 @@ class MunchyClient:
         total_bytes = sum(item.bytes for item in request.files)
         chunk_mib = request.upload_chunk_mib
         retry_reporter = UploadRetryReporter(label="remote upload")
-        current_upload = self._upload_status(request)
-        completed_paths = {
-            str(item.get("path"))
-            for item in current_upload.get("files", [])
-            if isinstance(item, dict) and item.get("complete")
-        }
-        pending_files = [item for item in request.files if item.rel_path not in completed_paths]
-        pending_bytes = sum(item.bytes for item in pending_files)
-        skipped_files = total_files - len(pending_files)
-        completed_bytes = total_bytes - pending_bytes
         print(
             (
-                f"uploading {len(pending_files)}/{total_files} remaining files "
-                f"({pending_bytes / 1024**3:.2f}/{total_bytes / 1024**3:.2f} GiB) "
+                f"uploading {total_files} files "
+                f"({total_bytes / 1024**3:.2f} GiB) "
                 f"with {request.upload_workers} workers, {chunk_mib} MiB chunks"
             ),
             file=sys.stderr,
         )
-        if skipped_files:
-            print(
-                f"upload resume: skipped {skipped_files} already complete files",
-                file=sys.stderr,
-            )
-        if pending_files:
+        if request.files:
             renderer = make_progress_renderer(include_job=False, title="Munchy Upload")
             retry_reporter.bind_renderer(renderer)
-            if request.upload_workers == 1 or len(pending_files) <= 1:
+            if request.upload_workers == 1 or len(request.files) <= 1:
                 with renderer:
                     self._upload_files_serial(
                         request,
-                        pending_files,
+                        list(request.files),
                         retry_reporter,
                         renderer,
-                        completed_files=skipped_files,
-                        completed_bytes=completed_bytes,
                     )
                     retry_reporter.finish()
             else:
                 with renderer:
                     self._upload_files_parallel(
                         request,
-                        pending_files,
+                        list(request.files),
                         retry_reporter,
                         renderer,
-                        completed_files=skipped_files,
-                        completed_bytes=completed_bytes,
                     )
                     retry_reporter.finish()
-        upload = self._upload_status(request)
-        if upload.get("state") != "uploaded":
-            raise RuntimeError(f"input upload did not complete: {upload}")
-        return upload
+        return {
+            "state": "uploaded",
+            "files_total": total_files,
+            "files_uploaded": total_files,
+            "bytes_total": total_bytes,
+            "uploaded_bytes": total_bytes,
+        }
 
     def _upload_provenance_journals(self, request: UploadRequest) -> None:
         journals: dict[str, bytes] = {}
