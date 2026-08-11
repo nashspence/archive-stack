@@ -25,6 +25,7 @@ from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
     CollectionProvenanceEntityRecord,
     CollectionProvenanceJournalRecord,
+    CollectionProvenanceLineageEdgeRecord,
     CollectionUploadRecord,
     TagRecord,
 )
@@ -155,6 +156,7 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
 
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, config, _multipart, root = _service_with_ingress(tmp_path)
     contents = {
@@ -274,6 +276,13 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
                 journal_id=summary.journal_id,
             )
         )
+        lineage_edges = list(
+            session.query(CollectionProvenanceLineageEdgeRecord).filter_by(
+                collection_id=collection_id,
+                from_journal_id=summary.journal_id,
+            )
+        )
+        exact_bytes = exact.journal_bytes if exact is not None else None
     assert [item.kind for item in objects] == [
         "pack",
         "provenance-bundle",
@@ -283,8 +292,12 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     ]
     assert bindings_by_path["captured.bin"].status == "captured"
     assert bindings_by_path["operator-note.txt"].status == "omitted"
-    assert exact is not None and exact.journal_bytes == journal
+    assert exact is not None and exact_bytes == journal
+    assert exact.entries == len(summary.frames)
+    assert exact.agent_ids_json
+    assert exact.entity_counts_json
     assert projected
+    assert lineage_edges == []
 
     stored_by_suffix = {path.rsplit("/", 1)[-1]: stored for path, stored in root.objects.items()}
     index_stored = stored_by_suffix["index.json.age"]
@@ -337,10 +350,17 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         "captured",
         "omitted",
     ]
-    shown = provenance_service.show_file(collection_id, "captured.bin", principal=reader)
-    assert shown["journal"]["journal_id"] == summary.journal_id
-    traced = provenance_service.trace_file(collection_id, "captured.bin", principal=reader)
-    assert [item["journal_id"] for item in traced["journals"]] == [summary.journal_id]
+    with monkeypatch.context() as context:
+        context.setattr(
+            "riverhog_core.services.provenance.validate_journal",
+            lambda _content: (_ for _ in ()).throw(
+                AssertionError("ordinary provenance reads must use the validated projection")
+            ),
+        )
+        shown = provenance_service.show_file(collection_id, "captured.bin", principal=reader)
+        assert shown["journal"]["journal_id"] == summary.journal_id
+        traced = provenance_service.trace_file(collection_id, "captured.bin", principal=reader)
+        assert [item["journal_id"] for item in traced["journals"]] == [summary.journal_id]
     exported, exported_sha256 = provenance_service.export_journal(
         collection_id,
         summary.journal_id,

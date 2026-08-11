@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
     output = tmp_path / "movie.json-seq"
+    json_output = tmp_path / "movie-json.json-seq"
 
     listed = RUNNER.invoke(
         app,
@@ -109,6 +111,19 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             str(output),
         ],
     )
+    exported_json = RUNNER.invoke(
+        app,
+        [
+            "collection",
+            "provenance",
+            "export",
+            "41",
+            JOURNAL_ID,
+            "--output",
+            str(json_output),
+            "--json",
+        ],
+    )
     verified = RUNNER.invoke(
         app,
         ["collection", "provenance", "verify", "41", "--json"],
@@ -122,6 +137,15 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert json.loads(traced.stdout)["journals"] == [shown["journal"]]
     assert exported.exit_code == 0
     assert output.read_bytes() == JOURNAL
+    assert exported_json.exit_code == 0
+    assert json_output.read_bytes() == JOURNAL
+    assert json.loads(exported_json.stdout) == {
+        "collection_id": 41,
+        "journal_id": JOURNAL_ID,
+        "output": str(json_output.resolve()),
+        "bytes": len(JOURNAL),
+        "sha256": hashlib.sha256(JOURNAL).hexdigest(),
+    }
     assert verified.exit_code == 0
     assert json.loads(verified.stdout)["valid"] is True
     assert calls == [
@@ -142,6 +166,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
         ),
         ("show", (41, "media/movie.mov")),
         ("trace", (41, "media/movie.mov")),
+        ("export", (41, JOURNAL_ID)),
         ("export", (41, JOURNAL_ID)),
         ("verify", 41),
     ]

@@ -1895,6 +1895,7 @@ def provenance_export_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     journal_id: Annotated[str, typer.Argument(help="Exact provenance journal id")],
     output: Annotated[Path, typer.Option("--output", "-o", help="Destination .json-seq file")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit a JSON export receipt")] = False,
 ) -> None:
     """Export one exact canonical RFC 7464 journal."""
 
@@ -1907,6 +1908,18 @@ def provenance_export_cmd(
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
+    if json_mode:
+        emit(
+            {
+                "collection_id": collection_id,
+                "journal_id": journal_id,
+                "output": str(destination),
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            },
+            json_mode=True,
+        )
+        return
     typer.echo(str(destination))
 
 

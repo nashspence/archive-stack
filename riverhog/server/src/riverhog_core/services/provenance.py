@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections.abc import Iterable
 from typing import Any
 
 from riverhog_protocol.errors import BadRequest, InvalidState, NotFound
@@ -17,7 +17,7 @@ from riverhog_provenance import (
     validate_provenance_archive,
 )
 from sqlalchemy import asc, delete, desc, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from riverhog_core.app_permissions import (
     CATALOG_READ,
@@ -31,9 +31,13 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionProvenanceEntityRecord,
     CollectionProvenanceJournalRecord,
+    CollectionProvenanceLineageEdgeRecord,
     CollectionRecord,
 )
-from riverhog_core.provenance_projection import provenance_entity_records
+from riverhog_core.provenance_projection import (
+    ProvenanceJournalProjection,
+    provenance_journal_projection,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 
 _SORT_FIELDS = {"path", "bytes", "status"}
@@ -155,7 +159,19 @@ class SqlAlchemyProvenanceService:
                 )
                 if journal is None:
                     raise InvalidState("captured provenance journal is missing")
-                payload["journal"] = _journal_payload(journal)
+                ancestors = tuple(
+                    session.scalars(
+                        select(CollectionProvenanceLineageEdgeRecord.to_journal_id).where(
+                            CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
+                            CollectionProvenanceLineageEdgeRecord.from_journal_id
+                            == row[1].journal_id,
+                        )
+                    )
+                )
+                payload["journal"] = _journal_payload(
+                    journal,
+                    ancestor_journal_ids=ancestors,
+                )
             return payload
 
     def trace_file(
@@ -172,40 +188,49 @@ class SqlAlchemyProvenanceService:
         journal_id = str(binding["journal_id"])
         with session_scope(self._session_factory) as session:
             _authorized_collection(session, collection_id, principal)
+            reachable = {journal_id}
+            pending = {journal_id}
+            edge_records: list[CollectionProvenanceLineageEdgeRecord] = []
+            while pending:
+                current_edges = list(
+                    session.scalars(
+                        select(CollectionProvenanceLineageEdgeRecord).where(
+                            CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
+                            CollectionProvenanceLineageEdgeRecord.from_journal_id.in_(pending),
+                        )
+                    )
+                )
+                edge_records.extend(current_edges)
+                discovered = {item.to_journal_id for item in current_edges} - reachable
+                reachable.update(discovered)
+                pending = discovered
             records = {
                 item.journal_id: item
                 for item in session.scalars(
                     select(CollectionProvenanceJournalRecord).where(
-                        CollectionProvenanceJournalRecord.collection_id == collection_id
+                        CollectionProvenanceJournalRecord.collection_id == collection_id,
+                        CollectionProvenanceJournalRecord.journal_id.in_(reachable),
                     )
                 )
             }
-            reachable = {journal_id}
-            pending = [journal_id]
-            edges: list[dict[str, str]] = []
-            while pending:
-                current_id = pending.pop()
-                current = records.get(current_id)
-                if current is None:
-                    raise InvalidState(f"provenance ancestor journal is missing: {current_id}")
-                for reference in validate_journal(current.journal_bytes).external_states:
-                    edges.append(
-                        {
-                            "from_journal_id": current_id,
-                            "to_journal_id": reference.journal_id,
-                            "state_id": reference.state_id,
-                            "entry_id": reference.entry_id,
-                            "entry_json_sha256": reference.entry_json_sha256,
-                        }
-                    )
-                    if reference.journal_id not in reachable:
-                        reachable.add(reference.journal_id)
-                        pending.append(reference.journal_id)
+            if set(records) != reachable:
+                raise InvalidState("provenance ancestor journal projection is incomplete")
+            ancestors_by_journal: dict[str, set[str]] = {
+                current_id: set() for current_id in reachable
+            }
+            for edge in edge_records:
+                ancestors_by_journal[edge.from_journal_id].add(edge.to_journal_id)
             return {
                 **shown,
-                "journals": [_journal_payload(records[item]) for item in sorted(reachable)],
+                "journals": [
+                    _journal_payload(
+                        records[item],
+                        ancestor_journal_ids=ancestors_by_journal[item],
+                    )
+                    for item in sorted(reachable)
+                ],
                 "lineage_edges": sorted(
-                    edges,
+                    (_lineage_edge_payload(item) for item in edge_records),
                     key=lambda item: (
                         item["from_journal_id"],
                         item["to_journal_id"],
@@ -260,6 +285,7 @@ class SqlAlchemyProvenanceService:
             journals = list(
                 session.scalars(
                     select(CollectionProvenanceJournalRecord)
+                    .options(undefer(CollectionProvenanceJournalRecord.journal_bytes))
                     .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
                     .order_by(CollectionProvenanceJournalRecord.journal_id)
                 )
@@ -271,8 +297,20 @@ class SqlAlchemyProvenanceService:
                     )
                 )
             )
+            lineage_edges = list(
+                session.scalars(
+                    select(CollectionProvenanceLineageEdgeRecord).where(
+                        CollectionProvenanceLineageEdgeRecord.collection_id == collection_id
+                    )
+                )
+            )
             if collection.provenance_mode == "omitted":
-                if journals or entities or any(item.status != "omitted" for item in bindings):
+                if (
+                    journals
+                    or entities
+                    or lineage_edges
+                    or any(item.status != "omitted" for item in bindings)
+                ):
                     raise InvalidState("collection-wide provenance omission is inconsistent")
                 return {
                     "collection_id": collection_id,
@@ -303,7 +341,22 @@ class SqlAlchemyProvenanceService:
             )
             if archive.identity != collection.provenance_etag:
                 raise InvalidState("catalog provenance identity does not match exact bytes")
-            expected_entities = _projected_entities(journals)
+            projections = {
+                item.journal_id: provenance_journal_projection(
+                    collection_id=collection_id,
+                    journal_id=item.journal_id,
+                    summary=validate_journal(item.journal_bytes),
+                )
+                for item in journals
+            }
+            expected_entities = {
+                (record.journal_id, record.entity_type, record.entity_id): (
+                    record.entry_id,
+                    record.document_json,
+                )
+                for projection in projections.values()
+                for record in projection.entities
+            }
             actual_entities = {
                 (item.journal_id, item.entity_type, item.entity_id): (
                     item.entry_id,
@@ -313,6 +366,40 @@ class SqlAlchemyProvenanceService:
             }
             if actual_entities != expected_entities:
                 raise InvalidState("catalog provenance projection differs from exact journals")
+            expected_edges = {
+                (
+                    record.from_journal_id,
+                    record.to_journal_id,
+                    record.entry_id,
+                    record.state_id,
+                    record.entry_json_sha256,
+                )
+                for projection in projections.values()
+                for record in projection.lineage_edges
+            }
+            actual_edges = {
+                (
+                    record.from_journal_id,
+                    record.to_journal_id,
+                    record.entry_id,
+                    record.state_id,
+                    record.entry_json_sha256,
+                )
+                for record in lineage_edges
+            }
+            if actual_edges != expected_edges:
+                raise InvalidState("catalog provenance lineage differs from exact journals")
+            for journal in journals:
+                projection = projections[journal.journal_id]
+                if (
+                    journal.entries != len(projection.summary.frames)
+                    or journal.agent_ids_json
+                    != json.dumps(sorted(projection.summary.agent_ids), separators=(",", ":"))
+                    or journal.entity_counts_json != projection.entity_counts_json
+                ):
+                    raise InvalidState(
+                        "catalog provenance journal summary differs from exact bytes"
+                    )
             return {
                 "collection_id": collection_id,
                 "valid": True,
@@ -366,6 +453,11 @@ class SqlAlchemyProvenanceService:
                     )
 
             session.execute(
+                delete(CollectionProvenanceLineageEdgeRecord).where(
+                    CollectionProvenanceLineageEdgeRecord.collection_id == collection_id
+                )
+            )
+            session.execute(
                 delete(CollectionProvenanceEntityRecord).where(
                     CollectionProvenanceEntityRecord.collection_id == collection_id
                 )
@@ -381,8 +473,15 @@ class SqlAlchemyProvenanceService:
                 )
             )
             journal_records: list[CollectionProvenanceJournalRecord] = []
+            projections: dict[str, ProvenanceJournalProjection] = {}
             for journal_id, content in sorted(validated.journal_bytes.items()):
                 summary = validated.journals[journal_id]
+                projection = provenance_journal_projection(
+                    collection_id=collection_id,
+                    journal_id=journal_id,
+                    summary=summary,
+                )
+                projections[journal_id] = projection
                 journal_records.append(
                     CollectionProvenanceJournalRecord(
                         collection_id=collection_id,
@@ -390,6 +489,9 @@ class SqlAlchemyProvenanceService:
                         journal_bytes=content,
                         bytes=len(content),
                         sha256=summary.journal_sha256,
+                        entries=len(summary.frames),
+                        agent_ids_json=json.dumps(sorted(summary.agent_ids), separators=(",", ":")),
+                        entity_counts_json=projection.entity_counts_json,
                         current_state_id=summary.current_state_id,
                         current_path=summary.current_path,
                         current_bytes=summary.current_bytes,
@@ -409,14 +511,9 @@ class SqlAlchemyProvenanceService:
                 )
                 for item in validated.bindings
             )
-            for journal_id, content in sorted(validated.journal_bytes.items()):
-                session.add_all(
-                    provenance_entity_records(
-                        collection_id=collection_id,
-                        journal_id=journal_id,
-                        content=content,
-                    )
-                )
+            for journal_id in sorted(validated.journal_bytes):
+                session.add_all(projections[journal_id].entities)
+                session.add_all(projections[journal_id].lineage_edges)
             session.flush()
             entities = int(
                 session.scalar(
@@ -485,78 +582,36 @@ def _file_payload(
     }
 
 
-def _journal_payload(record: CollectionProvenanceJournalRecord) -> dict[str, Any]:
-    summary = validate_journal(record.journal_bytes)
-    counts: Counter[str] = Counter()
-    for frame in summary.frames:
-        body = frame.document.get("body")
-        assertions = body.get("assertions") if isinstance(body, dict) else None
-        if isinstance(assertions, dict):
-            for key, value in assertions.items():
-                if isinstance(value, list):
-                    counts[key] += len(value)
+def _journal_payload(
+    record: CollectionProvenanceJournalRecord,
+    *,
+    ancestor_journal_ids: Iterable[str],
+) -> dict[str, Any]:
     return {
         "journal_id": record.journal_id,
         "bytes": record.bytes,
         "sha256": record.sha256,
-        "entries": len(summary.frames),
+        "entries": record.entries,
         "current_state_id": record.current_state_id,
         "current_path": record.current_path,
         "current_bytes": record.current_bytes,
         "current_sha256": record.current_sha256,
-        "agent_ids": sorted(summary.agent_ids),
-        "ancestor_journal_ids": sorted(
-            {reference.journal_id for reference in summary.external_states}
-        ),
-        "entity_counts": dict(sorted(counts.items())),
+        "agent_ids": json.loads(record.agent_ids_json),
+        "ancestor_journal_ids": sorted(set(ancestor_journal_ids)),
+        "entity_counts": json.loads(record.entity_counts_json),
     }
 
 
-def _projected_entities(
-    journals: list[CollectionProvenanceJournalRecord],
-) -> dict[tuple[str, str, str], tuple[str, str]]:
-    projected: dict[tuple[str, str, str], tuple[str, str]] = {}
-    entity_lists = (
-        "agents",
-        "lineages",
-        "states",
-        "environments",
-        "captures",
-        "activities",
-        "relations",
-        "payload_bindings",
-        "extensions",
-    )
-    for journal in journals:
-        for frame in validate_journal(journal.journal_bytes).frames:
-            body = frame.document.get("body")
-            assertions = body.get("assertions") if isinstance(body, dict) else None
-            if not isinstance(assertions, dict):
-                continue
-            for entity_type in entity_lists:
-                values = assertions.get(entity_type, [])
-                if not isinstance(values, list):
-                    continue
-                for value in values:
-                    if not isinstance(value, dict) or not isinstance(value.get("id"), str):
-                        continue
-                    entry = (
-                        str(frame.document["id"]),
-                        json.dumps(value, sort_keys=True, separators=(",", ":")),
-                    )
-                    projected[(journal.journal_id, entity_type, str(value["id"]))] = entry
-                    if entity_type == "activities" and isinstance(value.get("evidence"), list):
-                        for evidence in value["evidence"]:
-                            if isinstance(evidence, dict) and isinstance(evidence.get("id"), str):
-                                projected[(journal.journal_id, "evidence", str(evidence["id"]))] = (
-                                    str(frame.document["id"]),
-                                    json.dumps(
-                                        evidence,
-                                        sort_keys=True,
-                                        separators=(",", ":"),
-                                    ),
-                                )
-    return projected
+def _lineage_edge_payload(
+    record: CollectionProvenanceLineageEdgeRecord,
+) -> dict[str, str]:
+    return {
+        "from_journal_id": record.from_journal_id,
+        "to_journal_id": record.to_journal_id,
+        "state_id": record.state_id,
+        "entry_id": record.entry_id,
+        "entry_json_sha256": record.entry_json_sha256,
+    }
 
 
 def _collection_id(value: int) -> int:

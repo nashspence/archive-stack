@@ -2,8 +2,33 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from munchy_cli import main as munchy_main
 from riverhog_cli import main as riverhog_main
 from riverhog_protocol.errors import NotFound
+
+
+def test_munchy_main_prints_json_for_client_construction_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_app() -> None:
+        raise ValueError("remote HTTP requires explicit opt-in")
+
+    monkeypatch.setattr(munchy_main, "app", fail_app)
+    monkeypatch.setattr(
+        munchy_main.sys,
+        "argv",
+        ["munchy", "job", "list", "--json"],
+    )
+
+    exit_code = munchy_main.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == (
+        '{"error":{"code":"bad_request","message":"remote HTTP requires explicit opt-in"}}\n'
+    )
+    assert captured.err == ""
 
 
 def test_main_prints_transport_errors_without_traceback(

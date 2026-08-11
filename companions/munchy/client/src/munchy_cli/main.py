@@ -1821,5 +1821,22 @@ def cancel_job(
     emit(job if json_mode else format_job(job), json_mode=json_mode)
 
 
-def main() -> None:
-    app()
+def _json_requested(argv: Sequence[str]) -> bool:
+    return "--json" in argv
+
+
+def main() -> int:
+    try:
+        app()
+    except (MunchyHttpError, httpx.TransportError, OSError, ValueError) as exc:
+        try:
+            _exit_server_error(exc, json_mode=_json_requested(sys.argv[1:]))
+        except typer.Exit as exit_error:
+            return int(exit_error.exit_code)
+    finally:
+        _close_clients()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

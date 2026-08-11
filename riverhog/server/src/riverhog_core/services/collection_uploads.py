@@ -89,7 +89,10 @@ from riverhog_core.pack_volume import (
     parse_pack_volume_plan,
 )
 from riverhog_core.proofs import ProofStamper
-from riverhog_core.provenance_projection import provenance_entity_records
+from riverhog_core.provenance_projection import (
+    ProvenanceJournalProjection,
+    provenance_journal_projection,
+)
 from riverhog_core.raw_upload import RawUploadCheckpoint, RawVolumeUploader
 from riverhog_core.raw_verification import verify_raw_file_from_part_manifest
 from riverhog_core.raw_volume import parse_raw_volume_plan, raw_volume_plan_bytes
@@ -1338,7 +1341,14 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for row in rows
             )
+            journal_projections: dict[str, ProvenanceJournalProjection] = {}
             for journal in upload.provenance_journals:
+                journal_projection = provenance_journal_projection(
+                    collection_id=collection_id,
+                    journal_id=journal.journal_id,
+                    summary=validate_journal(journal.journal_bytes),
+                )
+                journal_projections[journal.journal_id] = journal_projection
                 session.add(
                     CollectionProvenanceJournalRecord(
                         collection_id=collection_id,
@@ -1346,6 +1356,11 @@ class SqlAlchemyCollectionUploadService:
                         journal_bytes=journal.journal_bytes,
                         bytes=journal.bytes,
                         sha256=journal.sha256,
+                        entries=len(journal_projection.summary.frames),
+                        agent_ids_json=json.dumps(
+                            sorted(journal_projection.summary.agent_ids), separators=(",", ":")
+                        ),
+                        entity_counts_json=journal_projection.entity_counts_json,
                         current_state_id=journal.current_state_id,
                         current_path=journal.current_path,
                         current_bytes=journal.current_bytes,
@@ -1365,13 +1380,9 @@ class SqlAlchemyCollectionUploadService:
                 for row in rows
             )
             for journal in upload.provenance_journals:
-                session.add_all(
-                    provenance_entity_records(
-                        collection_id=collection_id,
-                        journal_id=journal.journal_id,
-                        content=journal.journal_bytes,
-                    )
-                )
+                journal_projection = journal_projections[journal.journal_id]
+                session.add_all(journal_projection.entities)
+                session.add_all(journal_projection.lineage_edges)
             collection.tags.extend(
                 CollectionTagRecord(
                     collection_id=collection_id,

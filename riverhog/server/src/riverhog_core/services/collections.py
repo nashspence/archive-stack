@@ -172,7 +172,9 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             byte_count.label("bytes"),
         )
         .options(
-            selectinload(CollectionRecord.archive_copies),
+            selectinload(CollectionRecord.archive_copies).selectinload(
+                CollectionArchiveCopyRecord.objects
+            ),
             selectinload(CollectionRecord.tags),
         )
         .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),

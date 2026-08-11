@@ -28,6 +28,7 @@ from riverhog_core.catalog_models import TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 
@@ -118,6 +119,14 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
             )
         ).one()
 
+    archive_store = MemoryArchiveStore()
+    manifest, record_etag = SqlAlchemyRetrievalService(
+        RuntimeConfig(database_url=isolated_database_url),
+        ArchiveStoreRegistry({"fixture-archive": as_archive_store(archive_store)}),
+        ArchiveIngressStoreRegistry({"fixture-archive": as_ingress_store(archive_store)}),
+        None,
+    ).collection_manifest(1, principal=principal)
+
     assert status.condition == "current"
     assert principal is not None
     assert principal.app == "fixture-client"
@@ -138,6 +147,23 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     assert tuple(lifecycle_event) == ("riverhog-v1-event", "fixture-client", "1")
     assert tuple(existing_provenance) == ("omitted", None)
     assert tuple(provenance_projection_counts) == (0, 0, 0)
+    assert manifest == {
+        "format": "riverhog-collection/v1",
+        "collection": 1,
+        "content_etag": "a" * 64,
+        "provenance_mode": "omitted",
+        "provenance_etag": None,
+        "metadata_revision": 1,
+        "tags": [],
+        "files": [
+            {
+                "path": "notes/fixture.txt",
+                "bytes": 12,
+                "sha256": "5cb72f90e968922d30557d0af8f719d21f61792becaa87eb32477767d739dc0b",
+            }
+        ],
+    }
+    assert len(record_etag) == 64
     engine.dispose()
 
 

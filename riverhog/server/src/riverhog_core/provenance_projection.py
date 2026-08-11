@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from dataclasses import dataclass
 
-from riverhog_provenance import validate_journal
+from riverhog_provenance import JournalSummary, validate_journal
 
-from riverhog_core.catalog_models import CollectionProvenanceEntityRecord
+from riverhog_core.catalog_models import (
+    CollectionProvenanceEntityRecord,
+    CollectionProvenanceLineageEdgeRecord,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceJournalProjection:
+    summary: JournalSummary
+    entities: tuple[CollectionProvenanceEntityRecord, ...]
+    lineage_edges: tuple[CollectionProvenanceLineageEdgeRecord, ...]
+    entity_counts_json: str
 
 
 def provenance_entity_records(
@@ -15,8 +28,25 @@ def provenance_entity_records(
 ) -> tuple[CollectionProvenanceEntityRecord, ...]:
     """Build the disposable database projection from one exact journal."""
 
-    summary = validate_journal(content)
+    return provenance_journal_projection(
+        collection_id=collection_id,
+        journal_id=journal_id,
+        summary=validate_journal(content),
+    ).entities
+
+
+def provenance_journal_projection(
+    *,
+    collection_id: int,
+    journal_id: str,
+    summary: JournalSummary,
+) -> ProvenanceJournalProjection:
+    """Build every disposable database projection from one validated journal."""
+
+    if summary.journal_id != journal_id:
+        raise ValueError("provenance projection journal identity differs from its key")
     entities: dict[tuple[str, str], tuple[str, dict[str, object]]] = {}
+    counts: Counter[str] = Counter()
     entity_lists = (
         "agents",
         "lineages",
@@ -34,6 +64,9 @@ def provenance_entity_records(
         assertions = body.get("assertions") if isinstance(body, dict) else None
         if not isinstance(assertions, dict):
             continue
+        for key, values in assertions.items():
+            if isinstance(values, list):
+                counts[key] += len(values)
         for entity_type in entity_lists:
             values = assertions.get(entity_type, [])
             if not isinstance(values, list):
@@ -49,7 +82,7 @@ def provenance_entity_records(
                         for item in evidence:
                             if isinstance(item, dict) and isinstance(item.get("id"), str):
                                 entities[("evidence", str(item["id"]))] = (entry_id, item)
-    return tuple(
+    entity_records = tuple(
         CollectionProvenanceEntityRecord(
             collection_id=collection_id,
             journal_id=journal_id,
@@ -59,4 +92,29 @@ def provenance_entity_records(
             document_json=json.dumps(document, sort_keys=True, separators=(",", ":")),
         )
         for (entity_type, entity_id), (entry_id, document) in sorted(entities.items())
+    )
+    lineage_edges = tuple(
+        CollectionProvenanceLineageEdgeRecord(
+            collection_id=collection_id,
+            from_journal_id=journal_id,
+            to_journal_id=reference.journal_id,
+            entry_id=reference.entry_id,
+            state_id=reference.state_id,
+            entry_json_sha256=reference.entry_json_sha256,
+        )
+        for reference in sorted(
+            summary.external_states,
+            key=lambda item: (
+                item.journal_id,
+                item.entry_id,
+                item.state_id,
+                item.entry_json_sha256,
+            ),
+        )
+    )
+    return ProvenanceJournalProjection(
+        summary=summary,
+        entities=entity_records,
+        lineage_edges=lineage_edges,
+        entity_counts_json=json.dumps(dict(sorted(counts.items())), separators=(",", ":")),
     )

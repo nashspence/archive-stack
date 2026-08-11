@@ -149,9 +149,12 @@ class CollectionProvenanceJournalRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
-    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
+    entries: Mapped[int] = mapped_column(BigInteger)
+    agent_ids_json: Mapped[str] = mapped_column(Text)
+    entity_counts_json: Mapped[str] = mapped_column(Text)
     current_state_id: Mapped[str] = mapped_column(String)
     current_path: Mapped[str] = mapped_column(String)
     current_bytes: Mapped[int] = mapped_column(BigInteger)
@@ -163,6 +166,41 @@ class CollectionProvenanceJournalRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="provenance_journals")
+
+
+class CollectionProvenanceLineageEdgeRecord(Base):
+    __tablename__ = "collection_provenance_lineage_edges"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    from_journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    to_journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True)
+    state_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_json_sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "from_journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "to_journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_provenance_lineage_edges_target",
+            "collection_id",
+            "to_journal_id",
+        ),
+    )
 
 
 class CollectionFileProvenanceRecord(Base):
