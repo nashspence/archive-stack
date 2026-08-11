@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from urllib.parse import urljoin
 
 import httpx
-from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB
+from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusTransport
 
 TUS_VERSION = "1.0.0"
 DEFAULT_CHUNK_MIB = (DEFAULT_TUS_UPLOAD_CHUNK_MIB, 128)
@@ -44,6 +44,13 @@ def _credentials_from_env() -> tuple[str, str] | None:
     return (user, password) if user else None
 
 
+def _authorization_header(credentials: tuple[str, str] | None) -> str | None:
+    if credentials is None:
+        return None
+    encoded = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode("ascii")
+    return f"Basic {encoded}"
+
+
 def _require_termination(client: httpx.Client, base_url: str) -> None:
     response = client.options(base_url, headers={"Tus-Resumable": TUS_VERSION})
     response.raise_for_status()
@@ -60,6 +67,7 @@ def _require_termination(client: httpx.Client, base_url: str) -> None:
 
 def _measure_probe(
     client: httpx.Client,
+    transport: TusTransport,
     base_url: str,
     *,
     size_mib: int,
@@ -90,45 +98,27 @@ def _measure_probe(
 
         offset = 0
         payload = bytes(chunk_bytes)
-        http_version = response.http_version
         started = clock()
         while offset < total_bytes:
             length = min(chunk_bytes, total_bytes - offset)
-            response = client.patch(
+            offset = transport.patch_chunk(
                 upload_url,
-                headers={
-                    "Tus-Resumable": TUS_VERSION,
-                    "Upload-Offset": str(offset),
-                    "Content-Type": "application/offset+octet-stream",
-                },
+                offset=offset,
                 content=payload if length == chunk_bytes else payload[:length],
             )
-            response.raise_for_status()
-            http_version = response.http_version
-            expected_offset = offset + length
-            actual_offset = int(response.headers.get("Upload-Offset", "-1"))
-            if actual_offset != expected_offset:
-                raise RuntimeError(
-                    f"unexpected TUS offset {actual_offset}; expected {expected_offset}"
-                )
-            offset = actual_offset
         elapsed = clock() - started
 
         return ThroughputResult(
             chunk_mib=chunk_mib,
             gbit_per_second=round(total_bytes * 8 / elapsed / 1_000_000_000, 3),
-            http_version=http_version,
+            http_version="HTTP/1.1",
             mib_per_second=round(size_mib / elapsed, 2),
             seconds=round(elapsed, 3),
             size_mib=size_mib,
         )
     finally:
         if upload_url is not None:
-            cleanup = client.delete(
-                upload_url,
-                headers={"Tus-Resumable": TUS_VERSION},
-            )
-            cleanup.raise_for_status()
+            transport.delete_upload(upload_url)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -152,12 +142,6 @@ def _parser() -> argparse.ArgumentParser:
         help="PATCH size; repeat for a matrix (default: 64 and 128)",
     )
     parser.add_argument(
-        "--http-version",
-        choices=("1.1", "2"),
-        default="2",
-        help="client HTTP version preference (default: 2)",
-    )
-    parser.add_argument(
         "--timeout-seconds",
         type=_positive_int,
         default=300,
@@ -170,21 +154,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     chunk_sizes = args.chunk_mib or list(DEFAULT_CHUNK_MIB)
     auth = _credentials_from_env()
+    tus_headers = {"User-Agent": "tus-throughput/1"}
+    authorization = _authorization_header(auth)
+    if authorization is not None:
+        tus_headers["Authorization"] = authorization
     with httpx.Client(
         auth=auth,
-        http2=args.http_version == "2",
+        http2=True,
         timeout=float(args.timeout_seconds),
         headers={"User-Agent": "tus-throughput/1"},
     ) as client:
-        _require_termination(client, args.url)
-        for chunk_mib in chunk_sizes:
-            result = _measure_probe(
-                client,
-                args.url,
-                size_mib=args.size_mib,
-                chunk_mib=chunk_mib,
-            )
-            print(json.dumps(asdict(result), sort_keys=True), flush=True)
+        with TusTransport(
+            client=client,
+            headers=tus_headers,
+            timeout_seconds=float(args.timeout_seconds),
+        ) as transport:
+            _require_termination(client, args.url)
+            for chunk_mib in chunk_sizes:
+                result = _measure_probe(
+                    client,
+                    transport,
+                    args.url,
+                    size_mib=args.size_mib,
+                    chunk_mib=chunk_mib,
+                )
+                print(json.dumps(asdict(result), sort_keys=True), flush=True)
     return 0
 
 

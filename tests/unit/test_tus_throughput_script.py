@@ -8,6 +8,7 @@ from types import ModuleType
 
 import httpx
 import pytest
+from tus_transport import TusHttpError
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "tus_throughput.py"
@@ -49,10 +50,12 @@ def test_tus_throughput_probe_remains_incomplete_and_is_deleted() -> None:
         raise AssertionError(request.method)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
+    transport = module.TusTransport(client=client, patch_client=client)
     module._require_termination(client, "https://tus.invalid/files/")
     ticks = iter((10.0, 12.0))
     result = module._measure_probe(
         client,
+        transport,
         "https://tus.invalid/files/",
         size_mib=3,
         chunk_mib=1,
@@ -61,7 +64,9 @@ def test_tus_throughput_probe_remains_incomplete_and_is_deleted() -> None:
 
     assert methods == ["OPTIONS", "POST", "PATCH", "PATCH", "PATCH", "DELETE"]
     assert patch_sizes == [1024 * 1024] * 3
+    assert result.http_version == "HTTP/1.1"
     assert result.seconds == 2.0
+    transport.close()
 
 
 def test_tus_throughput_probe_is_deleted_after_patch_failure() -> None:
@@ -79,15 +84,18 @@ def test_tus_throughput_probe_is_deleted_after_patch_failure() -> None:
         raise AssertionError(request.method)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    with pytest.raises(httpx.HTTPStatusError):
+    transport = module.TusTransport(client=client, patch_client=client)
+    with pytest.raises(TusHttpError):
         module._measure_probe(
             client,
+            transport,
             "https://tus.invalid/files/",
             size_mib=1,
             chunk_mib=1,
         )
 
     assert methods == ["POST", "PATCH", "DELETE"]
+    transport.close()
 
 
 def test_tus_throughput_requires_safe_termination_support() -> None:
@@ -108,4 +116,8 @@ def test_tus_throughput_credentials_are_environment_only(monkeypatch) -> None:
     monkeypatch.setenv(module.PASSWORD_ENV, "example-password")
 
     assert module._credentials_from_env() == ("camera", "example-password")
+    assert (
+        module._authorization_header(("camera", "example-password"))
+        == "Basic Y2FtZXJhOmV4YW1wbGUtcGFzc3dvcmQ="
+    )
     assert os.access(SCRIPT, os.X_OK)
