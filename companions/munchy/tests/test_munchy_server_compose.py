@@ -72,3 +72,17 @@ def test_server_and_lan_gateway_share_the_tusd_signing_contract() -> None:
         )
         == 1
     )
+
+
+def test_lan_gateway_keeps_parallel_transfers_observable_and_unbuffered() -> None:
+    nginx = (REPO_ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
+        encoding="utf-8"
+    )
+
+    assert "worker_processes auto;" in nginx
+    assert "worker_connections 1024;" in nginx
+    assert "access_log /dev/stdout riverhog_transfer;" in nginx
+    assert '"$request_method $uri $server_protocol"' in nginx
+    assert "rt=$request_time urt=$upstream_response_time" in nginx
+    assert "proxy_request_buffering off;" in nginx
+    assert "proxy_buffering off;" in nginx
